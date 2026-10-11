@@ -1,0 +1,52 @@
+# =====================================================================
+# TimingMirror 提交边界（依据 implementation-baseline §3 R5 / §2.1 F-6）
+# 原则：凭证、密钥、真实账户数据严禁入库；
+#       脱敏合成测试样例（fixtures/ 等）允许并鼓励入库。
+# =====================================================================
+
+# ---- 凭证与密钥（严禁提交）----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+credentials.json
+token.json
+secrets.json
+
+# ---- 真实账户数据（严禁提交）----
+# 真实成交/账户导出统一放 data/real/（或使用 *.private.csv / *.real.csv 命名）；
+# 合成样例请放 fixtures/，允许入库。
+data/real/
+*.private.csv
+*.real.csv
+*.account.csv
+
+# ---- Python（仅离线数据准备与独立复算，非产品运行时）----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# ---- Node（工具链/前端依赖）----
+node_modules/
+npm-debug.log*
+
+# ---- 日志与临时文件 ----
+*.log
+*.tmp
+
+# ---- 编辑器与操作系统 ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# ---- 说明 ----
+# .qoder/ 为 M3 交付四件套之一，不得忽略；
+# evidence/ 与 fixtures/ 为验收证据与合成样例，不得忽略。
