@@ -26,7 +26,7 @@ body {
 .tab { display: block; padding: 10px 16px; color: var(--dim); text-decoration: none; font-size: 14px; border-bottom: 2px solid transparent; }
 .tab:hover { color: var(--cream); }
 .tab.active { color: var(--amber-ink); border-bottom-color: var(--amber); }
-.view { padding: 20px 24px 40px; max-width: 1100px; }
+.view { padding: 20px 24px 40px; max-width: 1100px; margin: 0 auto; }
 .stack { display: flex; flex-direction: column; gap: 14px; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .banner { border: 1px solid var(--line); border-left: 4px solid var(--amber); border-radius: 8px; background: var(--panel); padding: 10px 14px; font-size: 13px; color: var(--dim); line-height: 1.7; }
