@@ -1,0 +1,65 @@
+{
+  "artifact": "synthetic-fixture",
+  "note": "合成场景预期（示意；非真实行情）；对应 check-market-cache.mjs 的离线校验",
+  "scenarios": [
+    {
+      "id": "S1-normal",
+      "desc": "正常取价（交易日）",
+      "input": { "symbol": "000000", "requested_date": "2024-10-09" },
+      "expected": { "effective_date": "2024-10-09", "close_unadj": 106.0, "close_fwdadj": 104.5, "used_series": "unadjusted", "blocked": false }
+    },
+    {
+      "id": "S2-nontrading",
+      "desc": "非交易日映射（国庆假期中请求 10-03）",
+      "input": { "symbol": "000000", "requested_date": "2024-10-03" },
+      "expected": { "effective_date": "2024-09-30", "close_unadj": 104.0, "used_series": "unadjusted", "blocked": false }
+    },
+    {
+      "id": "S3-missing-price",
+      "desc": "888888 缺价：其受影响结果阻断、000000 保留、组合阻断且不回退",
+      "input": { "symbols": ["000000", "888888"], "requested_date": "2024-10-10" },
+      "expected": {
+        "effective_date": "2024-10-10",
+        "000000": { "blocked": false, "close_unadj": 107.0 },
+        "888888": { "blocked": true, "code": "E_PRICE_MISSING", "mark": "数据缺失", "no_fallback_used": true },
+        "portfolio": { "blocked": true, "recomputed_with_remaining": false }
+      }
+    },
+    {
+      "id": "S4-out-of-range",
+      "desc": "超范围阻断（请求 2026-01-05）",
+      "input": { "requested_date": "2026-01-05" },
+      "expected": { "blocked": true, "code": "E_VALUATION_OUT_OF_RANGE", "effective_date": null, "no_silent_clamp": true }
+    },
+    {
+      "id": "S5-before-last-trade",
+      "desc": "有效估值日早于账单末笔交易日（末笔 2024-10-10）",
+      "input": { "requested_date": "2024-10-09", "last_trade_date": "2024-10-10" },
+      "expected": { "effective_date": "2024-10-09", "blocked": true, "code": "E_VALUATION_BEFORE_LAST_TRADE" }
+    },
+    {
+      "id": "S6-event-actual",
+      "desc": "001234 实际持有区间 [09-24, 09-26] 命中送股事件 → 实际路径阻断",
+      "input": { "symbol": "001234", "actual_interval": ["2024-09-24", "2024-09-26"] },
+      "expected": { "blocked": true, "code": "E_SHARE_EVENT_UNSUPPORTED", "mark": "超出支持范围" }
+    },
+    {
+      "id": "S7-event-split-scope",
+      "desc": "000000：实际区间 [09-24, 09-26] 不命中；反事实区间 [09-24, 10-11] 命中 10-08 配股 → 仅反事实阻断",
+      "input": { "symbol": "000000", "actual_interval": ["2024-09-24", "2024-09-26"], "counterfactual_interval": ["2024-09-24", "2024-10-11"] },
+      "expected": { "actual_blocked": false, "counterfactual_blocked": true, "code": "E_SHARE_EVENT_UNSUPPORTED" }
+    },
+    {
+      "id": "S8-snapshot-meta",
+      "desc": "固定快照与复权基准元信息（四者分开记录）",
+      "input": {},
+      "expected": {
+        "snapshot_id": "mock-snap-1",
+        "fetch_time_present": true,
+        "adjustment_basis": null,
+        "adjustment_basis_note": "未提供（待尹辰核验后记录）",
+        "fields_distinct": true
+      }
+    }
+  ]
+}

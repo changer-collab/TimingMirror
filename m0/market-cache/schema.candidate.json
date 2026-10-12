@@ -1,0 +1,149 @@
+{
+  "interface": "market-cache",
+  "artifact": "candidate-draft",
+  "frozen": false,
+  "status": "候选草案 v1.1（含本次审校修订：OHLC 按基线 §4-2 纠正为必填并补齐夹具、M4 收口；未冻结）",
+  "version": "candidate-1.1",
+  "date": "2026-10-11",
+  "basis": [
+    "implementation-baseline.md §4-2（行情缓存接口要点）、§2.1 F-3、§3 R2、§2.2 E",
+    "PRD:156,162（演示 3 只真实股票 2023–2025 前复权；akshare 预拉缓存）",
+    "负责人本次确认的行情规则（见 confirmations_market）"
+  ],
+  "scope_note": "仅行情缓存接口候选；其余接口不在本轮。",
+  "confirmations_market": {
+    "source": "负责人本次确认（changer）；尹辰、吴涵晶对本版新增内容的覆盖确认未提供",
+    "items": [
+      { "id": "B1", "decision": "演示范围为目标 3 只 A 股、2023–2025；具体清单/数据源/交易日历来源/真实截止日/拉数成功证据未提供，待尹辰真实拉数后提出、changer 签收；合成代码与价格仅用于夹具，不冒充真实支持清单" },
+      { "id": "B2", "decision": "缓存同时提供不复权与前复权日线：不复权用于 actualValue/ghostValue 的金额估值；前复权仅用于注明口径的走势展示；实际路径与买入不动路径使用一致的费用、税费及现金分红口径；禁止拿前复权价格涨幅直接替代金额收益参与择时损耗相减；行情保留源数据精度，不套用 CSV 两位小数限制" },
+      { "id": "B3", "decision": "调用方显式提供 valuation_date；保留 requested_date/effective_date；请求日期超出缓存范围→阻断相关结果、不静默改期；非交易日按适用交易日历取不晚于请求日的最近交易日（不按“缓存共同有数据日”）；effective_date 早于 CSV 最后一笔交易日期→阻断并提示重新选择；v1 不引入历史持仓截面；F-3 下产品固定传数据集 asOfDate（显式参数不等于授权产品任意日期切换）" },
+      { "id": "B4", "decision": "只使用 effective_date 当日估值价，不因个别标的缺价回退到更早日期；缺失→阻断受影响结果并标注“数据缺失”，保留其他完整结果；依赖缺失数据的组合结果同样阻断，不按剩余标的重算后冒充完整组合" },
+      { "id": "B5", "decision": "v1 不实现送股、转增、拆合股、配股的股数调整；相关持有区间涉及这些事件→标注“超出支持范围”，阻断受影响结果及依赖它的组合，保留其他完整结果；实际路径与反事实路径分别检查各自相关持有区间；事件输入与判定为候选草案（供审校）；真实识别依据未提供，不得把未知事件信息当作“已核验无事件”" },
+      { "id": "B6", "decision": "前复权走势采用固定缓存快照；复权基准由尹辰核验并记录真实值；允许早期估值展示该序列但须标注快照口径、不声称“当时可见数据”；估值日期、抓取时间、快照标识、复权基准分开记录，抓取时间与缓存结束日期不得自动当作复权基准" },
+      { "id": "B7", "decision": "字段命名、JSON 结构、候选错误码及阻断原因由 Qoder 常规细化并明确标为候选；未知资料写“未提供”或按候选 schema 置空并附原因；本轮不定义“股票本身涨幅”公式与正式复核容差" }
+    ]
+  },
+  "support_scope": {
+    "status": "清单未提供（待尹辰真实拉数后提出、changer 签收）",
+    "target_demo_range": "三只 A 股、2023–2025（目标；未验证）",
+    "manifest_fields": [
+      { "name": "symbols", "type": "string[]（6 位数字代码）", "required": true, "value": null, "value_note": "未提供" },
+      { "name": "date_range", "type": "{start, end}", "required": true, "value": null, "value_note": "未提供（目标 2023–2025）" },
+      { "name": "data_source", "type": "string", "required": true, "value": null, "value_note": "未提供" },
+      { "name": "calendar_source", "type": "string", "required": true, "value": null, "value_note": "未提供（交易日历来源）" },
+      { "name": "adjustment_basis", "type": "string", "required": true, "value": null, "value_note": "未提供（待尹辰核验后记录）" },
+      { "name": "pull_evidence", "type": "string", "required": true, "value": null, "value_note": "未提供（拉数成功证据）" },
+      { "name": "asOfDate", "type": "string(YYYY-MM-DD)", "required": true, "value": null, "value_note": "未提供（基线 F-3：固定数据集元信息）" }
+    ],
+    "fixture_policy": "合成占位代码（000000/001234/888888）与合成价格仅用于夹具；不冒充真实支持清单",
+    "range_check": "requested_date 超出 date_range → 阻断（E_VALUATION_OUT_OF_RANGE）；范围外显示“不支持/数据缺失”（R2）；不静默改为范围内日期"
+  },
+  "bars": {
+    "series": [
+      { "key": "bars", "desc": "不复权日线；用于 actualValue、ghostValue 的金额估值（B2）" },
+      { "key": "bars_fwdadj", "desc": "前复权快照日线；仅用于注明口径的走势展示（B2/B6）" }
+    ],
+    "fields": [
+      { "name": "date", "type": "string(YYYY-MM-DD)", "required": true, "null_semantics": "无数据则整条缺失" },
+      { "name": "close", "type": "number", "unit": "元", "required": true, "precision": "源数据精度（不套用 CSV 两位小数限制）", "null_semantics": "缺价不填整条；禁止用前值填充" },
+      { "name": "open", "type": "number", "unit": "元", "required": true, "null_semantics": "基线 §4-2 要求 OHLC（前复权）——按基线纠正为必填：两个序列均须完整填充" },
+      { "name": "high", "type": "number", "unit": "元", "required": true, "null_semantics": "同 open；须满足 high ≥ max(open, close)" },
+      { "name": "low", "type": "number", "unit": "元", "required": true, "null_semantics": "同 open；须满足 low ≤ min(open, close)" },
+      { "name": "volume", "type": "number", "unit": "股", "required": false, "null_semantics": "候选：数据源提供则填充" }
+    ],
+    "rules": [
+      "两条路径（实际 / 买入不动）使用一致的费用、税费及现金分红口径；v1 分红未计入（沿 CSV 侧 Q2）",
+      "禁止拿前复权价格涨幅直接替代金额收益参与择时损耗相减（B2）",
+      "CSV 原始成交价与数量保留不动，不由缓存改写（B2）"
+    ]
+  },
+  "valuation": {
+    "input": {
+      "valuation_date": "string(YYYY-MM-DD)；调用方显式提供；产品 v1 固定传数据集 asOfDate（F-3；显式参数不代表授权产品任意日期切换）"
+    },
+    "output": {
+      "requested_date": "原样保留",
+      "effective_date": "有效估值日；所有金额结果统一使用",
+      "prices": "{symbol: 不复权 close} 或按阻断语义返回"
+    },
+    "rules": [
+      "requested_date 超出缓存范围 → 阻断相关结果（E_VALUATION_OUT_OF_RANGE），不静默改为范围内日期",
+      "非交易日 → 按适用交易日历（calendar_source）确定不晚于请求日的最近交易日；不得按“缓存共同有数据日”确定",
+      "effective_date 早于 CSV 最后一笔交易日期 → 阻断本次计算并提示重新选择日期（E_VALUATION_BEFORE_LAST_TRADE）；v1 不引入历史持仓截面",
+      "只使用 effective_date 当日估值价，不因个别标的缺价回退（B4）"
+    ]
+  },
+  "missing_data": {
+    "rule": "effective_date 当日某标的缺价 → 阻断该受影响结果并标注“数据缺失”（E_PRICE_MISSING），保留其他完整结果",
+    "portfolio_rule": "依赖缺失数据的组合结果同样阻断；不得按剩余标的重算后冒充完整组合",
+    "no_fallback": "不因个别标的缺价回退到其他日期取价"
+  },
+  "share_events": {
+    "v1_support": "不实现送股、转增、拆合股、配股的股数调整（B5）",
+    "input_fields": [
+      { "name": "symbol", "type": "string（6 位数字代码）", "required": true, "null_semantics": "—" },
+      { "name": "effective_date", "type": "string(YYYY-MM-DD)", "required": true, "value_note": "事件生效日；登记日/除权日口径未提供（候选待审）" },
+      { "name": "type", "type": "enum", "values": ["送股", "转增", "拆股", "合股", "配股"], "required": true },
+      { "name": "note", "type": "string", "required": false }
+    ],
+    "detection": "实际路径与反事实路径分别检查各自相关持有区间是否含（闭区间）事件生效日；命中 → 该路径结果阻断并标注“超出支持范围”（E_SHARE_EVENT_UNSUPPORTED），依赖它的组合同样阻断，保留其他完整结果",
+    "linkage_O3": "事件检查与 O3 超卖校验均基于“日期升序、同日原始行号”的时序视图；事件命中以标的为粒度，与 CSV 逐标的累计校验并行（候选草案，供审校）",
+    "evidence_status": "真实事件识别依据未提供；不得默认“已核验无事件”"
+  },
+  "snapshot": {
+    "fields": [
+      { "name": "snapshot_id", "type": "string", "desc": "缓存快照标识（固定快照）" },
+      { "name": "fetch_time", "type": "string(ISO)", "desc": "抓取时间（仅记录；不代表复权基准或数据可见时点）" },
+      { "name": "valuation_date / effective_date", "desc": "估值日期（沿用 valuation 段）" },
+      { "name": "adjustment_basis", "type": "string", "desc": "复权基准（由尹辰核验并记录；当前未提供）" }
+    ],
+    "rules": [
+      "前复权走势采用固定缓存快照；早期估值展示须标注快照口径，不得声称“当时可见数据”（B6）",
+      "抓取时间与缓存结束日期不得自动当作复权基准（B6）",
+      "估值日期、抓取时间、快照标识、复权基准四者必须分开记录"
+    ]
+  },
+  "failure_codes": [
+    { "code": "E_VALUATION_OUT_OF_RANGE", "candidate": true, "meaning": "请求日期超出缓存支持范围", "block_scope": "相关结果", "user_mark": "不支持/数据缺失" },
+    { "code": "E_VALUATION_BEFORE_LAST_TRADE", "candidate": true, "meaning": "有效估值日早于账单最后一笔交易日", "block_scope": "本次计算全部结果", "user_mark": "提示重新选择日期" },
+    { "code": "E_PRICE_MISSING", "candidate": true, "meaning": "effective_date 当日标的缺价", "block_scope": "该标的受影响结果 + 依赖它的组合", "user_mark": "数据缺失" },
+    { "code": "E_SHARE_EVENT_UNSUPPORTED", "candidate": true, "meaning": "持有区间涉及未支持的股数事件", "block_scope": "命中路径结果 + 依赖它的组合", "user_mark": "超出支持范围" }
+  ],
+  "asof_linkage": {
+    "draft": [
+      "产品 v1 固定使用数据集 asOfDate（F-3）作为 valuation_date 传入本接口",
+      "本接口的显式 valuation_date 参数为确定性测试与离线复核保留（接口层能力）；不等于授权产品新增“任意日期切换”功能",
+      "effective_date 不得早于账单最后一笔交易日期——该阻断隐含：估值时点必须处于账单完成时点之后（v1 无历史持仓截面）"
+    ],
+    "resolution": "已收口（本次审校确认）：产品继续固定使用数据集 asOfDate；未来任意日期选择放在当前范围外，不作为本轮冻结阻塞项（原 M4 关闭）"
+  },
+  "open_items": [
+    { "id": "M1", "question": "真实支持清单（symbols/date_range/data_source/calendar_source/pull_evidence/asOfDate）", "status": "未提供（待尹辰拉数后提出、changer 签收）", "affects": "冻结与真实运行" },
+    { "id": "M2", "question": "复权基准（adjustment_basis）核验记录", "status": "未提供（待尹辰）", "affects": "前复权快照口径" },
+    { "id": "M3", "question": "股数事件数据的来源与识别依据；事件生效日口径（登记日 vs 除权日）", "status": "未提供（待审）", "affects": "股数事件检测" },
+    { "id": "M5", "question": "候选错误码字样与结构化细节", "status": "候选（随三方审校定稿）", "affects": "接口文本" }
+  ],
+  "out_of_scope": [
+    "“股票本身涨幅”公式（归确定性计算结果接口，Q9；本轮不定义）",
+    "正式复核容差（未冻结，M0 项）"
+  ],
+  "fixtures": {
+    "files": [
+      "fixtures/mock-calendar.json（合成交易日历）",
+      "fixtures/mock-daily-bars.json（合成日线：不复权 + 前复权快照）",
+      "fixtures/mock-share-events.json（合成股数事件）",
+      "fixtures/scenarios.expected.json（8 个场景的合成预期）",
+      "fixtures/dividend-alignment.json（手算分红对齐案例）"
+    ],
+    "note": "全部夹具为合成数据；占位代码非真实证券；不能冒充真实支持清单或真实行情"
+  },
+  "sub_interface_status": {
+    "freeze": "未冻结",
+    "reason": "候选语义与离线夹具已就绪；冻结待：①三方对最终版本与验证证据的覆盖确认（队友对本版确认未提供）②真实清单与证据（M1/M2）到位",
+    "note": "Step 3 / M0-C1 整体未完成；其余六类接口不在本轮"
+  },
+  "review_history": {
+    "v1": "首版候选：负责人本次确认的 B1–B7 落实；合成夹具与离线校验；M1–M5 未决项",
+    "v1.1": "本次审校修订：OHLC 按基线 §4-2 纠正为必填（两个序列）并补齐夹具；M4 收口；分红混算差值单位更正为 pp"
+  }
+}
