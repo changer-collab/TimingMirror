@@ -1,0 +1,83 @@
+{
+  "fixture": "demo-bill-aprime.csv",
+  "artifact": "candidate-draft",
+  "status": "候选草案（v3；Q1–Q9 与 O1–O3 已落实，未冻结）",
+  "note": "A′ 样例：仅将 demo-bill.csv 第 5 行（T004 卖出）的价格 110.00 改为 115.00，其余不变；用于验证 R1“受影响指标按预期变化、其他指标可不变”。",
+  "confirmations_ref": "见 schema.candidate.json 的 confirmations（Q 组：负责人转述；O 组：负责人本次确认）",
+  "assumptions": {
+    "asof_prices": { "000000": 125.00, "888888": 1560.00 },
+    "asof_note": "与 demo-bill 相同（声明合成价格）。",
+    "formula_basis": "PRD:137-146 纯公式；费用/税费不计入 buyCost/actualValue/收益与损耗公式（Q1 已确认·三人；仅记录并标注）。",
+    "display_rules": "F-2：收益率/pp 保留 1 位小数；金额 2 位小数+千分位；内部保留更高精度。",
+    "checker_tolerance": "离线校验脚本内部阈值：金额 |差| ≤ 0.005 元；收益率/pp 相对容差 1e-9。**非正式复核接口容差**——正式容差尚未冻结（M0 项）。"
+  },
+  "result_labelling": {
+    "fees_taxes": "未计入费用、税费（Q1）",
+    "dividend": "分红未计入（Q2）"
+  },
+  "standardized": {
+    "schema_version": "candidate-3",
+    "source_file": "demo-bill-aprime.csv",
+    "blocked": false,
+    "trades": [
+      { "trade_id": "T001", "trade_date": "2024-09-24", "symbol": "000000", "side": "buy", "price": 96.00, "quantity": 100, "fee": 5.00, "tax": 0.00, "fee_missing": false, "tax_missing": false, "source": { "file": "demo-bill-aprime.csv", "line": 2 } },
+      { "trade_id": "T002", "trade_date": "2024-09-25", "symbol": "888888", "side": "buy", "price": 1500.00, "quantity": 10, "fee": 7.50, "tax": 0.00, "fee_missing": false, "tax_missing": false, "source": { "file": "demo-bill-aprime.csv", "line": 3 } },
+      { "trade_id": "T003", "trade_date": "2024-09-27", "symbol": "000000", "side": "buy", "price": 104.00, "quantity": 100, "fee": 5.00, "tax": 0.00, "fee_missing": false, "tax_missing": false, "source": { "file": "demo-bill-aprime.csv", "line": 4 } },
+      { "trade_id": "T004", "trade_date": "2024-10-08", "symbol": "000000", "side": "sell", "price": 115.00, "quantity": 200, "fee": 0.00, "tax": 11.00, "fee_missing": true, "tax_missing": false, "source": { "file": "demo-bill-aprime.csv", "line": 5 } },
+      { "trade_id": "T005", "trade_date": "2024-10-10", "symbol": "888888", "side": "sell", "price": 1470.00, "quantity": 10, "fee": 7.25, "tax": 7.25, "fee_missing": false, "tax_missing": false, "source": { "file": "demo-bill-aprime.csv", "line": 6 } }
+    ],
+    "warnings": [
+      { "line": 5, "code": "W_FEE_MISSING_AS_ZERO", "message": "费用缺失，按 0 计（产品层需标注，F-4）" }
+    ],
+    "errors": []
+  },
+  "expected_indicators": {
+    "per_stock": {
+      "000000": {
+        "buyCost": 20000.00, "heldShares": 0, "actualValue": 23000.00, "ghostValue": 25000.00,
+        "actualRet": 0.15, "ghostRet": 0.25, "dragMoney": 2000.00, "drag": 0.1,
+        "display": { "actualRet": "+15.0%", "ghostRet": "+25.0%", "dragMoney": "¥2,000.00", "drag": "+10.0pp" }
+      },
+      "888888": {
+        "buyCost": 15000.00, "heldShares": 0, "actualValue": 14700.00, "ghostValue": 15600.00,
+        "actualRet": -0.02, "ghostRet": 0.04, "dragMoney": 900.00, "drag": 0.06,
+        "display": { "actualRet": "-2.0%", "ghostRet": "+4.0%", "dragMoney": "¥900.00", "drag": "+6.0pp" }
+      }
+    },
+    "portfolio": {
+      "buyCost": 35000.00, "actualValue": 37700.00, "ghostValue": 40600.00,
+      "actualRet": 0.0771428571428572, "ghostRet": 0.16, "dragMoney": 2900.00, "drag": 0.0828571428571428,
+      "display": { "actualRet": "+7.7%", "ghostRet": "+16.0%", "dragMoney": "¥2,900.00", "drag": "+8.3pp" }
+    },
+    "not_asserted": [
+      "股票本身涨幅：已移出 CSV 接口、转入确定性计算结果接口定义（Q9），非 CSV 冻结阻塞项",
+      "PGR/PLR（T3 暂缓）",
+      "行为标签与样本数（后续轮次）"
+    ]
+  },
+  "delta_vs_demo_bill": {
+    "changed_cell": { "line": 5, "field": "价格", "from": "110.00", "to": "115.00", "trade_id": "T004" },
+    "affected": [
+      { "path": "000000.actualValue", "from": 22000.0, "to": 23000.0 },
+      { "path": "000000.actualRet", "from": 0.1, "to": 0.15 },
+      { "path": "000000.dragMoney", "from": 3000.0, "to": 2000.0 },
+      { "path": "000000.drag", "from": 0.15, "to": 0.1 },
+      { "path": "portfolio.actualValue", "from": 36700.0, "to": 37700.0 },
+      { "path": "portfolio.actualRet", "from": 0.0485714285714286, "to": 0.0771428571428572 },
+      { "path": "portfolio.dragMoney", "from": 3900.0, "to": 2900.0 },
+      { "path": "portfolio.drag", "from": 0.1114285714285714, "to": 0.0828571428571428 }
+    ],
+    "unchanged": [
+      "000000.buyCost", "000000.heldShares", "000000.ghostValue", "000000.ghostRet",
+      "888888.buyCost", "888888.heldShares", "888888.actualValue", "888888.ghostValue", "888888.actualRet", "888888.ghostRet", "888888.dragMoney", "888888.drag",
+      "portfolio.buyCost", "portfolio.ghostValue", "portfolio.ghostRet"
+    ],
+    "hand_calc": "（115.00 − 110.00）× 200 股 = +1,000 元卖出净额 → 000000 actualValue 22,000→23,000、actualRet +5.0pp、dragMoney −1,000、drag −5.0pp（ghost 不变、drag = ghostRet − actualRet）；组合同步：actualValue +1,000、actualRet +2.8571pp、dragMoney −1,000、drag −2.8571pp；888888 全部不变。"
+  },
+  "hand_calc": [
+    "000000 buyCost = 20,000（不变）；actualValue = 200×115 = 23,000；ghostValue = 200×125 = 25,000",
+    "000000 actualRet = +15.0%；ghostRet = +25.0%；dragMoney = ¥2,000.00；drag = +10.0pp",
+    "888888 与 demo-bill 相同：−2.0% / +4.0% / ¥900.00 / +6.0pp",
+    "组合 = 35,000 / 37,700 / 40,600；actualRet = +7.7143%（展示 +7.7%）；ghostRet = +16.0%；dragMoney = ¥2,900.00；drag = +8.2857pp（展示 +8.3pp）"
+  ]
+}

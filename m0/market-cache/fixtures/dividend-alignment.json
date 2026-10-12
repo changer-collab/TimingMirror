@@ -1,0 +1,30 @@
+{
+  "artifact": "synthetic-fixture",
+  "case": "dividend-alignment",
+  "note": "手算分红对齐案例（合成）；v1 口径＝分红未计入（Q2）；仅用于夹具",
+  "inputs": {
+    "buy": { "price": 10, "qty": 100 },
+    "cash_dividend_per_share": 1,
+    "end_unadj_close": 9,
+    "fwd_adj_series": [9, 9]
+  },
+  "expected": {
+    "buyCost": 1000,
+    "actualValue": 900,
+    "ghostValue": 900,
+    "actualRet": -0.1,
+    "ghostRet": -0.1,
+    "dragMoney": 0,
+    "drag": 0,
+    "fwdadj_price_change": 0,
+    "anti_pattern": "合成前复权序列 9→9 价格涨幅 0%；0%（价格口径）与 −10%（金额口径）不得直接相减（两者之差 +10pp 为无效混算，不得称择时损耗；收益之差以 pp 计）",
+    "aligned_with_dividend": { "actualRet": 0, "ghostRet": 0, "drag": 0, "note": "对照：若两条路径一致计入分红（1 元/股 × 100 股），actual=ghost=1,000 → 0%，损耗仍 0（v1 不采用）" }
+  },
+  "hand_calc": [
+    "买入成本 = 100 × 10 = 1,000 元；期末不复权价 9 元",
+    "v1（分红未计入）：actualValue = ghostValue = 100 × 9 = 900 元 → 金额收益均为 900/1,000 − 1 = −10%",
+    "择时损耗 = ghostValue − actualValue = 0 元；= ghostRet − actualRet = 0pp",
+    "合成前复权序列 9→9：价格涨幅 0%；0%（价格口径）与 −10%（金额口径）不可相减（差 +10pp 无效；收益本身用 %、收益之差用 pp）",
+    "对照（一致计入分红）：900 + 100 = 1,000 → 0% / 0%，损耗仍 0"
+  ]
+}

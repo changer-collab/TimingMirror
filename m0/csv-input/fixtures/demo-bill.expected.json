@@ -1,0 +1,66 @@
+{
+  "fixture": "demo-bill.csv",
+  "artifact": "candidate-draft",
+  "status": "候选草案（v3；Q1–Q9 与 O1–O3 已落实，未冻结）",
+  "note": "合成样例：标的为占位代码（非真实证券），价格为合成数值（非真实行情）；仅用于接口与算术审校。",
+  "confirmations_ref": "见 schema.candidate.json 的 confirmations（Q 组：负责人转述；O 组：负责人本次确认）",
+  "assumptions": {
+    "asof_prices": { "000000": 125.00, "888888": 1560.00 },
+    "asof_note": "现价语义见基线 F-3（固定 asOfDate）；本样例使用声明合成价格，不引用真实行情。",
+    "formula_basis": "PRD:137-146 纯公式；费用/税费不计入 buyCost/actualValue/收益与损耗公式（Q1 已确认·三人；仅记录并标注）。",
+    "display_rules": "F-2：收益率/pp 保留 1 位小数；金额 2 位小数+千分位；内部保留更高精度。",
+    "checker_tolerance": "离线校验脚本内部阈值：金额 |差| ≤ 0.005 元；收益率/pp 相对容差 1e-9。**非正式复核接口容差**——正式容差尚未冻结（M0 项）。"
+  },
+  "result_labelling": {
+    "fees_taxes": "未计入费用、税费（Q1）",
+    "dividend": "分红未计入（Q2）"
+  },
+  "standardized": {
+    "schema_version": "candidate-3",
+    "source_file": "demo-bill.csv",
+    "blocked": false,
+    "trades": [
+      { "trade_id": "T001", "trade_date": "2024-09-24", "symbol": "000000", "side": "buy", "price": 96.00, "quantity": 100, "fee": 5.00, "tax": 0.00, "fee_missing": false, "tax_missing": false, "source": { "file": "demo-bill.csv", "line": 2 } },
+      { "trade_id": "T002", "trade_date": "2024-09-25", "symbol": "888888", "side": "buy", "price": 1500.00, "quantity": 10, "fee": 7.50, "tax": 0.00, "fee_missing": false, "tax_missing": false, "source": { "file": "demo-bill.csv", "line": 3 } },
+      { "trade_id": "T003", "trade_date": "2024-09-27", "symbol": "000000", "side": "buy", "price": 104.00, "quantity": 100, "fee": 5.00, "tax": 0.00, "fee_missing": false, "tax_missing": false, "source": { "file": "demo-bill.csv", "line": 4 } },
+      { "trade_id": "T004", "trade_date": "2024-10-08", "symbol": "000000", "side": "sell", "price": 110.00, "quantity": 200, "fee": 0.00, "tax": 11.00, "fee_missing": true, "tax_missing": false, "source": { "file": "demo-bill.csv", "line": 5 } },
+      { "trade_id": "T005", "trade_date": "2024-10-10", "symbol": "888888", "side": "sell", "price": 1470.00, "quantity": 10, "fee": 7.25, "tax": 7.25, "fee_missing": false, "tax_missing": false, "source": { "file": "demo-bill.csv", "line": 6 } }
+    ],
+    "warnings": [
+      { "line": 5, "code": "W_FEE_MISSING_AS_ZERO", "message": "费用缺失，按 0 计（产品层需标注，F-4）" }
+    ],
+    "errors": []
+  },
+  "expected_indicators": {
+    "per_stock": {
+      "000000": {
+        "buyCost": 20000.00, "heldShares": 0, "actualValue": 22000.00, "ghostValue": 25000.00,
+        "actualRet": 0.1, "ghostRet": 0.25, "dragMoney": 3000.00, "drag": 0.15,
+        "display": { "actualRet": "+10.0%", "ghostRet": "+25.0%", "dragMoney": "¥3,000.00", "drag": "+15.0pp" }
+      },
+      "888888": {
+        "buyCost": 15000.00, "heldShares": 0, "actualValue": 14700.00, "ghostValue": 15600.00,
+        "actualRet": -0.02, "ghostRet": 0.04, "dragMoney": 900.00, "drag": 0.06,
+        "display": { "actualRet": "-2.0%", "ghostRet": "+4.0%", "dragMoney": "¥900.00", "drag": "+6.0pp" }
+      }
+    },
+    "portfolio": {
+      "buyCost": 35000.00, "actualValue": 36700.00, "ghostValue": 40600.00,
+      "actualRet": 0.0485714285714286, "ghostRet": 0.16, "dragMoney": 3900.00, "drag": 0.1114285714285714,
+      "display": { "actualRet": "+4.9%", "ghostRet": "+16.0%", "dragMoney": "¥3,900.00", "drag": "+11.1pp" }
+    },
+    "not_asserted": [
+      "股票本身涨幅：已移出 CSV 接口、转入确定性计算结果接口定义（Q9），非 CSV 冻结阻塞项",
+      "PGR/PLR（T3 暂缓）",
+      "行为标签与样本数（后续轮次）"
+    ]
+  },
+  "hand_calc": [
+    "000000 buyCost = 100×96 + 100×104 = 20,000；actualValue = 200×110 = 22,000（heldShares=0）；ghostValue = 200×125 = 25,000",
+    "000000 actualRet = 22,000/20,000 − 1 = +10.0%；ghostRet = 25,000/20,000 − 1 = +25.0%；dragMoney = 25,000 − 22,000 = ¥3,000.00；drag = +25.0% − (+10.0%) = +15.0pp",
+    "888888 buyCost = 10×1500 = 15,000；actualValue = 10×1470 = 14,700；ghostValue = 10×1560 = 15,600",
+    "888888 actualRet = −2.0%；ghostRet = +4.0%；dragMoney = ¥900.00；drag = +6.0pp",
+    "组合 = 35,000 / 36,700 / 40,600；actualRet = +4.8571%（展示 +4.9%）；ghostRet = +16.0%；dragMoney = ¥3,900.00；drag = +11.1429pp（展示 +11.1pp）"
+  ],
+  "affected_indicators_note": "R1：修改一笔卖出后仅要求受影响指标按预期变化——见 demo-bill-aprime.expected.json 的 delta_vs_demo_bill。"
+}

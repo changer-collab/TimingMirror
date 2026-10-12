@@ -1,0 +1,209 @@
+{
+  "interface": "csv-input",
+  "artifact": "candidate-draft",
+  "frozen": false,
+  "status": "候选草案 v3（Q1–Q9 与 O1–O3 已落实，含离线夹具；未冻结——等待三方对最终版本的覆盖确认）",
+  "version": "candidate-3",
+  "date": "2026-10-11",
+  "basis": [
+    "implementation-baseline.md §4-1（CSV 输入接口要点）",
+    "implementation-baseline.md §2.1 F-4 与 §2.1 F-6",
+    "implementation-baseline.md §3 R5（出站白名单）",
+    "PRD:81,104,163（浏览器本地解析，原始 CSV 不上传）",
+    "PRD 风险表（明确支持一种格式，其余走演示账单）",
+    "负责人转述的 Q1–Q9 确认与负责人本次确认的 O1–O3（见 confirmations）"
+  ],
+  "review_requested_from": ["changer", "尹辰", "吴涵晶"],
+  "scope_note": "本文件仅覆盖 CSV 输入接口候选；其余接口不在本轮，不在此定义。",
+  "confirmations": {
+    "q_items": {
+      "source": "负责人转述：changer 逐项确认，并转述尹辰、吴涵晶已确认；原始签名记录未提供",
+      "items": [
+        { "id": "Q1", "status": "changer 已确认（转述队友确认；原始签名未提供）", "decision": "费用、税费只记录并标注，不进入 buyCost、actualValue、收益与损耗公式；结果口径必须明确未计入费用、税费" },
+        { "id": "Q2", "status": "changer 已确认（转述队友确认；原始签名未提供）", "decision": "v1 不增加分红字段或事件；结果标注“分红未计入”；行情复权与计算结果接口另行处理" },
+        { "id": "Q3", "status": "changer 已确认（转述队友确认；原始签名未提供）", "decision": "费用、税费保持分列，分别记录缺失状态" },
+        { "id": "Q4", "status": "changer 已确认（转述队友确认；原始签名未提供）", "decision": "价格、费用、税费超过 2 位小数直接报错，要求修正后重新导入，不自动舍入；内部计算精度与展示精度遵循基线 F-2" },
+        { "id": "Q5", "status": "changer 已确认（转述队友确认；原始签名未提供）", "decision": "未知列忽略，生成 W_UNKNOWN_COLUMN 警告并提供被忽略列名，供确认列表展示" },
+        { "id": "Q6", "status": "changer 已确认（转述队友确认；原始签名未提供）", "decision": "费用或税费整列缺失时，该列全部按 0 处理，保留逐条缺失标记，生成全局警告，供确认列表标注" },
+        { "id": "Q7", "status": "changer 已确认（转述队友确认；原始签名未提供）", "decision": "允许 CSV 乱序；计算按交易日期升序、同日按原始行号稳定排序；排序不得改写原始 source 行号或重新分配已生成的 trade_id" },
+        { "id": "Q8", "status": "changer 已确认（转述队友确认；原始签名未提供）", "decision": "标的只接受 6 位数字代码，按字符串保存，保留前导零，不接受名称" },
+        { "id": "Q9", "status": "changer 已确认（转述队友确认；原始签名未提供）", "decision": "“股票本身涨幅”移出 CSV 接口，转入确定性计算结果接口定义；当前未断言说明保留，但不得继续列为 CSV 冻结阻塞项（本轮亦不定义）" }
+      ]
+    },
+    "o_items": {
+      "source": "负责人本次确认（changer）；尹辰、吴涵晶对本版新增内容的覆盖确认未提供",
+      "items": [
+        { "id": "O1", "status": "负责人本次确认（队友覆盖确认未提供）", "decision": "任一行级错误阻断整份 CSV 的计算，列出全部可检测的行号和错误码（错误汇总，不首错即停），要求修正后重新导入；不静默排除错误行" },
+        { "id": "O2", "status": "负责人本次确认（队友覆盖确认未提供）", "decision": "UTF-8（允许 BOM）、逗号分隔、首行为中文表头、支持 LF/CRLF；v1 只支持这一格式" },
+        { "id": "O3", "status": "负责人本次确认（队友覆盖确认未提供）", "decision": "按日期和原始行号排序，逐标的检查任一时点累计卖出是否超过累计买入；命中 E_QTY_EXCEEDS，整批阻断；v1 不支持缺少期初持仓的截断账单，允许期末未卖持仓" }
+      ]
+    }
+  },
+  "file_format": {
+    "status": "已确认（负责人本次，O2）",
+    "charset": "UTF-8（允许 BOM）",
+    "delimiter": ",",
+    "header_row": 1,
+    "header_language": "中文表头",
+    "line_endings": ["LF", "CRLF"],
+    "supported_count": "v1 仅此一种格式"
+  },
+  "columns": [
+    {
+      "header": "日期",
+      "key": "trade_date",
+      "type": "string(date)",
+      "unit": "-",
+      "required": true,
+      "format": "YYYY-MM-DD",
+      "null_semantics": "不允许为空",
+      "error_semantics": "E_DATE_FORMAT：非 YYYY-MM-DD 或非法日期 → 该行错误（行级错误触发 O1 整批阻断）"
+    },
+    {
+      "header": "标的",
+      "key": "symbol",
+      "type": "string",
+      "unit": "-",
+      "required": true,
+      "format": "6 位数字代码；按字符串保存并保留前导零；不接受名称（Q8）；样例使用占位代码 000000 / 888888 / 001234（非真实证券）",
+      "null_semantics": "不允许为空",
+      "error_semantics": "E_SYMBOL_FORMAT：非 6 位数字 → 该行错误；不在行情缓存支持范围 → 按 R2 显示“不支持/数据缺失”（本轮样例不过行情校验）"
+    },
+    {
+      "header": "方向",
+      "key": "side",
+      "type": "enum",
+      "unit": "-",
+      "required": true,
+      "format": "买入 | 卖出",
+      "null_semantics": "不允许为空",
+      "error_semantics": "E_SIDE_VALUE：非枚举值 → 该行错误"
+    },
+    {
+      "header": "价格",
+      "key": "price",
+      "type": "decimal",
+      "unit": "元",
+      "required": true,
+      "format": "> 0；≤ 2 位小数（Q4）",
+      "null_semantics": "不允许为空",
+      "error_semantics": "E_PRICE_VALUE：≤ 0 或非数字 → 该行错误；E_PRICE_PRECISION：超 2 位小数 → 直接报错，要求修正后重新导入，不自动舍入（Q4）"
+    },
+    {
+      "header": "数量",
+      "key": "quantity",
+      "type": "integer",
+      "unit": "股",
+      "required": true,
+      "format": "正整数（> 0）",
+      "null_semantics": "不允许为空",
+      "error_semantics": "E_QTY_INTEGER：非整数或 ≤ 0 → 该行错误；累计卖出超累计买入 → E_QTY_EXCEEDS（O3，见 quantity_validation）"
+    },
+    {
+      "header": "费用",
+      "key": "fee",
+      "type": "decimal",
+      "unit": "元",
+      "required": false,
+      "format": "≥ 0；≤ 2 位小数（Q4）",
+      "null_semantics": "允许为空；空 → 按 0 计，标记 fee_missing=true（F-4）；整列缺失 → 全部按 0 + 逐条标记 + 全局警告 W_FEE_COLUMN_MISSING（Q6）",
+      "error_semantics": "E_MONEY_VALUE：负数或非数字 → 该行错误；E_MONEY_PRECISION：超 2 位小数 → 直接报错，要求修正后重新导入，不自动舍入"
+    },
+    {
+      "header": "税费",
+      "key": "tax",
+      "type": "decimal",
+      "unit": "元",
+      "required": false,
+      "format": "≥ 0；≤ 2 位小数（Q4）",
+      "null_semantics": "允许为空；空 → 按 0 计，标记 tax_missing=true（F-4）；整列缺失 → 全部按 0 + 逐条标记 + 全局警告 W_TAX_COLUMN_MISSING（Q6）",
+      "error_semantics": "E_MONEY_VALUE：负数或非数字 → 该行错误；E_MONEY_PRECISION：超 2 位小数 → 直接报错，要求修正后重新导入，不自动舍入"
+    }
+  ],
+  "whole_file_policies": {
+    "missing_required_column": "整体错误 E_HEADER_MISSING：缺少必需列（日期/标的/方向/价格/数量）→ 列出缺失列，不上数（亦属整批阻断）",
+    "row_error_policy": "已确认（负责人本次，O1）：任一行级错误阻断整份 CSV 的计算；列出全部可检测的行号与错误码；要求修正后重新导入；不静默排除错误行",
+    "error_aggregation": "一次性汇总全部可检测错误（行级格式错误＋O3 数量校验），不首错即停（O1）",
+    "batch_block": "errors 非空 → blocked=true；不产出任何标准化交易（无部分结果）（O1）",
+    "optional_column_absent": "已确认（Q6）：费用/税费列整体缺失时按全部记录缺失处理——该列全部按 0、逐条保留 fee_missing/tax_missing=true、生成全局警告（W_FEE_COLUMN_MISSING / W_TAX_COLUMN_MISSING）供确认列表标注",
+    "unknown_columns": "已确认（Q5）：忽略未知列；对被忽略的每一列生成 W_UNKNOWN_COLUMN 警告（含列名），供确认列表展示",
+    "empty_file_or_header_only": "整体错误 E_EMPTY"
+  },
+  "quantity_validation": {
+    "status": "已确认（负责人本次，O3）",
+    "rule": "按日期升序、同日按原始行号稳定排序后，逐标的检查任一时点累计卖出是否超过累计买入；命中记录 E_QTY_EXCEEDS（行号=触发的卖出行）",
+    "block": "命中即整批阻断（与 O1 一致）",
+    "truncated_bill": "v1 不支持缺少期初持仓的截断账单——此类文件会在溢出时点命中 E_QTY_EXCEEDS",
+    "end_position": "允许期末未卖持仓（不报错、不阻断）",
+    "isolation": "校验按标的隔离；不同标的的买卖不得互相抵扣（跨标的池化会漏检）"
+  },
+  "ordering": {
+    "status": "已确认（Q7）",
+    "rule": "允许任意行序；计算时按 trade_date 升序、同日按原始行号稳定排序；排序不改变 source.line，不重新分配 trade_id"
+  },
+  "id_and_source_rules": {
+    "trade_id": "按数据行顺序（原始文件顺序）生成 T001、T002…；排序不改写（Q7）；不采集真实订单编号（F-6 禁发项，本地亦不采集）",
+    "source": "本地记录 {file, line}（原始行号，排序不改写），用于溯源与验算视图；不上云（F-6）"
+  },
+  "normalized_object": {
+    "envelope": {
+      "schema_version": "candidate-3",
+      "source_file": "<文件名>",
+      "blocked": "boolean（O1：errors 非空 → true，整批无交易产出）",
+      "trades": "标准化交易对象数组（按原始文件顺序排列；计算顺序另行按 ordering 排序；blocked=true 时为空数组）",
+      "warnings": "[{line, column?, code, message}]（column 仅用于列级警告 W_UNKNOWN_COLUMN / W_*_COLUMN_MISSING）",
+      "errors": "[{line, code, message}]（全部可检测错误汇总，O1）"
+    },
+    "trade": {
+      "trade_id": "string（本地生成）",
+      "trade_date": "string YYYY-MM-DD ← 日期",
+      "symbol": "string（6 位数字代码，前导零保留）← 标的",
+      "side": "\"buy\" | \"sell\" ← 方向（买入→buy、卖出→sell）",
+      "price": "number（元）← 价格",
+      "quantity": "integer（股）← 数量",
+      "fee": "number（元；缺失→0，不计入公式）← 费用",
+      "tax": "number（元；缺失→0，不计入公式）← 税费",
+      "fee_missing": "boolean（true=原值缺失按 0）",
+      "tax_missing": "boolean（true=原值缺失按 0）",
+      "source": "{file, line}"
+    }
+  },
+  "result_labelling": {
+    "fees_taxes": "未计入费用、税费（Q1）",
+    "dividend": "分红未计入（Q2）",
+    "note": "产品展示与复述口径必须与之一致"
+  },
+  "fee_tax_dividend": {
+    "fee_tax_inclusion": {
+      "status": "已确认（Q1；来源：负责人转述，见 confirmations.q_items）",
+      "rule": "费用、税费只记录并标注，不进入 buyCost、actualValue、收益与损耗公式",
+      "result_labelling": "结果口径必须明确标注：未计入费用、税费"
+    },
+    "fee_tax_split": {
+      "status": "已确认（Q3）",
+      "rule": "费用、税费保持分列，分别记录缺失状态（fee_missing / tax_missing）"
+    },
+    "dividend": {
+      "status": "已确认（Q2）",
+      "rule": "v1 不增加分红字段或事件；结果标注“分红未计入”；行情复权与计算结果接口另行处理（不在 CSV 接口范围）"
+    },
+    "precision": {
+      "status": "已确认（Q4）",
+      "rule": "价格、费用、税费超过 2 位小数直接报错（E_PRICE_PRECISION / E_MONEY_PRECISION），要求修正后重新导入，不自动舍入；内部计算精度与展示精度遵循基线 F-2"
+    }
+  },
+  "open_items": {
+    "status": "O1–O3 已由负责人本次确认并落实；CSV 层面当前无未决项（冻结仍待三方对最终版本与验证证据的覆盖确认）",
+    "items": []
+  },
+  "sub_interface_status": {
+    "freeze": "未冻结",
+    "reason": "语义与离线夹具已就绪（O1–O3 落实）；冻结待：①三方对最终版本与验证证据的覆盖确认（Q 组仅有转述、O 组队友确认未提供）",
+    "note": "Step 3 / M0-C1 整体未完成；其余七类接口不在本轮"
+  },
+  "review_history": {
+    "v1": "供三人审校的 pending_questions（Q1–Q9）",
+    "v2": "Q1–Q9 由负责人转述确认后落实；新增 open_items O1–O3",
+    "v3": "O1–O3 由负责人本次确认并落实：整批阻断＋错误汇总、格式与命名明示、E_QTY_EXCEEDS 逐标的累计校验；新增针对性夹具（错误汇总/超卖/跨标的隔离/期末持仓/BOM+CRLF）"
+  }
+}

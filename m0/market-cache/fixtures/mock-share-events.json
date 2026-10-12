@@ -1,0 +1,8 @@
+{
+  "artifact": "synthetic-fixture",
+  "note": "合成股数事件（示意）；真实事件识别依据未提供；仅用于夹具",
+  "events": [
+    { "symbol": "001234", "effective_date": "2024-09-25", "type": "送股", "note": "夹具：命中实际路径相关持有区间" },
+    { "symbol": "000000", "effective_date": "2024-10-08", "type": "配股", "note": "夹具：仅命中反事实（延展）区间" }
+  ]
+}
