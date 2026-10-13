@@ -118,8 +118,8 @@
     "resolution": "已收口（本次审校确认）：产品继续固定使用数据集 asOfDate；未来任意日期选择放在当前范围外，不作为本轮冻结阻塞项（原 M4 关闭）"
   },
   "open_items": [
-    { "id": "M1", "question": "真实支持清单（symbols/date_range/data_source/calendar_source/pull_evidence/asOfDate）", "status": "未提供（待尹辰拉数后提出、changer 签收）", "affects": "冻结与真实运行" },
-    { "id": "M2", "question": "复权基准（adjustment_basis）核验记录", "status": "未提供（待尹辰）", "affects": "前复权快照口径" },
+    { "id": "M1", "question": "真实支持清单（symbols/date_range/data_source/calendar_source/pull_evidence/asOfDate）", "status": "草案已提出（2026-10-13，m0/market-cache/manifest.candidate.json；symbols 与 asOfDate 为【建议】）；待 changer 签收", "affects": "冻结与真实运行" },
+    { "id": "M2", "question": "复权基准（adjustment_basis）核验记录", "status": "初核完成（2026-10-13，观测见 data/market-cache.pull-record.json）；随 M1 签收归档", "affects": "前复权快照口径" },
     { "id": "M3", "question": "股数事件数据的来源与识别依据；事件生效日口径（登记日 vs 除权日）", "status": "未提供（待审）", "affects": "股数事件检测" },
     { "id": "M5", "question": "候选错误码字样与结构化细节", "status": "候选（随三方审校定稿）", "affects": "接口文本" }
   ],
@@ -144,6 +144,7 @@
   },
   "review_history": {
     "v1": "首版候选：负责人本次确认的 B1–B7 落实；合成夹具与离线校验；M1–M5 未决项",
-    "v1.1": "本次审校修订：OHLC 按基线 §4-2 纠正为必填（两个序列）并补齐夹具；M4 收口；分红混算差值单位更正为 pp"
+    "v1.1": "本次审校修订：OHLC 按基线 §4-2 纠正为必填（两个序列）并补齐夹具；M4 收口；分红混算差值单位更正为 pp",
+    "2026-10-13·M0-C2（尹辰）": "M1/M2 状态指针更新：拉数草案 m0/market-cache/manifest.candidate.json 与运行记录 data/market-cache.pull-record.json 已提出；候选语义未变更；仍待签收与三方确认"
   }
 }
