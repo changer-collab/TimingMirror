@@ -31,11 +31,11 @@
 
 ```bash
 npm run dev     # 本地静态服务器，默认 http://localhost:5180 （可用 --port= 覆盖）
-npm run check   # 离线校验：csv-input 129 项 + market-cache 63 项 + calc-baseline 55 项 + 引擎单测 196 项（缓存 25 + 计算 83 + 反事实 29 + 标准化 59）
+npm run check   # 离线校验：csv-input 129 项 + market-cache 63 项 + calc-baseline 55 项 + 引擎单测 232 项（缓存 25 + 计算 83 + 反事实 29 + 标准化 59 + 行为发现 36）
 npm run smoke   # 前端交互冒烟（Node 最小 DOM 桩，非真实浏览器）：15 项
 ```
 
-最近一次核验结果（2026-10-13）：`npm run check` 443 项全部通过；`npm run smoke` 15/15 通过。远程仓库**未配置 CI**（GitHub 显示 no checks reported），以上为本地命令结果。
+最近一次核验结果（2026-10-13）：`npm run check` 479 项全部通过；`npm run smoke` 15/15 通过。远程仓库**未配置 CI**（GitHub 显示 no checks reported），以上为本地命令结果。
 
 ## 仓库结构
 
@@ -49,6 +49,7 @@ src/engine/indicators.js   计算引擎（M1-C3：实际/幽灵/损耗 + 双路�
 src/engine/counterfactual.js 单笔反事实（M1-C4：replaceSell S1 + 逐日双路径序列；页面未接线）
 src/engine/display.js      F-2 展示格式（引擎侧单一实现；UI 视图尚未切换引用）
 src/engine/csvNormalize.js CSV 标准化纯函数（M1-C2：Q4–Q8/O1–O3 + E_EMPTY/E_HEADER_MISSING；UI 侧 Papa Parse 接线由吴涵晶负责）
+src/engine/behavior.js     行为发现引擎（M1-C5：追高买入模式卡 n+明细+证据状态；阈值为候选占位；页面未接线）
 src/ui/components.js       小型 DOM 工具（无框架）
 src/ui/styles.css          浅色主题样式
 src/ui/views/*.js          四个页面视图（import / report / chat / contract）
@@ -61,6 +62,7 @@ tests/market-cache.test.mjs 行情缓存引擎单测（S1–S5 场景 + 拉数�
 tests/indicators.test.mjs  计算引擎单测（case-1/2/3 + 恒等式①–④ + A/A′ + 缓存链路；零依赖）
 tests/counterfactual.test.mjs 单笔反事实单测（case-2 复算 + 序列末日 + 负补救边界；零依赖）
 tests/csv-normalize.test.mjs CSV 标准化单测（A/A′ 全字段 + 9 组错误夹具 + E_EMPTY；零依赖）
+tests/behavior.test.mjs    行为发现单测（模式卡/证据不足/窗口边界/参数化；零依赖）
 docs/                      实施基线（权威）＋ 三分钟演示建议稿 ＋ 接入调研
 scripts/serve.mjs          零依赖本地静态服务器（开发用，非产品运行时）
 scripts/smoke-frontend.mjs 前端交互冒烟（零依赖，非产品代码）
