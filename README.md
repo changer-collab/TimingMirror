@@ -31,11 +31,11 @@
 
 ```bash
 npm run dev     # 本地静态服务器，默认 http://localhost:5180 （可用 --port= 覆盖）
-npm run check   # 离线校验：csv-input 129 项 + market-cache 63 项 + calc-baseline 55 项 + 引擎单测 376 项（缓存 25 + 计算 83 + 反事实 29 + 标准化 59 + 行为发现 45 + 契约匹配 47 + 复核 28 + 损耗分解 19 + 计算路径 22 + 界关系证明 19）
+npm run check   # 离线校验：csv-input 129 项 + market-cache 63 项 + calc-baseline 55 项 + 引擎单测 377 项（缓存 25 + 计算 83 + 反事实 30 + 标准化 59 + 行为发现 45 + 契约匹配 47 + 复核 28 + 损耗分解 19 + 计算路径 22 + 界关系证明 19）
 npm run smoke   # 前端交互冒烟（Node 最小 DOM 桩，非真实浏览器）：15 项
 ```
 
-最近一次核验结果（2026-10-13）：`npm run check` 623 项全部通过；`npm run smoke` 15/15 通过。远程仓库**未配置 CI**（GitHub 显示 no checks reported），以上为本地命令结果。
+最近一次核验结果（2026-10-13）：`npm run check` 624 项全部通过；`npm run smoke` 15/15 通过。远程仓库**未配置 CI**（GitHub 显示 no checks reported），以上为本地命令结果。
 
 ## 仓库结构
 

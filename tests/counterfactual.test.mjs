@@ -4,7 +4,7 @@
  *
  * 定位：case-2 手算复算（替换 T003 → +14.8%、补救 +9.1pp、剩余 ¥75.00）、序列末日＝cfValue＝2,525.00、
  *       替换笔不引入假设价格、红缺口符号（含负补救边界）、S3 买入侧明确拒答、缺价不回落（B4）。
- * 边界：多标的补救%基数未定义（候选项，未实现）；S3 属 C1 未定，仅断言抛错。
+ * 边界：多标的 trades 显式拒答（补救%基数未定义候选）；S3 属 C1 未定，仅断言抛错。
  * 运行：node tests/counterfactual.test.mjs
  */
 import { readFileSync } from 'node:fs';
@@ -72,6 +72,11 @@ const throws = (fn) => { try { fn(); return false; } catch { return true; } };
   check('case-2：未知 trade_id → 抛错', throws(() => replaceSell({ symbol: sym, trades: fx.inputs.trades, tradeId: 'T999', effectiveDate, closeOf, tradingDays: cache.tradingDays })), '');
   check('case-2：估值日不在交易日历 → 抛错', throws(() => replaceSell({ symbol: sym, trades: fx.inputs.trades, tradeId: 'T003', effectiveDate: '2024-09-28', closeOf, tradingDays: cache.tradingDays })), '');
   check('case-2：估值日缺价 → 抛错（不回落 B4）', throws(() => replaceSell({ symbol: sym, trades: fx.inputs.trades, tradeId: 'T003', effectiveDate: '2024-10-08', closeOf, tradingDays: cache.tradingDays })), '');
+  check('case-2：多标的 trades 混入 → 抛错（补救%基数未定义候选；不静默混算，接线须先按 symbol 过滤）', throws(() => replaceSell({
+    symbol: sym,
+    trades: [...fx.inputs.trades, { trade_id: 'T900', trade_date: '2024-09-27', symbol: '999999', side: 'sell', price: 10, quantity: 10 }],
+    tradeId: 'T003', effectiveDate, closeOf, tradingDays: cache.tradingDays,
+  })), '');
 }
 
 /* ---- 链路：合成缓存 → 反事实（负补救边界：卖价高于估值日 close） ---- */

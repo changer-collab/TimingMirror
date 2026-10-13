@@ -1,5 +1,5 @@
 // M1-C4 单笔反事实（S1 主口径：「假如这笔没卖」）—— 对齐 m0/calc-baseline case-2 与 schema.candidate.json（CALC_CF_REPLACE_SELL_V1 / SIG-3）。
-// 边界：单标的账单作用域（多标的的补救%基数未定义——候选问题，待三方定夺，本实现不猜测）；
+// 边界：单标的账单作用域——trades 含非 symbol 标的一律抛错（多标的的补救%基数未定义，候选问题待三方定夺；不静默混算）；
 //       替换按原卖出价/量与估值日不复权 close 重算，不引入假设价格；不改写其他成交（输入不被修改）。
 // S3 买入侧/早卖替换需要假设执行价（C1 未定）→ 明确抛错。
 // B5：v1 不支持股数事件——替换路径的持有区间内不得含送转/拆合股事件（依赖缓存侧保证，清单签收时约定）。
@@ -33,6 +33,12 @@ export function replaceSell({ symbol, trades, tradeId, effectiveDate, closeOf, t
   if (!Array.isArray(trades) || trades.length === 0) throw new TypeError('replaceSell：trades 为空');
   if (!Array.isArray(tradingDays) || !tradingDays.includes(effectiveDate)) throw new TypeError(`估值日不在交易日历：${effectiveDate}`);
   const sorted = sortTrades(trades);
+  // 兼容两种输入形状：产品标准化交易带 t.symbol；m0 夹具交易不带（标的由本函数 symbol 参数声明）。
+  // 仅当明确带出其他标的时拒绝——防止多标的账单被静默混算（补救%基数未定义，候选问题待三方定夺）。
+  const foreign = sorted.find((t) => t.symbol !== undefined && t.symbol !== symbol);
+  if (foreign) {
+    throw new TypeError(`replaceSell：多标的账单的补救%基数未定义（候选问题，待三方定夺）——仅接受单标的 trades，请先按 symbol 过滤（发现 ${foreign.symbol}，trade_id ${foreign.trade_id}）`);
+  }
   const replaced = sorted.find((t) => t.trade_id === tradeId);
   if (!replaced) throw new TypeError(`找不到交易：${tradeId}`);
   if (replaced.side !== 'sell') throw new TypeError(`S1 仅支持替换卖出笔（买入侧替换 S3 需假设执行价，C1 未定，v1 未定义）：${tradeId}`);
