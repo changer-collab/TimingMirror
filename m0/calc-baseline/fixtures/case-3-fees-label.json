@@ -1,0 +1,58 @@
+{
+  "artifact": "synthetic-fixture",
+  "case": "case-3-fees-label",
+  "desc": "费用/税费记录但不入公式 + 缺失标注 + anti-pattern（若误计入则结果错误）",
+  "note": "合成样例：占位代码 000000（非真实证券）、合成价格（非真实行情）；本案例与 case-1 交易相同、附加费用税费字段，用于验证 Q1 口径（数值应与 case-1 完全一致）",
+  "inputs": {
+    "symbol": "000000",
+    "trades": [
+      { "trade_id": "T001", "trade_date": "2024-09-24", "side": "buy", "price": 10.0, "quantity": 100, "fee": 5.0, "tax": 0.0, "fee_missing": false, "tax_missing": false },
+      { "trade_id": "T002", "trade_date": "2024-09-25", "side": "buy", "price": 12.0, "quantity": 100, "fee": 6.0, "tax": 0.0, "fee_missing": false, "tax_missing": false },
+      { "trade_id": "T003", "trade_date": "2024-09-27", "side": "sell", "price": 11.0, "quantity": 150, "fee": null, "tax": 16.5, "fee_missing": true, "tax_missing": false }
+    ],
+    "requested_date": "2024-10-03",
+    "calendar": ["2024-09-23", "2024-09-24", "2024-09-25", "2024-09-26", "2024-09-27", "2024-09-30", "2024-10-08", "2024-10-09", "2024-10-10", "2024-10-11"],
+    "bars": [
+      { "date": "2024-09-24", "close": 10.5 },
+      { "date": "2024-09-25", "close": 11.8 },
+      { "date": "2024-09-27", "close": 11.2 },
+      { "date": "2024-09-30", "close": 13.0 }
+    ]
+  },
+  "recorded_fees_taxes": {
+    "note": "只记录并标注（Q1）；缺失按 0 并保留逐条标记（Q6）",
+    "fee_recorded_sum": 11.0,
+    "fee_missing_lines": ["T003"],
+    "tax_recorded_sum": 16.5,
+    "label": "未计入费用、税费"
+  },
+  "expected": {
+    "effective_date": "2024-09-30",
+    "close_unadj": 13.0,
+    "buyCost": 2200.0,
+    "sellProceeds": 1650.0,
+    "heldShares": 50,
+    "actualValue": 2300.0,
+    "ghostValue": 2600.0,
+    "actualRet": 0.045454545454545414,
+    "ghostRet": 0.18181818181818188,
+    "dragMoney": 300.0,
+    "drag": 0.13636363636363646,
+    "indicator_equality_with_case_1": true,
+    "anti_pattern": {
+      "desc": "若误将费用税费计入 buyCost（2200 + 11 + 16.50 = 2,227.50）",
+      "wrongBuyCost": 2227.5,
+      "wrongActualRet": 0.032547699214365844,
+      "wrongDisplay": "+3.3%",
+      "note": "错误结果与正确 +4.5% 不同；Q1 已确认费用税费不入公式，展示必须标注“未计入费用、税费”"
+    },
+    "result_labelling": ["未计入费用、税费（Q1）", "分红未计入（Q2）", "未计入滑点（v1 未建模；【建议】待负责人确认，C2）"]
+  },
+  "hand_calc": [
+    "交易与 case-1 相同：buyCost = 2,200.00；actualValue = 2,300.00；ghostValue = 2,600.00（费用税费不进入任何公式，Q1）",
+    "实际收益 = 1/22 = +4.5454…%（展示 +4.5%）——与 case-1 完全一致，不因费用税费存在而变化",
+    "记录值（仅展示与标注）：费用合计 11.00（T003 缺失、按 0 并标注）；税费合计 16.50",
+    "anti-pattern：若错误地把 11.00 + 16.50 计入 buyCost → 2,227.50，actualRet 错算为 29/891 = +3.2547…%（展示 +3.3%）≠ +4.5% → 该口径不可采用",
+    "结果标注：未计入费用、税费（Q1）；分红未计入（Q2）；滑点未建模（v1，建议标注，C2）"
+  ]
+}

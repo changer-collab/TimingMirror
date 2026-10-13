@@ -1,0 +1,123 @@
+{
+  "interface": "calc-baseline",
+  "artifact": "candidate-draft",
+  "frozen": false,
+  "status": "候选草案 v1（数据与量化口径 + 3 组手算样例；未冻结——待三方覆盖确认）",
+  "version": "candidate-1",
+  "date": "2026-10-13",
+  "basis": [
+    "implementation-baseline.md §4-3（确定性计算结果）与 §2.3 F-2（展示与舍入）、§2.1 F-1（反事实口径）/F-4（资金与费用口径）、附A.2（恒等式清单）",
+    "PRD:137-148（公式）、PRD:255（场景化口径标注）",
+    "m0/csv-input/schema.candidate.json（Q1 费用税费不入公式、Q2 分红未计入、Q7 排序、O1 整批阻断、O3 超卖校验）",
+    "m0/market-cache/schema.candidate.json（B2 双序列口径、B3 估值日、B4 缺价阻断、B6 快照标注）",
+    "负责人布置的本轮任务（2026-10-13）：确认行情字段、信号定义、执行时点、手续费滑点，并给出 3 组手算样例"
+  ],
+  "review_requested_from": ["changer", "吴涵晶"],
+  "scope_note": "覆盖 §4-3 的计算公式与口径候选（实际/对照/损耗 + S1 单笔卖出替换反事实）及本轮四项确认项；不含 S2/S3/S4 与 V1/V2 变体、行为识别信号（M1-C5 / F-5）、正式复核容差与股票本身涨幅公式（见 open_items）。",
+  "confirmations": {
+    "source": "本轮候选由尹辰起草；其中引用项为既有已确认口径，新增项标注【建议】待负责人确认",
+    "items": [
+      { "id": "D1", "status": "引用已确认（m0/csv-input Q1）", "decision": "费用、税费只记录并标注，不进入 buyCost、actualValue、收益与损耗公式；结果口径必须标注“未计入费用、税费”" },
+      { "id": "D2", "status": "引用已确认（m0/csv-input Q2）", "decision": "v1 分红未计入；结果标注“分红未计入”" },
+      { "id": "D3", "status": "引用已确认（m0/market-cache B2）", "decision": "金额估值使用不复权价；前复权序列仅用于走势展示；禁止拿前复权价格涨幅直接参与金额收益相减" },
+      { "id": "D4", "status": "引用已确认（m0/market-cache B3/B4）", "decision": "估值日显式传参；非交易日按交易日历取不晚于请求日的最近交易日；缺价阻断受影响结果、不回落" },
+      { "id": "D5", "status": "引用已确认（implementation-baseline §2.3 F-2）", "decision": "损耗＝对照−实际；正值＝相对损耗，负值＝实际优于对照；收益率 1 位小数、pp 1 位小数、金额 2 位小数＋千分位；内部保留全精度、不使用展示值参与计算" },
+      { "id": "S1", "status": "【建议】待负责人确认（本轮新增）", "decision": "滑点 v1 不建模：CSV 成交价即执行价；结果标注建议增加“未计入滑点（未建模）”一项，纳入 result_labelling" },
+      { "id": "S2", "status": "【建议】待负责人确认（本轮新增）", "decision": "信号定义 v1＝成交事件驱动（无价格触发信号）：实际路径按 CSV 成交执行；对照路径忽略全部卖出；反事实 S1 仅替换指定一笔卖出为“持有到估值日”，不引入假设价格" },
+      { "id": "S3", "status": "【建议】待负责人确认（本轮新增）", "decision": "执行时点 v1：成交按 trade_date 当日以 CSV 成交价执行（不建模盘中时点/T+1）；估值按 effective_date 当日不复权 close（产品固定传数据集 asOfDate，F-3）" }
+    ]
+  },
+  "market_fields_consumed": {
+    "note": "计算侧消费的行情字段口径（对齐 m0/market-cache 候选；OHLC/volume 的完整性要求属行情缓存接口，不属本接口）",
+    "fields": [
+      { "field": "bars.close（不复权）", "usage": "唯一金额估值来源：actualValue、ghostValue、单笔反事实均使用 effective_date 当日不复权 close（B2/B4）", "status": "引用已确认（B2/B4）" },
+      { "field": "bars_fwdadj（前复权 OHLC）", "usage": "仅走势展示并标注快照口径；不得参与金额收益相减（B2/B6）", "status": "引用已确认（B2/B6）" },
+      { "field": "bars.open/high/low、volume", "usage": "v1 计算不使用（候选）；完整性校验随行情缓存接口（§4-2 已纠正 OHLC 必填）", "status": "候选" },
+      { "field": "calendar.trading_days", "usage": "非交易日映射：取不晚于 requested_date 的最近交易日为 effective_date（B3）", "status": "引用已确认（B3）" },
+      { "field": "snapshot {snapshot_id, fetch_time, adjustment_basis}", "usage": "标注与 provenance：四者分开记录、不互相代用（B6）", "status": "引用已确认（B6）" },
+      { "field": "manifest {symbols, date_range, data_source, calendar_source, adjustment_basis, pull_evidence, asOfDate}", "usage": "支持范围与阻断判定（R2/F-3）；范围外显示“不支持/数据缺失”，不静默外推", "status": "引用已确认（R2/F-3；清单内容待 M0-C2 产出）" }
+    ]
+  },
+  "signals": {
+    "note": "信号定义（本轮确认项之一）：v1 不引入任何价格触发信号，全部执行事件来自账单或对其的单笔替换",
+    "rules": [
+      { "id": "SIG-1", "rule": "实际路径：每笔 CSV 成交按 trade_date 升序、同日原始行号稳定排序（Q7），以该笔 CSV 价格与数量执行", "status": "【建议】（依据 Q7/§4-1）" },
+      { "id": "SIG-2", "rule": "对照路径（买入不动）：忽略全部卖出；所有买入按原 CSV 价格与数量持有到 effective_date", "status": "【建议】（依据 PRD:137-148）" },
+      { "id": "SIG-3", "rule": "单笔反事实（S1 主口径）：将指定一笔卖出替换为“不卖、持有到 effective_date”；其余成交不动；不引入假设价格、不改写其他成交", "status": "【建议】（依据 F-1 主口径）" },
+      { "id": "SIG-4", "rule": "S3 买入侧/早卖替换需要假设执行价，v1 未定义（见 open_items C1）；本候选不覆盖", "status": "未定义" },
+      { "id": "SIG-5", "rule": "行为模式识别信号（如“追高”）不属本接口，归行为发现引擎（M1-C5，F-5 参数集中配置、记录版本）", "status": "范围外" }
+    ]
+  },
+  "execution_timing": {
+    "note": "执行时点（本轮确认项之一）",
+    "rules": [
+      { "id": "T-1", "rule": "成交执行：trade_date 当日以 CSV 成交价执行；v1 不建模盘中时点、不引入 T+1/收盘价假设", "status": "【建议】" },
+      { "id": "T-2", "rule": "估值时点：effective_date 当日收盘（不复权 close）；产品固定传数据集 asOfDate（F-3），接口显式 valuation_date 参数为测试与离线复核保留（market-cache asof_linkage）", "status": "引用已确认（F-3/B3）" },
+      { "id": "T-3", "rule": "非交易日：按交易日历取不晚于 requested_date 的最近交易日（B3）；effective_date 早于账单末笔交易日 → 阻断 E_VALUATION_BEFORE_LAST_TRADE", "status": "引用已确认（B3）" },
+      { "id": "T-4", "rule": "effective_date 当日缺价 → E_PRICE_MISSING 阻断受影响结果，不回落取其他日期（B4）", "status": "引用已确认（B4）" }
+    ]
+  },
+  "fees_slippage": {
+    "note": "手续费/滑点（本轮确认项之一）",
+    "rules": [
+      { "id": "F-1", "rule": "费用、税费只记录并标注，不进入 buyCost、actualValue、收益与损耗公式；结果标注“未计入费用、税费”", "status": "引用已确认（Q1，三人）" },
+      { "id": "F-2", "rule": "费用、税费缺失按 0 记录并逐条标注（fee_missing/tax_missing）", "status": "引用已确认（Q6）" },
+      { "id": "F-3", "rule": "分红未计入（v1）；行情复权与分红事件另属行情缓存接口", "status": "引用已确认（Q2）" },
+      { "id": "F-4", "rule": "滑点 v1 不建模：无滑点字段、无假设价；展示口径建议标注“未计入滑点”", "status": "【建议】待负责人确认（S1）" }
+    ]
+  },
+  "formulas": {
+    "note": "纯公式（PRD:137-146）；全部按内部全精度计算，展示时统一四舍五入（F-2）",
+    "list": [
+      { "formula_id": "CALC_BUY_COST_V1", "expr": "buyCost = Σ 买入(quantity × price)", "unit": "元", "status": "候选" },
+      { "formula_id": "CALC_SELL_PROCEEDS_V1", "expr": "sellProceeds = Σ 卖出(quantity × price)", "unit": "元", "status": "候选" },
+      { "formula_id": "CALC_HELD_SHARES_V1", "expr": "heldShares = Σ 买入 quantity − Σ 卖出 quantity（≥ 0，O3 保证）", "unit": "股", "status": "候选" },
+      { "formula_id": "CALC_ACTUAL_VALUE_V1", "expr": "actualValue = sellProceeds + heldShares × close(effective_date)", "unit": "元", "status": "候选" },
+      { "formula_id": "CALC_GHOST_VALUE_V1", "expr": "ghostValue = Σ 买入 quantity × close(effective_date)", "unit": "元", "status": "候选" },
+      { "formula_id": "CALC_RET_V1", "expr": "actualRet = actualValue / buyCost − 1；ghostRet = ghostValue / buyCost − 1", "unit": "无量纲（展示 %，1 位小数）", "status": "候选" },
+      { "formula_id": "CALC_DRAG_MONEY_V1", "expr": "dragMoney = ghostValue − actualValue", "unit": "元（展示 2 位小数＋千分位）", "status": "候选" },
+      { "formula_id": "CALC_DRAG_PP_V1", "expr": "drag = ghostRet − actualRet（＝ dragMoney / buyCost）；正＝相对损耗，负＝实际优于对照", "unit": "pp（展示 1 位小数）", "status": "候选（符号规则已确认 F-2）" },
+      { "formula_id": "CALC_CF_REPLACE_SELL_V1", "expr": "单笔替换：actualValue_cf = (sellProceeds − 被替换笔金额) + (heldShares + 被替换笔股数) × close(effective_date)", "unit": "元", "status": "候选（S1）" }
+    ],
+    "per_number_requirements": "§4-3：每个数字须带 formula_id 与 display 字段（display 由确定性层生成，LLM 原样引用，F-2）；空值语义留待 M0 接口冻结统一（本候选未定义）"
+  },
+  "identities": {
+    "note": "供独立复核（附A.2）与恒等式断言（M1-C3 验收）",
+    "list": [
+      "① Σ 逐笔单笔替换损耗（金额）= dragMoney（逐笔替换可加总；样例二验证）",
+      "② dragMoney = ghostValue − actualValue",
+      "③ dragMoney = drag × buyCost（精确恒等，浮点容差比较）",
+      "④ 股数守恒：heldShares = Σ买入 − Σ卖出 ≥ 0"
+    ]
+  },
+  "scenario_labels": {
+    "note": "PRD:255：每个数字必须带场景化口径标签",
+    "covered": "S1 单笔卖出替换（F-1 主口径）；对照（幽灵）路径＝买入不动，单标的与组合层面各出结果；资金处置按 V1（卖出资金不再投资、不计息，F-4）",
+    "not_covered": "S2 批次替换、S3 买入侧替换（双向）、V2 按原标的再投资（B 组另行）；区间表述未定（M2-C5）",
+    "partition_rule": "每场景独立计算、逐个标注；区间仅在证明界关系后输出（B；M2-C5），否则并列展示、禁止拼接"
+  },
+  "fixtures": {
+    "files": [
+      "fixtures/case-1-basic.json（基础三指标 + 期末持仓 + 非交易日估值映射）",
+      "fixtures/case-2-single-replace.json（S1 单笔替换 + 逐笔替换可加总恒等式）",
+      "fixtures/case-3-fees-label.json（费用/税费记录但不入公式 + 缺失标注 + anti-pattern）"
+    ],
+    "note": "全部为合成夹具（占位代码 000000、合成价格）；手算基准为精确值（内部不四舍五入），展示值为 F-2 舍入后的字符串；校验见 check-calc-baseline.mjs",
+    "validator": "node m0/calc-baseline/check-calc-baseline.mjs（离线；通过仅证明候选口径与样例一致，不证明产品引擎或端到端验证通过）"
+  },
+  "open_items": [
+    { "id": "C1", "question": "S3 买入侧/早卖替换的假设执行价口径（沿用 CSV 成交价 vs 当日行情价）", "status": "未定义", "owner_hint": "负责人定夺", "affects": "S3 备用演示页（F-1）" },
+    { "id": "C2", "question": "“未计入滑点”标注是否纳入 result_labelling 文本", "status": "【建议】", "owner_hint": "负责人确认", "affects": "展示口径" },
+    { "id": "C3", "question": "“股票本身涨幅”公式（Q9 已移入计算结果接口，本候选未定义）", "status": "未定义", "owner_hint": "待定义", "affects": "T1-11 指标卡第四项" },
+    { "id": "C4", "question": "正式复核容差（金额到分规则已定；收益率数值容差未定）", "status": "未定", "owner_hint": "M0 接口冻结", "affects": "附A.2 复核" },
+    { "id": "C5", "question": "本候选三方覆盖确认（Q 组仅有转述先例，O 组队友确认未提供的先例见 csv-input）", "status": "未确认", "owner_hint": "changer 主持", "affects": "冻结" }
+  ],
+  "sub_interface_status": {
+    "freeze": "未冻结",
+    "reason": "公式与样例已就绪；冻结待：①三方对本版口径（尤其 S1–S3 新增建议项）的覆盖确认 ②open_items C1–C4 定夺",
+    "note": "Step 3 / M0-C1 整体未完成；本包仅覆盖 §4-3，其余接口不在本轮"
+  },
+  "review_history": {
+    "v1": "首版候选：行情字段/信号定义/执行时点/费用滑点四项口径 + 3 组手算样例与离线校验；全部新增建议项标注【建议】"
+  }
+}

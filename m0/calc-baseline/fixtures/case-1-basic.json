@@ -1,0 +1,54 @@
+{
+  "artifact": "synthetic-fixture",
+  "case": "case-1-basic",
+  "desc": "基础三指标：多批次买入 + 部分卖出 + 期末持仓 + 非交易日估值映射",
+  "note": "合成样例：占位代码 000000（非真实证券）、合成价格（非真实行情）；手算基准为精确值（内部不四舍五入），展示值按 F-2 舍入",
+  "inputs": {
+    "symbol": "000000",
+    "trades": [
+      { "trade_id": "T001", "trade_date": "2024-09-24", "side": "buy", "price": 10.0, "quantity": 100 },
+      { "trade_id": "T002", "trade_date": "2024-09-25", "side": "buy", "price": 12.0, "quantity": 100 },
+      { "trade_id": "T003", "trade_date": "2024-09-27", "side": "sell", "price": 11.0, "quantity": 150 }
+    ],
+    "requested_date": "2024-10-03",
+    "calendar": ["2024-09-23", "2024-09-24", "2024-09-25", "2024-09-26", "2024-09-27", "2024-09-30", "2024-10-08", "2024-10-09", "2024-10-10", "2024-10-11"],
+    "bars": [
+      { "date": "2024-09-24", "close": 10.5 },
+      { "date": "2024-09-25", "close": 11.8 },
+      { "date": "2024-09-27", "close": 11.2 },
+      { "date": "2024-09-30", "close": 13.0 }
+    ],
+    "bars_note": "本夹具仅提供估值消费的 close（不复权，B2/B4）；OHLC/volume 完整性属行情缓存接口（§4-2），由 market-cache 夹具覆盖"
+  },
+  "expected": {
+    "effective_date": "2024-09-30",
+    "close_unadj": 13.0,
+    "buyCost": 2200.0,
+    "sellProceeds": 1650.0,
+    "heldShares": 50,
+    "actualValue": 2300.0,
+    "ghostValue": 2600.0,
+    "actualRet": 0.045454545454545414,
+    "ghostRet": 0.18181818181818188,
+    "dragMoney": 300.0,
+    "drag": 0.13636363636363646,
+    "display": {
+      "actualRet": "+4.5%",
+      "ghostRet": "+18.2%",
+      "drag": "+13.6pp",
+      "dragMoney": "¥300.00",
+      "buyCost": "¥2,200.00",
+      "actualValue": "¥2,300.00",
+      "ghostValue": "¥2,600.00"
+    }
+  },
+  "hand_calc": [
+    "非交易日映射：requested 2024-10-03（国庆假期）→ 交易日历取不晚于请求日的最近交易日 → effective_date = 2024-09-30（B3）",
+    "buyCost = 100×10.00 + 100×12.00 = 2,200.00（费用/税费未计入，Q1）",
+    "sellProceeds = 150×11.00 = 1,650.00；heldShares = 200 − 150 = 50（股数守恒）",
+    "actualValue = 1,650.00 + 50×13.00 = 2,300.00；ghostValue = 200×13.00 = 2,600.00",
+    "actualRet = 2,300/2,200 − 1 = 1/22 = +4.5454…%（展示 +4.5%）；ghostRet = 2,600/2,200 − 1 = 2/11 = +18.1818…%（展示 +18.2%）",
+    "dragMoney = 2,600.00 − 2,300.00 = ¥300.00；drag = +18.1818% − (+4.5454%) = 300/2,200 = 3/22 = +13.6363pp（展示 +13.6pp）",
+    "恒等式校验：dragMoney = drag × buyCost → 3/22 × 2,200 = 300 ✓"
+  ]
+}

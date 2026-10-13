@@ -31,11 +31,11 @@
 
 ```bash
 npm run dev     # 本地静态服务器，默认 http://localhost:5180 （可用 --port= 覆盖）
-npm run check   # m0 离线校验：csv-input 129 项 + market-cache 51 项
+npm run check   # m0 离线校验：csv-input 129 项 + market-cache 51 项 + calc-baseline 55 项
 npm run smoke   # 前端交互冒烟（Node 最小 DOM 桩，非真实浏览器）：15 项
 ```
 
-最近一次核验结果（2026-10-12）：`npm run check` 180 项全部通过；`npm run smoke` 15/15 通过。远程仓库**未配置 CI**（GitHub 显示 no checks reported），以上为本地命令结果。
+最近一次核验结果（2026-10-13）：`npm run check` 235 项全部通过；`npm run smoke` 15/15 通过。远程仓库**未配置 CI**（GitHub 显示 no checks reported），以上为本地命令结果。
 
 ## 仓库结构
 
@@ -49,6 +49,8 @@ src/ui/styles.css          浅色主题样式
 src/ui/views/*.js          四个页面视图（import / report / chat / contract）
 m0/csv-input/              CSV 输入候选 schema + 合成夹具 + 离线校验脚本
 m0/market-cache/           行情缓存候选 schema + 合成夹具 + 离线校验脚本
+m0/calc-baseline/          确定性计算基线候选（口径 + 3 组手算样例 + 离线校验脚本）
+docs/                      实施基线（权威）＋ 三分钟演示建议稿 ＋ 接入调研
 scripts/serve.mjs          零依赖本地静态服务器（开发用，非产品运行时）
 scripts/smoke-frontend.mjs 前端交互冒烟（零依赖，非产品代码）
 .qoder/                    项目级技能与协作配置（M3 交付件之一）
