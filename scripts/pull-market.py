@@ -122,6 +122,15 @@ def main():
         diff_days = [a["date"] for a, b in zip(bars, fwd) if not eqv(a["close"], b["close"])]
         end_equal = bool(bars and fwd and eqv(bars[-1]["close"], fwd[-1]["close"]))
 
+        # 送转量级复权跳变扫描：qfq/不复权 比值日环比 ≥ 0.05（现金分红步长通常 <0.03，不触发）
+        ratio = [f["close"] / b["close"] for b, f in zip(bars, fwd)]
+        jumps = []
+        for i in range(1, len(ratio)):
+            if abs(ratio[i] - ratio[i - 1]) >= 0.05:
+                jumps.append({"date": d1[i], "ratio_before": round(ratio[i - 1], 4),
+                              "ratio_after": round(ratio[i], 4),
+                              "ratio_factor": round(ratio[i] / ratio[i - 1], 4)})
+
         # 前复权锚点核验：拉取近期窗口，观察 qfq 与不复权的收敛（一致）日
         r_un = fetch_hist(ak, sym, "", RECENT_START, today)
         r_fw = fetch_hist(ak, sym, "qfq", RECENT_START, today)
@@ -159,6 +168,7 @@ def main():
                 "full_range_diff_days": len(diff_days),
                 "full_range_first_diff": diff_days[0] if diff_days else None,
                 "full_range_end_equal": end_equal,
+                "ratio_jumps_large": jumps,
                 "recent": recent_obs[sym],
             },
         }
@@ -176,9 +186,21 @@ def main():
         obs2 = f"近窗差异形态为“各标的最后一次除权除息之前不同、其后与不复权逐日一致”（一致段起点：{starts_desc}）"
     else:
         obs2 = "近窗差异形态未满足预期（存在无差异或非连续观测，需人工复核）"
+    jump_syms = [s for s in SYMBOLS if per_symbol[s]["qfq_obs"]["ratio_jumps_large"]]
+    if jump_syms:
+        jdesc = "；".join(
+            f"{s}({SYMBOL_NAMES[s]})：" + "、".join(
+                f"{j['date']}（比值 {j['ratio_before']}→{j['ratio_after']}，≈×{j['ratio_factor']}）"
+                for j in per_symbol[s]["qfq_obs"]["ratio_jumps_large"])
+            for s in jump_syms)
+        obs3 = (f"③ 送转量级复权跳变：{jdesc}——远超现金分红步长可解释范围，疑似送转类股数事件，"
+                f"事件性质与识别依据属 M3 未决项；持有区间跨越该事件将命中 B5 处置口径")
+    else:
+        obs3 = "③ 未观察到送转量级复权跳变（区间内 ≥0.05 日环比）"
     basis = (f"前复权序列为抓取时点口径（qfq）快照；观测："
              f"① 2023–2025 区间两序列差异日数：{full_diff_desc}；"
-             f"② {obs2}。"
+             f"② {obs2}；"
+             f"{obs3}。"
              f"前复权值随抓取时点变化，早期展示须标注快照口径（B6）；详见 data/market-cache.pull-record.json")
 
     akshare_ver = getattr(ak, "__version__", "unknown")
@@ -193,7 +215,8 @@ def main():
                    "date_range": {"start": RANGE_START, "end": RANGE_END},
                    "recent_window": [RECENT_START, today],
                    "volume_unit_conversion": "成交量为股（akshare 原始为手，×100）",
-                   "recent_window_note": "近窗末行可能为抓取时点当日盘中行情（未收盘数据）；仅用于前复权基准核验，不进入 2023–2025 缓存"},
+                   "recent_window_note": "近窗末行可能为抓取时点当日盘中行情（未收盘数据）；仅用于前复权基准核验，不进入 2023–2025 缓存",
+                   "jump_scan_threshold": "|qfq/不复权 比值日环比| ≥ 0.05（送转量级；现金分红步长通常 <0.03 不触发）"},
         "requests": requests,
         "calendar": {"source": "akshare tool_trade_date_hist_sina",
                      "rows_total": len(days_all), "rows_in_range": len(cal_days),
@@ -248,7 +271,8 @@ def main():
         print(f"{sym} {SYMBOL_NAMES[sym]}  不复权 {p['bars_rows']} 行 {p['first']}..{p['last']} | "
               f"前复权 {p['fwdadj_rows']} 行 | 日历内缺失 {p['missing_vs_calendar']['count']} 日 | "
               f"区间内两序列差异 {p['qfq_obs']['full_range_diff_days']} 日 | "
-              f"近期窗口差异 {p['qfq_obs']['recent']['diff_days']} 日，一致段起点 {p['qfq_obs']['recent']['first_equal_date']}")
+              f"近期窗口差异 {p['qfq_obs']['recent']['diff_days']} 日，一致段起点 {p['qfq_obs']['recent']['first_equal_date']} | "
+              f"送转级跳变 {len(p['qfq_obs']['ratio_jumps_large'])} 处")
     print(f"adjustment_basis 观测：{basis}")
     print(f"\n== 硬校验 {len(fails)} 项失败 ==\n已写出：{OUT_RECORD.name}" + (f" / {OUT_CACHE.name}" if not fails else "（缓存未写出）"))
     return 1 if fails else 0

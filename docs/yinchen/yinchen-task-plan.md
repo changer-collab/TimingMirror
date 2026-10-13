@@ -39,7 +39,8 @@ M1-C11 契约匹配纯函数（依赖 M0-C1）
 
 ### P0-1 · M0-C2 akshare 前复权拉数【我的唯一 M0 主责卡】
 
-- 状态：已完成（2a24b1c）——交付 `m0/market-cache/manifest.candidate.json`（待签收）、`data/market-cache.json`（727/727 行、日历内缺失 0）、`data/market-cache.pull-record.json`（含前复权基准观测）、`scripts/pull-market.py`；`npm run check` 247 项 / `smoke` 15/15 通过；下一步：请 changer 审查签收（含 symbols 与 asOfDate=2025-12-31 两项【建议】）。
+- 状态：已完成（2a24b1c 起，另有补充提交）——交付 `m0/market-cache/manifest.candidate.json`（待签收）、`data/market-cache.json`（727/727 行、日历内缺失 0）、`data/market-cache.pull-record.json`（前复权基准 + 送转跳变观测）、`scripts/pull-market.py`；`npm run check` 247 项 / `smoke` 15/15 通过。
+- 签收待办（请 changer 定夺）：① symbols 与 asOfDate=2025-12-31 两项【建议】；② 300750 区间内 2023-04-26 送转量级复权跳变（≈×1.82，不复权价单日 ×1.72）处置——维持名单并约定演示账单避让该日（推荐），或替换为 300760 迈瑞医疗（已扫描核验区间内无送转事件）。
 - 目标：产出可签收的「行情支持清单草案」＋拉数成功证据。
 - 步骤：
   1. 本机 Python 环境安装/确认 akshare（不引入凭证类依赖）；
