@@ -6,7 +6,7 @@
   "description": "TimingMirror 开发骨架（浏览器纯 JS 运行时；演示数据模式）",
   "scripts": {
     "dev": "node scripts/serve.mjs",
-    "check": "node m0/csv-input/check-fixtures.mjs && node m0/market-cache/check-market-cache.mjs && node m0/calc-baseline/check-calc-baseline.mjs && node tests/market-cache.test.mjs",
+    "check": "node m0/csv-input/check-fixtures.mjs && node m0/market-cache/check-market-cache.mjs && node m0/calc-baseline/check-calc-baseline.mjs && node tests/market-cache.test.mjs && node tests/indicators.test.mjs",
     "smoke": "node scripts/smoke-frontend.mjs"
   }
 }
