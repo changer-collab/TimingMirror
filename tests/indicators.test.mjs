@@ -45,9 +45,9 @@ function closeAtValuation(fx) {
 
 /* ---- 注册表与标注（§4-3：每数字带 formula_id；Q1/Q2 标注） ---- */
 {
-  const ids = ['CALC_BUY_COST_V1', 'CALC_SELL_PROCEEDS_V1', 'CALC_HELD_SHARES_V1', 'CALC_ACTUAL_VALUE_V1', 'CALC_GHOST_VALUE_V1', 'CALC_RET_V1', 'CALC_DRAG_MONEY_V1', 'CALC_DRAG_PP_V1'];
-  check('注册表：8 个候选公式齐全且 formula_text 非空', Object.keys(CALC_FORMULAS).length === 8 && ids.every((id) => CALC_FORMULAS[id]?.formula_text?.length > 0), Object.keys(CALC_FORMULAS).join(','));
-  check('注册表：formula_id 字段与键一致、状态为候选', Object.entries(CALC_FORMULAS).every(([k, v]) => v.formula_id === k && v.status === '候选'), '');
+  const ids = ['CALC_BUY_COST_V1', 'CALC_SELL_PROCEEDS_V1', 'CALC_HELD_SHARES_V1', 'CALC_ACTUAL_VALUE_V1', 'CALC_GHOST_VALUE_V1', 'CALC_RET_V1', 'CALC_DRAG_MONEY_V1', 'CALC_DRAG_PP_V1', 'CALC_CF_REPLACE_SELL_V1'];
+  check('注册表：9 个候选公式齐全且 formula_text 非空（含 S1 替换公式）', Object.keys(CALC_FORMULAS).length === 9 && ids.every((id) => CALC_FORMULAS[id]?.formula_text?.length > 0), Object.keys(CALC_FORMULAS).join(','));
+  check('注册表：formula_id 字段与键一致、状态为候选', Object.entries(CALC_FORMULAS).every(([k, v]) => v.formula_id === k && String(v.status).startsWith('候选')), '');
   check('标注：RESULT_LABELS 含 Q1/Q2 口径', RESULT_LABELS.fees_taxes.includes('未计入费用、税费') && RESULT_LABELS.dividend.includes('分红未计入'), JSON.stringify(RESULT_LABELS));
 }
 

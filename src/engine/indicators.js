@@ -19,6 +19,7 @@ export const CALC_FORMULAS = Object.freeze({
   CALC_RET_V1: { formula_id: 'CALC_RET_V1', formula_text: 'actualRet = actualValue / buyCost − 1；ghostRet = ghostValue / buyCost − 1', unit: '无量纲（展示 %，1 位小数）', status: '候选' },
   CALC_DRAG_MONEY_V1: { formula_id: 'CALC_DRAG_MONEY_V1', formula_text: 'dragMoney = ghostValue − actualValue', unit: '元（展示 2 位小数＋千分位）', status: '候选' },
   CALC_DRAG_PP_V1: { formula_id: 'CALC_DRAG_PP_V1', formula_text: 'drag = ghostRet − actualRet（＝ dragMoney / buyCost）；正＝相对损耗，负＝实际优于对照', unit: 'pp（展示 1 位小数）', status: '候选' },
+  CALC_CF_REPLACE_SELL_V1: { formula_id: 'CALC_CF_REPLACE_SELL_V1', formula_text: '单笔替换：actualValue_cf = (sellProceeds − 被替换笔金额) + (heldShares + 被替换笔股数) × close(effective_date)', unit: '元', status: '候选（S1）' },
 });
 
 // §4-3：每个数字须带 formula_id 与 display 字段（provenance 由 changer 编排消费，M1-C7/C8）
@@ -54,7 +55,8 @@ function dualPath(pathA, pathB) {
   return { path_a: pathA, path_b: pathB, diff, tol, consistent: Math.abs(diff) <= tol };
 }
 
-function sortTrades(trades) {
+// 规范顺序：按 trade_date 升序、同日按原始下标稳定（Q7 候选；反事实逐日重放共用同一顺序）
+export function sortTrades(trades) {
   return trades
     .map((t, i) => ({ t, i }))
     .sort((a, b) => (a.t.trade_date < b.t.trade_date ? -1 : a.t.trade_date > b.t.trade_date ? 1 : a.i - b.i))
