@@ -105,6 +105,7 @@
   },
   "failure_codes": [
     { "code": "E_VALUATION_OUT_OF_RANGE", "candidate": true, "meaning": "请求日期超出缓存支持范围", "block_scope": "相关结果", "user_mark": "不支持/数据缺失" },
+    { "code": "E_NO_EFFECTIVE_TRADING_DAY", "candidate": true, "meaning": "请求日位于缓存范围内但早于首个交易日（无有效交易日可取）", "block_scope": "本次计算全部结果", "user_mark": "不支持/数据缺失", "note": "M1-C1 实现提出（2026-10-13；B7 授权候选细化，待三方审校）" },
     { "code": "E_VALUATION_BEFORE_LAST_TRADE", "candidate": true, "meaning": "有效估值日早于账单最后一笔交易日", "block_scope": "本次计算全部结果", "user_mark": "提示重新选择日期" },
     { "code": "E_PRICE_MISSING", "candidate": true, "meaning": "effective_date 当日标的缺价", "block_scope": "该标的受影响结果 + 依赖它的组合", "user_mark": "数据缺失" },
     { "code": "E_SHARE_EVENT_UNSUPPORTED", "candidate": true, "meaning": "持有区间涉及未支持的股数事件", "block_scope": "命中路径结果 + 依赖它的组合", "user_mark": "超出支持范围" }
@@ -145,6 +146,7 @@
   "review_history": {
     "v1": "首版候选：负责人本次确认的 B1–B7 落实；合成夹具与离线校验；M1–M5 未决项",
     "v1.1": "本次审校修订：OHLC 按基线 §4-2 纠正为必填（两个序列）并补齐夹具；M4 收口；分红混算差值单位更正为 pp",
-    "2026-10-13·M0-C2（尹辰）": "M1/M2 状态指针更新：拉数草案 m0/market-cache/manifest.candidate.json 与运行记录 data/market-cache.pull-record.json 已提出；候选语义未变更；仍待签收与三方确认"
+    "2026-10-13·M0-C2（尹辰）": "M1/M2 状态指针更新：拉数草案 m0/market-cache/manifest.candidate.json 与运行记录 data/market-cache.pull-record.json 已提出；候选语义未变更；仍待签收与三方确认",
+    "2026-10-13·M1-C1（尹辰）": "候选细化：新增 E_NO_EFFECTIVE_TRADING_DAY（区间内早于首个交易日的请求）；引擎 src/engine/marketCache.js 实现并有单测覆盖；待三方审校"
   }
 }

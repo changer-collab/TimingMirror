@@ -31,11 +31,11 @@
 
 ```bash
 npm run dev     # 本地静态服务器，默认 http://localhost:5180 （可用 --port= 覆盖）
-npm run check   # m0 离线校验：csv-input 129 项 + market-cache 63 项 + calc-baseline 55 项
+npm run check   # 离线校验：csv-input 129 项 + market-cache 63 项 + calc-baseline 55 项 + 引擎单测 25 项
 npm run smoke   # 前端交互冒烟（Node 最小 DOM 桩，非真实浏览器）：15 项
 ```
 
-最近一次核验结果（2026-10-13）：`npm run check` 247 项全部通过；`npm run smoke` 15/15 通过。远程仓库**未配置 CI**（GitHub 显示 no checks reported），以上为本地命令结果。
+最近一次核验结果（2026-10-13）：`npm run check` 272 项全部通过；`npm run smoke` 15/15 通过。远程仓库**未配置 CI**（GitHub 显示 no checks reported），以上为本地命令结果。
 
 ## 仓库结构
 
@@ -44,6 +44,7 @@ index.html                 入口（顶部栏 / 导航 / 主视图挂载点）
 src/main.js                应用引导：页签导航、hash 路由、视图挂载
 src/state.js               应用状态（内存 + 契约记录演示级本地持久化）
 src/demo/adapter.js        演示适配层：页面唯一数据出口（当前读 m0 合成夹具）
+src/engine/marketCache.js  行情缓存引擎（M1-C1：估值日解析/取价/阻断；候选语义，页面未接线）
 src/ui/components.js       小型 DOM 工具（无框架）
 src/ui/styles.css          浅色主题样式
 src/ui/views/*.js          四个页面视图（import / report / chat / contract）
@@ -52,6 +53,7 @@ m0/market-cache/           行情缓存候选 schema + 合成夹具 + 离线校�
 m0/calc-baseline/          确定性计算基线候选（口径 + 3 组手算样例 + 离线校验脚本）
 data/market-cache.json     真实行情缓存草案（akshare 预拉 2023–2025；清单待签收，R2）
 data/market-cache.pull-record.json  拉数运行记录（签收证据：行数/缺失日/前复权观测）
+tests/market-cache.test.mjs 行情缓存引擎单测（S1–S5 场景 + 拉数草案边界；零依赖）
 docs/                      实施基线（权威）＋ 三分钟演示建议稿 ＋ 接入调研
 scripts/serve.mjs          零依赖本地静态服务器（开发用，非产品运行时）
 scripts/smoke-frontend.mjs 前端交互冒烟（零依赖，非产品代码）
@@ -65,7 +67,7 @@ scripts/pull-market.py     离线拉数脚本（akshare；公开行情；失败�
 
 - **计算引擎**：报告页数值来自合成夹具的预期值（`m0`），非由计算引擎实时计算产出；
 - **真实 CSV 解析**：上传入口为占位；计划使用 Papa Parse 在浏览器本地解析（不上传）；
-- **行情缓存**：真实行情已拉取为**草案**（`data/market-cache.json`，akshare 预拉 2023–2025，清单待负责人签收；签收前不构成支持范围声明、R2），产品页面仍读 `m0` 合成夹具；
+- **行情缓存**：引擎模块 `src/engine/marketCache.js` 已实现并有单测（S1–S5 语义；页面未接线）；真实行情已拉取为**草案**（`data/market-cache.json`，akshare 预拉 2023–2025，清单待负责人签收；签收前不构成支持范围声明、R2），产品页面仍读 `m0` 合成夹具；
 - **百炼（LLM）**：对话为离线占位回复，未接入意图分类与事实 JSON 复述；
 - **契约匹配 / 哈希存证 / 历史情境模拟**：契约页仅有演示级确认、改写、拒绝与版本记录；
 - **独立复核、provenance、行为发现、报告图表（幽灵线双面板等）**：均未接入。
