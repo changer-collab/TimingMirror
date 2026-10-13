@@ -16,23 +16,28 @@
 2. 导入 A′ 账单（`m0/csv-input/fixtures/demo-bill-aprime.csv`；**唯一改动：000000 卖出价 110.00 → 115.00**，其余逐字节相同）→ 对比指标。
 3. 打开验算视图（自我复核 verify report）：A 与 A′ 均 26/26 事实通过、恒等式 0 失败。
 4. 现场手算核对（与展示值对照）：
-   - 受影响：000000 卖出金额 Δ = (115−110)×200 = **+1,000** → actualValue +1,000、dragMoney −1,000、drag 0.15→0.10（变化 −5.0pp）；
+   - 受影响：000000 卖出金额 Δ = (115−110)×200 = **+1,000** → actualValue +1,000、dragMoney −1,000、drag −2.0pp→−7.0pp（变化 −5.0pp）；组合 dragMoney +700→−300、drag +2.0pp→−0.9pp；
    - 不受影响（允许不变）：888888 全部指标不变；buyCost 两账单不变。
 5. 留档：按 §4 模板记录命令/输出/日期/操作人。
 
 ### 1.3 CLI 基线证据（2026-10-13 实际运行输出）
 
-命令（仓库根目录）：
+命令（仓库根目录；估值日＝合成缓存夹具末日，与接线后演示路径同源——`marketCache.fromFixtures`）：
 
 ```bash
 node --input-type=module -e "
 import {readFileSync} from 'node:fs';
+import {createMarketCache, fromFixtures} from './src/engine/marketCache.js';
+import {parseCsvText, normalizeRows} from './src/engine/csvNormalize.js';
 import {computeIndicators} from './src/engine/indicators.js';
 import {buildVerifyReport} from './src/engine/verify.js';
-import {parseCsvText, normalizeRows} from './src/engine/csvNormalize.js';
+const mc = createMarketCache(fromFixtures(JSON.parse(readFileSync('m0/market-cache/fixtures/mock-calendar.json','utf8')), JSON.parse(readFileSync('m0/market-cache/fixtures/mock-daily-bars.json','utf8'))));
 const A = normalizeRows(parseCsvText(readFileSync('m0/csv-input/fixtures/demo-bill.csv','utf8')), 'demo-bill.csv').trades;
 const Ap = normalizeRows(parseCsvText(readFileSync('m0/csv-input/fixtures/demo-bill-aprime.csv','utf8')), 'demo-bill-aprime.csv').trades;
-const closes = {'000000':125.0,'888888':1560.0};
+const effectiveDate = mc.tradingDays.at(-1);
+console.log('checkLastTrade', JSON.stringify(mc.checkLastTrade(effectiveDate, '2024-10-10')));
+const closes = Object.fromEntries(mc.symbols.map(s => [s, mc.getClose(s, effectiveDate)]));
+console.log('effective_date', effectiveDate, '| closes', JSON.stringify(closes));
 const rA = computeIndicators({trades:A, closes}); const rAp = computeIndicators({trades:Ap, closes});
 for (const sc of ['000000','888888','portfolio']) {
   const a = sc==='portfolio'? rA.portfolio : rA.per_stock[sc];
@@ -47,13 +52,15 @@ console.log('verify A:', JSON.stringify(vA.summary), '| verify Ap:', JSON.string
 实际输出（原样摘录）：
 
 ```
-000000    actualValue 22000 -> 23000 | dragMoney 3000 -> 2000 | drag 0.150000 -> 0.100000
-888888    actualValue 14700 -> 14700 | dragMoney 900 -> 900 | drag 0.060000 -> 0.060000
-portfolio actualValue 36700 -> 37700 | dragMoney 3900 -> 2900 | drag 0.111429 -> 0.082857
+checkLastTrade {"blocked":false,"code":null}
+effective_date 2024-10-11 | closes {"888888":1580,"000000":108,"001234":57}
+000000 actualValue 22000 -> 23000 | dragMoney -400 -> -1400 | drag -0.020000 -> -0.070000
+888888 actualValue 14700 -> 14700 | dragMoney 1100 -> 1100 | drag 0.073333 -> 0.073333
+portfolio actualValue 36700 -> 37700 | dragMoney 700 -> -300 | drag 0.020000 -> -0.008571
 verify A: {"n_facts":26,"pass":26,"fail":0,"identities_fail":0} | verify Ap: {"n_facts":26,"pass":26,"fail":0,"identities_fail":0}
 ```
 
-判读：000000 与组合按手算预期变化（actualValue +1,000 / dragMoney −1,000 / drag 变化 −5.0pp）；888888 不变（允许）；A、A′ 双路径复核全过。备注：closes 为演示口径合成收盘价（000000=125.00、888888=1,560.00）；页面演练时以页面实际加载的行情来源为准并按 F-7 标注。
+判读：000000 与组合按手算预期变化（000000：actualValue +1,000 / dragMoney −1,000 / drag −2.0pp→−7.0pp，变化 −5.0pp；组合：dragMoney +700→−300 / drag +2.0pp→−0.9pp）；888888 不变（允许）；checkLastTrade 通过（估值日不早于末笔 2024-10-10）；A、A′ 双路径复核全过。备注：closes 为合成缓存夹具在估值日 2024-10-11（＝夹具末日）的不复权 close（000000=108.00、888888=1,580.00），与接线后演示路径同源（`marketCache.fromFixtures`）；页面演练时以页面实际加载的行情来源为准并按 F-7 标注。
 
 ### 1.4 页面演练要点（待全链路就绪）
 
@@ -151,4 +158,4 @@ fixture missing-price 2024-10-10 -> {"888888":{"blocked":true,"code":"E_PRICE_MI
 
 - 演练本体前置：导入与报告链路就绪（吴涵晶侧）、verify/验算视图可打开；R2 声称真实范围需清单签收（E）在先。
 - 未就绪时的替代：仅保留本文件的 CLI 基线证据，**不宣称 R1/R2 演练通过**。
-- 已知偏差风险：演示口径 closes（§1.3）与页面实际行情来源可能不同 → 以页面来源为准重算留档。
+- 已知偏差风险：§1.3 CLI 证据采用合成缓存夹具（估值日 2024-10-11，与接线后演示路径同源）；页面演练若加载其他行情来源（如真实拉数草案），数字会不同 → 以页面实际来源为准重算留档。
