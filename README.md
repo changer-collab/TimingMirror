@@ -31,11 +31,11 @@
 
 ```bash
 npm run dev     # 本地静态服务器，默认 http://localhost:5180 （可用 --port= 覆盖）
-npm run check   # 离线校验：csv-input 129 项 + market-cache 63 项 + calc-baseline 55 项 + 引擎单测 357 项（缓存 25 + 计算 83 + 反事实 29 + 标准化 59 + 行为发现 45 + 契约匹配 47 + 复核 28 + 损耗分解 19 + 计算路径 22）
+npm run check   # 离线校验：csv-input 129 项 + market-cache 63 项 + calc-baseline 55 项 + 引擎单测 376 项（缓存 25 + 计算 83 + 反事实 29 + 标准化 59 + 行为发现 45 + 契约匹配 47 + 复核 28 + 损耗分解 19 + 计算路径 22 + 界关系证明 19）
 npm run smoke   # 前端交互冒烟（Node 最小 DOM 桩，非真实浏览器）：15 项
 ```
 
-最近一次核验结果（2026-10-13）：`npm run check` 604 项全部通过；`npm run smoke` 15/15 通过。远程仓库**未配置 CI**（GitHub 显示 no checks reported），以上为本地命令结果。
+最近一次核验结果（2026-10-13）：`npm run check` 623 项全部通过；`npm run smoke` 15/15 通过。远程仓库**未配置 CI**（GitHub 显示 no checks reported），以上为本地命令结果。
 
 ## 仓库结构
 
@@ -71,7 +71,8 @@ tests/contract-match.test.mjs 契约匹配单测（解析/归一化/自由文本
 tests/verify.test.mjs      独立复核单测（A/A′/case-2 双路径一致 + 计算错误注入 + 数据源错误边界 + 源行不可定位；零依赖）
 tests/decompose.test.mjs   损耗分解单测（双层加总/占比/带符号/空分解/悬空阻断；零依赖）
 tests/provenance.test.mjs  计算路径单测（全量 refs/四步结构/回源/悬空阻断/估值透传；零依赖）
-docs/                      实施基线（权威）＋ 三分钟演示建议稿 ＋ 接入调研
+tests/bound-relations.test.mjs 区间界关系证明/证伪测试记录（M2-C5：条件界关系可证＋无条件证伪＋V2 假设依赖；零依赖）
+docs/                      实施基线（权威）＋ 三分钟演示建议稿 ＋ 接入调研 ＋ 尹辰数据侧计划与报告（docs/yinchen/）
 scripts/serve.mjs          零依赖本地静态服务器（开发用，非产品运行时）
 scripts/smoke-frontend.mjs 前端交互冒烟（零依赖，非产品代码）
 scripts/pull-market.py     离线拉数脚本（akshare；公开行情；失败即停不重试）
