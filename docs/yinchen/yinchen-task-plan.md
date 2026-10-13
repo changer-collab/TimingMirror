@@ -27,7 +27,7 @@ M1-C11 契约匹配纯函数（依赖 M0-C1）
 |---|---|---|---|
 | P0 收尾 | 10/13–10/14 | M0-C2 拉数＋缓存清单草案；M0-C1 参与三方确认（行情缓存/CSV/计算结果三接口出具意见） | M0-C2 草案已交付（2a24b1c；待 changer 签收）；M0-C1 待三方 |
 | P1 引擎 | 10/13–10/16 | M1-C1、M1-C2（格式）、M1-C3、M1-C4、M1-C5、M1-C11（纯函数） | 全部完成：M1-C1（2387a72）、M1-C2（e3422d5）、M1-C3（9dd2fab）、M1-C4（8d5e0df）、M1-C5（f93370b）、M1-C11（b474f27）——纯函数与单测就绪；页面接线/状态机在 UI 侧（吴涵晶） |
-| P2 完善 | 10/17–10/23 | M2-C1（数据侧）、M2-C5；参与 M2-C4 真实运行验收演练 | 进行中（提前启动）：M2-C1 数据侧（一）双路径复核已完成（61e0f7a）；其余分解/假设检验/steps 与 M2-C5、M2-C4 未开始 |
+| P2 完善 | 10/17–10/23 | M2-C1（数据侧）、M2-C5；参与 M2-C4 真实运行验收演练 | 进行中（提前启动）：M2-C1 数据侧主体完成（61e0f7a 复核 / 7929f8c 分解·检验·路径）；M2-C5、M2-C4 未开始 |
 | P3 交付 | 10/24–10/25 | 支持 M3 提交材料（清单签收归档、复算记录）、回归修复 | 未开始 |
 
 已完成的基础交付（供 P1 直接复用）：
@@ -121,7 +121,7 @@ M1-C11 契约匹配纯函数（依赖 M0-C1）
 
 ### P2-1 · M2-C1 OUTPUT01-04（数据侧）
 
-- 状态：（一）已完成（61e0f7a，提前启动）——`src/engine/verify.js`（buildVerifyReport：独立单遍重算 + 引擎双路径值重算判定〔不信任引擎自报 consistent/tol，单侧注入必然命中〕＋恒等式 ID-1..4（标的）/ID-1..3（组合）＋provenance 缺失/源行不可定位阻断＋错误分类〔计算错误承诺捕获；数据源错误共用同源不承诺必然捕获，以 source_validation 告警为检测依据〕＋verify_id 内容摘要确定性）＋ `tests/verify.test.mjs` 28 项并入 `npm run check`（554 项全过，smoke 15/15）；附 A.2 五用例（A/A′/case-2 双路径一致、计算错误注入命中、数据源错误边界如实、源行抽除阻断、入参抛错）已断言。未完成：损耗分解占比（OUTPUT01）、假设检验（OUTPUT02，从 behavior 模式卡汇总）、计算路径 steps→provenance（OUTPUT03，附 A.4）；重算回流（A.3）归 changer 侧。
+- 状态：（一）已完成（61e0f7a，提前启动）——`src/engine/verify.js`（buildVerifyReport：独立单遍重算 + 引擎双路径值重算判定〔不信任引擎自报 consistent/tol，单侧注入必然命中〕＋恒等式 ID-1..4（标的）/ID-1..3（组合）＋provenance 缺失/源行不可定位阻断＋错误分类〔计算错误承诺捕获；数据源错误共用同源不承诺必然捕获，以 source_validation 告警为检测依据〕＋verify_id 内容摘要确定性）＋ `tests/verify.test.mjs` 28 项并入 `npm run check`（554 项全过，smoke 15/15）；附 A.2 五用例（A/A′/case-2 双路径一致、计算错误注入命中、数据源错误边界如实、源行抽除阻断、入参抛错）已断言。（二）（三）（四）已完成（7929f8c）——`src/engine/decompose.js`（OUTPUT01/T1-13：逐笔卖出分解＋带符号占比＋回源＋逐标的/组合双层加总校验，悬空/加总破坏→blocked；「主要矛盾」归推理层，仅提供确定性展示序〔候选〕）＋ `src/engine/behavior.js` 扩展（OUTPUT02/T1-14：三态结论〔成立/不成立/证据不足，观测充分性门槛＝最小重复数，候选语义〕＋不利结论照实＋evaluated_n＋hypotheses 视图〔statement/n/检验方式/证据 ID〕）＋ `src/engine/provenance.js`（OUTPUT03/T1-15＋附 A.4：steps 口径→批次→逐批→排序四步留痕＋逐笔行可回源＋formula_id/formula_text/inputs/匿名 source_refs＋悬空引用告警阻断＋估值日解析透传）；单测 19/45（36→45）/22 项并入 `npm run check`（604 项全过，smoke 15/15）。数据侧主体完成；剩余：验算视图/占比条等展示渲染属吴涵晶侧（走查项③④），重算回流（A.3）归 changer 侧。
 - 我提供：损耗分解（逐笔可加总，case-2 即恒等式）；假设检验（n＋检验方式）；计算路径 steps（→provenance：formula_id/inputs/source_refs/steps）；自我复核数据（verify_report，错误分类按附A.2）。
 - 验收：T1-13..16 逐条；计算错误注入可捕获；数据源错误注明检测依据（不承诺必然捕获）。
 
