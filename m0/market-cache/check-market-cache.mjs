@@ -4,9 +4,10 @@
  *
  * 定位：按 schema.candidate.json 的候选语义，对 fixtures 下 mock 样例执行场景校验
  *       （S1–S8：正常取价/非交易日映射/缺价与组合阻断/超范围/早于账单末日/股数事件/快照元信息）
- *       与分红对齐手算复核。
- * 边界：非产品实现（产品侧为 M1-C1）；全部数据为合成夹具，非真实行情；
- *       通过仅证明候选语义与样例一致，不证明真实行情可用、产品引擎或端到端验证通过。
+ *       与分红对齐手算复核；另含 M0-C2 真实拉数草案的结构核验（只验结构与标注：
+ *       清单字段/日历/两序列/OHLC 包络/快照要素分离，不验行情正确性）。
+ * 边界：非产品实现（产品侧为 M1-C1）；场景夹具全部为合成数据、非真实行情；拉数草案为公开行情（待签收，R2）；
+ *       通过仅证明候选语义与样例一致、草案结构成立，不证明真实行情可用、产品引擎或端到端验证通过。
  * 运行：node m0/market-cache/check-market-cache.mjs
  */
 import { readFileSync } from 'node:fs';
@@ -162,6 +163,66 @@ for (const sc of scenarios.scenarios) {
   check('分红对齐（对照）：一致计入分红 → 两路径均 0%（损耗仍 0）',
     Math.abs(actualWithDiv / buyCost - 1 - aligned.actualRet) < 1e-12 && Math.abs(ghostWithDiv / buyCost - 1 - aligned.ghostRet) < 1e-12 && aligned.drag === 0,
     `${actualWithDiv}/${ghostWithDiv}`);
+}
+
+/* ---- M0-C2 真实拉数草案结构核验（只验结构与标注，不验行情正确性；R2 纪律） ----
+ * 注：签收后需同步更新本区（accepted_by 写入、status 变更、可能改指向已签收清单）。
+ * —— */
+{
+  const REPO = join(HERE, '..', '..');
+  const readJson = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } };
+  const man = readJson(join(REPO, 'm0', 'market-cache', 'manifest.candidate.json'));
+  const real = readJson(join(REPO, 'data', 'market-cache.json'));
+
+  check('拉数草案：manifest.candidate.json 存在且可解析', !!man);
+  check('拉数草案：data/market-cache.json 存在且可解析', !!real);
+  if (man && real) {
+    const m = man.manifest;
+    const missing = ['symbols', 'date_range', 'data_source', 'calendar_source', 'adjustment_basis', 'pull_evidence', 'asOfDate']
+      .filter((k) => m?.[k] === undefined || m[k] === null || m[k] === '');
+    check('拉数草案：manifest 七字段齐备且非空', missing.length === 0, JSON.stringify(missing));
+    check('拉数草案：未冻结（frozen=false）', man.frozen === false);
+    check('拉数草案：未签收（sign_off.accepted_by 为空）', man.sign_off?.accepted_by === null, JSON.stringify(man.sign_off));
+    check('拉数草案：symbols 为非空 6 位数字代码且与缓存文件一致',
+      Array.isArray(m.symbols) && m.symbols.length > 0 && m.symbols.every((s) => /^\d{6}$/.test(s))
+      && JSON.stringify(m.symbols) === JSON.stringify(real.manifest?.symbols));
+    check('拉数草案：asOfDate = date_range.end 且两文件一致',
+      m.asOfDate === m.date_range.end && m.asOfDate === real.manifest?.asOfDate);
+
+    const cal = real.calendar?.trading_days;
+    check('拉数草案：日历非空、升序无重复且在范围内',
+      Array.isArray(cal) && cal.length > 600
+      && cal.every((d, i) => i === 0 || d > cal[i - 1])
+      && cal.every((d) => d >= m.date_range.start && d <= m.date_range.end));
+    const calSet = new Set(cal ?? []);
+    const symKeys = Object.keys(real.symbols ?? {});
+    check('拉数草案：缓存符号集与 manifest 一致',
+      symKeys.length > 0 && JSON.stringify([...symKeys].sort()) === JSON.stringify([...m.symbols].sort()));
+
+    const dateIssues = [];
+    const ohlcBad = [];
+    for (const sym of symKeys) {
+      const b = real.symbols[sym].bars;
+      const f = real.symbols[sym].bars_fwdadj;
+      if (!Array.isArray(b) || !Array.isArray(f) || b.length === 0 || f.length !== b.length) { dateIssues.push(`${sym}:rows`); continue; }
+      const bd = b.map((r) => r.date);
+      const fd = f.map((r) => r.date);
+      if (JSON.stringify(bd) !== JSON.stringify(fd)) dateIssues.push(`${sym}:two-series`);
+      for (const d of bd) if (!calSet.has(d)) dateIssues.push(`${sym}:${d}`);
+      for (const r of [...b, ...f]) {
+        const pos = ['open', 'high', 'low', 'close'].every((k) => Number.isFinite(r[k]) && r[k] > 0);
+        if (!pos || r.high < Math.max(r.open, r.close) - 1e-9 || r.low > Math.min(r.open, r.close) + 1e-9) ohlcBad.push(`${sym}:${r.date}`);
+      }
+    }
+    check('拉数草案：两序列行数一致、日期集合相同且均在日历内', dateIssues.length === 0, JSON.stringify(dateIssues.slice(0, 5)));
+    check('拉数草案：全部 K 线 OHLC 正数有效且 high/low 包络成立', ohlcBad.length === 0, JSON.stringify(ohlcBad.slice(0, 5)));
+
+    const snap = real.snapshot ?? {};
+    check('拉数草案：snapshot 四要素分离（快照标识/抓取时间/复权基准分列；B6）',
+      !!snap.snapshot_id && !!snap.fetch_time && !!snap.adjustment_basis
+      && snap.snapshot_id !== snap.fetch_time && snap.adjustment_basis !== snap.fetch_time
+      && !!snap.range && snap.range.start !== snap.range.end);
+  }
 }
 
 /* ---- 输出 ---- */
