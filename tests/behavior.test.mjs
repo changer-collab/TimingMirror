@@ -4,7 +4,8 @@
  *
  * 定位：模式卡断言（模式名/状态/n/成交 ID/阈值与检验方式/证据路径）、"证据不足"用例（F-10.3 / PRD:234：
  *       样本 < 最小样本不下确定结论）、情境窗口边界（阈值等于、非交易日映射、窗口超范围、端点缺价）、
- *       配置候选占位标注（F-5.1）、CSV 标准化 → 行为发现链路。
+ *       配置候选占位标注（F-5.1）、CSV 标准化 → 行为发现链路；
+ *       M2-C1 数据侧（三）OUTPUT02/T1-14：三态结论（成立/不成立/证据不足，不利结论照实）＋ hypotheses 视图。
  * 边界：清单 UI 呈现与对话引用属页面侧（F-10.4/F-10.6 已在本模块 notes 声明）；其余 PRD 模式未实现（不虚构）。
  * 运行：node tests/behavior.test.mjs
  */
@@ -67,11 +68,14 @@ const CSV_A = [
   const norm = normalize(CSV_A, 'scenario-a.csv');
   check('场景A：标准化通过（7 条交易，无错误）', !norm.blocked && norm.trades.length === 7, JSON.stringify(norm.errors));
   const list = buildPatternList({ trades: norm.trades, market: marketA() });
-  check('场景A：清单 config_version/config_source 与 notes 声明 F-10.4/F-10.6', list.config_version === 'candidate-1' && list.notes.length === 3 && list.notes.some((s) => s.includes('F-10.6')) && list.notes.some((s) => s.includes('F-10.4')), JSON.stringify(list.notes));
+  check('场景A：清单 config_version/config_source 与 notes 声明 F-10.4/F-10.6', list.config_version === 'candidate-1' && list.notes.length === 4 && list.notes.some((s) => s.includes('F-10.6')) && list.notes.some((s) => s.includes('F-10.4')), JSON.stringify(list.notes));
+  check('场景A：notes 声明三态语义（T1-14 不利结论照实）', list.notes.some((s) => s.includes('成立/不成立/证据不足') && s.includes('T1-14')), JSON.stringify(list.notes));
   check('场景A：scope 计数（7 笔 = 6 买 + 1 卖）', list.scope.trade_count === 7 && list.scope.buy_count === 6 && list.scope.sell_count === 1, JSON.stringify(list.scope));
 
   const card = list.patterns[0];
   check('场景A：卡字段（模式名/实现状态/状态/样本数/最小样本）', card.pattern_id === 'chase_high_buy' && card.name === '追高买入' && card.implemented === true && card.status === '成立' && card.sample_n === 3 && card.min_samples === 2, JSON.stringify({ s: card.status, n: card.sample_n }));
+  check('场景A：evaluated_n = 命中 3 + 未命中 1 = 4（观测充分性可见）', card.evaluated_n === 4, card.evaluated_n);
+  check('场景A：hypotheses 视图（OUTPUT02/T1-14）：statement 含阈值/最小重复数，n/evaluated_n/证据 ID/检验方式齐备', list.hypotheses.length === 1 && list.hypotheses[0].hypothesis_id === 'chase_high_buy' && list.hypotheses[0].statement.includes('追高买入') && list.hypotheses[0].statement.includes('10.0%') && list.hypotheses[0].status === '成立' && list.hypotheses[0].n === 3 && list.hypotheses[0].evaluated_n === 4 && list.hypotheses[0].check_method.includes('情境切分') && eqArr(list.hypotheses[0].evidence_ids, ['T004', 'T001', 'T002']), JSON.stringify(list.hypotheses[0]));
   check('场景A：阈值与检验方式（规则展示 1 位小数；comparator ≥）', card.rule.window === '买入日前 5 个交易日' && card.rule.comparator === '≥' && card.rule.threshold === 0.1 && card.rule.threshold_display === '10.0%' && card.check_method.includes('情境切分'), JSON.stringify(card.rule));
   check('场景A：threshold_meta 记录配置版本与候选来源', card.threshold_meta.config_version === 'candidate-1' && card.threshold_meta.source.includes('候选'), JSON.stringify(card.threshold_meta));
   check('场景A：结论含“不宣称阈值普适”（F-5.1）', card.conclusion.includes('不宣称阈值'), card.conclusion);
@@ -117,8 +121,25 @@ const CSV_A = [
   const norm = normalize(csv, 'scenario-c.csv');
   const card = buildPatternList({ trades: norm.trades, market: marketA() }).patterns[0];
   check('场景C：n=1 < 2 → 状态“证据不足”', card.status === '证据不足' && card.sample_n === 1, JSON.stringify({ s: card.status, n: card.sample_n }));
+  check('场景C：可评估样本 1 < 2（观测不足，不得转“不成立”）', card.evaluated_n === 1, card.evaluated_n);
   check('场景C：命中笔仍列出（T001，10.0%），证据与结论分层', eqArr(card.evidence.map((e) => e.trade_id), ['T001']) && card.evidence[0].display.rise === '+10.0%', '');
   check('场景C：未评估 1 笔（T002 窗口超范围）', eqArr(card.unevaluated.map((u) => u.trade_id), ['T002']), '');
+}
+
+/* ---- 场景 D：不成立（T1-14 不利结论照实）——已评估 2 笔 ≥ 最小样本 2，但命中 n=0 ---- */
+{
+  const csv = [
+    '日期,标的,方向,价格,数量,费用,税费',
+    '2024-08-19,000000,买入,118.50,100,5.00,0.00',
+    '2024-08-20,000000,买入,120.00,100,5.00,0.00',
+  ].join('\n');
+  const norm = normalize(csv, 'scenario-d.csv');
+  const list = buildPatternList({ trades: norm.trades, market: marketA() });
+  const card = list.patterns[0];
+  check('场景D：已评估 2 ≥ 2 且 n=0 → 状态“不成立”（照实报不利结论）', card.status === '不成立' && card.sample_n === 0 && card.evaluated_n === 2, JSON.stringify({ s: card.status, n: card.sample_n, ev: card.evaluated_n }));
+  check('场景D：结论含“未达最小重复数/不利结论照实”，不混同“证据不足”', card.conclusion.includes('未达最小重复数') && card.conclusion.includes('T1-14') && !card.conclusion.includes('证据不足'), card.conclusion);
+  check('场景D：n=0 → 证据为空；2 笔未命中列出（6.36% / 7.27%）', card.evidence.length === 0 && eqArr(card.evaluated_others.map((o) => o.trade_id), ['T001', 'T002']) && card.evaluated_others[0].display.rise === '+6.4%' && card.evaluated_others[1].display.rise === '+7.3%', JSON.stringify(card.evaluated_others));
+  check('场景D：hypotheses 同步“不成立”且挂 n/evaluated_n', list.hypotheses[0].status === '不成立' && list.hypotheses[0].n === 0 && list.hypotheses[0].evaluated_n === 2 && eqArr(list.hypotheses[0].evidence_ids, []), JSON.stringify(list.hypotheses[0]));
 }
 
 /* ---- 参数化：config 覆盖生效（供 M0 冻结阈值后替换；不改代码） ---- */
@@ -132,6 +153,7 @@ const CSV_A = [
   const card = buildPatternList({ trades: norm.trades, market: marketA(), config }).patterns[0];
   check('参数化：lookback=3 时结果变化（T003 = 118/106−1 = 11.32% 转为命中）', card.sample_n === 1 && eqArr(card.evidence.map((e) => e.trade_id), ['T003']) && near(card.evidence[0].rise, 118 / 106 - 1), JSON.stringify(card.evidence.map((e) => e.trade_id)));
   check('参数化：lookback=3 时 T001 窗口端点 08-06 缺价 → 未评估（窗口平移不改语义）', card.unevaluated.some((u) => u.trade_id === 'T001' && u.code === BEHAVIOR_CODES.PRICE_MISSING), JSON.stringify(card.unevaluated));
+  check('参数化：lookback=3 下已评估 4 ≥ 2、n=1 < 2 → 状态“不成立”（三态随参数联动）', card.evaluated_n === 4 && card.status === '不成立', JSON.stringify({ ev: card.evaluated_n, s: card.status }));
   check('参数化：卡内 threshold_meta 记录覆盖版本（test-override）', card.threshold_meta.config_version === 'test-override', card.threshold_meta.config_version);
 }
 

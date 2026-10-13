@@ -31,11 +31,11 @@
 
 ```bash
 npm run dev     # 本地静态服务器，默认 http://localhost:5180 （可用 --port= 覆盖）
-npm run check   # 离线校验：csv-input 129 项 + market-cache 63 项 + calc-baseline 55 项 + 引擎单测 307 项（缓存 25 + 计算 83 + 反事实 29 + 标准化 59 + 行为发现 36 + 契约匹配 47 + 复核 28）
+npm run check   # 离线校验：csv-input 129 项 + market-cache 63 项 + calc-baseline 55 项 + 引擎单测 357 项（缓存 25 + 计算 83 + 反事实 29 + 标准化 59 + 行为发现 45 + 契约匹配 47 + 复核 28 + 损耗分解 19 + 计算路径 22）
 npm run smoke   # 前端交互冒烟（Node 最小 DOM 桩，非真实浏览器）：15 项
 ```
 
-最近一次核验结果（2026-10-13）：`npm run check` 554 项全部通过；`npm run smoke` 15/15 通过。远程仓库**未配置 CI**（GitHub 显示 no checks reported），以上为本地命令结果。
+最近一次核验结果（2026-10-13）：`npm run check` 604 项全部通过；`npm run smoke` 15/15 通过。远程仓库**未配置 CI**（GitHub 显示 no checks reported），以上为本地命令结果。
 
 ## 仓库结构
 
@@ -49,9 +49,11 @@ src/engine/indicators.js   计算引擎（M1-C3：实际/幽灵/损耗 + 双路�
 src/engine/counterfactual.js 单笔反事实（M1-C4：replaceSell S1 + 逐日双路径序列；页面未接线）
 src/engine/display.js      F-2 展示格式（引擎侧单一实现；UI 视图尚未切换引用）
 src/engine/csvNormalize.js CSV 标准化纯函数（M1-C2：Q4–Q8/O1–O3 + E_EMPTY/E_HEADER_MISSING；UI 侧 Papa Parse 接线由吴涵晶负责）
-src/engine/behavior.js     行为发现引擎（M1-C5：追高买入模式卡 n+明细+证据状态；阈值为候选占位；页面未接线）
+src/engine/behavior.js     行为发现引擎（M1-C5＋M2-C1 OUTPUT02：追高买入模式卡＋三态结论〔成立/不成立/证据不足〕＋hypotheses 视图；阈值为候选占位；页面未接线）
 src/engine/contractMatch.js 契约匹配纯函数（M1-C11：模板解析+字段归一化+占位哈希+命中判定；状态机/持久化在 UI 侧）
 src/engine/verify.js       独立复核双路径（M2-C1 数据侧：verify_report + 恒等式 + 错误分类；重算回流 A.3 归 changer 侧）
+src/engine/decompose.js    损耗分解（M2-C1 OUTPUT01：逐笔占比/回源/加总=总损耗双层校验；「主要矛盾」定位属推理层）
+src/engine/provenance.js   计算路径 steps（M2-C1 OUTPUT03：口径→批次→逐批→排序 + 悬空引用阻断；验算视图渲染属 UI 侧）
 src/ui/components.js       小型 DOM 工具（无框架）
 src/ui/styles.css          浅色主题样式
 src/ui/views/*.js          四个页面视图（import / report / chat / contract）
@@ -64,9 +66,11 @@ tests/market-cache.test.mjs 行情缓存引擎单测（S1–S5 场景 + 拉数�
 tests/indicators.test.mjs  计算引擎单测（case-1/2/3 + 恒等式①–④ + A/A′ + 缓存链路；零依赖）
 tests/counterfactual.test.mjs 单笔反事实单测（case-2 复算 + 序列末日 + 负补救边界；零依赖）
 tests/csv-normalize.test.mjs CSV 标准化单测（A/A′ 全字段 + 9 组错误夹具 + E_EMPTY；零依赖）
-tests/behavior.test.mjs    行为发现单测（模式卡/证据不足/窗口边界/参数化；零依赖）
+tests/behavior.test.mjs    行为发现单测（模式卡/三态结论/hypotheses/证据不足/窗口边界/参数化；零依赖）
 tests/contract-match.test.mjs 契约匹配单测（解析/归一化/自由文本拒答/哈希 R4/双情境；零依赖）
 tests/verify.test.mjs      独立复核单测（A/A′/case-2 双路径一致 + 计算错误注入 + 数据源错误边界 + 源行不可定位；零依赖）
+tests/decompose.test.mjs   损耗分解单测（双层加总/占比/带符号/空分解/悬空阻断；零依赖）
+tests/provenance.test.mjs  计算路径单测（全量 refs/四步结构/回源/悬空阻断/估值透传；零依赖）
 docs/                      实施基线（权威）＋ 三分钟演示建议稿 ＋ 接入调研
 scripts/serve.mjs          零依赖本地静态服务器（开发用，非产品运行时）
 scripts/smoke-frontend.mjs 前端交互冒烟（零依赖，非产品代码）

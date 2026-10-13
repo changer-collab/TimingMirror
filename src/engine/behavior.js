@@ -1,4 +1,5 @@
 // M1-C5 行为发现引擎（F-10）—— 情境切分→重复模式→样本数 n＋成交明细＋证据状态。
+// M2-C1 数据侧（三）扩展（OUTPUT02/T1-14）：结论三态（成立/不成立/证据不足，不利结论照实）＋ hypotheses 视图（n＋检验方式）。
 // 边界：纯函数；输入为标准化交易（csvNormalize.js 输出同形）＋行情缓存引擎实例（marketCache.js）；不发网络请求。
 // 口径：F-10.2 每条模式含 模式名/结论状态/样本数 n/成交记录 ID/阈值与检验方式/证据与计算路径；
 //       F-10.3 与 PRD:234 —— 样本不足显示“证据不足”，不下确定结论；F-10.6 “清单是唯一事实出口”限定于本模块；
@@ -118,19 +119,26 @@ export function buildPatternList({ trades, market, config = PATTERN_CONFIG }) {
     }
   }
   const n = evidence.length;
-  const status = n >= p.min_samples ? '成立' : '证据不足';
+  const evaluatedCount = evidence.length + evaluatedOthers.length;
+  // 三态（T1-14 成立/不成立、F-10.3 证据不足；候选语义）：观测充分性门槛与最小重复数同为 min_samples——
+  // 已评估 ≥ min 且命中 n < min → 照实报“不成立”（不利结论照实）；已评估 < min → 证据不足，不下确定结论。
+  const status = n >= p.min_samples ? '成立' : evaluatedCount >= p.min_samples ? '不成立' : '证据不足';
+  const conclusion =
+    status === '成立'
+      ? `样本数 n=${n} ≥ 最小样本 ${p.min_samples}：出现重复模式（候选阈值；不宣称阈值为已验证的普适标准，F-5.1）`
+      : status === '不成立'
+        ? `已评估 ${evaluatedCount} 笔 ≥ 最小样本 ${p.min_samples}，但命中 n=${n} < ${p.min_samples}：未达最小重复数，模式不成立（不利结论照实，T1-14）`
+        : `可评估样本 ${evaluatedCount} < 最小样本 ${p.min_samples}：证据不足，不下确定结论（F-10.3 / PRD:234）`;
   const card = {
     pattern_id: p.pattern_id,
     name: p.name,
     implemented: true,
     status,
     sample_n: n,
+    evaluated_n: evaluatedCount,
     min_samples: p.min_samples,
     buy_count: buyCount,
-    conclusion:
-      status === '成立'
-        ? `样本数 n=${n} ≥ 最小样本 ${p.min_samples}：出现重复模式（候选阈值；不宣称阈值为已验证的普适标准，F-5.1）`
-        : `样本数 n=${n} < 最小样本 ${p.min_samples}：证据不足，不下确定结论（F-10.3 / PRD:234）`,
+    conclusion,
     rule: {
       side: '买入',
       window: `买入日前 ${p.lookback_days} 个交易日`,
@@ -144,15 +152,31 @@ export function buildPatternList({ trades, market, config = PATTERN_CONFIG }) {
     evaluated_others: evaluatedOthers,
     unevaluated,
   };
+  // OUTPUT02（T1-14）：每结论挂 n＋检验方式；不利结论照实（status 三态）；证据 ID 可回成交
+  const hypotheses = [
+    {
+      hypothesis_id: p.pattern_id,
+      statement: `存在“${p.name}”重复模式：买入日前 ${p.lookback_days} 个交易日内涨幅 ≥ ${(p.rise_threshold * 100).toFixed(1)}% 的笔数 ≥ ${p.min_samples}（阈值候选，F-5.1）`,
+      status,
+      n,
+      evaluated_n: evaluatedCount,
+      min_samples: p.min_samples,
+      check_method: card.check_method,
+      evidence_ids: evidence.map((e) => e.trade_id),
+      conclusion,
+    },
+  ];
   return {
     config_version: config.version,
     config_source: config.source,
     scope: { trade_count: trades.length, buy_count: buyCount, sell_count: trades.length - buyCount },
     patterns: [card],
+    hypotheses,
     notes: [
       '“清单是唯一事实出口”限定于行为发现模块（F-10.6）；对话解释须引用本清单 pattern_id 与成交 ID（F-10.4）。',
       '其余 PRD 模式清单未到位（PRD 副本在负责人本机）：不虚构模式名与阈值（F-5.1），待副本后集中登记。',
       '回看窗口与阈值为候选占位，待负责人确认后替换并升配置版本。',
+      '结论三态（成立/不成立/证据不足）：观测充分性门槛＝最小重复数（同为 min_samples，候选）；不利结论照实、不与“证据不足”混同（T1-14 / F-10.3）。',
     ],
   };
 }
