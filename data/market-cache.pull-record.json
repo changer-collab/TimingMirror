@@ -1,0 +1,260 @@
+{
+  "artifact": "market-cache-pull-record",
+  "note": "拉数运行记录（成功证据）：由 scripts/pull-market.py 生成；供 M0-C2 签收与 M1-C1 引用。数据为公开行情，不含账户数据。",
+  "fetch_time": "2026-10-13T09:54:02+08:00",
+  "snapshot_id": "pull-20261013-095402",
+  "command": "python scripts/pull-market.py",
+  "environment": {
+    "python": "3.14.3",
+    "akshare": "1.18.64",
+    "pandas": "2.2.2"
+  },
+  "params": {
+    "symbols": [
+      "600519",
+      "300750",
+      "601318"
+    ],
+    "symbol_names": {
+      "600519": "贵州茅台",
+      "300750": "宁德时代",
+      "601318": "中国平安"
+    },
+    "date_range": {
+      "start": "2023-01-01",
+      "end": "2025-12-31"
+    },
+    "recent_window": [
+      "2026-01-01",
+      "2026-10-13"
+    ],
+    "volume_unit_conversion": "成交量为股（akshare 原始为手，×100）",
+    "recent_window_note": "近窗末行可能为抓取时点当日盘中行情（未收盘数据）；仅用于前复权基准核验，不进入 2023–2025 缓存",
+    "jump_scan_threshold": "|qfq/不复权 比值日环比| ≥ 0.05（送转量级；现金分红步长通常 <0.03 不触发）"
+  },
+  "requests": [
+    {
+      "symbol": "600519",
+      "adjust": "none",
+      "start": "2023-01-01",
+      "end": "2025-12-31",
+      "rows": 727,
+      "first": "2023-01-03",
+      "last": "2025-12-31"
+    },
+    {
+      "symbol": "600519",
+      "adjust": "qfq",
+      "start": "2023-01-01",
+      "end": "2025-12-31",
+      "rows": 727,
+      "first": "2023-01-03",
+      "last": "2025-12-31"
+    },
+    {
+      "symbol": "600519",
+      "adjust": "none",
+      "start": "2026-01-01",
+      "end": "2026-10-13",
+      "rows": 185,
+      "first": "2026-01-05",
+      "last": "2026-10-13"
+    },
+    {
+      "symbol": "600519",
+      "adjust": "qfq",
+      "start": "2026-01-01",
+      "end": "2026-10-13",
+      "rows": 185,
+      "first": "2026-01-05",
+      "last": "2026-10-13"
+    },
+    {
+      "symbol": "300750",
+      "adjust": "none",
+      "start": "2023-01-01",
+      "end": "2025-12-31",
+      "rows": 727,
+      "first": "2023-01-03",
+      "last": "2025-12-31"
+    },
+    {
+      "symbol": "300750",
+      "adjust": "qfq",
+      "start": "2023-01-01",
+      "end": "2025-12-31",
+      "rows": 727,
+      "first": "2023-01-03",
+      "last": "2025-12-31"
+    },
+    {
+      "symbol": "300750",
+      "adjust": "none",
+      "start": "2026-01-01",
+      "end": "2026-10-13",
+      "rows": 185,
+      "first": "2026-01-05",
+      "last": "2026-10-13"
+    },
+    {
+      "symbol": "300750",
+      "adjust": "qfq",
+      "start": "2026-01-01",
+      "end": "2026-10-13",
+      "rows": 185,
+      "first": "2026-01-05",
+      "last": "2026-10-13"
+    },
+    {
+      "symbol": "601318",
+      "adjust": "none",
+      "start": "2023-01-01",
+      "end": "2025-12-31",
+      "rows": 727,
+      "first": "2023-01-03",
+      "last": "2025-12-31"
+    },
+    {
+      "symbol": "601318",
+      "adjust": "qfq",
+      "start": "2023-01-01",
+      "end": "2025-12-31",
+      "rows": 727,
+      "first": "2023-01-03",
+      "last": "2025-12-31"
+    },
+    {
+      "symbol": "601318",
+      "adjust": "none",
+      "start": "2026-01-01",
+      "end": "2026-10-13",
+      "rows": 185,
+      "first": "2026-01-05",
+      "last": "2026-10-13"
+    },
+    {
+      "symbol": "601318",
+      "adjust": "qfq",
+      "start": "2026-01-01",
+      "end": "2026-10-13",
+      "rows": 185,
+      "first": "2026-01-05",
+      "last": "2026-10-13"
+    }
+  ],
+  "calendar": {
+    "source": "akshare tool_trade_date_hist_sina",
+    "rows_total": 8797,
+    "rows_in_range": 727,
+    "first": "2023-01-03",
+    "last": "2025-12-31"
+  },
+  "per_symbol": {
+    "600519": {
+      "bars_rows": 727,
+      "fwdadj_rows": 727,
+      "first": "2023-01-03",
+      "last": "2025-12-31",
+      "missing_vs_calendar": {
+        "count": 0,
+        "dates": [],
+        "truncated": false
+      },
+      "ohlc_ok": true,
+      "qfq_obs": {
+        "full_range_diff_days": 727,
+        "full_range_first_diff": "2023-01-03",
+        "full_range_end_equal": false,
+        "ratio_jumps_large": [],
+        "recent": {
+          "start": "2026-01-01",
+          "end": "2026-10-13",
+          "rows": 185,
+          "first": "2026-01-05",
+          "last": "2026-10-13",
+          "diff_days": 113,
+          "last_diff_date": "2026-06-25",
+          "first_equal_date": "2026-06-26",
+          "diff_prefix_contiguous": true,
+          "last_equal_date": "2026-10-13",
+          "last_date_equal": true
+        }
+      }
+    },
+    "300750": {
+      "bars_rows": 727,
+      "fwdadj_rows": 727,
+      "first": "2023-01-03",
+      "last": "2025-12-31",
+      "missing_vs_calendar": {
+        "count": 0,
+        "dates": [],
+        "truncated": false
+      },
+      "ohlc_ok": true,
+      "qfq_obs": {
+        "full_range_diff_days": 727,
+        "full_range_first_diff": "2023-01-03",
+        "full_range_end_equal": false,
+        "ratio_jumps_large": [
+          {
+            "date": "2023-04-26",
+            "ratio_before": 0.4998,
+            "ratio_after": 0.9105,
+            "ratio_factor": 1.8215
+          }
+        ],
+        "recent": {
+          "start": "2026-01-01",
+          "end": "2026-10-13",
+          "rows": 185,
+          "first": "2026-01-05",
+          "last": "2026-10-13",
+          "diff_days": 144,
+          "last_diff_date": "2026-08-07",
+          "first_equal_date": "2026-08-10",
+          "diff_prefix_contiguous": true,
+          "last_equal_date": "2026-10-13",
+          "last_date_equal": true
+        }
+      }
+    },
+    "601318": {
+      "bars_rows": 727,
+      "fwdadj_rows": 727,
+      "first": "2023-01-03",
+      "last": "2025-12-31",
+      "missing_vs_calendar": {
+        "count": 0,
+        "dates": [],
+        "truncated": false
+      },
+      "ohlc_ok": true,
+      "qfq_obs": {
+        "full_range_diff_days": 727,
+        "full_range_first_diff": "2023-01-03",
+        "full_range_end_equal": false,
+        "ratio_jumps_large": [],
+        "recent": {
+          "start": "2026-01-01",
+          "end": "2026-10-13",
+          "rows": 185,
+          "first": "2026-01-05",
+          "last": "2026-10-13",
+          "diff_days": 167,
+          "last_diff_date": "2026-09-09",
+          "first_equal_date": "2026-09-10",
+          "diff_prefix_contiguous": true,
+          "last_equal_date": "2026-10-13",
+          "last_date_equal": true
+        }
+      }
+    }
+  },
+  "adjustment_basis_obs": "前复权序列为抓取时点口径（qfq）快照；观测：① 2023–2025 区间两序列差异日数：600519(贵州茅台)=727/727、300750(宁德时代)=727/727、601318(中国平安)=727/727；② 近窗差异形态为“各标的最后一次除权除息之前不同、其后与不复权逐日一致”（一致段起点：600519→2026-06-26、300750→2026-08-10、601318→2026-09-10）；③ 送转量级复权跳变：300750(宁德时代)：2023-04-26（比值 0.4998→0.9105，≈×1.8215）——远超现金分红步长可解释范围，疑似送转类股数事件，事件性质与识别依据属 M3 未决项；持有区间跨越该事件将命中 B5 处置口径。前复权值随抓取时点变化，早期展示须标注快照口径（B6）；详见 data/market-cache.pull-record.json",
+  "hard_checks": {
+    "passed": true,
+    "failures": []
+  },
+  "verdict": "PASS"
+}
