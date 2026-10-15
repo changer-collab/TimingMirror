@@ -1,6 +1,9 @@
 // M1-C7 · 复核与重算编排（纯编排；接口候选，未冻结——依据 implementation-baseline 附A.2/A.3）
 // 链路：computeIndicators（主实现）→ buildVerifyReport（独立复核）→ 必要重算（备用实现/数据重载，≤2 次；仅采纳严格改进）
 //       → buildProvenanceReport（追溯）→ 发布状态（published / degraded / blocked）。
+// 重算采纳规则（候选，含作用域锁）：候选必须与当前编排作用域完全一致才可被评估采纳——
+//   不允许缺少原有标的、不允许新增未请求标的、每个作用域必须有有效 close（有限正数）；
+//   作用域变化/close 无效 → 不采纳、不计算该候选，拒绝原因写入 recompute_log（候选错误码）与 degraded。
 // 边界：只调用现有 src/engine/* 导出（不实现/不修改公式）；无 DOM / localStorage / 网络；不接百炼；
 //       输出确定性（ts 字段仅由调用方注入 now，默认 null）。
 // 发布门槛（候选）：fact 复核通过（A.2）＋ provenance 无悬空（A.4）＋ 作用域无恒等式破坏（A.2）
@@ -17,6 +20,8 @@ export const REVIEW_CODES = Object.freeze({
   PROVENANCE_FAILED: 'E_REVIEW_PROVENANCE_FAILED',
   RECOMPUTE_TOOL_ERROR: 'E_REVIEW_RECOMPUTE_TOOL_ERROR',
   RECOMPUTE_NO_ALTERNATIVE: 'E_REVIEW_RECOMPUTE_NO_ALTERNATIVE',
+  CANDIDATE_SCOPE_CHANGED: 'E_REVIEW_CANDIDATE_SCOPE_CHANGED',
+  CANDIDATE_CLOSE_INVALID: 'E_REVIEW_CANDIDATE_CLOSE_INVALID',
   IDENTITY_BREAK: 'E_VERIFY_IDENTITY_BREAK',
   PORTFOLIO_WITHHELD: 'E_REVIEW_PORTFOLIO_WITHHELD',
   PROVENANCE_BLOCKED: 'E_REVIEW_PROVENANCE_BLOCKED',
@@ -38,6 +43,25 @@ function fnv1a64(str) {
 
 function problemCount(verify) {
   return verify.summary.fail + verify.summary.identities_fail;
+}
+
+/* 候选作用域校验（作用域锁）：标的集合与作用域完全一致 + 每作用域有效 close；不满足 → 拒绝采纳、不计算该候选 */
+function validateCandidate(candTrades, candCloses, scopeSymbols) {
+  const nextSymbols = [...new Set(candTrades.map((t) => (t !== null && typeof t === 'object' ? t.symbol : undefined)))];
+  const missingSyms = scopeSymbols.filter((s) => !nextSymbols.includes(s));
+  const addedSyms = nextSymbols.filter((s) => !scopeSymbols.includes(s));
+  if (missingSyms.length > 0 || addedSyms.length > 0) {
+    return {
+      ok: false,
+      code: REVIEW_CODES.CANDIDATE_SCOPE_CHANGED,
+      detail: `候选标的集合与作用域不一致（缺少：${missingSyms.map(String).join('、') || '无'}；新增：${addedSyms.map(String).join('、') || '无'}）`,
+    };
+  }
+  const badClose = scopeSymbols.filter((s) => typeof candCloses[s] !== 'number' || !Number.isFinite(candCloses[s]) || candCloses[s] <= 0);
+  if (badClose.length > 0) {
+    return { ok: false, code: REVIEW_CODES.CANDIDATE_CLOSE_INVALID, detail: `候选缺少有效 close：${badClose.join('、')}` };
+  }
+  return { ok: true, code: null, detail: null };
 }
 
 function scopeOfFact(factId) {
@@ -119,7 +143,7 @@ export function runReview({ trades, closes, valuation = null, recompute = null, 
   if (cur.problems > 0 && typeof recompute === 'function') {
     for (let attempt = 1; attempt <= MAX_RECOMPUTE_ATTEMPTS; attempt++) {
       const trigger = { failed_facts: cur.verify.summary.fail, identities_fail: cur.verify.summary.identities_fail, verify_id: cur.verify.verify_id };
-      const record = (path_used, result, final_status, error = null) => {
+      const record = (path_used, result, final_status, error = null, code = null) => {
         recomputeLog.push({
           recompute_id: `R-${fnv1a64(`${trigger.verify_id}|${attempt}`).slice(0, 8)}`,
           trigger,
@@ -128,6 +152,7 @@ export function runReview({ trades, closes, valuation = null, recompute = null, 
           result,
           final_status,
           error,
+          code,
           ts: now,
           ms: null,
         });
@@ -138,31 +163,37 @@ export function runReview({ trades, closes, valuation = null, recompute = null, 
       } catch (e) {
         attemptsRun = attempt;
         degraded.push({ code: REVIEW_CODES.RECOMPUTE_TOOL_ERROR, attempt, message: `重算回调异常（第 ${attempt} 次）：${String((e && e.message) || e)}` });
-        record('none', 'error', 'aborted', String((e && e.message) || e));
+        record('none', 'error', 'aborted', String((e && e.message) || e), REVIEW_CODES.RECOMPUTE_TOOL_ERROR);
         continue;
       }
       if (alt === null || alt === undefined || typeof alt !== 'object') {
         degraded.push({ code: REVIEW_CODES.RECOMPUTE_NO_ALTERNATIVE, message: '无备用实现/数据重载可用：停止重算' });
-        record('none', 'no_alternative', 'aborted');
+        record('none', 'no_alternative', 'aborted', null, REVIEW_CODES.RECOMPUTE_NO_ALTERNATIVE);
         break;
       }
       attemptsRun = attempt;
-      const nextTrades = Array.isArray(alt.trades) && alt.trades.length > 0 ? alt.trades : cur.trades;
-      const nextCloses = alt.closes !== null && typeof alt.closes === 'object' ? alt.closes : cur.closes;
+      const candTrades = Array.isArray(alt.trades) ? alt.trades : cur.trades;
+      const candCloses = alt.closes !== null && typeof alt.closes === 'object' ? alt.closes : cur.closes;
       const pathUsed = typeof alt.path_used === 'string' ? alt.path_used : 'callback';
+      const candCheck = validateCandidate(candTrades, candCloses, unblocked);
+      if (!candCheck.ok) {
+        degraded.push({ code: candCheck.code, attempt, message: `重算候选被拒绝（第 ${attempt} 次）：${candCheck.detail}` });
+        record(pathUsed, 'rejected', 'not_adopted', null, candCheck.code);
+        continue;
+      }
       let nextReport;
       let nextVerify;
       try {
-        nextReport = computeIndicators({ trades: nextTrades, closes: nextCloses });
-        nextVerify = buildVerifyReport({ report: nextReport, trades: nextTrades, closes: nextCloses });
+        nextReport = computeIndicators({ trades: candTrades, closes: candCloses });
+        nextVerify = buildVerifyReport({ report: nextReport, trades: candTrades, closes: candCloses });
       } catch (e) {
         degraded.push({ code: REVIEW_CODES.COMPUTE_FAILED, attempt, message: `重算（第 ${attempt} 次）失败：${String((e && e.message) || e)}` });
-        record(pathUsed, 'error', 'aborted', String((e && e.message) || e));
+        record(pathUsed, 'error', 'aborted', String((e && e.message) || e), REVIEW_CODES.COMPUTE_FAILED);
         continue;
       }
       const nextProblems = problemCount(nextVerify);
       if (nextProblems < cur.problems) {
-        cur = { trades: nextTrades, closes: nextCloses, report: nextReport, verify: nextVerify, problems: nextProblems };
+        cur = { trades: candTrades, closes: candCloses, report: nextReport, verify: nextVerify, problems: nextProblems };
         record(pathUsed, nextProblems === 0 ? 'pass' : 'improved', 'adopted');
         if (nextProblems === 0) break;
       } else {
@@ -179,6 +210,7 @@ export function runReview({ trades, closes, valuation = null, recompute = null, 
       result: 'no_alternative',
       final_status: 'aborted',
       error: null,
+      code: REVIEW_CODES.RECOMPUTE_NO_ALTERNATIVE,
       ts: now,
       ms: null,
     });
