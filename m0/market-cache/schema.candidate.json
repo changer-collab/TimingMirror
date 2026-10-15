@@ -24,17 +24,18 @@
     ]
   },
   "support_scope": {
-    "status": "清单未提供（待尹辰真实拉数后提出、changer 签收）",
-    "target_demo_range": "三只 A 股、2023–2025（目标；未验证）",
+    "status": "清单草案已提出（2026-10-13 拉数完成，七字段值见 manifest.candidate.json；待 changer 签收）",
+    "target_demo_range": "三只 A 股、2023–2025（草案；待签收）",
     "manifest_fields": [
-      { "name": "symbols", "type": "string[]（6 位数字代码）", "required": true, "value": null, "value_note": "未提供" },
-      { "name": "date_range", "type": "{start, end}", "required": true, "value": null, "value_note": "未提供（目标 2023–2025）" },
-      { "name": "data_source", "type": "string", "required": true, "value": null, "value_note": "未提供" },
-      { "name": "calendar_source", "type": "string", "required": true, "value": null, "value_note": "未提供（交易日历来源）" },
-      { "name": "adjustment_basis", "type": "string", "required": true, "value": null, "value_note": "未提供（待尹辰核验后记录）" },
-      { "name": "pull_evidence", "type": "string", "required": true, "value": null, "value_note": "未提供（拉数成功证据）" },
-      { "name": "asOfDate", "type": "string(YYYY-MM-DD)", "required": true, "value": null, "value_note": "未提供（基线 F-3：固定数据集元信息）" }
+      { "name": "symbols", "type": "string[]（6 位数字代码）", "required": true, "value": null, "value_note": "见 manifest.candidate.json（草案值；待签收）" },
+      { "name": "date_range", "type": "{start, end}", "required": true, "value": null, "value_note": "见 manifest.candidate.json（草案值；待签收）" },
+      { "name": "data_source", "type": "string", "required": true, "value": null, "value_note": "见 manifest.candidate.json（草案值；待签收）" },
+      { "name": "calendar_source", "type": "string", "required": true, "value": null, "value_note": "见 manifest.candidate.json（草案值；待签收）" },
+      { "name": "adjustment_basis", "type": "string", "required": true, "value": null, "value_note": "见 manifest.candidate.json（草案值；待签收）" },
+      { "name": "pull_evidence", "type": "string", "required": true, "value": null, "value_note": "见 manifest.candidate.json（草案值；待签收）" },
+      { "name": "asOfDate", "type": "string(YYYY-MM-DD)", "required": true, "value": null, "value_note": "见 manifest.candidate.json（草案值；待签收）" }
     ],
+    "manifest_fields_note": "本节为接口结构模板；2026-10-13 拉数后清单值已落在 m0/market-cache/manifest.candidate.json（下称 manifest），本表不再表示「未提供」——先前表述易被误读，2026-10-16 修正",
     "fixture_policy": "合成占位代码（000000/001234/888888）与合成价格仅用于夹具；不冒充真实支持清单",
     "range_check": "requested_date 超出 date_range → 阻断（E_VALUATION_OUT_OF_RANGE）；范围外显示“不支持/数据缺失”（R2）；不静默改为范围内日期"
   },
@@ -147,6 +148,7 @@
     "v1": "首版候选：负责人本次确认的 B1–B7 落实；合成夹具与离线校验；M1–M5 未决项",
     "v1.1": "本次审校修订：OHLC 按基线 §4-2 纠正为必填（两个序列）并补齐夹具；M4 收口；分红混算差值单位更正为 pp",
     "2026-10-13·M0-C2（尹辰）": "M1/M2 状态指针更新：拉数草案 m0/market-cache/manifest.candidate.json 与运行记录 data/market-cache.pull-record.json 已提出；候选语义未变更；仍待签收与三方确认",
-    "2026-10-13·M1-C1（尹辰）": "候选细化：新增 E_NO_EFFECTIVE_TRADING_DAY（区间内早于首个交易日的请求）；引擎 src/engine/marketCache.js 实现并有单测覆盖；待三方审校"
+    "2026-10-13·M1-C1（尹辰）": "候选细化：新增 E_NO_EFFECTIVE_TRADING_DAY（区间内早于首个交易日的请求）；引擎 src/engine/marketCache.js 实现并有单测覆盖；待三方审校",
+    "2026-10-16·任务B（尹辰）": "support_scope 指针修正：七字段草案值统一指向已填写的 manifest.candidate.json（原「未提供」为拉数前模板，避免与拉数后实际值混淆）；收口包 docs/yinchen/m0c2-signoff-package.md 交付（R1–R7 签收表＋决策 A–E＋回涵晶 §8.2 两问）"
   }
 }

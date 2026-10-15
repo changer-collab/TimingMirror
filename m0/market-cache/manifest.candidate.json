@@ -25,6 +25,7 @@
     { "field": "date_range", "value_note": "目标 2023–2025；实际首末交易日 2023-01-03..2025-12-31；逐标的 727/727 行、日历内缺失 0 日" },
     { "field": "adjustment_basis", "value_note": "M2 初核完成，观测与推导详见 pull-record（事实记录，不含解释性结论；B6）" }
   ],
+  "closure_note": "2026-10-15 收口（任务 B/Issue #13）：七字段值齐备复核（R2/R3/R4/R5/R6 为已核事实值；R1/R7 两项为【建议】）；公司行为边界、300750 处置、缺价文案为待签收决策项（逐项建议与证据见 docs/yinchen/m0c2-signoff-package.md）。签收前本文件不得被产品作为真实支持范围引用（R2）。",
   "evidence_summary": {
     "calendar_days_in_range": 727,
     "symbols_rows": { "600519": { "bars": 727, "bars_fwdadj": 727 }, "300750": { "bars": 727, "bars_fwdadj": 727 }, "601318": { "bars": 727, "bars_fwdadj": 727 } },
