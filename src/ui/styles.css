@@ -40,6 +40,7 @@ body {
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .input { background: #FFFFFF; border: 1px solid var(--line); border-radius: 8px; color: var(--cream); padding: 8px 12px; font-size: 14px; font-family: inherit; flex: 1; min-width: 220px; }
 .input::placeholder { color: #8A93A6; }
+.input[type="file"] { padding: 6px 10px; font-size: 13px; }
 .muted { color: var(--dim); font-size: 13px; }
 .small { font-size: 12px; }
 .error { color: var(--red); font-size: 13px; }
