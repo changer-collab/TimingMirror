@@ -1,5 +1,5 @@
 // 前端交互冒烟（零依赖：Node + 最小 DOM 桩；非产品代码，仅回归工具）
-// 覆盖：导入/确认、报告切换（组合/标的/A′/差异）、对话离线、契约三态与持久化、状态徽标色映射。
+// 覆盖：导入/确认（演示账单 + 本地 CSV 本机校验）、报告切换（组合/标的/A′/差异）、对话离线、契约三态与持久化、状态徽标色映射。
 // 运行：npm run smoke
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -51,8 +51,19 @@ globalThis.fetch = async (url) => {
 };
 const store = new Map();
 globalThis.localStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) };
+// FileReader 桩（异步回调，模拟浏览器 readAsText；fake file 用 __content / __readError 控制行为）
+class FakeFileReader {
+  readAsText(file) {
+    setTimeout(() => {
+      if (file && file.__readError) { if (this.onerror) this.onerror({}); return; }
+      this.result = file && file.__content !== undefined ? file.__content : '';
+      if (this.onload) this.onload({});
+    }, 0);
+  }
+}
+globalThis.FileReader = FakeFileReader;
 
-const { state, subscribe, notify } = await imp('src/state.js');
+const { state, subscribe, notify, defaultBill } = await imp('src/state.js');
 const { renderImport } = await imp('src/ui/views/importView.js');
 const { renderReport } = await imp('src/ui/views/reportView.js');
 const { renderChat } = await imp('src/ui/views/chatView.js');
@@ -92,6 +103,14 @@ function findButtons(node, out = []) {
   }
   return out;
 }
+function findInputs(node, out = []) {
+  for (const c of node.children ?? []) {
+    if (!c || c.__text !== undefined) continue;
+    if (c.tagName === 'INPUT') out.push(c);
+    findInputs(c, out);
+  }
+  return out;
+}
 function findChips(node, out = []) {
   for (const c of node.children ?? []) {
     if (!c || c.__text !== undefined) continue;
@@ -106,10 +125,15 @@ async function clickLabel(label, nth = 0) {
   if (!btns[nth]) throw new Error('找不到按钮：' + label + '（序号 ' + nth + '）');
   for (const fn of btns[nth].listeners.click ?? []) await fn({});
 }
+async function pickFile(fakeFile) {
+  const inp = findInputs(current)[0];
+  if (!inp) throw new Error('找不到文件选择控件');
+  for (const fn of inp.listeners.change ?? []) await fn({ target: { files: [fakeFile] } });
+}
 
 /* ==== 导入页：加载 → 待确认 → 确认 ==== */
 state.route = 'import';
-state.bill = { status: 'none', scenario: 'A', trades: [], warnings: [], sourceNote: '', resultLabelling: null, error: '' };
+state.bill = defaultBill();
 mountCycle();
 await clickLabel('加载演示账单');
 let txt = texts(current).join('|');
@@ -157,6 +181,95 @@ check('契约：改写后 v2 徽标（mode）', findChips(current).some((c) => t
 await clickLabel('拒绝', 1);
 check('契约：拒绝后 v3 徽标（warn）', findChips(current).some((c) => texts(c).join('') === '已拒绝 v3' && String(c.attrs.class).includes('warn')));
 check('契约：持久化写入与版本记录', String(store.get('tm.contracts.demo') ?? '').includes('已拒绝') && texts(current).join('|').includes('哈希：未接入'));
+
+/* ==== 导入页：用户本地 CSV（FileReader 本机读取 → adapter 校验 → 确认门槛 → 旧账单清理）==== */
+state.route = 'import';
+state.bill = defaultBill();
+mountCycle();
+check('用户CSV：空状态提示 + accept 限定 csv', texts(current).join('|').includes('尚未选择账单') && findInputs(current)[0].attrs.accept === '.csv,text/csv');
+
+const happyCsv = '日期,标的,方向,价格,数量,费用,税费\n2024-09-25,000000,买入,100,100,5,0\n2024-10-09,000000,卖出,104,100,5,1\n';
+await pickFile({ name: 'my-bill.csv', size: 2048, __content: happyCsv });
+await flush();
+txt = texts(current).join('|');
+check('用户CSV：校验通过 → loaded + 待确认 + 文件名/大小', state.bill.status === 'loaded' && state.bill.sourceType === 'local' && state.bill.trades.length === 2 && txt.includes('my-bill.csv') && txt.includes('2 KB') && findChips(current).some((c) => texts(c).join('').includes('待确认')), txt.slice(0, 200));
+check('用户CSV：本机处理与数据模式标注', txt.includes('仅在本机读取和校验，不上传') && txt.includes('用户本地账单 + 合成演示行情'), txt.slice(0, 200));
+let confirmBtn = findButtons(current).find((b) => labelOf(b).includes('确认交易列表'));
+check('用户CSV：正常校验通过后确认按钮可用', !!confirmBtn && !confirmBtn.disabled);
+
+await pickFile({ name: 'notes.txt', size: 12, __content: 'hello' });
+await flush();
+confirmBtn = findButtons(current).find((b) => labelOf(b).includes('确认交易列表'));
+check('用户CSV：有效账单后选 .txt → 旧账单完全重置且不可确认', state.bill.status === 'none' && state.bill.error.includes('文件类型不符合预期') && state.bill.trades.length === 0 && state.bill.warnings.length === 0 && state.bill.errors.length === 0 && state.bill.blocked === false && state.bill.dataMode === null && state.bill.resultLabelling === null && state.bill.sourceNote === '' && !confirmBtn, JSON.stringify(state.bill).slice(0, 220));
+
+await pickFile({ name: 'bad.csv', size: 64, __content: '日期,标的,方向,价格,数量\n2024-10-09,ABC,买入,100,100\n' });
+await flush();
+txt = texts(current).join('|');
+confirmBtn = findButtons(current).find((b) => labelOf(b).includes('确认交易列表'));
+check('用户CSV：blocked → invalid + trades 为空 + 确认按钮禁用', state.bill.status === 'invalid' && state.bill.blocked === true && state.bill.trades.length === 0 && !!confirmBtn && confirmBtn.disabled === true, JSON.stringify({ s: state.bill.status, b: state.bill.blocked }));
+check('用户CSV：errors/warnings 渲染（错误码/行号/警告码/整批阻断）', txt.includes('整批阻断') && txt.includes('E_SYMBOL_FORMAT') && txt.includes('第 2 行') && txt.includes('W_FEE_COLUMN_MISSING'), txt.slice(0, 260));
+
+await pickFile({ name: 'my-bill.csv', size: 2048, __content: happyCsv });
+await flush();
+await pickFile({ name: 'broken.csv', size: 8, __readError: true });
+await flush();
+confirmBtn = findButtons(current).find((b) => labelOf(b).includes('确认交易列表'));
+check('用户CSV：有效账单后读取失败 → 干净错误态且不可确认', state.bill.status === 'error' && state.bill.fileName === 'broken.csv' && state.bill.fileSize === 8 && state.bill.sourceType === 'local' && state.bill.error.includes('无法读取文件内容') && state.bill.trades.length === 0 && state.bill.warnings.length === 0 && state.bill.errors.length === 0 && state.bill.blocked === false && state.bill.dataMode === null && !confirmBtn, JSON.stringify(state.bill).slice(0, 220));
+
+state.route = 'import';
+state.bill = defaultBill();
+mountCycle();
+const loadPromise = clickLabel('加载演示账单');
+const loadingBtn = findButtons(current).find((b) => labelOf(b).includes('加载'));
+check('演示加载：期间 status=loading 且文件选择/按钮均禁用', state.bill.status === 'loading' && !!loadingBtn && loadingBtn.disabled === true && findInputs(current)[0].disabled === true, JSON.stringify({ s: state.bill.status }));
+await loadPromise;
+check('演示加载：结束后恢复 loaded + 待确认（5 笔）', state.bill.status === 'loaded' && state.bill.trades.length === 5 && findChips(current).some((c) => texts(c).join('').includes('待确认')), JSON.stringify({ s: state.bill.status, n: state.bill.trades.length }));
+
+/* ==== 用户账单 → 报告页（确认 → 合成行情 → runReview 发布门槛）==== */
+const oosCsv = '日期,标的,方向,价格,数量,费用,税费\n2024-09-25,000000,买入,100,100,5,0\n2024-09-26,600519,买入,30,100,5,0\n2024-10-09,000000,卖出,104,100,5,1\n';
+const lateCsv = '日期,标的,方向,价格,数量,费用,税费\n2024-11-05,000000,买入,100,100,5,0\n';
+
+state.route = 'import';
+state.bill = defaultBill();
+state.report = { scenario: 'A', symbol: 'pool' };
+mountCycle();
+await pickFile({ name: 'user-bill.csv', size: happyCsv.length, __content: happyCsv });
+await flush();
+await clickLabel('确认交易列表');
+check('用户报告：确认后 status=confirmed 且进入报告页（用户字段不被覆盖）', state.bill.status === 'confirmed' && state.route === 'report' && state.bill.fileName === 'user-bill.csv' && state.bill.trades.length === 2 && state.bill.dataMode && state.bill.dataMode.id === 'user_bill_synthetic_market', JSON.stringify({ s: state.bill.status, r: state.route }));
+await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+check('用户报告：文件名 + 用户本地账单 + 合成行情标注', txt.includes('用户本地账单') && txt.includes('文件名：user-bill.csv') && txt.includes('用户本地账单 + 合成演示行情') && txt.includes('m0 合成夹具'), txt.slice(0, 240));
+check('用户报告：指标来自用户交易（+4.0%/+8.0%/¥400.00），非演示 A', txt.includes('+4.0%') && txt.includes('+8.0%') && txt.includes('¥400.00') && !txt.includes('+4.9%') && !txt.includes('¥700.00') && !txt.includes('undefined'), txt.slice(0, 240));
+check('用户报告：无 A/A′ 场景切换与差异面板', !txt.includes('演示场景') && !txt.includes('A′') && !txt.includes('与基准 A 的差异'), txt.slice(0, 160));
+check('用户报告：复核 published + 已发布 17 项 + 组合已发布', txt.includes('复核：published') && txt.includes('已发布事实 17 项') && txt.includes('组合已发布'), txt.slice(0, 200));
+
+state.route = 'import';
+state.report = { scenario: 'A', symbol: 'pool' };
+mountCycle();
+await pickFile({ name: 'oos-bill.csv', size: oosCsv.length, __content: oosCsv });
+await flush();
+await clickLabel('确认交易列表');
+await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+check('用户报告：范围外标的 600519 阻断展示（E_PRICE_MISSING · 不回落演示）', txt.includes('600519') && txt.includes('E_PRICE_MISSING') && !txt.includes('+4.9%') && !txt.includes('¥700.00'), txt.slice(0, 260));
+check('用户报告：复核 degraded + 组合结果不发布（不按剩余标的重算）', txt.includes('复核：degraded') && txt.includes('组合」结果不发布') && txt.includes('不按剩余标的'), txt.slice(0, 260));
+await clickLabel('000000'); await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+check('用户报告：未阻断标的 000000 仍发布（+4.0%）', txt.includes('+4.0%') && txt.includes('¥400.00'), txt.slice(0, 200));
+await clickLabel('600519'); await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+check('用户报告：600519 视图不发布（支持范围外说明）', txt.includes('600519」结果不发布') && txt.includes('合成行情缓存支持范围'), txt.slice(0, 200));
+
+state.route = 'import';
+state.report = { scenario: 'A', symbol: 'pool' };
+mountCycle();
+await pickFile({ name: 'late-bill.csv', size: lateCsv.length, __content: lateCsv });
+await flush();
+await clickLabel('确认交易列表');
+await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+check('用户报告：估值早于末笔 → 明确阻断（不回退演示）', txt.includes('E_VALUATION_BEFORE_LAST_TRADE') && !txt.includes('演示场景') && !txt.includes('¥700.00'), txt.slice(0, 240));
 
 /* ---- 输出 ---- */
 const failed = results.filter((r) => !r.ok);
