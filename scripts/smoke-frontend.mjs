@@ -46,8 +46,8 @@ globalThis.Node = FakeNode;
 globalThis.document = { createElement: (t) => makeEl(t), createTextNode };
 globalThis.fetch = async (url) => {
   const rel = String(url).replace(/^\//, '');
-  const data = JSON.parse(readFileSync(join(ROOT, rel), 'utf8'));
-  return { ok: true, status: 200, json: async () => data };
+  const raw = readFileSync(join(ROOT, rel), 'utf8');
+  return { ok: true, status: 200, json: async () => JSON.parse(raw), text: async () => raw };
 };
 const store = new Map();
 globalThis.localStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) };
@@ -121,20 +121,20 @@ state.route = 'import'; mountCycle();
 check('导入：确认态徽标为“已确认”（ok 样式）', findChips(current).some((c) => texts(c).join('') === '已确认' && String(c.attrs.class).includes('ok')));
 await flush(); await flush();
 
-/* ==== 报告页：组合 / 标的 / A′ / 证据 / 差异 ==== */
+/* ==== 报告页（引擎接线：演示账单 CSV → csvNormalize → marketCache(合成夹具) → indicators → provenance）==== */
 state.route = 'report';
 state.report = { scenario: 'A', symbol: 'pool' };
-mountCycle(); await flush(); await flush();
+mountCycle(); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
-check('报告：组合指标（+4.9% / +16.0% / +11.1pp / ¥3,900.00）', txt.includes('+4.9%') && txt.includes('+16.0%') && txt.includes('+11.1pp') && txt.includes('¥3,900.00'));
-check('报告：买入不动口径与组合持仓处理', txt.includes('买入不动') && txt.includes('组合不汇总个股股数') && !txt.includes('undefined'));
-await clickLabel('000000'); await flush(); await flush();
+check('报告：组合指标（引擎输出 +4.9% / +6.9% / +2.0pp / ¥700.00）', txt.includes('+4.9%') && txt.includes('+6.9%') && txt.includes('+2.0pp') && txt.includes('¥700.00'), txt.slice(0, 220));
+check('报告：合成演示标注 + 买入不动口径 + 无 undefined', txt.includes('合成演示数据') && txt.includes('买入不动') && txt.includes('组合不汇总个股股数') && !txt.includes('undefined'));
+await clickLabel('000000'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
-check('报告：标的切换 000000（+10.0% / +15.0pp / ¥3,000.00）', txt.includes('+10.0%') && txt.includes('+15.0pp') && txt.includes('¥3,000.00'));
-await clickLabel('A′'); await flush(); await flush();
+check('报告：标的切换 000000（引擎输出 +10.0% / -2.0pp / ¥-400.00）', txt.includes('+10.0%') && txt.includes('-2.0pp') && txt.includes('¥-400.00'), txt.slice(0, 220));
+await clickLabel('A′'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
-check('报告：A′ 切换 + 差异面板', state.report.scenario === 'Aprime' && txt.includes('+15.0%') && txt.includes('与基准 A 的差异') && txt.includes('仅改第 5 行卖出价'), txt.slice(0, 260));
-await clickLabel('基准账单 A'); await flush(); await flush();
+check('报告：A′ 切换 + 引擎差异面板', state.report.scenario === 'Aprime' && txt.includes('与基准 A 的差异') && txt.includes('仅改第 5 行卖出价') && txt.includes('-7.0pp'), txt.slice(0, 280));
+await clickLabel('基准账单 A'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('报告：切回 A 恢复（实际收益卡与证据入口正常）', state.report.scenario === 'A' && txt.includes('实际收益') && txt.includes('查看证据与计算路径'));
 
