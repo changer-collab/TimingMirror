@@ -3,11 +3,15 @@
  * M1-C7 · 复核与重算编排 —— 离线单测（合成数据；零依赖）
  *
  * 覆盖（首轮验收）：①正常验证并发布；②校验失败后 blocked；③缺价后不发布组合结论；
- *                 ④必要重算后 provenance 可追溯；⑤工具异常后的降级状态；⑥重放确定性。
+ *                 ④必要重算后 provenance 可追溯；⑤工具异常后的降级状态；⑥重放确定性；
+ *                 ⑦重算候选作用域校验（丢失/新增标的、close 无效 → 拒绝采纳，回归）；⑧连续两次无改善即停止；
+ *                 ⑨A.2 单侧注入（engine 层可测；编排层无注入 seam——如实记录为遗留项）。
  * 边界：只调用现有引擎导出（未改公式）；通过仅证明编排语义与单测一致，不证明产品端到端验收通过。
  * 运行：node tests/agent/review-pipeline.test.mjs（或 npm run check）
  */
 import { runReview, REVIEW_CODES, MAX_RECOMPUTE_ATTEMPTS } from '../../src/agent/reviewPipeline.js';
+import { computeIndicators } from '../../src/engine/indicators.js';
+import { buildVerifyReport } from '../../src/engine/verify.js';
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -116,6 +120,76 @@ const CLOSES2 = { '000000': 12, '888888': 110 };
   check('确定性：now 未注入时日志 ts 为 null', r1.recompute_log[0].ts === null && r1.recompute_log[0].ms === null);
   const r5 = runReview({ trades: A_DIRTY(), closes: { '000000': 12 }, now: 'T0' });
   check('确定性：now 注入时仅透传到日志 ts', r5.recompute_log[0].ts === 'T0' && JSON.stringify({ ...r5, recompute_log: [] }) === JSON.stringify({ ...runReview({ trades: A_DIRTY(), closes: { '000000': 12 } }), recompute_log: [] }));
+}
+
+/* ==== ⑦ 重算候选作用域校验（回归：丢失标的不得被采纳） ==== */
+{
+  const A = A_CLEAN();
+  const initial = [...A, ...B_DIRTY()];
+
+  // 场景 A：候选只返回一个标的（丢失 888888）——自身可复核通过也不得采纳
+  const r = runReview({ trades: initial, closes: CLOSES2, recompute: () => ({ trades: A, closes: CLOSES2, path_used: 'subset-candidate' }) });
+  check('回归：丢失标的候选被拒绝（两次均 rejected/not_adopted + 候选错误码）', r.recompute_log.length === 2
+    && r.recompute_log.every((x) => x.result === 'rejected' && x.final_status === 'not_adopted' && x.code === REVIEW_CODES.CANDIDATE_SCOPE_CHANGED), JSON.stringify(r.recompute_log[0]));
+  check('回归：degraded 记录拒绝原因（含缺少的 888888）', r.degraded.some((d) => d.code === REVIEW_CODES.CANDIDATE_SCOPE_CHANGED && d.message.includes('888888')), JSON.stringify(r.degraded.filter((d) => d.code === REVIEW_CODES.CANDIDATE_SCOPE_CHANGED)));
+  check('回归：组合结论不发布（portfolio_published=false，发布项不含 portfolio）', r.portfolio_published === false && r.published_facts.every((f) => f.scope !== 'portfolio'));
+  check('回归：仅 000000 的 9 项发布（完整数据照常保留）', r.published_facts.length === 9 && r.published_facts.every((f) => f.scope === '000000'));
+  check('回归：原失败事实保持 insufficient_evidence（888888 9 项 + 组合 8 项）', r.blocked_facts.length === 17
+    && r.blocked_facts.filter((b) => b.scope === '888888').length === 9
+    && r.blocked_facts.filter((b) => b.scope === 'portfolio').length === 8
+    && r.blocked_facts.every((b) => b.final_status === 'insufficient_evidence'), JSON.stringify(r.blocked_facts.map((b) => [b.scope, b.final_status]).slice(0, 3)));
+  check('回归：候选未采纳（最终复核仍为初始 26 项、fail=17）、尝试 2 次', r.verify.facts.length === 26 && r.verify.summary.fail === 17 && r.meta.recompute_attempts === 2);
+  check('回归：状态 degraded', r.status === 'degraded');
+
+  // 场景 B：候选新增未请求标的（999999）
+  const C_EXTRA = [mk('C001', '2024-09-25', '999999', 'buy', 5, 100), mk('C002', '2024-09-26', '999999', 'sell', 6, 100)];
+  const r2 = runReview({ trades: initial, closes: CLOSES2, recompute: () => ({ trades: [...A, ...B_CLEAN(), ...C_EXTRA], closes: { ...CLOSES2, '999999': 7 }, path_used: 'extra-symbol' }) });
+  check('回归：新增未请求标的同样拒绝（detail 含 999999）', r2.recompute_log[0].result === 'rejected' && r2.recompute_log[0].code === REVIEW_CODES.CANDIDATE_SCOPE_CHANGED
+    && r2.degraded.some((d) => d.code === REVIEW_CODES.CANDIDATE_SCOPE_CHANGED && d.message.includes('999999')));
+
+  // 场景 C：候选标的集齐但某作用域 close 无效（NaN）
+  const r3 = runReview({ trades: initial, closes: CLOSES2, recompute: () => ({ trades: [...A, ...B_CLEAN()], closes: { '000000': 12, '888888': NaN }, path_used: 'bad-close' }) });
+  check('回归：候选缺有效 close 同样拒绝（E_REVIEW_CANDIDATE_CLOSE_INVALID，detail 含 888888）', r3.recompute_log[0].result === 'rejected'
+    && r3.recompute_log[0].code === REVIEW_CODES.CANDIDATE_CLOSE_INVALID
+    && r3.degraded.some((d) => d.code === REVIEW_CODES.CANDIDATE_CLOSE_INVALID && d.message.includes('888888')));
+
+  // 场景 D：第一次候选被拒后，第二次合法候选可正常采纳
+  const r4 = runReview({ trades: initial, closes: CLOSES2, recompute: ({ attempt }) => (attempt === 1
+    ? { trades: A, closes: CLOSES2, path_used: 'subset-candidate' }
+    : { trades: [...A, ...B_CLEAN()], closes: CLOSES2, path_used: 'full-reload' }) });
+  check('回归：拒绝不终止重算——第二次合法候选被采纳（published）', r4.status === 'published' && r4.recompute_log.length === 2
+    && r4.recompute_log[0].result === 'rejected' && r4.recompute_log[1].result === 'pass' && r4.recompute_log[1].final_status === 'adopted'
+    && r4.meta.recompute_attempts === 2, JSON.stringify(r4.recompute_log.map((x) => [x.result, x.final_status])));
+  check('回归：采纳后全作用域发布（26 项、组合可发布）', r4.published_facts.length === 26 && r4.portfolio_published === true);
+}
+
+/* ==== ⑧ 连续两次无改善即停止（不抛异常） ==== */
+{
+  let calls = 0;
+  const dirty = [...A_CLEAN(), ...B_DIRTY()];
+  const r = runReview({ trades: dirty, closes: CLOSES2, recompute: () => { calls += 1; return { trades: dirty, closes: CLOSES2, path_used: 'reload-same' }; } });
+  check('无改善：回调被调用恰好 2 次后停止（不超次）', calls === 2, calls);
+  check('无改善：两次均记录 no_improvement/not_adopted', r.recompute_log.length === 2 && r.recompute_log.every((x) => x.result === 'no_improvement' && x.final_status === 'not_adopted'), JSON.stringify(r.recompute_log.map((x) => x.result)));
+  check('无改善：最终与初始一致（000000 发布 9 项；888888+组合 17 项 insufficient_evidence）', r.published_facts.length === 9 && r.blocked_facts.length === 17 && r.blocked_facts.every((b) => b.final_status === 'insufficient_evidence'));
+  check('无改善：状态 degraded、组合结论未发布', r.status === 'degraded' && r.portfolio_published === false);
+}
+
+/* ==== ⑨ A.2 单侧注入：engine 层可测；编排层无注入 seam（如实记录，不宣称已覆盖） ==== */
+{
+  const A = A_CLEAN();
+  const report = computeIndicators({ trades: A, closes: { '000000': 12 } });
+  const tampered = JSON.parse(JSON.stringify(report));
+  const d = tampered.per_stock['000000'].dual_path.dragMoney;
+  tampered.per_stock['000000'].dual_path.dragMoney = { ...d, path_a: d.path_a + 1 };
+  const v = buildVerifyReport({ report: tampered, trades: A, closes: { '000000': 12 } });
+  const f = v.facts.find((x) => x.fact_id === '000000.dragMoney');
+  check('A.2 注入（engine 层可测）：单侧篡改双路径 → E_VERIFY_DUAL_PATH_MISMATCH 命中', !!f && f.verdict === 'fail'
+    && f.reasons.some((rr) => rr.code === 'E_VERIFY_DUAL_PATH_MISMATCH'), JSON.stringify(f && f.reasons));
+  check('A.2 注入：仅受影响 fact 失败（ghostValue 未篡改仍 pass）', v.summary.fail === 1
+    && v.facts.find((x) => x.fact_id === '000000.ghostValue').verdict === 'pass', JSON.stringify(v.summary));
+  const r = runReview({ trades: A, closes: { '000000': 12 }, report: tampered });
+  check('A.2 注入：编排层不接受 report 注入（额外参数被忽略、按自算结果发布）——「编排层单侧注入 seam 缺失」如实记为遗留项',
+    r.status === 'published' && r.verify.summary.fail === 0 && near(r.published_facts.find((x) => x.fact_id === '000000.dragMoney').value, 100), JSON.stringify({ s: r.status, fail: r.verify.summary.fail }));
 }
 
 /* —— 输出 —— */
