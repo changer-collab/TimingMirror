@@ -27,7 +27,7 @@ M1-C11 契约匹配纯函数（依赖 M0-C1）
 |---|---|---|---|
 | P0 收尾 | 10/13–10/14 | M0-C2 拉数＋缓存清单草案；M0-C1 参与三方确认（行情缓存/CSV/计算结果三接口出具意见） | M0-C2 草案已交付（2a24b1c；待 changer 签收）；M0-C1 我方意见已出具（2167319），待三方合并（吴涵晶方确认仍待补，changer 主持） |
 | P1 引擎 | 10/13–10/16 | M1-C1、M1-C2（格式）、M1-C3、M1-C4、M1-C5、M1-C11（纯函数） | 全部完成：M1-C1（2387a72）、M1-C2（e3422d5）、M1-C3（9dd2fab）、M1-C4（8d5e0df）、M1-C5（f93370b）、M1-C11（b474f27）——纯函数与单测就绪；页面接线/状态机在 UI 侧（吴涵晶） |
-| P2 完善 | 10/17–10/23 | M2-C1（数据侧）、M2-C5；参与 M2-C4 真实运行验收演练；UI 接线支持；任务 B 缓存签收收口（Issue #13，10/15 派发） | 进行中（提前启动）：M2-C1 数据侧主体完成（61e0f7a / 7929f8c）；M2-C5 数据侧报告已交付（ac6c7c1，待负责人选型）；M2-C4 数据侧准备材料已就绪（a4eca65；证据同步接线口径 68bfad7），演练本体待全链路就绪后三人执行；P2-4 引擎对接说明已交付（68bfad7，致吴涵晶）；任务 B 收口包已交付（e0493e6，待 changer 签收） |
+| P2 完善 | 10/17–10/23 | M2-C1（数据侧）、M2-C5；参与 M2-C4 真实运行验收演练；UI 接线支持；任务 B 缓存签收收口（Issue #13，10/15 派发）；任务 A 支持（adapter 修订意见，10/16 组长消息） | 进行中（提前启动）：M2-C1 数据侧主体完成（61e0f7a / 7929f8c）；M2-C5 数据侧报告已交付（ac6c7c1，待负责人选型）；M2-C4 数据侧准备材料已就绪（a4eca65；证据同步接线口径 68bfad7），演练本体待全链路就绪后三人执行；P2-4 引擎对接说明已交付（68bfad7，致吴涵晶）；任务 B 收口包已交付（e0493e6）＋任务 A 支持 adapter 修订意见已交付（e41cb80）——**PR #15 已开待组长合并**（含签收收口包，签收落档后另开缓存接入 PR） |
 | P3 交付 | 10/24–10/25 | 支持 M3 提交材料（清单签收归档、复算记录）、回归修复 | 未开始 |
 
 已完成的基础交付（供 P1 直接复用）：
@@ -150,7 +150,13 @@ M1-C11 契约匹配纯函数（依赖 M0-C1）
 
 - 状态：已交付（e0493e6）——`docs/yinchen/m0c2-signoff-package.md`（三件套：明确候选清单〔R1–R7 七字段签收表，R2–R6 已核事实 / R1·R7【建议】〕＋验证依据〔拉数硬校验 PASS、结构核验入 check、混合标的与 300750 复跑证据逐字留档〕＋限制〔§3 六条〕）；Issue #13 六项逐项收口对照；待签收决策 A–E（300750 处置 / asOfDate / 公司行为边界 / 生效日口径 / 缺价文案）；回涵晶 §8.2(2) 阻断语义与三类文案拟案、§8.2(3) 公司行为码如实告知（引擎未实现，E_SHARE_EVENT 仅存于 m0 候选层——grep 逐字证据）。manifest 增 closure_note。验证：npm run check 624/624（exit 0）、smoke 15/15（exit 0）。
 - 背景：Issue #13（10/15 派发）目标「把支持边界收口为可签收清单」；签收人 changer；产品接入 PR 前置=本签收完成（独立 PR，R2）。
-- 备注：Issue #13 描述「symbols/date_range/asOfDate 未提供」与仓库现状不符——七字段自 PR #5（2026-10-13）起已全部填写，疑混淆 `schema.candidate.json` 拉数前模板段（收口包 §2 注已澄清）；本地 gh 登录账号 NanyuDeer 为本人（尹辰），供负责人设置 Issue assignee 参考。
+- 备注：Issue #13 描述「symbols/date_range/asOfDate 未提供」与仓库现状不符——七字段自 PR #5（2026-10-13）起已全部填写，疑混淆 `schema.candidate.json` 拉数前模板段（收口包 §2 注已澄清；模板指针已修正 e41cb80）；本地 gh 登录账号 NanyuDeer 为本人（尹辰），供负责人设置 Issue assignee 参考。
+
+### P2-6 · 任务 A 支持：用户 CSV adapter 修订意见（10/16 组长消息）
+
+- 状态：已交付（e41cb80，随 PR #15）——`docs/yinchen/adapter-user-csv-opinions.md`（【建议】非冻结，实施归任务 A 吴涵晶）：①`computeIndicators({trades, closes})` 调用约束表（缺 close 抛 TypeError / 排序在引擎内 / 调用方先经缓存解析 / 保留 source 回源）；②多标的 pool 语义（pool=传入 trades 涉及标的加总；B4 组合扣发责任在调用方〔现状 poolBlocked 实现〕；「不在支持范围」预检 vs「当日缺价」E_PRICE_MISSING 两类区分；合成期日期阻断为预期行为需文案说明）；③估值日传参（v1 固定数据集估值日、不开放 UI 任选〔asof_linkage 已收口〕；链路顺序 resolveValuation→checkLastTrade→resolvePrices；四类代码分别展示）；④文本入口共享链路建议（loadUserBillFromText 与 loadReportEngine 用单一内部函数防 gating 分叉；state.bill 字段清单）；⑤【建议】用户路径消费 runReview（对齐 Issue #12 验收 #6，单一源头/分步两形态 + 输出契约增补 review{...}）。
+- 背景：组长 10/16 消息对报告页接线现状确认（PR #7 合成夹具路径）+ 三问；缺价/不匹配最终文案与行为由收口包 §5.1 拟案，等签收。
+- 附带（e41cb80）：`schema.candidate.json` support_scope 七字段「未提供」模板修正为指向 manifest 草案值（消除组长消息中「全部未提供」误读诱因）+ review_history 记录。
 
 ## 6. P3 明细（10/24–10/25）
 
