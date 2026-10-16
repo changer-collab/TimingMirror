@@ -7,6 +7,7 @@
 //   组合结论只在 review.portfolio_published 时展示（B4）；阻断时不发布对应结论，不回退演示数据。
 import { el } from '../components.js';
 import * as demo from '../../demo/adapter.js';
+import { renderGhostChart } from '../components/ghostChart.js';
 
 function billStatusText(bill) {
   if (bill.status === 'confirmed') return `已确认（${bill.trades.length} 条）`;
@@ -29,6 +30,63 @@ function safeJson(v) {
   } catch {
     return '{}';
   }
+}
+
+/* —— 单笔反事实区（S1 幽灵线；演示与用户账单共用）——
+   数据一律来自 adapter.loadSellCounterfactual（内部唯一调用 replaceSell）；
+   页面不计算 actual/ghost/cf/gap/收盘价，引擎 display 原样展示。 */
+function cfSection({ trades, symbol, selectedId, set }) {
+  const box = el('div', { class: 'rp-cf' });
+  box.append(el('div', { class: 'rp-sub' }, ['单笔反事实：如果这笔卖出没有发生（S1 单笔卖出替换）']));
+  const body = el('div', {});
+  box.append(body);
+  // 跨标的/跨场景残留防护：selectedId 不属于当前标的的卖出笔时传 null（adapter 默认该标的按时间第一笔）
+  const applicable = typeof selectedId === 'string'
+    && trades.some((t) => t && t.symbol === symbol && t.side === 'sell' && t.trade_id === selectedId);
+  demo.loadSellCounterfactual({ trades, symbol, tradeId: applicable ? selectedId : null })
+    .then((cf) => {
+      if (!cf.ok) {
+        body.replaceChildren(el('div', { class: 'rp-error' }, [`该反事实结论不发布：${cf.code} · ${cf.message}`]));
+        return;
+      }
+      body.replaceChildren();
+      if (cf.sellOptions.length > 1) {
+        const row = el('div', { class: 'rp-cf-picker' });
+        row.append(el('span', { class: 'rp-control-label' }, ['替换哪笔卖出：']));
+        const sel = el('select', {
+          class: 'input',
+          onchange: (e) => set({ report: { cfTradeId: e.target.value } }),
+        });
+        for (const o of cf.sellOptions) sel.append(el('option', { value: o.trade_id }, [`${o.trade_id} · ${o.trade_date} · ${o.price} × ${o.quantity}`]));
+        sel.value = cf.tradeId;
+        row.append(sel);
+        body.append(row);
+      } else {
+        body.append(el('div', { class: 'muted small' }, [
+          `可替换卖出笔：${cf.sellOptions.map((o) => `${o.trade_id} · ${o.trade_date} · ${o.price} × ${o.quantity}`).join('；')}`,
+        ]));
+      }
+      const chartBox = el('div', {});
+      body.append(chartBox);
+      renderGhostChart(chartBox, cf);
+      const r = cf.replace;
+      body.append(el('div', { class: 'rp-calc' }, [
+        `本次模拟：不发生 ${r.replaced.trade_id} 这笔卖出（${r.replaced.trade_date} · ${r.replaced.price} × ${r.replaced.quantity}）｜假设结果价值 ${r.display.cfValue} ｜ 假设收益 ${r.display.cfRet} ｜ 相对改善 ${r.display.recoveredPP} ｜ 剩余损耗金额 ${r.display.remainingDragMoney}`,
+      ]));
+      body.append(el('div', { class: 'rp-calc unchanged' }, [
+        `说明：正的“相对改善”表示不卖这笔会更好；负值表示这笔卖出反而优于持有，不是错误。公式标识：${[...new Set(Object.values(r.formula_ids))].join(' / ')}（可在「查看证据与计算路径」中复核）。`,
+      ]));
+    })
+    .catch((e) => {
+      body.replaceChildren(el('div', { class: 'rp-error' }, [
+        `反事实数据加载失败：${String(e && e.message ? e.message : e)}（该反事实结论不发布）`,
+      ]));
+    });
+  return box;
+}
+
+function cfPoolHint() {
+  return el('div', { class: 'rp-cf rp-cf-hint muted' }, ['请选择一个标的查看单笔卖出反事实（组合 scope 不绘制单笔反事实图）。']);
 }
 
 export function renderReport(root, ctx) {
@@ -180,6 +238,12 @@ function buildPage(page, b, baseBundle, ctx) {
       `费用缺失行 ${entry.recorded.fee_missing_lines.length ? entry.recorded.fee_missing_lines.join('、') : '无'}；税费缺失行 ${entry.recorded.tax_missing_lines.length ? entry.recorded.tax_missing_lines.join('、') : '无'}`,
     ]);
     page.append(rec);
+  }
+
+  if (scope === 'pool') {
+    page.append(cfPoolHint());
+  } else if (!scopeBlocked && entry) {
+    page.append(cfSection({ trades: b.trades, symbol: scope, selectedId: state.report.cfTradeId, set: ctx.set }));
   }
 
   /* —— 证据：计算路径（provenance；引擎输出，含 formula / inputs / steps）—— */
@@ -340,6 +404,12 @@ function buildUserBillPage(page, b, ctx) {
     meta.append(el('span', {}, ['估值日 ', el('b', {}, [b.valuation && !b.valuation.blocked ? b.valuation.effective_date : '不可用'])]));
     meta.append(el('span', {}, ['账单状态 ', el('b', {}, [`已确认 · ${b.fileName}`])]));
     page.append(meta);
+  }
+
+  if (scope === 'pool') {
+    page.append(cfPoolHint());
+  } else if (!scopeBlocked && entry) {
+    page.append(cfSection({ trades: state.bill.trades, symbol: scope, selectedId: state.report.cfTradeId, set: ctx.set }));
   }
 
   const det = el('details', { class: 'rp-evidence' });
