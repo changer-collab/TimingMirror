@@ -27,7 +27,7 @@ M1-C11 契约匹配纯函数（依赖 M0-C1）
 |---|---|---|---|
 | P0 收尾 | 10/13–10/14 | M0-C2 拉数＋缓存清单草案；M0-C1 参与三方确认（行情缓存/CSV/计算结果三接口出具意见） | M0-C2 草案已交付（2a24b1c；待 changer 签收）；M0-C1 我方意见已出具（2167319），待三方合并（吴涵晶方确认仍待补，changer 主持） |
 | P1 引擎 | 10/13–10/16 | M1-C1、M1-C2（格式）、M1-C3、M1-C4、M1-C5、M1-C11（纯函数） | 全部完成：M1-C1（2387a72）、M1-C2（e3422d5）、M1-C3（9dd2fab）、M1-C4（8d5e0df）、M1-C5（f93370b）、M1-C11（b474f27）——纯函数与单测就绪；页面接线/状态机在 UI 侧（吴涵晶） |
-| P2 完善 | 10/17–10/23 | M2-C1（数据侧）、M2-C5；参与 M2-C4 真实运行验收演练；UI 接线支持；任务 B 缓存签收收口（Issue #13，10/15 派发）；任务 A 支持（adapter 修订意见，10/16 组长消息） | 进行中（提前启动）：M2-C1 数据侧主体完成（61e0f7a / 7929f8c）；M2-C5 数据侧报告已交付（ac6c7c1，待负责人选型）；M2-C4 数据侧准备材料已就绪（a4eca65；证据同步接线口径 68bfad7），演练本体待全链路就绪后三人执行；P2-4 引擎对接说明已交付（68bfad7，致吴涵晶）；任务 B 收口包已交付（e0493e6）＋任务 A 支持 adapter 修订意见已交付（e41cb80）——**PR #15 已合并（squash 8f93f92，2026-10-16）**（含签收收口包；签收落档〔changer〕后另开缓存接入 PR） |
+| P2 完善 | 10/17–10/23 | M2-C1（数据侧）、M2-C5；参与 M2-C4 真实运行验收演练；UI 接线支持；任务 B 缓存签收收口（Issue #13，10/15 派发）；任务 A 支持（adapter 修订意见，10/16 组长消息） | 进行中（提前启动）：M2-C1 数据侧主体完成（61e0f7a / 7929f8c）；M2-C5 数据侧报告已交付（ac6c7c1，待负责人选型）；M2-C4 数据侧准备材料已就绪（a4eca65；证据同步接线口径 68bfad7），演练本体待全链路就绪后三人执行；P2-4 引擎对接说明已交付（68bfad7，致吴涵晶）；任务 B 收口包已交付（e0493e6）＋任务 A 支持 adapter 修订意见已交付（e41cb80）——**PR #15 已合并（squash 8f93f92，2026-10-16）**（含签收收口包；签收落档〔changer〕后另开缓存接入 PR）；同步 main（PR #16，7807dee）后完成跨区回归修复并提 **PR #19**（演示 provenance val→stage.val，2026-10-16） |
 | P3 交付 | 10/24–10/25 | 支持 M3 提交材料（清单签收归档、复算记录）、回归修复 | 未开始 |
 
 已完成的基础交付（供 P1 直接复用）：
@@ -157,6 +157,13 @@ M1-C11 契约匹配纯函数（依赖 M0-C1）
 - 状态：已交付（e41cb80，随 PR #15）——`docs/yinchen/adapter-user-csv-opinions.md`（【建议】非冻结，实施归任务 A 吴涵晶）：①`computeIndicators({trades, closes})` 调用约束表（缺 close 抛 TypeError / 排序在引擎内 / 调用方先经缓存解析 / 保留 source 回源）；②多标的 pool 语义（pool=传入 trades 涉及标的加总；B4 组合扣发责任在调用方〔现状 poolBlocked 实现〕；「不在支持范围」预检 vs「当日缺价」E_PRICE_MISSING 两类区分；合成期日期阻断为预期行为需文案说明）；③估值日传参（v1 固定数据集估值日、不开放 UI 任选〔asof_linkage 已收口〕；链路顺序 resolveValuation→checkLastTrade→resolvePrices；四类代码分别展示）；④文本入口共享链路建议（loadUserBillFromText 与 loadReportEngine 用单一内部函数防 gating 分叉；state.bill 字段清单）；⑤【建议】用户路径消费 runReview（对齐 Issue #12 验收 #6，单一源头/分步两形态 + 输出契约增补 review{...}）。
 - 背景：组长 10/16 消息对报告页接线现状确认（PR #7 合成夹具路径）+ 三问；缺价/不匹配最终文案与行为由收口包 §5.1 拟案，等签收。
 - 附带（e41cb80）：`schema.candidate.json` support_scope 七字段「未提供」模板修正为指向 manifest 草案值（消除组长消息中「全部未提供」误读诱因）+ review_history 记录。
+
+### P2-7 · 跨区回归修复：演示链路 provenance（PR #19，10/16）
+
+- 状态：已修复并提 PR（a2d630f，PR #19，2026-10-16；OPEN/MERGEABLE，合并留组长）——基线＝同步 main 后（7807dee，含 PR #16）。
+- 内容：`src/demo/adapter.js` `loadReportEngine` 第 4 步 `valuation: val` → `stage.val`（PR #16 共享市场段重构遗漏引用；ReferenceError 被 provenance 专用 catch 吞掉 → 演示 A/A′ 证据区恒为「fact 0 项 + E_PROVENANCE」）；`scripts/smoke-frontend.mjs` 演示段补断言（fact>0、阻断 0、无 E_PROVENANCE；原 35 项只查入口存在未覆盖）。
+- 验证：红绿（临时回退该行 → smoke 35/36 新断言失败；恢复 → 36/36）；check 729/729（15 脚本，exit 0）；smoke 36/36（exit 0）；远程 no checks reported（未配置 CI）。
+- 备注：adapter 归属主线 B（#17）；本修复为一行回归修正由主线 A 实施，PR 内已说明共享文件（smoke）改动范围；主线 B 后续调整可在此基础上继续。
 
 ## 6. P3 明细（10/24–10/25）
 
