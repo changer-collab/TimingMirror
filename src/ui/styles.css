@@ -197,4 +197,46 @@ body {
   .rp-delta-grid { grid-template-columns: 1fr; }
 }
 
+/* —— 单笔反事实（S1 幽灵线双面板）—— */
+.rp-cf { background: #fff; border: 1px solid var(--hairline); border-radius: 14px; padding: 18px 22px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 1px 2px rgba(20, 33, 61, .05); }
+.rp-cf-hint { color: var(--ink-soft); font-size: 15px; }
+.rp-cf-picker { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.rp-cf-picker .input { min-width: 340px; flex: 0 1 auto; }
+.gc-wrap { position: relative; display: flex; flex-direction: column; gap: 6px; }
+.gc-panel-title { font-size: 14px; font-weight: 700; color: var(--ink-soft); letter-spacing: .02em; }
+.gc-reading-guide { margin: 4px 0 8px; padding: 8px 10px; border-radius: 7px; background: #F4F7FC; color: #4B5E7A; font-size: 13px; line-height: 1.6; }
+.gc-svg { width: 100%; height: auto; display: block; background: #FBFCFE; border: 1px solid var(--hairline-soft); border-radius: 10px; }
+.gc-grid { stroke: #ECEFF4; stroke-width: 1; }
+.gc-axis { font-size: 12px; fill: #8A93A6; font-family: var(--mono); }
+.gc-axis-end { text-anchor: end; }
+.gc-line-actual { stroke: #14213D; stroke-width: 2.4; }
+.gc-line-ghost { stroke: #1F4FA8; stroke-width: 2; stroke-dasharray: 7 5; }
+.gc-line-cf { stroke: #D98E1F; stroke-width: 2.4; }
+.gc-line-close { stroke: #5A6880; stroke-width: 2; }
+.gc-isolated-point { fill: #fff; stroke-width: 2.25; }
+.gc-line-actual.gc-isolated-point { stroke: #14213D; }
+.gc-line-ghost.gc-isolated-point { stroke: #1F4FA8; }
+.gc-line-cf.gc-isolated-point { stroke: #D98E1F; }
+.gc-line-close.gc-isolated-point { stroke: #5A6880; }
+.gc-isolated-label { font-size: 11px; fill: #6C768A; font-family: var(--mono); }
+.gc-missing-marker-label { font-size: 11px; fill: #A46314; font-family: var(--mono); }
+.gc-gap-area { fill: rgba(178, 58, 63, .28); stroke: none; }
+.gc-marker-buy { fill: #2F6B33; }
+.gc-marker-sell { fill: #B23A3F; }
+.gc-marker-ring { fill: none; stroke: #C77E14; stroke-width: 2.5; }
+.gc-cross { stroke: #46536B; stroke-width: 1; stroke-dasharray: 4 4; opacity: .8; }
+.gc-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; color: var(--ink); }
+.gc-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.gc-sw { width: 14px; height: 4px; border-radius: 2px; display: inline-block; }
+.gc-sw-actual { background: #14213D; }
+.gc-sw-ghost { background: repeating-linear-gradient(90deg, #1F4FA8 0 5px, transparent 5px 8px); height: 2px; }
+.gc-sw-cf { background: #D98E1F; }
+.gc-sw-gap { background: rgba(178, 58, 63, .45); height: 10px; }
+.gc-sw-buy { background: #2F6B33; width: 10px; height: 10px; border-radius: 2px; }
+.gc-sw-sell { background: #B23A3F; width: 10px; height: 10px; border-radius: 2px; }
+.gc-sw-replaced { border: 2px solid #C77E14; width: 10px; height: 10px; border-radius: 50%; background: #fff; }
+.gc-tip { position: absolute; top: 8px; right: 12px; background: rgba(255, 255, 255, .97); border: 1px solid var(--hairline); border-radius: 8px; padding: 8px 12px; font-size: 13px; color: var(--ink); line-height: 1.7; pointer-events: none; box-shadow: 0 4px 14px rgba(20, 33, 61, .12); font-family: var(--mono); }
+.gc-tip-date { font-weight: 700; color: var(--ink-strong); }
+.gc-caption { font-size: 13px; color: var(--faint); line-height: 1.7; }
+
 /* 浅色主题已统一到基础样式与各页面；原 body.route-report 路由外壳覆盖已移除。 */
