@@ -231,7 +231,7 @@ export async function loadReportEngine(scenario = 'A') {
 
   // 4) 计算路径（provenance）：阻断则对应视图不发布（主指标不受影响）
   try {
-    out.provenance = buildProvenanceReport({ report, trades: usableTrades, closes, valuation: val });
+    out.provenance = buildProvenanceReport({ report, trades: usableTrades, closes, valuation: stage.val });
   } catch (e) {
     out.provenance = {
       blocked: true,
