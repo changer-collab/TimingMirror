@@ -4,7 +4,9 @@
  *
  * 覆盖：合法 display/数值+单位通过；不存在的数字失败；blocked/insufficient_evidence 数字不能通过；
  *       无数字回答通过；裸数字/非金融频次不纳入（候选语义）；不换算不舍入；
- *       失败含数字与原因；输入非法失败状态；重复数字去重；不修改输入；重复校验确定性。
+ *       负数/千分位/正负号边界；% 与 pp 单位互斥；全角/异体符号归一（＋％￥−／全角数字）；
+ *       失败项 suspected_blocked_fact（null/true/false）；失败含数字与原因；输入非法失败状态；
+ *       重复数字去重；不修改输入；重复校验确定性。
  * 边界：纯函数测试；通过仅证明校验器语义与单测一致，不证明在线链路或产品端到端验收通过。
  * 运行：node tests/agent/number-check.test.mjs（或 npm run check）
  */
@@ -29,6 +31,9 @@ const pub = exportFacts({ review: runReview({ trades: A_CLEAN(), closes: { '0000
 const full = exportFacts({ review: runReview({ trades: [...A_CLEAN(), ...B_CLEAN()], closes: { '000000': 12, '888888': 110 }, valuation: VAL }) });
 const degraded = exportFacts({ review: runReview({ trades: [...A_CLEAN(), ...B_CLEAN()], closes: { '000000': 12 }, valuation: VAL }) });
 const blockedEx = exportFacts({ review: runReview({ trades: A_DIRTY(), closes: { '000000': 12 } }) });
+// lucky：实际 +30.0%、对照 +20.0%、损耗 -10.0pp、损耗金额 ¥-100.00（负数 display 边界）
+const A_LUCKY = () => [mk('T001', '2024-09-24', '000000', 'buy', 10, 100), mk('T002', '2024-09-27', '000000', 'sell', 13, 100)];
+const lucky = exportFacts({ review: runReview({ trades: A_LUCKY(), closes: { '000000': 12 }, valuation: VAL }) });
 
 /* ==== ⑦ 合法 display / 数值+单位 通过 ==== */
 {
@@ -67,6 +72,46 @@ const blockedEx = exportFacts({ review: runReview({ trades: A_DIRTY(), closes: {
   check('无数字：纯文字回答通过（checked=0）', r.ok === true && r.checked === 0 && r.failed.length === 0);
   const r2 = checkNumbers('共 2 笔，2024 年 9 月，第 3 条记录。', pub);
   check('候选语义：裸数字/年份/计数不纳入识别（checked=0 且通过）', r2.ok === true && r2.checked === 0, JSON.stringify(r2));
+}
+
+/* ==== 负数与千分位边界（六.16） ==== */
+{
+  const r = checkNumbers('实际收益 +30.0%，对照收益 +20.0%，择时损耗 -10.0pp，损耗金额 ¥-100.00。', lucky);
+  check('负数：负 pp / 负金额 display 通过（checked=4）', r.ok === true && r.checked === 4 && r.failed.length === 0, JSON.stringify(r));
+  const r2 = checkNumbers('损耗金额 ¥-1,100.00。', lucky);
+  check('边界：¥-1,100.00（负号+千分位）不在事实 → 失败', r2.ok === false && r2.failed[0].raw === '¥-1,100.00', JSON.stringify(r2.failed));
+}
+
+/* ==== % 与 pp 单位互斥（六.17） ==== */
+{
+  const r1 = checkNumbers('对照收益 +20.0pp。', lucky);
+  check('互斥：+20.0pp（该值只有 % 口径）→ 失败，不借 % 数字通过', r1.ok === false && r1.failed[0].raw === '+20.0pp', JSON.stringify(r1.failed));
+  const r2 = checkNumbers('择时损耗 -10.0%。', lucky);
+  check('互斥：-10.0%（该值只有 pp 口径）→ 失败，不借 pp 数字通过', r2.ok === false && r2.failed[0].raw === '-10.0%', JSON.stringify(r2.failed));
+}
+
+/* ==== 全角/异体符号归一（F5；raw 保留原字符） ==== */
+{
+  const r = checkNumbers('实际收益 ＋30.0％，择时损耗 −10.0pp，损耗金额 ￥-100.00。', lucky);
+  check('全角：＋/％/−/￥ 归一后匹配（checked=3，raw 保留原字符）', r.ok === true && r.checked === 3 && r.failed.length === 0, JSON.stringify(r));
+  const rBad = checkNumbers('收益率 ＋99.9％', lucky);
+  check('全角：不存在数字（＋99.9％）归一后失败，不再逃逸', rBad.ok === false && rBad.failed[0].raw === '＋99.9％', JSON.stringify(rBad));
+  const rDigit = checkNumbers('期末持仓 ０ 股。', lucky);
+  check('全角：全角数字（０ 股）归一后匹配 value=0/unit=股', rDigit.ok === true && rDigit.checked === 1, JSON.stringify(rDigit));
+}
+
+/* ==== 失败项 suspected_blocked_fact（五.8，候选语义） ==== */
+{
+  const text = '该标的的实际收益为 +5.0%。';
+  const rNull = checkNumbers(text, degraded);
+  check('疑似阻断：未提供本地被阻断清单 → null（无法判定）', rNull.ok === false && rNull.failed[0].suspected_blocked_fact === null, JSON.stringify(rNull.failed));
+  const rTrue = checkNumbers(text, degraded, { blockedDisplays: ['+5.0%'] });
+  check('疑似阻断：命中本地被阻断 display → true', rTrue.ok === false && rTrue.failed[0].suspected_blocked_fact === true, JSON.stringify(rTrue.failed));
+  const rFalse = checkNumbers('收益率达到了 +99.9%。', pub, { blockedDisplays: ['+5.0%'] });
+  check('疑似阻断：不在被阻断清单 → false', rFalse.ok === false && rFalse.failed[0].suspected_blocked_fact === false, JSON.stringify(rFalse.failed));
+  const blockedArr = ['+5.0%'];
+  checkNumbers(text, degraded, { blockedDisplays: blockedArr });
+  check('疑似阻断：blockedDisplays 输入不被修改', JSON.stringify(blockedArr) === '["+5.0%"]');
 }
 
 /* ==== 不换算、不舍入 ==== */
