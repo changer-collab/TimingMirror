@@ -1,11 +1,14 @@
 // 演示数据适配层 —— 页面唯一数据出口。
-// 数据链路（报告页）：演示账单 CSV 文本 → csvNormalize → marketCache（m0 合成夹具）→ indicators → provenance。
-// 未接线：真实 CSV 上传、真实行情、百炼、契约匹配（分别由后续任务接入）；导入页仍读 m0 标准化夹具。
+// 数据链路（报告页·演示账单）：夹具 CSV 文本 → csvNormalize → marketCache（m0 合成夹具）→ indicators → provenance。
+// 数据链路（报告页·用户账单）：确认后的标准化 state.bill → 同一市场段（合成夹具）→ runReview 复核与发布门槛 → published_facts。
+// 数据链路（导入页·用户账单）：本地 CSV 文本（FileReader）→ csvNormalize 校验（仅本机，不上传、不落 localStorage）。
+// 未接线：真实行情、百炼、契约匹配；行情为 m0 合成夹具（草案·演示口径，非真实行情）。
 // 边界：本层只做取数与编排，不实现计算口径；数字与展示字符串一律来自 src/engine/*（页面不重新格式化）。
 import { parseCsvText, normalizeRows } from '../engine/csvNormalize.js';
 import { createMarketCache, fromFixtures } from '../engine/marketCache.js';
 import { computeIndicators, RESULT_LABELS } from '../engine/indicators.js';
 import { buildProvenanceReport } from '../engine/provenance.js';
+import { runReview } from '../agent/reviewPipeline.js';
 
 // 导入页使用的标准化夹具（保持现状：导入页未在本轮接线范围）
 const FIXTURE = {
@@ -83,6 +86,31 @@ function demoMarket() {
   return marketPromise;
 }
 
+async function runSyntheticMarketStage(trades) {
+  const market = await demoMarket();
+  const val = market.resolveValuation(DEMO_VALUATION_DATE);
+  if (val.blocked) {
+    return { ok: false, market, val, errors: [{ line: 0, code: val.code, message: `估值日 ${val.requested_date} 无法解析有效交易日（不静默改期）` }] };
+  }
+  const lastTradeDate = trades.map((t) => t.trade_date).sort()[trades.length - 1];
+  const lastCheck = market.checkLastTrade(val.effective_date, lastTradeDate);
+  if (lastCheck.blocked) {
+    return { ok: false, market, val, errors: [{ line: 0, code: lastCheck.code, message: `有效估值日 ${val.effective_date} 早于账单末笔交易日 ${lastTradeDate}` }] };
+  }
+  const symbols = [...new Set(trades.map((t) => t.symbol))];
+  const prices = market.resolvePrices(symbols, val.effective_date);
+  const unblocked = symbols.filter((s) => !prices.per_symbol[s].blocked);
+  const blockedSymbols = symbols.filter((s) => prices.per_symbol[s].blocked);
+  const errors = blockedSymbols.map((s) => ({
+    line: 0,
+    code: prices.per_symbol[s].code,
+    message: market.symbols.includes(s)
+      ? `标的 ${s} 在估值日 ${val.effective_date} 缺价：该标的结果不发布；组合结果同样不发布（未回退其他日期）`
+      : `标的 ${s} 不在合成行情缓存支持范围（${market.symbols.join('、')}）：该标的结果不发布；组合结果同样不发布`,
+  }));
+  return { ok: true, market, val, prices, symbols, unblocked, blockedSymbols, errors };
+}
+
 /* —— 导入页：演示账单标准化夹具（保持现状，未在本轮接线范围） —— */
 export const DEMO_SOURCE_NOTE = '演示数据 · 合成夹具（m0/csv-input/fixtures）；非真实账户交易结果';
 
@@ -95,6 +123,28 @@ export async function loadDemoBill(scenario = 'A') {
     blocked: fx.standardized.blocked ?? false,
     sourceNote: `来源：${fx.fixture}（合成夹具；占位代码非真实证券）`,
     resultLabelling: fx.result_labelling,
+  };
+}
+
+const USER_BILL_DATA_MODE = Object.freeze({
+  id: 'user_bill_synthetic_market',
+  label: '用户本地账单 + 合成演示行情',
+  note: '交易文件仅在本机处理；当前行情为合成演示缓存，非真实行情，支持范围有限',
+});
+
+export async function loadUserBillFromText(csvText, fileName) {
+  const name = String(fileName || 'user-bill.csv');
+  const normalized = normalizeRows(parseCsvText(String(csvText)), name);
+  return {
+    sourceType: 'local',
+    dataMode: USER_BILL_DATA_MODE,
+    fileName: name,
+    blocked: normalized.blocked,
+    trades: normalized.trades,
+    warnings: normalized.warnings,
+    errors: normalized.errors,
+    sourceNote: `来源：${name}（本机文件，未上传；schema ${normalized.schema_version}）`,
+    resultLabelling: RESULT_LABELS,
   };
 }
 
@@ -140,38 +190,24 @@ export async function loadReportEngine(scenario = 'A') {
   }
   const trades = normalized.trades;
 
-  // 2) 行情（合成夹具）→ 估值日解析 → 末笔检查 → 取价（缺价阻断，不回落）
-  const market = await demoMarket();
-  out.marketRange = { ...market.range };
-  out.snapshot = market.snapshot;
-  const val = market.resolveValuation(DEMO_VALUATION_DATE);
-  out.valuation = val;
-  if (val.blocked) {
+  // 2) 行情（合成夹具）→ 估值日解析 → 末笔检查 → 取价（缺价阻断，不回落）——共享市场段
+  const stage = await runSyntheticMarketStage(trades);
+  out.marketRange = { ...stage.market.range };
+  out.snapshot = stage.market.snapshot;
+  out.valuation = stage.val;
+  if (!stage.ok) {
     out.status = 'blocked';
     out.blocked = true;
-    out.errors.push({ line: 0, code: val.code, message: `估值日 ${val.requested_date} 无法解析有效交易日（不静默改期）` });
+    out.errors.push(...stage.errors);
     return out;
   }
-  const lastTradeDate = trades.map((t) => t.trade_date).sort()[trades.length - 1];
-  const lastCheck = market.checkLastTrade(val.effective_date, lastTradeDate);
-  if (lastCheck.blocked) {
-    out.status = 'blocked';
-    out.blocked = true;
-    out.errors.push({ line: 0, code: lastCheck.code, message: `有效估值日 ${val.effective_date} 早于账单末笔交易日 ${lastTradeDate}` });
-    return out;
-  }
-  const symbols = [...new Set(trades.map((t) => t.symbol))];
-  const prices = market.resolvePrices(symbols, val.effective_date);
-  out.prices = prices;
-  const unblocked = symbols.filter((s) => !prices.per_symbol[s].blocked);
-  out.blockedSymbols = symbols.filter((s) => prices.per_symbol[s].blocked);
-  if (out.blockedSymbols.length > 0) {
+  out.prices = stage.prices;
+  out.blockedSymbols = stage.blockedSymbols;
+  if (stage.blockedSymbols.length > 0) {
     out.poolBlocked = true; // B4：不按剩余标的重算冒充完整组合
-    for (const s of out.blockedSymbols) {
-      out.errors.push({ line: 0, code: prices.per_symbol[s].code, message: `标的 ${s} 在估值日 ${val.effective_date} 缺价：该标的结果不发布；组合结果同样不发布（未回退其他日期）` });
-    }
+    out.errors.push(...stage.errors);
   }
-  if (unblocked.length === 0) {
+  if (stage.unblocked.length === 0) {
     out.status = 'blocked';
     out.blocked = true;
     return out;
@@ -179,8 +215,8 @@ export async function loadReportEngine(scenario = 'A') {
 
   // 3) 计算（只喂未阻断标的；引擎抛错不被吞掉）
   const closes = {};
-  for (const s of unblocked) closes[s] = prices.per_symbol[s].close;
-  const usableTrades = trades.filter((t) => unblocked.includes(t.symbol));
+  for (const s of stage.unblocked) closes[s] = stage.prices.per_symbol[s].close;
+  const usableTrades = trades.filter((t) => stage.unblocked.includes(t.symbol));
   let report;
   try {
     report = computeIndicators({ trades: usableTrades, closes });
@@ -207,6 +243,78 @@ export async function loadReportEngine(scenario = 'A') {
   }
 
   out.status = out.blockedSymbols.length > 0 ? 'partial' : 'ok';
+  return out;
+}
+
+export async function loadUserBillReport(bill) {
+  const out = {
+    sourceType: 'local',
+    fileName: bill && bill.fileName ? bill.fileName : '',
+    dataMode: USER_BILL_DATA_MODE,
+    status: 'ok',
+    blocked: false,
+    warnings: [],
+    errors: [],
+    valuation: null,
+    marketRange: null,
+    snapshot: null,
+    prices: null,
+    blockedSymbols: [],
+    poolBlocked: false,
+    review: null,
+    factsByScope: {},
+    provenance: null,
+    labels: RESULT_LABELS,
+  };
+  if (!bill || bill.status !== 'confirmed' || bill.sourceType !== 'local' || bill.blocked || !Array.isArray(bill.trades) || bill.trades.length === 0) {
+    out.status = 'blocked';
+    out.blocked = true;
+    out.errors.push({ line: 0, code: 'E_BILL_NOT_CONFIRMED', message: '账单未确认或校验未通过：不能进入报告（不回退演示数据）' });
+    return out;
+  }
+  const trades = bill.trades;
+  out.warnings = [...(bill.warnings ?? [])];
+
+  // 1) 共享市场段：估值日 → 末笔检查 → 取价（硬阻断即返回，不回退演示账单）
+  const stage = await runSyntheticMarketStage(trades);
+  out.marketRange = { ...stage.market.range };
+  out.snapshot = stage.market.snapshot;
+  out.valuation = stage.val;
+  if (!stage.ok) {
+    out.status = 'blocked';
+    out.blocked = true;
+    out.errors.push(...stage.errors);
+    return out;
+  }
+  out.prices = stage.prices;
+  out.blockedSymbols = [...stage.blockedSymbols];
+  out.errors.push(...stage.errors);
+
+  // 2) runReview（全量标的 closes：缺价置 null，由复核统一扣发该标的与组合）
+  const closes = {};
+  for (const s of stage.symbols) closes[s] = stage.prices.per_symbol[s].blocked ? null : stage.prices.per_symbol[s].close;
+  const review = runReview({ trades, closes, valuation: stage.val });
+  out.review = review;
+  out.provenance = review.provenance;
+
+  const byScope = {};
+  for (const f of review.published_facts) {
+    (byScope[f.scope] ??= {})[f.key] = { value: f.value, display: f.display, formula_id: f.formula_id, fact_id: f.fact_id };
+  }
+  out.factsByScope = byScope;
+  for (const b of review.blocked_symbols) {
+    if (!out.blockedSymbols.includes(b.symbol)) out.blockedSymbols.push(b.symbol);
+  }
+  out.poolBlocked = !review.portfolio_published;
+
+  // 3) 状态映射（词汇与演示契约一致：ok / partial / blocked；review blocked 时透出降级原因）
+  if (review.status === 'blocked') {
+    out.status = 'blocked';
+    out.blocked = true;
+    for (const d of review.degraded) out.errors.push({ line: 0, code: d.code, message: d.message });
+  } else {
+    out.status = review.status === 'degraded' ? 'partial' : 'ok';
+  }
   return out;
 }
 

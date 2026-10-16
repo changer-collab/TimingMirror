@@ -3,9 +3,17 @@ const CONTRACT_STORE_KEY = 'tm.contracts.demo';
 
 const listeners = new Set();
 
+export function defaultBill() {
+  return {
+    status: 'none', scenario: 'A', trades: [], warnings: [], errors: [],
+    sourceNote: '', resultLabelling: null, error: '',
+    sourceType: null, fileName: '', fileSize: 0, blocked: false, dataMode: null,
+  };
+}
+
 export const state = {
   route: 'import',
-  bill: { status: 'none', scenario: 'A', trades: [], warnings: [], sourceNote: '', resultLabelling: null, error: '' },
+  bill: defaultBill(),
   report: { scenario: 'A', symbol: 'pool' },
   chat: { messages: [], draft: '' },
   contracts: { versions: [] },
