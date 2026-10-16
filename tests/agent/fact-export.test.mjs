@@ -5,7 +5,8 @@
  * 覆盖：只导出 published_facts；blocked_facts 不进入；portfolio_published=false 不导出组合；
  *       source_ref 匿名化（trade_id/file/line 不外泄）；白名单字段固定；重复导出完全一致；
  *       intent 选择（支持集/unsupported/零事实）；作用域校验（needs_context）；行为标签须有证据；
- *       provenance 逐 fact 缺失阻断；非法输入明确失败状态。
+ *       provenance 逐 fact 缺失阻断；诊断消息匿名化（不回显原始 fact_id/scope；结构化断言）；
+ *       blocked review 失败语义（F4：provenance 可为 null）；非法输入明确失败状态。
  * 边界：纯函数测试；通过仅证明导出器语义与单测一致，不证明在线链路或产品端到端验收通过。
  * 运行：node tests/agent/fact-export.test.mjs（或 npm run check）
  */
@@ -76,7 +77,9 @@ const buildBlocked = () => runReview({ trades: A_DIRTY(), closes: { '000000': 12
   const ex = exportFacts({ review: buildFull() });
   const s = JSON.stringify(ex);
   check('匿名化：不含 trade_id / 文件名 / 行号 / file,line 字段', !s.includes('T001') && !s.includes('B101') && !s.includes('mini.csv') && !s.includes('"file"') && !s.includes('"line"') && !s.includes('trade_id'));
-  check('匿名化：不含标的代码（无 "000000"/"888888" 字符串、无 symbol 字段名）', !s.includes('"000000"') && !s.includes('"888888"') && !s.includes('"symbol"'), s.slice(0, 120));
+  // 结构化断言：剔除 value（内部浮点尾数含长 0 串，如 0.10000000000000009）后不得出现裸标的代码/字段名
+  const stripped = JSON.stringify({ ...ex, facts: ex.facts.map((f) => ({ ...f, value: undefined })) });
+  check('匿名化：剔除 value 浮点尾数后无裸标的代码/symbol 字段（结构化）', !stripped.includes('000000') && !stripped.includes('888888') && !stripped.includes('"symbol"'), stripped.slice(0, 160));
   check('匿名化：source_ref 为稳定匿名哈希（src- + 8hex）', ex.facts.every((f) => /^src-[0-9a-f]{8}$/.test(f.source_ref)));
   check('匿名化：fact_ref 为稳定匿名哈希（F- + 8hex）；scope 为匿名句柄', ex.facts.every((f) => /^F-[0-9a-f]{8}$/.test(f.fact_ref)) && ex.facts.every((f) => ['portfolio', 'stock-1', 'stock-2'].includes(f.scope)));
 }
@@ -120,6 +123,7 @@ const buildBlocked = () => runReview({ trades: A_DIRTY(), closes: { '000000': 12
   check('作用域：scope=portfolio 只导出组合 8 项', onlyP.status === 'ok' && onlyP.facts.length === 8 && onlyP.facts.every((f) => f.scope === 'portfolio'));
   const bad = exportFacts({ review, scope: '999999' });
   check('作用域：未知 scope → needs_context + E_FACT_SCOPE_UNAVAILABLE', bad.status === 'needs_context' && bad.facts.length === 0 && bad.diagnostics.some((d) => d.code === FACT_EXPORT_CODES.SCOPE_UNAVAILABLE));
+  check('诊断匿名化：未命中作用域不回显原始输入（不含 999999）', bad.status === 'needs_context' && !JSON.stringify(bad.diagnostics).includes('999999'), JSON.stringify(bad.diagnostics));
 
   const tags = exportFacts({ review, behavior_tags: [{ tag: '追高买入', evidence_ref: 'pattern-candidate-1' }, { tag: '无证据标签' }] });
   check('行为标签：仅有证据者导出；无证据者丢弃并告警', Array.isArray(tags.behavior_tags) && tags.behavior_tags.length === 1 && tags.behavior_tags[0].tag === '追高买入' && tags.diagnostics.some((d) => d.code === FACT_EXPORT_CODES.BEHAVIOR_TAG_DROPPED));
@@ -131,16 +135,22 @@ const buildBlocked = () => runReview({ trades: A_DIRTY(), closes: { '000000': 12
   const filtered = { ...review, provenance: { ...review.provenance, items: review.provenance.items.filter((i) => i.fact_id !== '000000.buyCost') } };
   const ex = exportFacts({ review: filtered });
   check('provenance：缺失项的 fact 不导出（17→16）且给出 E_FACT_PROVENANCE_MISSING', ex.status === 'ok' && ex.facts.length === 16 && ex.diagnostics.some((d) => d.code === FACT_EXPORT_CODES.PROVENANCE_MISSING));
+  const diagStr = JSON.stringify(ex.diagnostics);
+  check('诊断匿名化：PROVENANCE_MISSING 消息不含原始 fact_id/标的代码（仅匿名句柄 F-8hex）', !diagStr.includes('000000') && !diagStr.includes('buyCost') && /F-[0-9a-f]{8}/.test(diagStr), diagStr.slice(0, 200));
 }
 
-/* ==== ⑫ 非法输入明确失败状态 ==== */
+/* ==== ⑫ 非法输入明确失败状态 + 失败语义（F4） ==== */
 {
   const e1 = exportFacts({});
   const e2 = exportFacts({ review: { published_facts: [], blocked_facts: [], provenance: null, meta: {} } });
   const e3 = exportFacts({ review: null });
   check('非法输入：缺 review → invalid + E_FACT_INPUT_INVALID', e1.status === 'invalid' && e1.diagnostics.some((d) => d.code === FACT_EXPORT_CODES.INPUT_INVALID));
-  check('非法输入：provenance 缺失 → invalid（消息提及 provenance）', e2.status === 'invalid' && e2.diagnostics[0].message.includes('provenance'));
+  check('失败语义：空事实 review（provenance 可为 null 的合法阻断输出）→ blocked，不误判 invalid', e2.status === 'blocked' && e2.facts.length === 0 && e2.diagnostics.some((d) => d.code === FACT_EXPORT_CODES.REVIEW_NOT_PUBLISHED));
   check('非法输入：review=null → invalid', e3.status === 'invalid' && e3.facts.length === 0);
+  const emptyTrades = exportFacts({ review: runReview({ trades: [], closes: { '000000': 12 } }) });
+  check('失败语义：runReview 空 trades 输出（status=blocked、provenance=null）→ 导出 blocked（F4 对齐）', emptyTrades.status === 'blocked' && emptyTrades.facts.length === 0, JSON.stringify(emptyTrades.diagnostics));
+  const noProv = exportFacts({ review: { ...buildPublished(), provenance: null } });
+  check('非法输入：已发布事实但 provenance 缺失 → invalid（消息提及 provenance）', noProv.status === 'invalid' && noProv.diagnostics[0].message.includes('provenance'));
 }
 
 /* —— 输出 —— */

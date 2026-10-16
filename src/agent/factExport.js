@@ -5,6 +5,8 @@
 //   · portfolio 事实仅当 review.portfolio_published === true 时导出（B4）；
 //   · 不回退读取引擎原始结果绕过 reviewPipeline；不生成新计算、不复制公式；
 //   · 同一输入重复导出，JSON 内容完全一致（无时间戳、无随机、顺序稳定）。
+//   · blocked review（含 provenance 为 null 的合法阻断输出）→ status 'blocked'；已发布事实但 provenance 缺失/非法 → 'invalid'；
+//   · 诊断消息不回显原始 fact_id / scope 原文（fact_id 仅以匿名句柄 `F-`+8hex 出现），避免 diagnostics 随出站时泄露标识。
 // 出站白名单（基线 §2.1 F-6 / §3 R5）：value / unit / display / formula_ref / 匿名 source_ref / 必要的行为标签（须有证据引用）。
 // 出站禁止：原始成交行、trade_id、文件名/行号等 source 明细、账户信息、订单编号、未通过复核的数字。
 // 候选扩展（未冻结）：fact_ref / scope（匿名稳定句柄，如 portfolio / stock-1）/ key —— 供本地与对话上下文引用，
@@ -52,6 +54,10 @@ function fnv1a64(str) {
   return h.toString(16).padStart(16, '0');
 }
 
+function factRef(factId) {
+  return `F-${fnv1a64(factId).slice(0, 8)}`;
+}
+
 function scopeHandle(sortedStockScopes, scope) {
   return scope === 'portfolio' ? 'portfolio' : `stock-${sortedStockScopes.indexOf(scope) + 1}`;
 }
@@ -78,11 +84,10 @@ export function exportFacts({ review, intent = null, scope = null, behavior_tags
   /* —— 输入校验：必须是 reviewPipeline 的实际输出形状 —— */
   if (review === null || typeof review !== 'object'
     || !Array.isArray(review.published_facts) || !Array.isArray(review.blocked_facts)
-    || review.provenance === null || typeof review.provenance !== 'object'
     || review.meta === null || typeof review.meta !== 'object') {
     diagnostics.push({
       code: FACT_EXPORT_CODES.INPUT_INVALID,
-      message: 'review 非法或缺失必需字段（published_facts / blocked_facts / provenance / meta）：不导出',
+      message: 'review 非法或缺失必需字段（published_facts / blocked_facts / meta）：不导出',
     });
     return out;
   }
@@ -117,12 +122,20 @@ export function exportFacts({ review, intent = null, scope = null, behavior_tags
     return out;
   }
 
-  /* —— 发布状态门槛 —— */
+  /* —— 发布状态门槛（blocked review 含 provenance 可为 null 的合法阻断输出：先判状态，再要求 provenance） —— */
   if (review.status === 'blocked' || review.published_facts.length === 0) {
     out.status = 'blocked';
     diagnostics.push({
       code: FACT_EXPORT_CODES.REVIEW_NOT_PUBLISHED,
       message: 'review 无可发布事实：blocked / insufficient_evidence 的数字不得进入事实 JSON（不发布即不导出）',
+    });
+    return out;
+  }
+  if (review.provenance === null || typeof review.provenance !== 'object') {
+    out.status = 'invalid';
+    diagnostics.push({
+      code: FACT_EXPORT_CODES.INPUT_INVALID,
+      message: 'review 已发布事实但 provenance 缺失或非法：无法核验来源与单位，不导出（invalid）',
     });
     return out;
   }
@@ -140,7 +153,7 @@ export function exportFacts({ review, intent = null, scope = null, behavior_tags
     out.status = 'needs_context';
     diagnostics.push({
       code: FACT_EXPORT_CODES.SCOPE_UNAVAILABLE,
-      message: `请求作用域「${scope}」不在已发布事实集：需澄清（不猜测所占范围）`,
+      message: '请求作用域不在已发布事实集：需澄清（不猜测所占范围）',
     });
     return out;
   }
@@ -156,13 +169,13 @@ export function exportFacts({ review, intent = null, scope = null, behavior_tags
     if (!provItem || provItem.blocked) {
       diagnostics.push({
         code: FACT_EXPORT_CODES.PROVENANCE_MISSING,
-        message: `fact「${f.fact_id}」缺少非阻断 provenance：不导出（A.4 悬空引用阻断）`,
+        message: `fact「${factRef(f.fact_id)}」缺少非阻断 provenance：不导出（A.4 悬空引用阻断）`,
       });
       continue;
     }
     const srcCount = Array.isArray(provItem.source_refs) ? provItem.source_refs.length : 0;
     out.facts.push({
-      fact_ref: `F-${fnv1a64(f.fact_id).slice(0, 8)}`,
+      fact_ref: factRef(f.fact_id),
       scope: scopeHandle(stockScopes, f.scope),
       key: f.key,
       value: f.value,
