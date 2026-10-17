@@ -24,14 +24,6 @@ function metric(label, value, note, kind, sub) {
   return card;
 }
 
-function safeJson(v) {
-  try {
-    return JSON.stringify(v) ?? '{}';
-  } catch {
-    return '{}';
-  }
-}
-
 /* —— 单笔反事实区（S1 幽灵线；演示与用户账单共用）——
    数据一律来自 adapter.loadSellCounterfactual（内部唯一调用 replaceSell）；
    页面不计算 actual/ghost/cf/gap/收盘价，引擎 display 原样展示。 */
@@ -246,42 +238,36 @@ function buildPage(page, b, baseBundle, ctx) {
     page.append(cfSection({ trades: b.trades, symbol: scope, selectedId: state.report.cfTradeId, set: ctx.set }));
   }
 
-  /* —— 证据：计算路径（provenance；引擎输出，含 formula / inputs / steps）—— */
+  /* —— 证据：演示计算路径（provenance；未经 runReview，不使用复核发布措辞）—— */
   const det = el('details', { class: 'rp-evidence' });
-  det.append(el('summary', {}, ['查看证据与计算路径']));
+  det.append(el('summary', {}, [
+    '查看证据与计算路径',
+    el('span', { class: 'rp-summary-note' }, ['以下为演示计算路径，未经过复核发布流程（runReview），不代表复核结果。']),
+  ]));
   const body = el('div', { class: 'rp-evidence-body' });
   const prov = b.provenance;
   if (!prov) {
-    body.append(el('div', { class: 'rp-calc' }, ['计算路径不可用：本次运行未产出 provenance（不掩盖，照实提示）。']));
+    body.append(el('div', { class: 'rp-calc rp-bad-text' }, ['演示计算路径不可用：本次运行未产出计算路径（不掩盖，照实提示）。']));
   } else {
-    body.append(el('div', { class: 'rp-sub' }, [`计算路径（fact ${prov.summary.n} 项 · 阻断 ${prov.summary.blocked_n} 项）`]));
+    const factScope = scope === 'pool' ? 'portfolio' : scope;
+    const items = prov.items.filter((it) => it.scope === factScope);
+    body.append(el('div', { class: 'rp-sub' }, [`演示计算路径（当前范围「${scopeLabel(scope)}」· ${items.length} 项）`]));
     if (prov.blocked || prov.dangling_refs.length > 0) {
       const pb = el('div', { class: 'banner warn-banner' });
-      pb.append(el('strong', {}, ['该视图存在阻断项（不发布部分路径）']));
-      for (const d of prov.dangling_refs) pb.append(el('div', {}, [`· ${d.fact_id} · ${d.message}`]));
-      if (prov.errors) for (const e of prov.errors) pb.append(el('div', {}, [`· ${e.code} · ${e.message}`]));
+      pb.append(el('strong', {}, ['演示计算路径存在阻断项：相关条目不能作为有效结果引用']));
+      for (const d of prov.dangling_refs) pb.append(el('div', {}, [`${factName(d.fact_id)} · ${d.message}`]));
       body.append(pb);
     }
-    const ledger = el('div', { class: 'rp-ledger' });
-    prov.items.forEach((it, i) => {
-      const row = el('div', { class: 'rp-row' });
-      row.append(el('i', {}, [String(i + 1).padStart(2, '0')]));
-      const cell = el('span', {});
-      cell.append(el('b', {}, [`${it.fact_id}`]));
-      cell.append(` · ${it.formula_id ?? '（无公式编号）'} · ${it.display ?? String(it.value)}${it.blocked ? ' · 阻断不发布' : ''}`);
-      row.append(cell);
-      if (it.formula_text) row.append(el('div', { class: 'rp-calc muted small' }, [it.formula_text]));
-      row.append(el('div', { class: 'rp-calc muted small' }, [`inputs：${safeJson(it.inputs)}`]));
-      if (Array.isArray(it.steps) && it.steps.length) {
-        row.append(el('div', { class: 'rp-calc muted small' }, [`steps：${it.steps.map((s) => `${s.step_id} ${s.label}`).join(' → ')}`]));
-      }
-      ledger.append(row);
-    });
-    body.append(ledger);
-    body.append(el('div', { class: 'rp-dev' }, [
-      '口径与来源：数字由本地确定性引擎（csvNormalize → marketCache → indicators → provenance）计算；行情为 m0 合成夹具（占位代码、合成价格；非真实行情），清单尚未签收（草案·演示口径）。未接线：真实 CSV 上传、真实行情、百炼、契约匹配。',
-    ]));
+    if (items.length === 0) {
+      body.append(el('div', { class: 'rp-calc rp-bad-text' }, [
+        `「${scopeLabel(scope)}」没有演示计算路径：${b.blockedSymbols.includes(scope) ? '该标的缺价或超出行情支持范围，未进入计算' : '引擎未输出该范围的计算记录'}，不展示替代数字。`,
+      ]));
+    }
+    for (const it of items) body.append(demoFactEvidence(it));
   }
+  body.append(el('div', { class: 'rp-dev' }, [
+    '口径与来源：数字由本地确定性引擎（csvNormalize → marketCache → indicators → provenance）计算；行情为 m0 合成夹具（占位代码、合成价格；非真实行情），清单尚未签收（草案·演示口径）。未接线：真实 CSV 上传、真实行情、百炼、契约匹配。',
+  ]));
   det.append(body);
   page.append(det);
 
@@ -358,7 +344,8 @@ function buildUserBillPage(page, b, ctx) {
   }
 
   const stockScopes = Object.keys(b.factsByScope).filter((s) => s !== 'portfolio');
-  const symbolKeys = ['pool', ...stockScopes, ...b.blockedSymbols.filter((s) => !stockScopes.includes(s))];
+  const blockedFactScopes = (review.blocked_facts ?? []).map((f) => f.scope).filter((s) => s !== 'portfolio');
+  const symbolKeys = ['pool', ...new Set([...stockScopes, ...b.blockedSymbols, ...blockedFactScopes])];
   const scope = symbolKeys.includes(state.report.symbol) ? state.report.symbol : 'pool';
   const symGroup = el('div', { class: 'rp-control-group' });
   symGroup.append(el('span', { class: 'rp-control-label' }, ['标的']));
@@ -376,16 +363,7 @@ function buildUserBillPage(page, b, ctx) {
   const scopeBlocked = scope === 'pool' ? review.portfolio_published !== true : !entry;
 
   if (scopeBlocked) {
-    const blockedBox = el('div', { class: 'rp-error' });
-    blockedBox.append(el('div', {}, [scope === 'pool' ? '「组合」结果不发布：' : `「${scope}」结果不发布：`]));
-    const reasons = scope === 'pool' ? b.errors : b.errors.filter((e) => e.message && e.message.includes(scope));
-    for (const r of (reasons.length ? reasons : b.errors)) blockedBox.append(el('div', {}, [`· ${r.code} · ${r.message}`]));
-    blockedBox.append(el('div', { class: 'muted small' }, [
-      scope === 'pool'
-        ? '存在缺价/超范围标的时不按剩余标的重新计算组合（B4）；部分标的可显示不代表完整组合结论。'
-        : '不使用替代值或其他估值日冒充该标的结果。',
-    ]));
-    page.append(blockedBox);
+    page.append(userBlockedBox(b, review, scope));
   } else if (!entry) {
     page.append(el('div', { class: 'rp-error' }, [`未找到「${scope}」的已发布事实（照实提示，不猜测）。`]));
   } else {
@@ -412,51 +390,411 @@ function buildUserBillPage(page, b, ctx) {
     page.append(cfSection({ trades: state.bill.trades, symbol: scope, selectedId: state.report.cfTradeId, set: ctx.set }));
   }
 
+  page.append(reviewSection(review));
+  page.append(evidenceSection(b, review, scope));
+}
+
+/* —— 用户账单：复核与发布记录 / 证据与计算路径 ——
+   数据只来自 runReview 输出（review.*）与其 provenance；展示值只取引擎 display，页面不重算。
+   未发布事实一律显示“未发布”：provenance 条目里可能仍带有按剩余标的算出的值（B4 扣发），不得外露。 */
+const FACT_LABELS = Object.freeze({
+  buyCost: '买入成本',
+  sellProceeds: '卖出所得',
+  heldShares: '期末持仓',
+  actualValue: '实际期末价值',
+  ghostValue: '对照期末价值',
+  actualRet: '实际收益',
+  ghostRet: '对照收益',
+  dragMoney: '择时损耗金额',
+  drag: '择时损耗',
+});
+
+const REVIEW_STATUS_TEXT = Object.freeze({
+  published: '全部事实通过复核并发布',
+  degraded: '部分发布：有事实被扣发',
+  blocked: '未发布：没有可发布的事实',
+});
+
+const FINAL_STATUS_TEXT = Object.freeze({ blocked: '阻断', insufficient_evidence: '证据不足' });
+
+const REASON_TEXT = Object.freeze({
+  E_PRICE_MISSING: '估值日缺价或超出行情支持范围',
+  E_REVIEW_PORTFOLIO_WITHHELD: '存在缺价标的，组合结论整体扣发（不按剩余标的重算）',
+  E_REVIEW_PROVENANCE_BLOCKED: '计算路径不完整，不能追溯',
+  E_REVIEW_PROVENANCE_FAILED: '计算路径生成失败',
+  E_REVIEW_RECOMPUTE_NO_ALTERNATIVE: '复核未通过，且没有备用重算来源',
+  E_VERIFY_IDENTITY_BREAK: '恒等式校验未通过',
+  E_VERIFY_SOURCE_UNRESOLVED: '有成交无法定位到账单源文件的行',
+  E_VERIFY_RECOMPUTE_MISMATCH: '独立重算结果与主计算不一致',
+  E_VERIFY_DUAL_PATH_MISMATCH: '两条计算路径结果不一致',
+  E_VERIFY_PROVENANCE_MISSING: '缺少公式编号或计算记录',
+  E_PROV_DANGLING_REF: '计算路径引用的成交无法定位到源文件的行',
+  E_REVIEW_INPUT_INVALID: '复核输入不完整',
+  E_REVIEW_COMPUTE_FAILED: '计算失败',
+  E_REVIEW_VERIFY_FAILED: '独立复核运行失败',
+  E_REVIEW_RECOMPUTE_TOOL_ERROR: '重算过程出错',
+  E_REVIEW_CANDIDATE_SCOPE_CHANGED: '重算候选的标的范围与原范围不一致，未采纳',
+  E_REVIEW_CANDIDATE_CLOSE_INVALID: '重算候选缺少有效收盘价，未采纳',
+});
+
+// 只有这两类原因才属于“行情侧”阻断（B4）；其余均视为复核/证据问题，照实列码，不归因到缺价。
+const PRICE_BLOCK_CODES = new Set(['E_PRICE_MISSING', 'E_REVIEW_PORTFOLIO_WITHHELD']);
+
+function collectBlockReasons(b, review, scope) {
+  const isPool = scope === 'pool';
+  const factScope = isPool ? 'portfolio' : scope;
+  const items = [];
+  const add = (code, message) => {
+    if (!code) return;
+    const same = items.find((i) => i.code === code);
+    if (same && (!message || same.message === message)) return;
+    if (same && !same.message) { same.message = message; return; }
+    items.push({ code, message: message || null });
+  };
+  for (const s of review.blocked_symbols ?? []) if (isPool || s.symbol === scope) add(s.code, s.message);
+  for (const e of b.errors) {
+    if (!e.message) continue;
+    if (isPool ? PRICE_BLOCK_CODES.has(e.code) : e.message.includes(scope)) add(e.code, e.message);
+  }
+  for (const d of review.degraded ?? []) {
+    const related = !d.scope || d.scope === factScope || (isPool && PRICE_BLOCK_CODES.has(d.code));
+    if (related) add(d.code, d.message);
+  }
+  for (const f of review.blocked_facts ?? []) if (f.scope === factScope) for (const c of f.reason_codes) add(c, null);
+  return items;
+}
+
+function userBlockedBox(b, review, scope) {
+  const name = scope === 'pool' ? '组合' : scope;
+  const items = collectBlockReasons(b, review, scope);
+  const priceRelated = items.some((i) => PRICE_BLOCK_CODES.has(i.code));
+  const evidenceRelated = items.some((i) => !PRICE_BLOCK_CODES.has(i.code));
+  const box = el('div', { class: 'rp-error' });
+  box.append(el('div', {}, [`「${name}」结果不发布：`]));
+  if (items.length === 0) {
+    box.append(el('div', {}, ['· 复核输出中没有该范围的具体阻断记录（照实提示，不猜测原因）。']));
+  }
+  for (const i of items) box.append(el('div', {}, [i.message ? `· ${i.code} · ${i.message}` : `· ${reasonText(i.code)}`]));
+  if (priceRelated) {
+    box.append(el('div', { class: 'muted small' }, [
+      scope === 'pool'
+        ? '存在缺价/超范围标的时不按剩余标的重新计算组合（B4），也不回退其他日期；部分标的可显示不代表完整组合结论。'
+        : '不使用替代值或其他估值日冒充该标的结果（B4）。',
+    ]));
+  }
+  if (evidenceRelated) {
+    box.append(el('div', { class: 'muted small' }, [
+      `复核或证据不足导致「${name}」结果不发布：问题出在复核与计算路径环节，结果不能被追溯核对，因此不展示任何被阻断的数字。详见下方“复核与发布记录”。`,
+    ]));
+  }
+  return box;
+}
+
+const RECOMPUTE_RESULT_TEXT = Object.freeze({
+  no_alternative: '没有备用来源',
+  pass: '重算后通过',
+  improved: '重算后有改善',
+  no_improvement: '重算无改善',
+  rejected: '重算候选被拒绝',
+  error: '重算出错',
+});
+const RECOMPUTE_FINAL_TEXT = Object.freeze({ adopted: '已采纳', not_adopted: '未采纳', aborted: '已停止' });
+
+const SIDE_TEXT = Object.freeze({ buy: '买入', sell: '卖出' });
+
+function scopeLabel(scope) {
+  return scope === 'portfolio' || scope === 'pool' ? '组合' : scope;
+}
+
+function factName(factId) {
+  const i = String(factId).indexOf('.');
+  const scope = i > 0 ? factId.slice(0, i) : 'portfolio';
+  const key = i > 0 ? factId.slice(i + 1) : factId;
+  return `${scopeLabel(scope)} · ${FACT_LABELS[key] ?? key}`;
+}
+
+function reasonText(code) {
+  return REASON_TEXT[code] ? `${code}（${REASON_TEXT[code]}）` : code;
+}
+
+function table(headers, rows) {
+  const tbl = el('table', { class: 'tbl rp-tbl' });
+  const thead = el('thead', {});
+  thead.append(el('tr', {}, headers.map((h) => el('th', {}, [h]))));
+  tbl.append(thead);
+  const tbody = el('tbody', {});
+  for (const r of rows) {
+    const tr = el('tr', {});
+    for (const c of r) tr.append(c instanceof Node ? el('td', {}, [c]) : el('td', {}, [c ?? '']));
+    tbody.append(tr);
+  }
+  tbl.append(tbody);
+  return el('div', { class: 'table-wrap' }, [tbl]);
+}
+
+function statusTag(text, kind) {
+  return el('span', { class: `rp-tag ${kind}` }, [text]);
+}
+
+function overviewItem(label, value, kind = '') {
+  return el('div', { class: `rp-ov-item ${kind}`.trim() }, [
+    el('div', { class: 'k' }, [label]),
+    el('div', { class: 'v' }, [value]),
+  ]);
+}
+
+function publishedDisplay(fact, provItem) {
+  return fact.display ?? (provItem && provItem.display) ?? '（引擎未提供展示值）';
+}
+
+function reviewSection(review) {
   const det = el('details', { class: 'rp-evidence' });
   det.append(el('summary', {}, ['复核与发布记录']));
   const body = el('div', { class: 'rp-evidence-body' });
-  body.append(el('div', { class: 'rp-sub' }, [
-    `复核状态：${review.status} · 已发布事实 ${review.published_facts.length} 项 · 阻断事实 ${review.blocked_facts.length} 项 · 组合${review.portfolio_published ? '已发布' : '不发布'}`,
-  ]));
-  body.append(el('div', { class: 'rp-calc muted small' }, [
-    `verify_id：${review.meta.verify_id ?? '（未产出）'} · 重算尝试 ${review.meta.recompute_attempts} 次（本轮用户链路未提供重算来源，如实降级）`,
-  ]));
-  for (const d of review.degraded) {
-    body.append(el('div', { class: 'rp-calc' }, [`· ${d.code}${d.scope ? `（${d.scope}）` : ''} · ${d.message}`]));
-  }
-  for (const bf of review.blocked_facts) {
-    body.append(el('div', { class: 'rp-calc muted small' }, [`· ${bf.fact_id} · ${bf.final_status} · ${bf.reason_codes.join('、')}`]));
-  }
-  for (const r of review.recompute_log) {
-    body.append(el('div', { class: 'rp-calc muted small' }, [`· ${r.recompute_id} · attempt ${r.attempt} · ${r.path_used} · ${r.result}/${r.final_status}${r.code ? ` · ${r.code}` : ''}`]));
-  }
-  det.append(body);
-  page.append(det);
+  const provById = new Map((review.provenance ? review.provenance.items : []).map((i) => [i.fact_id, i]));
 
+  /* 复核概览 */
+  body.append(el('div', { class: 'rp-sub' }, ['复核概览']));
+  const ov = el('div', { class: 'rp-overview' });
+  ov.append(overviewItem('复核状态', `${review.status} · ${REVIEW_STATUS_TEXT[review.status] ?? '未知状态'}`, review.status === 'published' ? 'ok' : 'bad'));
+  ov.append(overviewItem('复核编号 verify_id', review.meta.verify_id ?? '未产出（复核未运行）', review.meta.verify_id ? '' : 'bad'));
+  ov.append(overviewItem('已发布事实', `已发布事实 ${review.published_facts.length} 项`));
+  ov.append(overviewItem('阻断事实', `阻断事实 ${review.blocked_facts.length} 项`, review.blocked_facts.length ? 'bad' : ''));
+  ov.append(overviewItem('组合结论', review.portfolio_published ? '组合已发布' : '组合不发布', review.portfolio_published ? 'ok' : 'bad'));
+  body.append(ov);
+  if (review.degraded.length > 0) {
+    const db = el('div', { class: 'banner warn-banner' });
+    db.append(el('strong', {}, ['降级说明']));
+    for (const d of review.degraded) db.append(el('div', {}, [`${d.scope ? `「${scopeLabel(d.scope)}」` : ''}${reasonText(d.code)}：${d.message}`]));
+    body.append(db);
+  }
+
+  /* 已发布事实 */
+  body.append(el('div', { class: 'rp-sub' }, [`已发布事实（${review.published_facts.length} 项）`]));
+  if (review.published_facts.length === 0) {
+    body.append(el('div', { class: 'rp-calc rp-bad-text' }, ['没有通过复核的事实，本次不发布任何数字。']));
+  } else {
+    body.append(table(
+      ['事实', 'fact_id', '展示值', '公式编号', '状态'],
+      review.published_facts.map((f) => [
+        factName(f.fact_id), f.fact_id, publishedDisplay(f, provById.get(f.fact_id)), f.formula_id, statusTag('已发布', 'ok'),
+      ]),
+    ));
+  }
+
+  /* 未发布事实 */
+  body.append(el('div', { class: 'rp-sub' }, [`未发布事实（${review.blocked_facts.length} 项）`]));
+  if (review.blocked_facts.length === 0 && review.blocked_symbols.length === 0) {
+    body.append(el('div', { class: 'rp-calc unchanged' }, ['无未发布事实。']));
+  }
+  if (review.blocked_facts.length > 0) {
+    body.append(table(
+      ['事实', 'fact_id', '状态', '原因代码', '说明'],
+      review.blocked_facts.map((f) => [
+        factName(f.fact_id),
+        f.fact_id,
+        statusTag(`未发布 · ${FINAL_STATUS_TEXT[f.final_status] ?? f.final_status}`, 'bad'),
+        f.reason_codes.join('、'),
+        f.reason_summary ?? f.reason_codes.map((c) => REASON_TEXT[c] ?? c).join('；'),
+      ]),
+    ));
+  }
+  for (const s of review.blocked_symbols) {
+    body.append(el('div', { class: 'rp-calc rp-bad-text' }, [
+      `「${s.symbol}」未进入计算（${reasonText(s.code)}）：该标的没有任何事实条目，也不展示替代数字。`,
+    ]));
+  }
+
+  /* 复核检查 */
+  body.append(el('div', { class: 'rp-sub' }, ['复核检查']));
+  const v = review.verify;
+  if (!v) {
+    body.append(el('div', { class: 'rp-calc rp-bad-text' }, [
+      `复核检查未运行：${review.degraded.length ? review.degraded.map((d) => d.message).join('；') : '未进入计算'}。没有任何数字经过复核。`,
+    ]));
+  } else {
+    const idTotal = v.identity_checks.length;
+    const checks = el('div', { class: 'rp-overview' });
+    checks.append(overviewItem('事实独立重算', `${v.summary.pass}/${v.summary.n_facts} 通过${v.summary.fail ? ` · ${v.summary.fail} 项未通过` : ''}`, v.summary.fail ? 'bad' : 'ok'));
+    checks.append(overviewItem('恒等式校验', `${idTotal - v.summary.identities_fail}/${idTotal} 通过`, v.summary.identities_fail ? 'bad' : 'ok'));
+    checks.append(overviewItem('计算路径完整性', v.provenance_complete ? '完整' : '不完整', v.provenance_complete ? 'ok' : 'bad'));
+    checks.append(overviewItem('悬空来源引用', v.dangling_refs.length ? `${v.dangling_refs.length} 处` : '无', v.dangling_refs.length ? 'bad' : 'ok'));
+    body.append(checks);
+    if (v.dangling_refs.length > 0) {
+      const db = el('div', { class: 'banner warn-banner' });
+      db.append(el('strong', {}, ['悬空来源引用（相关事实不发布）']));
+      for (const d of v.dangling_refs) db.append(el('div', {}, [`「${scopeLabel(d.fact_scope)}」引用的成交 ${d.ref.key} 无法定位到账单源文件的行`]));
+      body.append(db);
+    }
+    // 只展示通过/未通过，不展示左右两侧数值：被扣发的组合恒等式两侧值同样不得外露
+    body.append(table(
+      ['编号', '恒等式', '范围', '结果'],
+      v.identity_checks.map((i) => [
+        i.identity_id, i.name, scopeLabel(i.scope),
+        i.verdict === 'pass' ? statusTag('通过', 'ok') : statusTag(`未通过 · ${i.code}`, 'bad'),
+      ]),
+    ));
+  }
+
+  /* 重算记录 */
+  body.append(el('div', { class: 'rp-sub' }, ['重算记录']));
+  const attempts = review.meta.recompute_attempts;
+  if (review.recompute_log.length === 0) {
+    body.append(el('div', { class: 'rp-calc unchanged' }, [
+      `重算尝试 ${attempts} 次 · 未提供重算来源${v && v.summary.fail === 0 && v.summary.identities_fail === 0 ? '（本次复核已通过，无需重算）' : ''}。`,
+    ]));
+  } else {
+    body.append(el('div', { class: 'rp-calc unchanged' }, [
+      `重算尝试 ${attempts} 次 · 本轮用户账单链路未提供重算来源，复核未通过的事实保持不发布。`,
+    ]));
+    body.append(table(
+      ['记录编号', '第几次', '使用来源', '结果', '处理', '代码'],
+      review.recompute_log.map((r) => [
+        r.recompute_id,
+        String(r.attempt),
+        r.path_used === 'none' ? '无' : r.path_used,
+        RECOMPUTE_RESULT_TEXT[r.result] ?? r.result,
+        RECOMPUTE_FINAL_TEXT[r.final_status] ?? r.final_status,
+        r.code ?? '',
+      ]),
+    ));
+  }
+
+  det.append(body);
+  return det;
+}
+
+function evidenceSection(b, review, scope) {
   const evd = el('details', { class: 'rp-evidence' });
   evd.append(el('summary', {}, ['查看证据与计算路径']));
-  const evBody = el('div', { class: 'rp-evidence-body' });
+  const body = el('div', { class: 'rp-evidence-body' });
+  const factScope = scope === 'pool' ? 'portfolio' : scope;
   const prov = b.provenance;
+
   if (!prov) {
-    evBody.append(el('div', { class: 'rp-calc' }, ['计算路径不可用：本次运行未产出 provenance（不掩盖，照实提示）。']));
+    body.append(el('div', { class: 'rp-calc rp-bad-text' }, [
+      `计算路径不可用：本次没有产出计算路径（${review.degraded.length ? review.degraded.map((d) => reasonText(d.code)).join('；') : '原因未知'}）。没有可追溯的数字，因此不发布、不标记为已验证。`,
+    ]));
   } else {
-    evBody.append(el('div', { class: 'rp-sub' }, [`计算路径（fact ${prov.summary.n} 项 · 阻断 ${prov.summary.blocked_n} 项）`]));
+    const items = prov.items.filter((it) => it.scope === factScope);
+    const pubById = new Map(review.published_facts.map((f) => [f.fact_id, f]));
+    const blkById = new Map(review.blocked_facts.map((f) => [f.fact_id, f]));
+    body.append(el('div', { class: 'rp-sub' }, [
+      `当前范围「${scopeLabel(scope)}」· 计算路径 ${items.length} 项 · 已发布 ${items.filter((it) => pubById.has(it.fact_id)).length} 项`,
+    ]));
     if (prov.blocked || prov.dangling_refs.length > 0) {
       const pb = el('div', { class: 'banner warn-banner' });
-      pb.append(el('strong', {}, ['该视图存在阻断项（不发布部分路径）']));
-      for (const d of prov.dangling_refs) pb.append(el('div', {}, [`· ${d.fact_id} · ${d.message}`]));
-      if (prov.errors) for (const e of prov.errors) pb.append(el('div', {}, [`· ${e.code} · ${e.message}`]));
-      evBody.append(pb);
+      pb.append(el('strong', {}, ['计算路径存在阻断或悬空引用：相关事实不发布、不标记为已验证']));
+      for (const d of prov.dangling_refs) pb.append(el('div', {}, [`${factName(d.fact_id)} · ${d.message}`]));
+      body.append(pb);
     }
-    for (const it of prov.items) {
-      evBody.append(el('div', { class: 'rp-calc muted small' }, [
-        `${it.fact_id} · ${it.formula_id ?? '（无公式编号）'} · ${it.display ?? String(it.value)}${it.blocked ? ' · 阻断不发布' : ''}`,
+    if (items.length === 0) {
+      body.append(el('div', { class: 'rp-calc rp-bad-text' }, [
+        `「${scopeLabel(scope)}」没有计算路径：${b.blockedSymbols.includes(scope) ? '该标的缺价或超出行情支持范围，未进入计算' : '引擎未输出该范围的事实'}，不展示替代数字。`,
       ]));
     }
+    for (const it of items) body.append(factEvidence(it, pubById.get(it.fact_id), blkById.get(it.fact_id), review.meta.verify_id));
   }
-  evBody.append(el('div', { class: 'rp-dev' }, [
-    '口径与来源：数字由本地确定性引擎（csvNormalize → marketCache → indicators → verify → provenance）计算，经 runReview 发布门槛过滤；行情为 m0 合成夹具（占位代码、合成价格；非真实行情，清单未签收·草案口径）。原始 CSV 仅在本机读取与校验，未上传。',
+
+  body.append(el('div', { class: 'rp-dev' }, [
+    '口径与来源：数字由本地确定性引擎计算，并经复核（runReview）筛选后才发布；行情为 m0 合成夹具（占位代码、合成价格；非真实行情，清单未签收·草案口径）。原始 CSV 仅在本机读取与校验，未上传。',
   ]));
-  evd.append(evBody);
-  page.append(evd);
+  evd.append(body);
+  return evd;
+}
+
+function factEvidence(it, pub, blk, verifyId) {
+  const published = !!pub && !it.blocked;
+  const det = el('details', { class: `rp-fact ${published ? 'ok' : 'bad'}` });
+  const sum = el('summary', {});
+  sum.append(el('span', { class: 'rp-fact-name' }, [factName(it.fact_id)]));
+  sum.append(el('span', { class: 'rp-fact-val' }, [published ? publishedDisplay(pub, it) : '未发布']));
+  sum.append(published
+    ? statusTag('已发布', 'ok')
+    : statusTag(blk ? `未发布 · ${FINAL_STATUS_TEXT[blk.final_status] ?? blk.final_status}` : '未发布', 'bad'));
+  det.append(sum);
+
+  const body = el('div', { class: 'rp-fact-body' });
+  if (published) {
+    body.append(el('div', { class: 'rp-calc unchanged' }, [`复核通过并发布（${verifyId}）。`]));
+  } else {
+    const reasons = blk ? blk.reason_codes : [];
+    const warn = el('div', { class: 'banner warn-banner' });
+    warn.append(el('strong', {}, ['该事实未发布，不能作为有效结果引用']));
+    for (const c of reasons) warn.append(el('div', {}, [reasonText(c)]));
+    if (blk && blk.reason_summary) warn.append(el('div', {}, [blk.reason_summary]));
+    for (const e of it.errors) warn.append(el('div', {}, [`${e.code} · ${e.message}`]));
+    if (!blk && it.errors.length === 0) warn.append(el('div', {}, ['复核结果中没有该事实的发布记录。']));
+    body.append(warn);
+  }
+
+  appendFactDetails(body, it, published, '未发布：不展示该步骤的中间数值。');
+  det.append(body);
+  return det;
+}
+
+function appendFactDetails(body, it, showValues, hiddenStepText) {
+  body.append(el('div', { class: 'rp-kv' }, [el('b', {}, ['公式编号']), it.formula_id ?? '缺少公式编号（不发布）']));
+  body.append(el('div', { class: 'rp-kv' }, [el('b', {}, ['公式']), it.formula_text ?? '公式注册表中没有该公式']));
+  const inputs = it.inputs || {};
+  body.append(el('div', { class: 'rp-kv' }, [
+    el('b', {}, ['输入']),
+    `成交 ${Array.isArray(inputs.trade_ids) ? inputs.trade_ids.join('、') : '无'}；${inputs.close_basis ?? `估值日收盘价（合成行情）${inputs.close}`}`,
+  ]));
+
+  const refs = el('div', { class: 'rp-kv' }, [el('b', {}, ['来源引用'])]);
+  const refList = el('div', { class: 'rp-refs' });
+  for (const r of it.source_refs) refList.append(el('span', { class: 'rp-ref' }, [`${r.key} · ${r.file} 第 ${r.line} 行`]));
+  for (const e of it.errors) {
+    if (e.code === 'E_PROV_DANGLING_REF') refList.append(el('span', { class: 'rp-ref bad' }, [`悬空引用：${e.message}`]));
+  }
+  if (it.source_refs.length === 0 && !it.errors.length) refList.append(el('span', { class: 'rp-ref bad' }, ['无可定位来源（不发布）']));
+  refs.append(refList);
+  body.append(refs);
+
+  body.append(el('div', { class: 'rp-sub2' }, ['计算步骤']));
+  const ol = el('ol', { class: 'rp-steps' });
+  for (const s of it.steps ?? []) {
+    const li = el('li', {});
+    li.append(el('b', {}, [`${s.step_id} ${s.label}`]));
+    if (!showValues && s.kind !== 'sort') {
+      li.append(el('div', { class: 'rp-calc unchanged' }, [hiddenStepText]));
+    } else if (s.kind === 'lines' && Array.isArray(s.lines)) {
+      li.append(el('div', { class: 'rp-calc unchanged' }, [s.detail]));
+      li.append(table(
+        ['序号', '成交', '日期', '方向', '价格', '数量', '来源行'],
+        s.lines.map((l) => [String(l.seq), l.trade_id, l.trade_date, SIDE_TEXT[l.side] ?? l.side, String(l.price), String(l.quantity),
+          l.ref && l.ref.file ? `${l.ref.file} 第 ${l.ref.line} 行` : '无法定位']),
+      ));
+    } else if (s.kind === 'sort') {
+      li.append(el('div', { class: 'rp-calc unchanged' }, [`处理顺序：${(s.order ?? []).join(' → ')}`]));
+    } else {
+      li.append(el('div', { class: 'rp-calc unchanged' }, [s.detail]));
+    }
+    ol.append(li);
+  }
+  body.append(ol);
+}
+
+/* 演示模式条目：未经 runReview，不使用发布/复核措辞；provenance 自身阻断时不展示数值。 */
+function demoFactEvidence(it) {
+  const usable = !it.blocked;
+  const det = el('details', { class: `rp-fact ${usable ? 'demo' : 'bad'}` });
+  const sum = el('summary', {});
+  sum.append(el('span', { class: 'rp-fact-name' }, [factName(it.fact_id)]));
+  sum.append(el('span', { class: 'rp-fact-val' }, [usable ? (it.display ?? '（引擎未提供展示值）') : '演示计算路径不可用']));
+  sum.append(el('span', { class: 'rp-fact-fid' }, [it.formula_id ?? '缺少公式编号']));
+  if (!usable) sum.append(statusTag('存在阻断项', 'bad'));
+  det.append(sum);
+
+  const body = el('div', { class: 'rp-fact-body' });
+  if (!usable) {
+    const warn = el('div', { class: 'banner warn-banner' });
+    warn.append(el('strong', {}, ['该条演示计算路径存在阻断项，不能作为有效结果引用']));
+    for (const e of it.errors) warn.append(el('div', {}, [`${e.code} · ${e.message}`]));
+    body.append(warn);
+  }
+  appendFactDetails(body, it, usable, '存在阻断项：不展示该步骤的中间数值。');
+  det.append(body);
+  return det;
 }

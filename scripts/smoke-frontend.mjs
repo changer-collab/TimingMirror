@@ -172,16 +172,35 @@ mountCycle(); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('报告：组合指标（引擎输出 +4.9% / +6.9% / +2.0pp / ¥700.00）', txt.includes('+4.9%') && txt.includes('+6.9%') && txt.includes('+2.0pp') && txt.includes('¥700.00'), txt.slice(0, 220));
 check('报告：合成演示标注 + 买入不动口径 + 无 undefined', txt.includes('合成演示数据') && txt.includes('买入不动') && txt.includes('组合不汇总个股股数') && !txt.includes('undefined'));
-const provA = txt.match(/计算路径（fact (\d+) 项 · 阻断 (\d+) 项）/);
-check('报告：A provenance 完整（fact>0、阻断 0、无 E_PROVENANCE）', !!provA && Number(provA[1]) > 0 && Number(provA[2]) === 0 && !txt.includes('E_PROVENANCE'), txt.slice(0, 320));
+const demoFacts = () => findByClass(current, 'rp-fact');
+const provA = txt.match(/演示计算路径（当前范围「组合」· (\d+) 项）/);
+check('报告：A 演示计算路径完整（组合 8 项可展开条目、无阻断项、无 E_PROVENANCE）', !!provA && Number(provA[1]) === 8 && demoFacts().length === 8
+  && demoFacts().every((n) => n.tagName === 'DETAILS' && String(n.attrs.class).includes('demo')) && !txt.includes('存在阻断项') && !txt.includes('E_PROVENANCE'), txt.slice(0, 320));
+check('报告：演示模式常驻“未经过复核发布流程”提示，不出现复核链路专属词（已发布/复核通过/阻断事实/verify_id/复核概览）',
+  txt.includes('以下为演示计算路径，未经过复核发布流程（runReview），不代表复核结果。')
+  && !txt.includes('已发布') && !txt.includes('复核通过') && !txt.includes('阻断事实') && !txt.includes('verify_id') && !txt.includes('复核概览'), txt.slice(0, 320));
+{
+  const first = demoFacts()[0];
+  const sumTxt = texts(first.children[0]).join('|');
+  const allTxt = demoFacts().map((n) => texts(n).join('|')).join('||');
+  check('报告：演示条目收起时显示中文事实名 + 展示值 + 公式编号', sumTxt.includes('组合 · ') && /CALC_/.test(sumTxt) && sumTxt.split('|').length === 3, sumTxt);
+  check('报告：演示条目展开后为可读文本（公式/输入/来源引用/S1–S4），不平铺原始 JSON',
+    allTxt.includes('公式编号') && allTxt.includes('输入') && allTxt.includes('估值日不复权 close') && allTxt.includes('来源引用') && /第 \d+ 行/.test(allTxt)
+    && allTxt.includes('S1 口径') && allTxt.includes('S2 批次') && allTxt.includes('S3 逐批') && allTxt.includes('S4 排序') && allTxt.includes('处理顺序')
+    && !txt.includes('inputs：') && !txt.includes('"trade_ids"') && !txt.includes('steps：'), allTxt.slice(0, 400));
+  check('报告：演示 S3 逐笔明细沿用明细表', demoFacts().every((n) => findByClass(n, 'rp-tbl').length === 1), String(demoFacts().map((n) => findByClass(n, 'rp-tbl').length)));
+}
 await clickLabel('000000'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('报告：标的切换 000000（引擎输出 +10.0% / -2.0pp / ¥-400.00）', txt.includes('+10.0%') && txt.includes('-2.0pp') && txt.includes('¥-400.00'), txt.slice(0, 220));
+check('报告：演示计算路径随范围切换（000000 · 9 项，输入含估值日收盘价）', txt.includes('演示计算路径（当前范围「000000」· 9 项）') && demoFacts().length === 9
+  && txt.includes('估值日收盘价（合成行情）'), txt.slice(0, 320));
 await clickLabel('A′'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('报告：A′ 切换 + 引擎差异面板', state.report.scenario === 'Aprime' && txt.includes('与基准 A 的差异') && txt.includes('仅改第 5 行卖出价') && txt.includes('-7.0pp'), txt.slice(0, 280));
-const provAp = txt.match(/计算路径（fact (\d+) 项 · 阻断 (\d+) 项）/);
-check('报告：A′ provenance 完整（fact>0、阻断 0、无 E_PROVENANCE）', !!provAp && Number(provAp[1]) > 0 && Number(provAp[2]) === 0 && !txt.includes('E_PROVENANCE'), txt.slice(0, 320));
+const provAp = txt.match(/演示计算路径（当前范围「000000」· (\d+) 项）/);
+check('报告：A′ 演示计算路径完整（9 项、无阻断项、无复核专属词、无 E_PROVENANCE）', !!provAp && Number(provAp[1]) === 9 && demoFacts().length === 9
+  && !txt.includes('存在阻断项') && !txt.includes('已发布') && !txt.includes('复核通过') && !txt.includes('verify_id') && !txt.includes('E_PROVENANCE'), txt.slice(0, 320));
 await clickLabel('基准账单 A'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('报告：切回 A 恢复（实际收益卡与证据入口正常）', state.report.scenario === 'A' && txt.includes('实际收益') && txt.includes('查看证据与计算路径'));
@@ -309,6 +328,27 @@ check('用户报告：指标来自用户交易（+4.0%/+8.0%/¥400.00），非�
 check('用户报告：无 A/A′ 场景切换与差异面板', !txt.includes('演示场景') && !txt.includes('A′') && !txt.includes('与基准 A 的差异'), txt.slice(0, 160));
 check('用户报告：复核 published + 已发布 17 项 + 组合已发布', txt.includes('复核：published') && txt.includes('已发布事实 17 项') && txt.includes('组合已发布'), txt.slice(0, 200));
 check('用户报告：组合 scope 反事实入口提示选择标的（不画图）', txt.includes('请选择一个标的查看单笔卖出反事实'), txt.slice(0, 160));
+const factNodes = () => findByClass(current, 'rp-fact');
+const blockedBoxOf = () => findByClass(current, 'rp-error').find((n) => texts(n).join('').includes('结果不发布：')) ?? { children: [] };
+const factSummary = (n) => texts(n.children[0]).join('|');
+check('证据视图：复核概览（verify_id / 已发布 17 / 阻断 0 / 组合已发布）+ 已发布事实表（fact_id / display / 公式编号）',
+  txt.includes('复核概览') && /V-[0-9a-f]{8}/.test(txt) && txt.includes('阻断事实 0 项') && txt.includes('已发布事实（17 项）')
+  && txt.includes('portfolio.actualRet') && txt.includes('CALC_RET_V1') && txt.includes('组合 · 实际收益') && txt.includes('无未发布事实'), txt.slice(0, 400));
+check('证据视图：复核检查（独立重算 17/17、恒等式全过、路径完整、无悬空引用）',
+  txt.includes('事实独立重算') && txt.includes('17/17 通过') && txt.includes('恒等式校验') && txt.includes('ID-1') && txt.includes('计算路径完整性') && txt.includes('悬空来源引用'), txt.slice(0, 400));
+check('证据视图：无备用重算来源时如实说明（重算尝试 0 次 · 未提供重算来源）', txt.includes('重算尝试 0 次 · 未提供重算来源') && txt.includes('无需重算'), txt.slice(0, 300));
+{
+  const nodes = factNodes();
+  const ret = nodes.find((n) => factSummary(n).includes('组合 · 实际收益'));
+  const retTxt = ret ? texts(ret).join('|') : '';
+  check('证据视图：组合 8 项事实均已发布，条目标题含事实名 + 引擎 display + 已发布',
+    nodes.length === 8 && nodes.every((n) => String(n.attrs.class).includes('ok') && factSummary(n).includes('已发布'))
+    && !!ret && factSummary(ret).includes('+4.0%'), JSON.stringify(nodes.map(factSummary)).slice(0, 300));
+  check('证据视图：展开后含公式编号/公式文本/输入/来源行/计算步骤',
+    retTxt.includes('CALC_RET_V1') && retTxt.includes('actualValue / buyCost − 1') && retTxt.includes('成交 T001、T002')
+    && retTxt.includes('user-bill.csv 第 2 行') && retTxt.includes('计算步骤') && retTxt.includes('S1 口径') && retTxt.includes('S3 逐批')
+    && retTxt.includes('复核通过并发布') && !retTxt.includes('undefined'), retTxt.slice(0, 400));
+}
 await clickLabel('000000'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('用户反事实：未阻断标可进入反事实图（入口 + 引擎 display ¥10,800.00 / +8.0% / +4.0pp）', txt.includes('单笔反事实') && txt.includes('S1') && txt.includes('假设结果价值 ¥10,800.00') && txt.includes('假设收益 +8.0%') && txt.includes('相对改善 +4.0pp'), txt.slice(0, 300));
@@ -324,12 +364,83 @@ await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('用户报告：范围外标的 600519 阻断展示（E_PRICE_MISSING · 不回落演示）', txt.includes('600519') && txt.includes('E_PRICE_MISSING') && !txt.includes('+4.9%') && !txt.includes('¥700.00'), txt.slice(0, 260));
 check('用户报告：复核 degraded + 组合结果不发布（不按剩余标的重算）', txt.includes('复核：degraded') && txt.includes('组合」结果不发布') && txt.includes('不按剩余标的'), txt.slice(0, 260));
+check('证据视图·缺价：未发布事实表列出组合扣发原因 + 600519 未进入计算 + 无组合指标卡',
+  txt.includes('组合不发布') && txt.includes('未发布事实（8 项）') && txt.includes('portfolio.actualRet') && txt.includes('E_REVIEW_PORTFOLIO_WITHHELD')
+  && txt.includes('组合结论整体扣发') && txt.includes('「600519」未进入计算') && findByClass(current, 'rp-metric').length === 0, txt.slice(0, 400));
+{
+  const boxTxt = texts(blockedBoxOf()).join('|');
+  check('阻断框·缺价：组合扣发显示真实原因（E_PRICE_MISSING / WITHHELD）+ B4 文案，不出现复核证据不足说明',
+    boxTxt.includes('「组合」结果不发布') && boxTxt.includes('E_PRICE_MISSING') && boxTxt.includes('E_REVIEW_PORTFOLIO_WITHHELD')
+    && boxTxt.includes('不按剩余标的') && boxTxt.includes('不回退其他日期') && !boxTxt.includes('复核或证据不足') && !boxTxt.includes('+4.0%'), boxTxt.slice(0, 400));
+}
+{
+  const nodes = factNodes();
+  const allTxt = nodes.map((n) => texts(n).join('|')).join('||');
+  check('证据视图·缺价：组合事实条目全部“未发布”，不外露按剩余标的算出的数字',
+    nodes.length === 8 && nodes.every((n) => String(n.attrs.class).includes('bad') && factSummary(n).includes('未发布'))
+    && !allTxt.includes('+4.0%') && !allTxt.includes('¥400.00') && !allTxt.includes('¥10,400.00') && !allTxt.includes('复核通过并发布')
+    && allTxt.includes('不展示该步骤的中间数值'), allTxt.slice(0, 400));
+}
 await clickLabel('000000'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('用户报告：未阻断标的 000000 仍发布（+4.0%）', txt.includes('+4.0%') && txt.includes('¥400.00'), txt.slice(0, 200));
 await clickLabel('600519'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('用户报告：600519 视图不发布（支持范围外说明，且不出反事实图）', txt.includes('600519」结果不发布') && txt.includes('合成行情缓存支持范围') && !txt.includes('单笔反事实'), txt.slice(0, 200));
+check('证据视图·缺价标的：600519 无计算路径且说明未进入计算', txt.includes('「600519」没有计算路径') && factNodes().length === 0, txt.slice(0, 300));
+
+const allOutCsv = '日期,标的,方向,价格,数量,费用,税费\n2024-09-26,600519,买入,30,100,5,0\n';
+state.route = 'import';
+state.report = { scenario: 'A', symbol: 'pool' };
+mountCycle();
+await pickFile({ name: 'allout-bill.csv', size: allOutCsv.length, __content: allOutCsv });
+await flush();
+await clickLabel('确认交易列表');
+await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+check('证据视图·复核未运行：verify 未产出、计算路径不可用、无已发布数字',
+  txt.includes('复核：blocked') && txt.includes('未产出（复核未运行）') && txt.includes('已发布事实 0 项') && txt.includes('复核检查未运行')
+  && txt.includes('计算路径不可用') && txt.includes('不标记为已验证') && txt.includes('重算尝试 0 次 · 未提供重算来源')
+  && findByClass(current, 'rp-metric').length === 0 && factNodes().length === 0, txt.slice(0, 400));
+{
+  const boxTxt = texts(blockedBoxOf()).join('|');
+  check('阻断框·全部超范围：组合阻断显示缺价原因与 B4 文案',
+    boxTxt.includes('E_PRICE_MISSING') && boxTxt.includes('不按剩余标的') && !boxTxt.includes('复核或证据不足'), boxTxt.slice(0, 300));
+}
+
+state.route = 'import';
+state.report = { scenario: 'A', symbol: 'pool' };
+mountCycle();
+await pickFile({ name: 'dangling-bill.csv', size: happyCsv.length, __content: happyCsv });
+await flush();
+state.bill = { ...state.bill, trades: state.bill.trades.map((t, i) => (i === 0 ? { ...t, source: { file: null, line: null } } : t)) };
+await clickLabel('确认交易列表');
+await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+check('证据视图·悬空引用：路径不完整 + 悬空成交 T001 + E_PROV_DANGLING_REF 显著标注',
+  txt.includes('计算路径完整性') && txt.includes('不完整') && txt.includes('引用的成交 T001 无法定位') && txt.includes('E_PROV_DANGLING_REF')
+  && txt.includes('E_VERIFY_SOURCE_UNRESOLVED') && txt.includes('计算路径存在阻断或悬空引用'), txt.slice(0, 400));
+check('证据视图·悬空引用：重算记录如实列出（无备用来源 / 已停止 / 尝试 0 次）',
+  /R-[0-9a-f]{8}/.test(txt) && txt.includes('没有备用来源') && txt.includes('已停止') && txt.includes('E_REVIEW_RECOMPUTE_NO_ALTERNATIVE') && txt.includes('重算尝试 0 次'), txt.slice(0, 400));
+check('证据视图·悬空引用：全部事实未发布，页面不出现任何有效数字或“复核通过”',
+  factNodes().length === 8 && factNodes().every((n) => factSummary(n).includes('未发布')) && txt.includes('没有通过复核的事实')
+  && !txt.includes('+4.0%') && !txt.includes('¥400.00') && !txt.includes('¥10,000.00') && !txt.includes('复核通过并发布'), txt.slice(0, 400));
+{
+  const boxTxt = texts(blockedBoxOf()).join('|');
+  check('阻断框·悬空来源：组合显示复核/证据问题（来源行不可定位 / 无备用重算），不归因缺价或超范围，无指标卡',
+    boxTxt.includes('「组合」结果不发布') && boxTxt.includes('E_VERIFY_SOURCE_UNRESOLVED') && boxTxt.includes('E_REVIEW_RECOMPUTE_NO_ALTERNATIVE')
+    && boxTxt.includes('复核或证据不足') && !boxTxt.includes('缺价') && !boxTxt.includes('超范围') && !boxTxt.includes('不按剩余标的')
+    && !boxTxt.includes('不回退其他日期') && findByClass(current, 'rp-metric').length === 0, boxTxt.slice(0, 400));
+}
+await clickLabel('000000'); await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+{
+  const boxTxt = texts(blockedBoxOf()).join('|');
+  check('阻断框·悬空来源：标的 000000 同样显示真实原因，不归因缺价，不显示数字与反事实图',
+    boxTxt.includes('「000000」结果不发布') && boxTxt.includes('E_VERIFY_SOURCE_UNRESOLVED') && boxTxt.includes('复核或证据不足')
+    && !boxTxt.includes('缺价') && !boxTxt.includes('超范围') && !boxTxt.includes('其他估值日')
+    && findByClass(current, 'rp-metric').length === 0 && !txt.includes('单笔反事实') && !txt.includes('+4.0%') && !txt.includes('¥400.00'), boxTxt.slice(0, 400));
+}
 
 state.route = 'import';
 state.report = { scenario: 'A', symbol: 'pool' };

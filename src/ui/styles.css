@@ -173,10 +173,39 @@ body {
 .rp-sub2 { font-size: 15px; font-weight: 700; color: var(--ink-soft); }
 .rp-calc { font-size: 17px; color: var(--ink); line-height: 1.75; }
 .rp-calc.unchanged { font-size: 15px; color: var(--ink-soft); }
-.rp-ledger { display: flex; flex-direction: column; border-top: 1px solid var(--hairline-soft); }
-.rp-row { display: flex; gap: 14px; padding: 10px 2px; border-bottom: 1px solid var(--hairline-soft); font-size: 17px; color: var(--ink); line-height: 1.7; }
-.rp-row i { font-family: var(--mono); font-style: normal; font-size: 14px; color: var(--amber-ink); padding-top: 3px; min-width: 26px; }
 .rp-dev { background: #F4F6F9; border: 1px dashed #D8DDE6; border-radius: 10px; padding: 12px 16px; font-size: 15px; color: var(--ink-soft); line-height: 1.7; }
+
+/* —— 复核与证据视图（用户账单）—— */
+.rp-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.rp-ov-item { border: 1px solid var(--hairline); border-left: 4px solid #C9D1DD; border-radius: 10px; padding: 10px 14px; background: #FBFCFD; }
+.rp-ov-item.ok { border-left-color: #6FA872; }
+.rp-ov-item.bad { border-left-color: var(--red-drag); background: #FDF7F7; }
+.rp-ov-item .k { font-size: 13px; color: var(--ink-soft); }
+.rp-ov-item .v { font-size: 16px; font-weight: 700; color: var(--ink-strong); margin-top: 2px; word-break: break-all; }
+.rp-tbl { font-size: 14px; }
+.rp-tbl td { white-space: normal; vertical-align: top; }
+.rp-tag { display: inline-block; font-size: 13px; padding: 1px 10px; border-radius: 999px; border: 1px solid; white-space: nowrap; }
+.rp-tag.ok { color: var(--green-ink); border-color: #BFD9BF; background: #F1F8F1; }
+.rp-tag.bad { color: #9C3A3E; border-color: #E3C4C4; background: #FBF2F2; }
+.rp-bad-text { color: var(--red-drag); }
+.rp-fact { border: 1px solid var(--hairline); border-left: 4px solid #6FA872; border-radius: 10px; background: #fff; }
+.rp-fact.bad { border-left-color: var(--red-drag); background: #FFFCFC; }
+.rp-fact summary { cursor: pointer; padding: 10px 14px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 16px; }
+.rp-fact-name { font-weight: 700; color: var(--ink-strong); min-width: 180px; }
+.rp-fact-val { font-family: "Times New Roman", Georgia, serif; font-weight: 700; font-size: 18px; color: var(--ink-strong); }
+.rp-fact.bad .rp-fact-val { color: #9C3A3E; font-family: inherit; font-size: 15px; }
+.rp-fact.demo { border-left-color: var(--amber); }
+.rp-fact-fid { font-family: var(--mono); font-size: 13px; color: var(--ink-soft); }
+.rp-evidence summary { flex-wrap: wrap; }
+.rp-summary-note { flex-basis: 100%; padding-left: 18px; font-size: 14px; font-weight: 400; color: var(--amber-ink); }
+.rp-fact-body { padding: 4px 16px 14px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--hairline-soft); }
+.rp-kv { display: flex; gap: 12px; font-size: 15px; line-height: 1.7; }
+.rp-kv > b { flex: 0 0 80px; color: var(--ink-soft); font-weight: 400; }
+.rp-refs { display: flex; flex-wrap: wrap; gap: 6px; }
+.rp-ref { font-family: var(--mono); font-size: 13px; padding: 2px 8px; border-radius: 6px; background: #F1F4F8; color: var(--ink); }
+.rp-ref.bad { background: #FBF2F2; color: #9C3A3E; font-family: inherit; }
+.rp-steps { padding-left: 22px; display: flex; flex-direction: column; gap: 8px; font-size: 15px; }
+.rp-steps b { color: var(--ink-strong); }
 
 /* —— A′ 差异面板 —— */
 .rp-delta { background: #FFFDF6; border: 1px solid #EAD9AE; border-radius: 14px; padding: 18px 22px; display: flex; flex-direction: column; gap: 10px; }
