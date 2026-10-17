@@ -43,7 +43,11 @@ function makeEl(tag) {
   return node;
 }
 globalThis.Node = FakeNode;
-globalThis.document = { createElement: (t) => makeEl(t), createTextNode };
+globalThis.document = {
+  createElement: (t) => makeEl(t),
+  createElementNS: (ns, t) => makeEl(t),
+  createTextNode,
+};
 globalThis.fetch = async (url) => {
   const rel = String(url).replace(/^\//, '');
   const raw = readFileSync(join(ROOT, rel), 'utf8');
@@ -119,6 +123,22 @@ function findChips(node, out = []) {
   }
   return out;
 }
+function findByClass(node, cls, out = []) {
+  for (const c of node.children ?? []) {
+    if (!c || typeof c !== 'object' || c.__text !== undefined) continue;
+    if (String(c.attrs.class ?? '').split(/\s+/).includes(cls)) out.push(c);
+    findByClass(c, cls, out);
+  }
+  return out;
+}
+function findByTag(node, tag, out = []) {
+  for (const c of node.children ?? []) {
+    if (!c || typeof c !== 'object' || c.__text !== undefined) continue;
+    if (c.tagName === String(tag).toUpperCase()) out.push(c);
+    findByTag(c, tag, out);
+  }
+  return out;
+}
 const labelOf = (b) => texts(b).join('');
 async function clickLabel(label, nth = 0) {
   const btns = findButtons(current).filter((b) => labelOf(b).includes(label));
@@ -152,17 +172,62 @@ mountCycle(); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('报告：组合指标（引擎输出 +4.9% / +6.9% / +2.0pp / ¥700.00）', txt.includes('+4.9%') && txt.includes('+6.9%') && txt.includes('+2.0pp') && txt.includes('¥700.00'), txt.slice(0, 220));
 check('报告：合成演示标注 + 买入不动口径 + 无 undefined', txt.includes('合成演示数据') && txt.includes('买入不动') && txt.includes('组合不汇总个股股数') && !txt.includes('undefined'));
+const provA = txt.match(/计算路径（fact (\d+) 项 · 阻断 (\d+) 项）/);
+check('报告：A provenance 完整（fact>0、阻断 0、无 E_PROVENANCE）', !!provA && Number(provA[1]) > 0 && Number(provA[2]) === 0 && !txt.includes('E_PROVENANCE'), txt.slice(0, 320));
 await clickLabel('000000'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('报告：标的切换 000000（引擎输出 +10.0% / -2.0pp / ¥-400.00）', txt.includes('+10.0%') && txt.includes('-2.0pp') && txt.includes('¥-400.00'), txt.slice(0, 220));
 await clickLabel('A′'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('报告：A′ 切换 + 引擎差异面板', state.report.scenario === 'Aprime' && txt.includes('与基准 A 的差异') && txt.includes('仅改第 5 行卖出价') && txt.includes('-7.0pp'), txt.slice(0, 280));
+const provAp = txt.match(/计算路径（fact (\d+) 项 · 阻断 (\d+) 项）/);
+check('报告：A′ provenance 完整（fact>0、阻断 0、无 E_PROVENANCE）', !!provAp && Number(provAp[1]) > 0 && Number(provAp[2]) === 0 && !txt.includes('E_PROVENANCE'), txt.slice(0, 320));
 await clickLabel('基准账单 A'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('报告：切回 A 恢复（实际收益卡与证据入口正常）', state.report.scenario === 'A' && txt.includes('实际收益') && txt.includes('查看证据与计算路径'));
 const provM = txt.match(/计算路径（fact (\d+) 项 · 阻断 (\d+) 项）/);
 check('报告：演示链路 provenance 完整（fact>0、阻断 0、无 E_PROVENANCE）', !!provM && Number(provM[1]) > 0 && Number(provM[2]) === 0 && !txt.includes('E_PROVENANCE'), txt.slice(0, 320));
+
+/* ==== 单笔反事实（S1 幽灵线双面板）：演示账单 000000 → T004 ==== */
+await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+check('反事实：入口 + S1 口径 + 替换笔信息（T004 · 2024-10-08 · 110 × 200）', txt.includes('单笔反事实') && txt.includes('S1') && txt.includes('T004') && txt.includes('2024-10-08') && txt.includes('110 × 200'), txt.slice(0, 260));
+check('反事实：双 SVG 面板 + 易读图例与读图提示（实际/持有/假设结果/差额/买入/卖出）', findByTag(current, 'svg').length >= 2 && txt.includes('读图提示') && txt.includes('资产价值变化') && txt.includes('每日收盘价与交易时间点') && txt.includes('假如这笔卖出没有发生') && txt.includes('当前替换笔'), txt.slice(0, 320));
+check('反事实：引擎 display（假设结果价值 ¥21,600.00 / 假设收益 +8.0% / 相对改善 -2.0pp / 剩余损耗金额 ¥0.00）', txt.includes('假设结果价值 ¥21,600.00') && txt.includes('假设收益 +8.0%') && txt.includes('相对改善 -2.0pp') && txt.includes('剩余损耗金额 ¥0.00'), txt.slice(0, 280));
+check('反事实：公式标识 + 负值说明 + 非真实行情与免责标注', txt.includes('CALC_CF_REPLACE_SELL_V1') && txt.includes('负值表示这笔卖出反而优于持有') && txt.includes('合成行情') && txt.includes('不构成投资建议'), txt.slice(0, 280));
+{
+  const wrap = findByClass(current, 'gc-wrap')[0];
+  const step = (1000 - 76 - 20) / 8; // 000000 序列 9 点（2024-09-24 → 2024-10-11）
+  for (const fn of wrap.listeners.mousemove ?? []) await fn({ offsetX: 76 + 3 * step });
+  const crosses = findByClass(current, 'gc-cross');
+  const tipTxt = texts(findByClass(current, 'gc-tip')[0]).join('|');
+  check('反事实：十字线两面板同步 + 提示六项（日期/实际/对照/反事实/缺口/收盘价）', crosses.length === 2
+    && crosses[0].attrs.x1 === crosses[1].attrs.x1 && String(crosses[0].attrs.x1) === String(76 + 3 * step)
+    && tipTxt.includes('2024-09-27') && tipTxt.includes('实际') && tipTxt.includes('对照') && tipTxt.includes('反事实') && tipTxt.includes('缺口') && tipTxt.includes('收盘价'),
+    JSON.stringify({ n: crosses.length, x1: crosses[0]?.attrs.x1, tip: tipTxt.slice(0, 120) }));
+}
+await clickLabel('组合'); await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+check('反事实：组合 scope 不画图并提示选择标的', txt.includes('请选择一个标的查看单笔卖出反事实') && !txt.includes('当前替换笔') && findByClass(current, 'gc-svg').length === 0, txt.slice(0, 200));
+await clickLabel('888888'); await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+check('反事实：缺价序列断开并列出缺失日期（2024-10-10；引擎 display 照实）', txt.includes('序列不完整') && txt.includes('路径已断开') && txt.includes('2024-10-10') && txt.includes('假设结果价值 ¥15,800.00'), txt.slice(0, 300));
+{
+  const closePath = findByClass(current, 'gc-line-close')[0];
+  check('反事实：缺价日断线（close 路径为多段 M）', !!closePath && (closePath.attrs.d.match(/M/g) ?? []).length >= 2, closePath?.attrs.d?.slice(0, 80));
+  check('反事实：缺价后有效孤立点、完整末日期和底缘交易含义均可见', findByClass(current, 'gc-isolated-point').length >= 4
+    && txt.includes('2024-10-11') && txt.includes('断线后有效值（实际）') && txt.includes('断线后有效值（对照／反事实）')
+    && txt.includes('断线后收盘价有效（2024-10-11）') && txt.includes('2024-10-10：交易日缺价')
+    && txt.includes('底缘买卖标记表示该交易日缺价'), txt.slice(0, 440));
+}
+
+state.report = { scenario: 'A', symbol: '000000', cfTradeId: 'T004' };
+mountCycle(); await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+check('反事实：同标的内指定卖出笔仍生效（T004 · 假设结果价值 ¥21,600.00）', txt.includes('T004 · 2024-10-08') && txt.includes('假设结果价值 ¥21,600.00'), txt.slice(0, 260));
+await clickLabel('888888'); await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+check('反事实：切标的后残留 tradeId 不报错（无 E_CF_TRADE_NOT_FOUND），落 B 默认第一笔 T005', !txt.includes('E_CF_TRADE_NOT_FOUND') && !txt.includes('该反事实结论不发布') && txt.includes('T005 · 2024-10-10') && txt.includes('假设结果价值 ¥15,800.00'), txt.slice(0, 300));
 
 /* ==== 对话页 ==== */
 state.route = 'chat'; state.chat = { messages: [], draft: '' }; mountCycle();
@@ -245,6 +310,11 @@ check('用户报告：文件名 + 用户本地账单 + 合成行情标注', txt.
 check('用户报告：指标来自用户交易（+4.0%/+8.0%/¥400.00），非演示 A', txt.includes('+4.0%') && txt.includes('+8.0%') && txt.includes('¥400.00') && !txt.includes('+4.9%') && !txt.includes('¥700.00') && !txt.includes('undefined'), txt.slice(0, 240));
 check('用户报告：无 A/A′ 场景切换与差异面板', !txt.includes('演示场景') && !txt.includes('A′') && !txt.includes('与基准 A 的差异'), txt.slice(0, 160));
 check('用户报告：复核 published + 已发布 17 项 + 组合已发布', txt.includes('复核：published') && txt.includes('已发布事实 17 项') && txt.includes('组合已发布'), txt.slice(0, 200));
+check('用户报告：组合 scope 反事实入口提示选择标的（不画图）', txt.includes('请选择一个标的查看单笔卖出反事实'), txt.slice(0, 160));
+await clickLabel('000000'); await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+check('用户反事实：未阻断标可进入反事实图（入口 + 引擎 display ¥10,800.00 / +8.0% / +4.0pp）', txt.includes('单笔反事实') && txt.includes('S1') && txt.includes('假设结果价值 ¥10,800.00') && txt.includes('假设收益 +8.0%') && txt.includes('相对改善 +4.0pp'), txt.slice(0, 300));
+check('用户反事实：双 SVG 面板与图例渲染正常', findByTag(current, 'svg').length >= 2 && txt.includes('当前替换笔') && txt.includes('不构成投资建议'), txt.slice(0, 200));
 
 state.route = 'import';
 state.report = { scenario: 'A', symbol: 'pool' };
@@ -261,7 +331,7 @@ txt = texts(current).join('|');
 check('用户报告：未阻断标的 000000 仍发布（+4.0%）', txt.includes('+4.0%') && txt.includes('¥400.00'), txt.slice(0, 200));
 await clickLabel('600519'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
-check('用户报告：600519 视图不发布（支持范围外说明）', txt.includes('600519」结果不发布') && txt.includes('合成行情缓存支持范围'), txt.slice(0, 200));
+check('用户报告：600519 视图不发布（支持范围外说明，且不出反事实图）', txt.includes('600519」结果不发布') && txt.includes('合成行情缓存支持范围') && !txt.includes('单笔反事实'), txt.slice(0, 200));
 
 state.route = 'import';
 state.report = { scenario: 'A', symbol: 'pool' };
