@@ -1,5 +1,5 @@
 // 前端交互冒烟（零依赖：Node + 最小 DOM 桩；非产品代码，仅回归工具）
-// 覆盖：导入/确认（演示账单 + 本地 CSV 本机校验）、报告切换（组合/标的/A′/差异）、对话离线、契约三态与持久化、状态徽标色映射。
+// 覆盖：导入/确认（演示账单 + 本地 CSV 本机校验）、报告切换（组合/标的/A′/差异）、对话离线、契约（引擎模板解析/确认改写拒绝/持久化/历史情境三态）、状态徽标色映射。
 // 运行：npm run smoke
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -67,7 +67,7 @@ class FakeFileReader {
 }
 globalThis.FileReader = FakeFileReader;
 
-const { state, subscribe, notify, defaultBill } = await imp('src/state.js');
+const { state, subscribe, notify, defaultBill, defaultContracts, loadContractsDemo } = await imp('src/state.js');
 const { renderImport } = await imp('src/ui/views/importView.js');
 const { renderReport } = await imp('src/ui/views/reportView.js');
 const { renderChat } = await imp('src/ui/views/chatView.js');
@@ -172,6 +172,9 @@ mountCycle(); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('报告：组合指标（引擎输出 +4.9% / +6.9% / +2.0pp / ¥700.00）', txt.includes('+4.9%') && txt.includes('+6.9%') && txt.includes('+2.0pp') && txt.includes('¥700.00'), txt.slice(0, 220));
 check('报告：合成演示标注 + 买入不动口径 + 无 undefined', txt.includes('合成演示数据') && txt.includes('买入不动') && txt.includes('组合不汇总个股股数') && !txt.includes('undefined'));
+const wiringOk = (t) => !t.includes('契约匹配') && !t.includes('未接线') && t.includes('契约页已接入候选模板与历史情境模拟') && t.includes('契约不会自动改变本报告结论')
+  && t.includes('未接入：百炼') && t.includes('真实行情') && t.includes('对话页事实回跳');
+check('报告·演示：底部不再写“契约匹配未接线”，如实说明契约页已接入且不改报告结论，百炼/真实行情/事实回跳仍标未接入', wiringOk(txt), txt.slice(-300));
 const demoFacts = () => findByClass(current, 'rp-fact');
 const provA = txt.match(/演示计算路径（当前范围「组合」· (\d+) 项）/);
 check('报告：A 演示计算路径完整（组合 8 项可展开条目、无阻断项、无 E_PROVENANCE）', !!provA && Number(provA[1]) === 8 && demoFacts().length === 8
@@ -252,19 +255,139 @@ await clickLabel('为什么说我追高？');
 txt = texts(current).join('|');
 check('对话：发送后两条消息 + 离线模式标注', state.chat.messages.length === 2 && txt.includes('离线模式（百炼未接入）') && txt.includes('事实 JSON'), txt.slice(0, 200));
 
-/* ==== 契约页：确认 / 改写 / 拒绝 + 状态色 + 持久化 ==== */
-state.route = 'contract'; state.contracts = { versions: [] }; mountCycle();
-check('契约：空状态提示存在', texts(current).join('|').includes('暂无记录'));
-await clickLabel('确认');
-check('契约：确认后 v1 徽标（ok）', findChips(current).some((c) => texts(c).join('') === '已确认 v1' && String(c.attrs.class).includes('ok')));
-await clickLabel('改写', 1);
-const ta = current.querySelector('.input');
-ta.value = '卖出后 5 个交易日内不追回同一只票。';
-await clickLabel('保存改写');
-check('契约：改写后 v2 徽标（mode）', findChips(current).some((c) => texts(c).join('') === '已改写 v2' && String(c.attrs.class).includes('mode')));
-await clickLabel('拒绝', 1);
-check('契约：拒绝后 v3 徽标（warn）', findChips(current).some((c) => texts(c).join('') === '已拒绝 v3' && String(c.attrs.class).includes('warn')));
-check('契约：持久化写入与版本记录', String(store.get('tm.contracts.demo') ?? '').includes('已拒绝') && texts(current).join('|').includes('哈希：未接入'));
+/* ==== 契约页：引擎模板 → 解析预览 → 确认 / 改写 / 拒绝 → 刷新恢复 → 历史情境模拟（合成行情）==== */
+const fire = async (node, type, value) => { node.value = value; for (const fn of node.listeners[type] ?? []) await fn({ target: { value } }); };
+const fieldInput = (key) => findInputs(current).find((i) => i.attrs['data-field'] === key);
+const byRole = (role) => [...findByTag(current, 'select'), ...findInputs(current), ...findByTag(current, 'textarea')].find((n) => n.attrs['data-role'] === role);
+const liveTxt = () => texts(findByClass(current, 'cv-live')[0] ?? { children: [] }).join('|');
+const simTxt = () => texts(findByClass(current, 'cv-sim-out')[0] ?? { children: [] }).join('|');
+const statusChip = () => { const n = findByClass(current, 'cv-status')[0]; return n ? { text: texts(n).join(''), cls: String(n.attrs.class) } : { text: '', cls: '' }; };
+const verdictText = () => { const n = findByClass(current, 'cv-verdict')[0]; return n ? texts(n).join('') : ''; };
+const btnOf = (label) => findButtons(current).find((b) => labelOf(b).includes(label));
+const hashOf = (s) => (s.match(/候选哈希，待 M0-C1 冻结：([0-9a-f]{16})/) ?? [])[1] ?? null;
+const settle = async () => { await flush(); await flush(); await flush(); };
+const simulate = async (symbol, date) => {
+  await fire(byRole('sim-symbol'), 'change', symbol);
+  await fire(byRole('sim-date'), 'input', date);
+  await clickLabel('模拟申报买入'); await settle();
+  return simTxt();
+};
+const sourceLine = () => texts(findByClass(current, 'cv-source')[0] ?? { children: [] }).join('');
+{
+  const adapterMod = await imp('src/demo/adapter.js');
+  const viewSrc = readFileSync(join(ROOT, 'src/ui/views/contractView.js'), 'utf8');
+  check('契约：页面只经 adapter 取数（不 import contractMatch / marketCache / engine），能力状态为“已接入（候选口径）”',
+    !/from\s+['"][^'"]*engine\//.test(viewSrc) && !viewSrc.includes('contractMatch') && !viewSrc.includes('marketCache') && !viewSrc.includes('demoRuleCandidates')
+    && adapterMod.CAPABILITY.contractEngine.label.includes('已接入（候选口径）') && typeof adapterMod.demoRuleCandidates === 'undefined'
+    && adapterMod.CAPABILITY.bailian.label.includes('未接入'), adapterMod.CAPABILITY.contractEngine.label);
+
+  store.delete('tm.contracts.demo');
+  state.route = 'contract'; state.contracts = defaultContracts(); mountCycle(); await settle();
+  txt = texts(current).join('|');
+  const tplOpts = findByTag(byRole('template'), 'option').map((o) => texts(o).join(''));
+  check('契约：两个引擎模板可选 + 空状态 + 备注标注“仅备注，不参与规则判定”',
+    tplOpts.length === 2 && tplOpts.includes('涨幅超阈值不买入') && tplOpts.includes('卖出后 N 个交易日内不追回')
+    && txt.includes('暂无记录') && txt.includes('仅备注，不参与规则判定'), JSON.stringify(tplOpts));
+  let live = liveTxt();
+  const hashDefault = hashOf(live);
+  check('契约·涨幅模板：默认解析预览（规则文本 / 阈值 5.0% / 提醒 / 候选哈希 + 算法）+ 候选未保存 + 改写不可用',
+    live.includes('当天涨幅超过 5% 的票，我绝不买入。') && live.includes('阈值：5.0%') && live.includes('提醒：申报买入时')
+    && !!hashDefault && live.includes('fnv1a64-placeholder') && statusChip().text === '候选（未保存）'
+    && btnOf('改写').disabled === true && btnOf('确认').disabled === false, live.slice(0, 300));
+  await fire(fieldInput('threshold_pct'), 'input', '3');
+  live = liveTxt();
+  const hash3 = hashOf(live);
+  check('契约·涨幅模板：编辑阈值 → 实时预览更新（3% / 3.0%）且哈希随之变化', live.includes('当天涨幅超过 3% 的票') && live.includes('阈值：3.0%') && !!hash3 && hash3 !== hashDefault, live.slice(0, 300));
+  await fire(fieldInput('threshold_pct'), 'input', '5%');
+  live = liveTxt();
+  check('契约·非法参数：显示引擎错误（E_CONTRACT_FIELD_INVALID · 须为数字），不生成规则/哈希，三按钮与模拟均禁用',
+    live.includes('E_CONTRACT_FIELD_INVALID') && live.includes('须为数字') && live.includes('收到「5%」') && !hashOf(live) && !live.includes('阈值：')
+    && btnOf('确认').disabled && btnOf('改写').disabled && btnOf('拒绝').disabled && btnOf('模拟申报买入').disabled, live.slice(0, 300));
+  await fire(fieldInput('threshold_pct'), 'input', '-1');
+  check('契约·非法参数：负阈值显示“须 ≥ 0”（不自动纠正）', liveTxt().includes('须 ≥ 0') && liveTxt().includes('收到「-1」'), liveTxt().slice(0, 200));
+  await fire(fieldInput('threshold_pct'), 'input', '3');
+  await fire(byRole('note'), 'input', '追高总亏');
+  await clickLabel('确认');
+  txt = texts(current).join('|');
+  check('契约：确认 → v1 已确认（ok）+ 记录含模板/参数/规则文本/哈希/备注', statusChip().text === '已确认 v1' && statusChip().cls.includes('ok')
+    && txt.includes('涨幅超阈值不买入 · 涨幅阈值（%）：3') && txt.includes(hash3) && txt.includes('备注（仅备注，不参与规则判定）：追高总亏'), txt.slice(0, 400));
+  check('契约：确认后改写不可用（与最近版本相同，需先修改）', btnOf('改写').disabled === true && liveTxt().includes('与最近版本 v1相同'), liveTxt().slice(-200));
+  await fire(fieldInput('threshold_pct'), 'input', '4');
+  const hash4 = hashOf(liveTxt());
+  check('契约：修改参数后改写可用', btnOf('改写').disabled === false && statusChip().text === '候选（未保存）');
+  await clickLabel('改写');
+  check('契约：改写 → v2 已改写（mode）', statusChip().text === '已改写 v2' && statusChip().cls.includes('mode'), statusChip().text);
+  await clickLabel('拒绝');
+  check('契约：拒绝 → v3 已拒绝（warn）', statusChip().text === '已拒绝 v3' && statusChip().cls.includes('warn'), statusChip().text);
+  const saved = JSON.parse(store.get('tm.contracts.demo') ?? '{}').versions ?? [];
+  check('契约：持久化记录含 template/fields/text/hash/hash_algorithm/status/at',
+    saved.length === 3 && saved.every((r) => r.schema === 'contract-v1' && r.template_id === 'no_buy_on_surge' && r.text && /^[0-9a-f]{16}$/.test(r.hash) && r.hash_algorithm === 'fnv1a64-placeholder' && r.at && r.fields)
+    && saved.map((r) => r.status).join(',') === '已确认,已改写,已拒绝' && saved[0].fields.threshold_pct === 3 && saved[2].hash === hash4, JSON.stringify(saved).slice(0, 300));
+
+  state.contracts = { ...defaultContracts(), versions: loadContractsDemo() }; mountCycle(); await settle();
+  check('契约：刷新后记录恢复，草稿取最近版本参数，哈希一致且状态为“已拒绝 v3”',
+    state.contracts.versions.length === 3 && fieldInput('threshold_pct').value === '4' && hashOf(liveTxt()) === hash4 && statusChip().text === '已拒绝 v3', liveTxt().slice(0, 200));
+
+  await fire(byRole('template'), 'change', 'no_buy_back_within');
+  live = liveTxt();
+  check('契约·不追回模板：切换后解析默认（3 个交易日）+ 提醒 + 候选哈希', live.includes('卖出后 3 个交易日内不追回同一只票。') && live.includes('阈值：3 个交易日') && live.includes('距最近一次卖出') && !!hashOf(live), live.slice(0, 300));
+  await fire(fieldInput('days'), 'input', '2.5');
+  check('契约·不追回模板：小数窗口 → 引擎错误“须为 ≥ 1 的整数”', liveTxt().includes('E_CONTRACT_FIELD_INVALID') && liveTxt().includes('须为 ≥ 1 的整数') && btnOf('确认').disabled, liveTxt().slice(0, 200));
+  await fire(fieldInput('days'), 'input', '0');
+  check('契约·不追回模板：0 窗口 → 引擎错误（不纠正为 1）', liveTxt().includes('收到「0」') && !hashOf(liveTxt()), liveTxt().slice(0, 200));
+  await fire(fieldInput('days'), 'input', '5');
+  check('契约·不追回模板：编辑窗口 → 预览“卖出后 5 个交易日”', liveTxt().includes('卖出后 5 个交易日内不追回同一只票。') && liveTxt().includes('阈值：5 个交易日'), liveTxt().slice(0, 200));
+  await clickLabel('改写');
+  txt = texts(current).join('|');
+  check('契约：换模板后改写 → v4 已改写，记录为不追回模板', statusChip().text === '已改写 v4' && txt.includes('卖出后 N 个交易日内不追回 · 不追回窗口（交易日）：5'), txt.slice(0, 300));
+
+  /* —— 历史情境模拟：不追回模板（演示账单 A 卖出 T004 000000 2024-10-08）—— */
+  await fire(fieldInput('days'), 'input', '3');
+  txt = texts(current).join('|');
+  check('情境模拟：标注合成行情口径 + 卖出记录来源', txt.includes('历史情境模拟（合成行情）') && txt.includes('合成行情 · 演示口径，不构成投资建议') && txt.includes('T004 000000 2024-10-08'), txt.slice(-400));
+  check('情境来源·演示模式（演示账单已确认、非本地）：交易来源=演示账单 A · 行情=合成演示行情 + 非真实行情/候选口径/不构成投资建议',
+    state.bill.status === 'confirmed' && state.bill.sourceType !== 'local' && sourceLine().startsWith('交易来源：演示账单 A') && sourceLine().includes('行情：合成演示行情')
+    && txt.includes('非真实行情 · 候选口径（待 M0-C1 冻结）· 不构成投资建议'), sourceLine());
+  let s = await simulate('000000', '2024-10-10');
+  check('情境模拟·不追回：000000 2024-10-10（距卖出 2 日 ≤ 3）→ 命中 + 规则/阈值/情境事实/警告',
+    verdictText() === '命中' && s.includes('契约提醒：此情境命中你确认的规则') && s.includes('规则：卖出后 3 个交易日内不追回同一只票。') && s.includes('阈值：3 个交易日')
+    && s.includes('最近卖出：T004 · 2024-10-08') && s.includes('距最近卖出：2 个交易日') && s.includes('合成行情 · 演示口径，不构成投资建议') && s.includes('候选哈希，待 M0-C1 冻结'), s.slice(0, 400));
+  await fire(fieldInput('days'), 'input', '1');
+  check('情境模拟：改参数后旧判定结果清空', simTxt() === '', simTxt().slice(0, 100));
+  s = await simulate('000000', '2024-10-10');
+  check('情境模拟·不追回：窗口 1 日 → 未命中（无警告）', verdictText() === '未命中' && s.includes('未触发') && !s.includes('契约提醒'), s.slice(0, 300));
+  s = await simulate('000000', '2024-10-05');
+  check('情境模拟·不追回：2024-10-05 不在交易日历 → 数据不足（E_DATE_NOT_IN_CALENDAR，不猜测）', verdictText() === '数据不足' && s.includes('E_DATE_NOT_IN_CALENDAR') && s.includes('不在缓存交易日历') && !s.includes('契约提醒'), s.slice(0, 300));
+
+  /* —— 历史情境模拟：涨幅模板（阈值 3%；000000 2024-09-30 合成涨幅约 +4%）—— */
+  await fire(byRole('template'), 'change', 'no_buy_on_surge');
+  await fire(fieldInput('threshold_pct'), 'input', '3');
+  s = await simulate('000000', '2024-09-30');
+  check('情境模拟·涨幅：000000 2024-09-30 → 命中 + 规则/阈值 3.0%/当日涨跌幅（引擎 display）/行情来源',
+    verdictText() === '命中' && s.includes('契约提醒') && s.includes('规则：当天涨幅超过 3% 的票，我绝不买入。') && s.includes('阈值：3.0%')
+    && /当日涨跌幅：\+4\.\d+%/.test(s) && s.includes('前收日 2024-09-27') && s.includes('不复权') && s.includes('合成行情 · 演示口径，不构成投资建议'), s.slice(0, 400));
+  s = await simulate('000000', '2024-10-08');
+  check('情境模拟·涨幅：000000 2024-10-08 → 未命中', verdictText() === '未命中' && s.includes('未超过阈值 3.0%') && !s.includes('契约提醒'), s.slice(0, 300));
+  s = await simulate('888888', '2024-10-10');
+  check('情境模拟·涨幅：888888 2024-10-10 缺价 → 数据不足（E_CHANGE_PCT_MISSING + 引擎原因，不补造）',
+    verdictText() === '数据不足' && s.includes('E_CHANGE_PCT_MISSING') && s.includes('缺 888888 收盘价') && !s.includes('当日涨跌幅：') && !s.includes('契约提醒'), s.slice(0, 300));
+  s = await simulate('000000', '2024-09-23');
+  check('情境模拟·涨幅：缓存首日 → 数据不足（E_PREV_DAY_BEYOND_CACHE 前收不足）', verdictText() === '数据不足' && s.includes('E_PREV_DAY_BEYOND_CACHE'), s.slice(0, 300));
+  s = await simulate('000000', '2024-11-05');
+  check('情境模拟·涨幅：超出缓存范围 → 数据不足（E_VALUATION_OUT_OF_RANGE，不回退）', verdictText() === '数据不足' && s.includes('E_VALUATION_OUT_OF_RANGE'), s.slice(0, 300));
+  s = await simulate('000000', '');
+  check('情境模拟：日期为空 → 无法判定并显示引擎输入错误（不默认日期）', verdictText() === '' && s.includes('无法判定') && s.includes('E_CONTRACT_SIM_INPUT_INVALID'), s.slice(0, 300));
+
+  /* —— 旧演示记录兼容 —— */
+  store.set('tm.contracts.demo', JSON.stringify({ versions: [{ v: 1, candidateId: 'RC-1', status: '已确认', text: '当天涨幅超过 5% 的票，我绝不买入。', at: '2026/10/1 10:00:00', hash: '未接入' }, null, 7, 'x'] }));
+  state.contracts = { ...defaultContracts(), versions: loadContractsDemo() }; mountCycle(); await settle();
+  txt = texts(current).join('|');
+  check('契约·旧记录：显示为“旧演示记录”且不崩溃，非对象条目被丢弃，不参与判定', state.contracts.versions.length === 1 && txt.includes('旧演示记录') && txt.includes('未经契约引擎解析') && statusChip().text === '候选（未保存）', txt.slice(0, 300));
+  await clickLabel('确认');
+  check('契约·旧记录：在旧记录后确认 → 新版本 v2（编号延续）', statusChip().text === '已确认 v2' && (JSON.parse(store.get('tm.contracts.demo')).versions ?? []).length === 2, statusChip().text);
+  store.set('tm.contracts.demo', '{broken');
+  check('契约·旧记录：损坏的本地存储 → 空记录（不崩溃）', loadContractsDemo().length === 0);
+}
 
 /* ==== 导入页：用户本地 CSV（FileReader 本机读取 → adapter 校验 → 确认门槛 → 旧账单清理）==== */
 state.route = 'import';
@@ -324,6 +447,7 @@ check('用户报告：确认后 status=confirmed 且进入报告页（用户字�
 await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('用户报告：文件名 + 用户本地账单 + 合成行情标注', txt.includes('用户本地账单') && txt.includes('文件名：user-bill.csv') && txt.includes('用户本地账单 + 合成演示行情') && txt.includes('m0 合成夹具'), txt.slice(0, 240));
+check('报告·用户账单：底部同样不出现“契约匹配未接线”，契约状态与未接入项照实说明', wiringOk(txt), txt.slice(-300));
 check('用户报告：指标来自用户交易（+4.0%/+8.0%/¥400.00），非演示 A', txt.includes('+4.0%') && txt.includes('+8.0%') && txt.includes('¥400.00') && !txt.includes('+4.9%') && !txt.includes('¥700.00') && !txt.includes('undefined'), txt.slice(0, 240));
 check('用户报告：无 A/A′ 场景切换与差异面板', !txt.includes('演示场景') && !txt.includes('A′') && !txt.includes('与基准 A 的差异'), txt.slice(0, 160));
 check('用户报告：复核 published + 已发布 17 项 + 组合已发布', txt.includes('复核：published') && txt.includes('已发布事实 17 项') && txt.includes('组合已发布'), txt.slice(0, 200));
@@ -451,6 +575,58 @@ await clickLabel('确认交易列表');
 await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('用户报告：估值早于末笔 → 明确阻断（不回退演示）', txt.includes('E_VALUATION_BEFORE_LAST_TRADE') && !txt.includes('演示场景') && !txt.includes('¥700.00'), txt.slice(0, 240));
+
+/* ==== 契约情境模拟：交易来源随账单模式切换（已确认本地账单 → 用户 trades；否则演示账单 A）==== */
+{
+  const cfCsv = '日期,标的,方向,价格,数量,费用,税费\n2024-09-24,000000,买入,100,100,5,0\n2024-10-09,000000,卖出,104,100,5,1\n2024-09-25,600519,买入,30,100,5,0\n2024-09-30,600519,卖出,31,100,5,0\n';
+  state.route = 'import'; state.bill = defaultBill(); mountCycle();
+  await pickFile({ name: 'cf-user.csv', size: cfCsv.length, __content: cfCsv });
+  await flush();
+  state.route = 'contract'; mountCycle(); await settle();
+  check('情境来源·未确认本地账单（loaded）：仍用演示账单 A，不显示用户文件名',
+    state.bill.status === 'loaded' && sourceLine().startsWith('交易来源：演示账单 A') && !sourceLine().includes('cf-user.csv'), sourceLine());
+
+  state.route = 'import'; mountCycle();
+  await clickLabel('确认交易列表'); await settle();
+  state.route = 'contract'; mountCycle(); await settle();
+  await fire(byRole('template'), 'change', 'no_buy_back_within');
+  await settle();
+  txt = texts(current).join('|');
+  const symOpts = findByTag(byRole('sim-symbol'), 'option').map((o) => texts(o).join(''));
+  check('情境来源·已确认本地账单：交易来源=已确认本地账单（cf-user.csv）· 行情=合成演示行情；卖出列表为用户交易（非演示 T004）',
+    state.bill.status === 'confirmed' && sourceLine().startsWith('交易来源：已确认本地账单（cf-user.csv）') && sourceLine().includes('行情：合成演示行情')
+    && txt.includes('T002 000000 2024-10-09') && txt.includes('T004 600519 2024-09-30') && !txt.includes('T004 000000 2024-10-08') && !txt.includes('演示账单 A')
+    && txt.includes('非真实行情 · 候选口径（待 M0-C1 冻结）· 不构成投资建议'), sourceLine() + ' || ' + txt.slice(-300));
+  check('情境来源·已确认本地账单：范围外标的 600519 列出且标注“不在合成行情缓存”（不隐藏、不替代）',
+    symOpts.some((o) => o.startsWith('600519') && o.includes('不在合成行情缓存')) && symOpts.some((o) => o.startsWith('000000')), JSON.stringify(symOpts));
+
+  let s = await simulate('000000', '2024-10-10');
+  check('情境模拟·用户账单不追回：000000 2024-10-10 用用户卖出 T002（2024-10-09，距 1 日）→ 命中，结果标注用户来源',
+    verdictText() === '命中' && s.includes('最近卖出：T002 · 2024-10-09') && s.includes('距最近卖出：1 个交易日') && !s.includes('T004 · 2024-10-08')
+    && s.includes('交易来源：已确认本地账单（cf-user.csv）') && !s.includes('演示账单 A'), s.slice(0, 400));
+  s = await simulate('600519', '2024-11-06');
+  check('情境模拟·用户账单不追回：600519 申报日超出缓存日历 → 数据不足（E_DATE_NOT_IN_CALENDAR），不回退演示账单',
+    verdictText() === '数据不足' && s.includes('E_DATE_NOT_IN_CALENDAR') && s.includes('不在合成行情缓存支持范围') && s.includes('已确认本地账单（cf-user.csv）') && !s.includes('演示账单 A'), s.slice(0, 400));
+  s = await simulate('600519', '2024-10-08');
+  check('情境模拟·用户账单不追回：600519（缓存外）照用用户卖出 T004 判定，并如实说明只用交易日历、不读价格',
+    s.includes('最近卖出：T004 · 2024-09-30') && s.includes('不追回判定只使用交易日历与账单交易') && !s.includes('演示账单 A'), s.slice(0, 400));
+
+  await fire(byRole('template'), 'change', 'no_buy_on_surge');
+  await settle();
+  check('情境来源·涨幅模板：说明只读合成行情、不使用账单交易', sourceLine().includes('涨幅模板只读取合成行情，不使用账单交易'), sourceLine());
+  s = await simulate('600519', '2024-10-08');
+  check('情境模拟·用户账单涨幅：600519 不在缓存 → 数据不足（E_CHANGE_PCT_MISSING + 引擎原因），不替换标的、不回退',
+    verdictText() === '数据不足' && s.includes('E_CHANGE_PCT_MISSING') && s.includes('缺 600519 收盘价') && s.includes('无法读取涨跌幅') && s.includes('600519 · 申报日 2024-10-08') && !s.includes('当日涨跌幅：'), s.slice(0, 400));
+
+  state.bill = defaultBill();
+  state.route = 'contract'; mountCycle(); await settle();
+  await fire(byRole('template'), 'change', 'no_buy_back_within');
+  await settle();
+  check('情境来源·清空账单后：自动切回演示账单 A，旧用户上下文与结果被丢弃', sourceLine().startsWith('交易来源：演示账单 A') && simTxt() === '' && texts(current).join('|').includes('T004 000000 2024-10-08'), sourceLine());
+  s = await simulate('000000', '2024-10-10');
+  check('情境模拟·演示模式不追回：仍用演示账单 A 的 T004（2024-10-08，距 2 日），结果标注演示来源',
+    verdictText() === '命中' && s.includes('最近卖出：T004 · 2024-10-08') && s.includes('距最近卖出：2 个交易日') && s.includes('交易来源：演示账单 A') && !s.includes('cf-user.csv'), s.slice(0, 400));
+}
 
 /* ---- 输出 ---- */
 const failed = results.filter((r) => !r.ok);

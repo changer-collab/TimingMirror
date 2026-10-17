@@ -2,7 +2,8 @@
 // 数据链路（报告页·演示账单）：夹具 CSV 文本 → csvNormalize → marketCache（m0 合成夹具）→ indicators → provenance。
 // 数据链路（报告页·用户账单）：确认后的标准化 state.bill → 同一市场段（合成夹具）→ runReview 复核与发布门槛 → published_facts。
 // 数据链路（导入页·用户账单）：本地 CSV 文本（FileReader）→ csvNormalize 校验（仅本机，不上传、不落 localStorage）。
-// 未接线：真实行情、百炼、契约匹配；行情为 m0 合成夹具（草案·演示口径，非真实行情）。
+// 数据链路（契约页）：CONTRACT_TEMPLATES → parseContract 预览；历史情境：marketCache（合成夹具）→ dayChangePct / 交易来源（已确认本地账单，否则演示账单 A）→ matchContract。
+// 未接线：真实行情、百炼；契约为候选口径（占位哈希，待 M0-C1 冻结）；行情为 m0 合成夹具（草案·演示口径，非真实行情）。
 // 边界：本层只做取数与编排，不实现计算口径；数字与展示字符串一律来自 src/engine/*（页面不重新格式化）。
 import { parseCsvText, normalizeRows } from '../engine/csvNormalize.js';
 import { createMarketCache, fromFixtures } from '../engine/marketCache.js';
@@ -10,6 +11,7 @@ import { computeIndicators, RESULT_LABELS } from '../engine/indicators.js';
 import { buildProvenanceReport } from '../engine/provenance.js';
 import { runReview } from '../agent/reviewPipeline.js';
 import { replaceSell } from '../engine/counterfactual.js';
+import { CONTRACT_TEMPLATES, parseContract, dayChangePct, matchContract } from '../engine/contractMatch.js';
 
 // 导入页使用的标准化夹具（保持现状：导入页未在本轮接线范围）
 const FIXTURE = {
@@ -34,7 +36,7 @@ export const CAPABILITY = {
   engine: { ready: false, label: '计算引擎·仅报告页接入' },
   bailian: { ready: false, label: '百炼·未接入（离线）' },
   marketCache: { ready: false, label: '行情缓存·合成夹具（草案·演示口径）' },
-  contractEngine: { ready: false, label: '契约引擎·未接入' },
+  contractEngine: { ready: false, label: '契约引擎·已接入（候选口径）' },
 };
 
 // 数据模式标识（PR #6 §1.1：三种模式必须显式标注；当前仅合成演示可用）
@@ -419,24 +421,108 @@ export function computeScopeDelta(baseBundle, altBundle, scope) {
   return { changed, unchanged };
 }
 
-/* —— 契约规则候选（演示数据；契约引擎未接入，阈值解析与匹配未实现） —— */
-export function demoRuleCandidates() {
-  return [
-    {
-      id: 'RC-1',
-      text: '当天涨幅超过 5% 的票，我绝不买入。',
-      trigger: '申报买入时：该标的当日涨幅 > 5%',
-      backread: '回看：过去 N 次追涨买入的持有期表现（历史统计）',
-      note: '演示候选（合成）——契约引擎未接入，阈值解析与匹配判定未实现',
-    },
-    {
-      id: 'RC-2',
-      text: '卖出后 3 个交易日内不追回同一只票。',
-      trigger: '卖出后 3 个交易日内出现同标的买入申报',
-      backread: '回看：过去相似“卖出即买回”的记录',
-      note: '演示候选（合成）',
-    },
-  ];
+/* —— 契约：模板读取 / 规则预览 / 历史情境判定（src/engine/contractMatch.js；候选口径，哈希为占位算法，待 M0-C1 冻结） —— */
+export const CONTRACT_SIM_LABEL = '合成行情 · 演示口径，不构成投资建议';
+export const CONTRACT_SIM_SCOPE_NOTE = '非真实行情 · 候选口径（待 M0-C1 冻结）· 不构成投资建议';
+export const CONTRACT_HASH_NOTE = '候选哈希，待 M0-C1 冻结';
+export const CONTRACT_SIM_INPUT_INVALID = 'E_CONTRACT_SIM_INPUT_INVALID';
+const SIM_MARKET_LABEL = '合成演示行情（m0 夹具，非真实行情）';
+const DEMO_TRADES_LABEL = '演示账单 A（demo-bill.csv，合成）';
+
+export function contractTemplates() {
+  return Object.values(CONTRACT_TEMPLATES).map((t) => ({
+    template_id: t.template_id,
+    name: t.name,
+    kind: t.kind,
+    text_template: t.text_template,
+    reminder: t.reminder,
+    fields: Object.entries(t.fields).map(([key, f]) => ({ key, label: f.label, default: f.default, min: f.min, integer: f.integer })),
+  }));
+}
+
+export function previewContract({ template_id, fields } = {}) {
+  return parseContract({ template_id, fields });
+}
+
+let demoTradesPromise = null;
+function demoTradesA() {
+  if (!demoTradesPromise) {
+    demoTradesPromise = (async () => {
+      const csvUrl = REPORT_CSV.A;
+      const normalized = normalizeRows(parseCsvText(await fetchText(csvUrl)), csvUrl.split('/').pop());
+      return normalized.trades;
+    })();
+  }
+  return demoTradesPromise;
+}
+
+// 交易来源：已确认、未阻断、有标准化交易的本地账单 → 用户账单；其余一律演示账单 A（不混用、不互相回退）
+function isConfirmedLocalBill(bill) {
+  return !!bill && bill.status === 'confirmed' && bill.sourceType === 'local' && !bill.blocked && Array.isArray(bill.trades) && bill.trades.length > 0;
+}
+
+export function contractTradeSource(bill) {
+  if (isConfirmedLocalBill(bill)) {
+    const name = String(bill.fileName || 'user-bill.csv');
+    return {
+      kind: 'user_bill',
+      label: `已确认本地账单（${name}）`,
+      fileName: name,
+      market_label: SIM_MARKET_LABEL,
+      key: `user:${name}:${JSON.stringify(bill.trades.map((t) => [t.trade_id, t.symbol, t.side, t.trade_date]))}`,
+    };
+  }
+  return { kind: 'demo_bill_a', label: DEMO_TRADES_LABEL, fileName: 'demo-bill.csv', market_label: SIM_MARKET_LABEL, key: 'demo:A' };
+}
+
+async function sourceTrades(bill) {
+  const source = contractTradeSource(bill);
+  return { source, trades: source.kind === 'user_bill' ? bill.trades : await demoTradesA() };
+}
+
+export async function contractSimContext({ bill } = {}) {
+  const [market, { source, trades }] = await Promise.all([demoMarket(), sourceTrades(bill)]);
+  const billSymbols = [...new Set(trades.map((t) => t.symbol))].sort();
+  const symbols = [...billSymbols, ...market.symbols.filter((s) => !billSymbols.includes(s))];
+  return {
+    label: CONTRACT_SIM_LABEL,
+    scopeNote: CONTRACT_SIM_SCOPE_NOTE,
+    sourceKey: source.key,
+    tradesSource: source,
+    symbols: symbols.map((s) => ({ symbol: s, in_market_cache: market.symbols.includes(s), in_bill: billSymbols.includes(s) })),
+    range: { ...market.range },
+    tradingDays: [...market.tradingDays],
+    sells: trades.filter((t) => t.side === 'sell').map((t) => ({ trade_id: t.trade_id, symbol: t.symbol, trade_date: t.trade_date })),
+  };
+}
+
+export async function simulateContract({ template_id, fields, symbol, date, bill } = {}) {
+  const parsed = parseContract({ template_id, fields });
+  const out = {
+    ok: false, label: CONTRACT_SIM_LABEL, scopeNote: CONTRACT_SIM_SCOPE_NOTE, symbol: symbol ?? null, requested_date: date ?? null,
+    parsed, verdict: null, code: null, message: '', change: null, match: null,
+    tradesSource: contractTradeSource(bill), uses_trades: parsed.kind === 'sell_buyback_window', in_market_cache: null,
+  };
+  if (!parsed.supported) return { ...out, code: parsed.code, message: parsed.message };
+  try {
+    const market = await demoMarket();
+    out.in_market_cache = market.symbols.includes(symbol);
+    if (parsed.kind === 'change_pct_threshold') {
+      const change = dayChangePct(market, symbol, date);
+      const match = matchContract(parsed, {
+        symbol,
+        date: change.complete ? change.effective_date : date,
+        changePct: change.complete ? change.change_pct : null,
+        reason_code: change.complete ? null : change.code,
+      });
+      return { ...out, ok: true, verdict: match.verdict, code: match.code, message: match.message, change, match };
+    }
+    const { source, trades } = await sourceTrades(bill);
+    const match = matchContract(parsed, { symbol, date, trades, tradingDays: market.tradingDays });
+    return { ...out, ok: true, verdict: match.verdict, code: match.code, message: match.message, match, tradesSource: source };
+  } catch (e) {
+    return { ...out, code: CONTRACT_SIM_INPUT_INVALID, message: `情境输入无效：${String(e && e.message ? e.message : e)}` };
+  }
 }
 
 // 对话离线降级占位（百炼未接入；不引用事实 JSON）

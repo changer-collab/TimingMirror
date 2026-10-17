@@ -9,6 +9,8 @@ import { el } from '../components.js';
 import * as demo from '../../demo/adapter.js';
 import { renderGhostChart } from '../components/ghostChart.js';
 
+const WIRING_NOTE = '契约页已接入候选模板与历史情境模拟（候选口径，哈希待 M0-C1 冻结），契约不会自动改变本报告结论。未接入：百炼（对话页为离线模式）、真实行情、对话页事实回跳。';
+
 function billStatusText(bill) {
   if (bill.status === 'confirmed') return `已确认（${bill.trades.length} 条）`;
   if (bill.status === 'loaded') return `已加载（${bill.trades.length} 条，未确认）`;
@@ -266,7 +268,7 @@ function buildPage(page, b, baseBundle, ctx) {
     for (const it of items) body.append(demoFactEvidence(it));
   }
   body.append(el('div', { class: 'rp-dev' }, [
-    '口径与来源：数字由本地确定性引擎（csvNormalize → marketCache → indicators → provenance）计算；行情为 m0 合成夹具（占位代码、合成价格；非真实行情），清单尚未签收（草案·演示口径）。未接线：真实 CSV 上传、真实行情、百炼、契约匹配。',
+    `口径与来源：数字由本地确定性引擎（csvNormalize → marketCache → indicators → provenance）计算；行情为 m0 合成夹具（占位代码、合成价格；非真实行情），清单尚未签收（草案·演示口径）。本页为演示账单；本地 CSV 请在导入页选择（仅本机处理，不上传）。${WIRING_NOTE}`,
   ]));
   det.append(body);
   page.append(det);
@@ -697,7 +699,7 @@ function evidenceSection(b, review, scope) {
   }
 
   body.append(el('div', { class: 'rp-dev' }, [
-    '口径与来源：数字由本地确定性引擎计算，并经复核（runReview）筛选后才发布；行情为 m0 合成夹具（占位代码、合成价格；非真实行情，清单未签收·草案口径）。原始 CSV 仅在本机读取与校验，未上传。',
+    `口径与来源：数字由本地确定性引擎计算，并经复核（runReview）筛选后才发布；行情为 m0 合成夹具（占位代码、合成价格；非真实行情，清单未签收·草案口径）。原始 CSV 仅在本机读取与校验，未上传。${WIRING_NOTE}`,
   ]));
   evd.append(body);
   return evd;

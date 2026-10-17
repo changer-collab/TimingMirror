@@ -74,8 +74,19 @@ body {
 .msg .chip { margin-top: 6px; display: inline-block; }
 .card { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
 .rule-text { font-size: 15px; font-weight: 700; }
-.rewrite { display: flex; flex-direction: column; gap: 8px; }
-.disabled-card { opacity: .75; }
+.cv-live { display: flex; flex-direction: column; gap: 8px; border-top: 1px dashed var(--line); padding-top: 10px; }
+.cv-field { display: flex; flex-direction: column; gap: 4px; }
+.cv-input { min-width: 160px; flex: 0 1 auto; }
+.cv-hash { font-family: var(--mono); word-break: break-all; }
+.cv-error { border-left: 4px solid var(--red); background: var(--red-tint); border-radius: 8px; padding: 8px 12px; }
+.cv-rec.legacy { opacity: .8; border-style: dashed; }
+.cv-source.user_bill { color: var(--green-ink); font-weight: 600; }
+.cv-sim-result { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.cv-sim-result.triggered { border-left: 4px solid var(--red); }
+.cv-sim-result.not_triggered { border-left: 4px solid var(--green-ink); }
+.cv-sim-result.missing_data { border-left: 4px solid var(--amber); }
+.cv-warning { display: flex; flex-direction: column; gap: 4px; background: var(--red-tint); border: 1px solid #E3C4C4; border-radius: 8px; padding: 8px 12px; }
+.cv-warning strong { color: var(--red-ink); }
 .footer { border-top: 1px solid var(--line); padding: 12px 24px 24px; color: var(--faint); font-size: 12px; }
 
 /* =====================================================================
