@@ -1,4 +1,4 @@
-// 契约：引擎模板＋可编辑字段 → 解析预览 → 确认/改写/拒绝（版本记录本地持久化）→ 历史情境模拟（合成行情）
+// 契约：引擎模板＋可编辑字段 → 解析预览 → 确认/拒绝（按候选哈希的版本状态机，本地持久化）→ 历史情境模拟（合成行情）
 // 边界：解析、涨跌幅、交易日距离与命中判定全部经 adapter 调用引擎；本页只渲染引擎返回的文本与 display。
 import { el, chip } from '../components.js';
 import * as adapter from '../../demo/adapter.js';
@@ -33,6 +33,79 @@ function fieldsText(templates, rec) {
   return Object.entries(rec.fields ?? {})
     .map(([k, v]) => `${tpl?.fields.find((f) => f.key === k)?.label ?? k}：${safe(v)}`)
     .join('；');
+}
+
+// 版本＝引擎候选哈希：同一哈希的记录合并为一个版本（版本号取最早一条），状态取最新一条决策；记录只追加不删除。
+const ACCEPTED = new Set(['已确认', '已改写']);
+
+function groupVersions(versions) {
+  const groups = new Map();
+  versions.forEach((r, idx) => {
+    if (!isNewRecord(r) || typeof r.hash !== 'string') return;
+    let g = groups.get(r.hash);
+    if (!g) { g = { hash: r.hash, v: null, records: [] }; groups.set(r.hash, g); }
+    g.records.push(r);
+    if (Number.isFinite(r.v) && (g.v === null || r.v < g.v)) g.v = r.v;
+    g.latest = r;
+    g.order = idx;
+  });
+  return [...groups.values()].map((g) => {
+    const vs = [...new Set(g.records.map((r) => r.v))];
+    return { ...g, v: g.v ?? safe(g.records[0].v), status: g.latest.status, duplicates: vs.filter((v) => v !== g.v) };
+  });
+}
+
+function nextVersion(versions) {
+  return versions.reduce((m, r) => (Number.isFinite(r.v) ? Math.max(m, r.v) : m), 0) + 1;
+}
+
+function decide(versions, parsed) {
+  const groups = groupVersions(versions);
+  const active = groups.filter((g) => ACCEPTED.has(g.status)).sort((a, b) => b.order - a.order)[0] ?? null;
+  const fresh = { groups, active, current: null, confirmLabel: active ? '确认改写为新版本' : '确认' };
+  if (!parsed || !parsed.supported) return { ...fresh, canConfirm: false, canReject: false };
+  const current = groups.find((g) => g.hash === parsed.hash) ?? null;
+  if (!current) return { ...fresh, canConfirm: true, canReject: true };
+  return { groups, active, current, confirmLabel: '确认', canConfirm: !ACCEPTED.has(current.status), canReject: current.status !== '已拒绝' };
+}
+
+function actionHint(d, parsed, versions) {
+  if (!parsed.supported) return '参数无效：确认与拒绝均不可用。';
+  const g = d.current;
+  if (g && ACCEPTED.has(g.status)) return `当前规则即 ${g.status} v${g.v}（同一候选哈希不再生成新版本；备注不参与哈希，不能单独产生新版本）。可拒绝该版本，或修改模板 / 参数后另存新版本。`;
+  if (g) return `当前规则即 已拒绝 v${g.v}（同一候选哈希不再生成新版本）。可重新确认该版本（仍为 v${g.v}），或修改模板 / 参数。`;
+  if (d.active) return `已在 ${d.active.status} v${d.active.v} 基础上修改模板或参数：确认后保存为新版本 v${nextVersion(versions)}；拒绝也会记录为新版本。`;
+  return `确认或拒绝都会保存为版本 v${nextVersion(versions)}（备注不参与哈希）。`;
+}
+
+function versionCard(g, templates, tag, featured) {
+  const first = g.records[0];
+  const notes = [...new Set(g.records.map((r) => r.note).filter(Boolean))];
+  const decisionText = (r) => [
+    `v${safe(r.v)} · ${safe(r.status)}`,
+    r.transition_from ? `（由 ${r.transition_from} 变更，未新增版本）` : '',
+    r.from_v ? `（改写自 v${r.from_v}）` : '',
+    ` · ${fmtAt(r.at)}`,
+  ].join('');
+  return el('div', { class: `card cv-rec${featured ? ' featured' : ''}`, 'data-hash': g.hash }, [
+    el('div', { class: 'row' }, [
+      chip(`${g.status} v${g.v}`, STATUS_KIND[g.status] ?? 'mode'),
+      tag ? el('span', { class: 'chip cv-tag' }, [tag]) : null,
+      g.duplicates.length ? el('span', { class: 'chip cv-dup' }, [`早期重复记录 ${g.duplicates.length} 条`]) : null,
+    ]),
+    el('div', { class: 'calc-line cv-rec-text' }, [safe(first.text)]),
+    el('div', { class: 'muted small' }, [`${safe(first.template_name)} · ${fieldsText(templates, first)} · ${fmtAt(g.latest.at)}`]),
+    el('details', { class: 'cv-rec-detail' }, [
+      el('summary', {}, ['详情（候选哈希、备注、决策记录）']),
+      el('div', { class: 'muted small cv-hash' }, [`${adapter.CONTRACT_HASH_NOTE}：${g.hash} · ${safe(first.hash_algorithm)}`]),
+      ...notes.map((n) => el('div', { class: 'muted small' }, [`备注（仅备注，不参与规则判定）：${safe(n)}`])),
+      el('div', { class: 'muted small' }, ['决策记录：']),
+      ...g.records.map((r) => el('div', { class: 'muted small' }, [decisionText(r)])),
+      g.duplicates.length
+        ? el('div', { class: 'muted small' }, [`早期重复记录：同一候选哈希曾被重复保存为 ${g.duplicates.map((v) => `v${safe(v)}`).join('、')}；此处按哈希合并展示，本地数据未删除。`])
+        : null,
+    ]),
+  ]);
 }
 
 export function renderContract(root, ctx) {
@@ -96,14 +169,13 @@ export function renderContract(root, ctx) {
   editor.append(live);
   wrap.append(editor);
 
-  function addVersion(status) {
+  function applyAction(action) {
     const parsed = preview();
     if (!parsed.supported) return;
-    const v = versions.reduce((m, r) => (Number.isFinite(r.v) ? Math.max(m, r.v) : m), 0) + 1;
-    const rec = {
+    const d = decide(versions, parsed);
+    if (action === 'confirm' ? !d.canConfirm : !d.canReject) return;
+    const base = {
       schema: RECORD_SCHEMA,
-      v,
-      status,
       template_id: parsed.template_id,
       template_name: parsed.template_name,
       fields: { ...parsed.fields },
@@ -114,22 +186,30 @@ export function renderContract(root, ctx) {
       at: new Date().toISOString(),
       note: (c.draft.note ?? '').trim() || null,
     };
+    const rec = d.current
+      ? { ...base, v: d.current.v, status: action === 'confirm' ? '已确认' : '已拒绝', transition_from: d.current.status }
+      : {
+        ...base,
+        v: nextVersion(versions),
+        status: action === 'reject' ? '已拒绝' : d.active ? '已改写' : '已确认',
+        from_v: action === 'confirm' && d.active ? d.active.v : null,
+      };
     set({ contracts: { versions: [...versions, rec] } });
     saveContractsDemo();
   }
 
   function paintLive() {
     const parsed = preview();
+    const d = decide(versions, parsed);
     const nodes = [el('div', { class: 'section-title' }, ['规则预览（引擎解析）'])];
     if (!parsed.supported) {
       nodes.push(el('div', { class: 'cv-error' }, [
         el('div', { class: 'error' }, [`参数无效 · ${parsed.code}`]),
         el('div', { class: 'calc-line' }, [parsed.message]),
-        el('div', { class: 'muted small' }, ['未生成规则：不猜测、不自动纠正；修正参数后才可确认 / 改写 / 拒绝。']),
+        el('div', { class: 'muted small' }, ['未生成规则：不猜测、不自动纠正；修正参数后才可确认或拒绝。']),
       ]));
     } else {
-      const rec = [...versions].reverse().find((r) => isNewRecord(r) && r.hash === parsed.hash);
-      const status = rec ? { text: `${rec.status} v${rec.v}`, kind: STATUS_KIND[rec.status] ?? 'mode' } : { text: '候选（未保存）', kind: 'mode' };
+      const status = d.current ? { text: `${d.current.status} v${d.current.v}`, kind: STATUS_KIND[d.current.status] ?? 'mode' } : { text: '候选（未保存）', kind: 'mode' };
       nodes.push(el('div', { class: 'row' }, [el('span', { class: `chip cv-status ${status.kind}`.trim() }, [status.text]), el('span', { class: 'muted small' }, [parsed.template_name])]));
       nodes.push(el('div', { class: 'rule-text' }, [parsed.text]));
       nodes.push(el('div', { class: 'calc-line' }, [`阈值：${parsed.threshold.display}`]));
@@ -138,45 +218,52 @@ export function renderContract(root, ctx) {
       nodes.push(el('div', { class: 'muted small' }, [`哈希算法：${parsed.hash_algorithm}（占位算法，冻结后可能替换；覆盖模板、条件、参数与规则文本，不含备注）`]));
     }
 
-    const last = lastNew();
-    const baselineHash = last ? last.hash : adapter.previewContract({ template_id: c.draft.template_id }).hash;
-    const canRewrite = parsed.supported && parsed.hash !== baselineHash;
-    const confirmBtn = el('button', { class: 'btn primary', onclick: () => addVersion('已确认') }, ['确认']);
-    const rewriteBtn = el('button', { class: 'btn', onclick: () => addVersion('已改写') }, ['改写（保存为新版本）']);
-    const rejectBtn = el('button', { class: 'btn danger', onclick: () => addVersion('已拒绝') }, ['拒绝']);
-    confirmBtn.disabled = !parsed.supported;
-    rejectBtn.disabled = !parsed.supported;
-    rewriteBtn.disabled = !canRewrite;
-    nodes.push(el('div', { class: 'row' }, [confirmBtn, rewriteBtn, rejectBtn]));
-    nodes.push(el('div', { class: 'muted small' }, [
-      parsed.supported && !canRewrite
-        ? `改写＝修改模板或参数后保存为新版本；当前规则与${last ? `最近版本 v${last.v}` : '模板默认参数'}相同，请先修改。`
-        : '改写＝修改模板或参数后保存为新版本；备注不参与规则判定。',
-    ]));
+    const confirmBtn = el('button', { class: 'btn primary', onclick: () => applyAction('confirm') }, [d.confirmLabel]);
+    const rejectBtn = el('button', { class: 'btn danger', onclick: () => applyAction('reject') }, ['拒绝']);
+    confirmBtn.disabled = !d.canConfirm;
+    rejectBtn.disabled = !d.canReject;
+    nodes.push(el('div', { class: 'row' }, [confirmBtn, rejectBtn]));
+    nodes.push(el('div', { class: 'muted small cv-hint' }, [actionHint(d, parsed, versions)]));
     live.replaceChildren(...nodes);
   }
 
-  /* —— 版本记录 —— */
-  wrap.append(el('div', { class: 'section-title' }, ['契约版本记录（本地持久化）']));
-  if (!versions.length) {
-    wrap.append(el('div', { class: 'muted' }, ['暂无记录。确认 / 改写 / 拒绝后会在此生成版本记录（含模板、参数、规则文本、候选哈希、状态与时间）。']));
-  } else {
-    for (const rec of versions) {
-      if (isNewRecord(rec)) {
-        wrap.append(el('div', { class: 'card cv-rec' }, [
-          el('div', { class: 'row' }, [chip(`${rec.status} v${rec.v}`, STATUS_KIND[rec.status] ?? 'mode'), el('span', { class: 'muted small' }, [`${safe(rec.template_name)} · ${fieldsText(templates, rec)} · ${fmtAt(rec.at)}`])]),
-          el('div', { class: 'calc-line' }, [safe(rec.text)]),
-          el('div', { class: 'muted small cv-hash' }, [`${adapter.CONTRACT_HASH_NOTE}：${safe(rec.hash)} · ${safe(rec.hash_algorithm)}`]),
-          rec.note ? el('div', { class: 'muted small' }, [`备注（仅备注，不参与规则判定）：${safe(rec.note)}`]) : null,
-        ]));
-      } else {
-        wrap.append(el('div', { class: 'card cv-rec legacy' }, [
-          el('div', { class: 'row' }, [chip('旧演示记录', 'mode'), el('span', { class: 'muted small' }, [`v${safe(rec.v)} · ${safe(rec.status)} · ${safe(rec.candidateId)} · ${safe(rec.at)}`])]),
-          el('div', { class: 'calc-line' }, [safe(rec.text)]),
-          el('div', { class: 'muted small' }, ['未经契约引擎解析：不参与规则判定，无候选哈希。']),
+  /* —— 版本记录（按候选哈希合并；本地数据只追加、不删除）—— */
+  wrap.append(el('div', { class: 'section-title' }, ['契约版本记录（本地持久化 · 按候选哈希合并）']));
+  const recordsBox = el('div', { class: 'stack cv-records' });
+  wrap.append(recordsBox);
+
+  function paintRecords() {
+    const parsed = preview();
+    const d = decide(versions, parsed);
+    const legacy = versions.filter((r) => !isNewRecord(r));
+    const nodes = [];
+    if (!d.groups.length && !legacy.length) {
+      nodes.push(el('div', { class: 'muted' }, ['暂无记录。确认或拒绝后会在此生成版本记录（含模板、参数、规则文本、候选哈希、状态与时间）。']));
+    }
+    if (d.groups.length) {
+      const byRecent = [...d.groups].sort((a, b) => b.order - a.order);
+      const featured = d.current ?? d.active ?? byRecent[0];
+      const tag = featured === d.current ? '当前候选对应版本' : featured === d.active ? '最新有效版本' : '最新版本';
+      nodes.push(versionCard(featured, templates, tag, true));
+      const rest = byRecent.filter((g) => g !== featured);
+      if (rest.length) {
+        nodes.push(el('details', { class: 'cv-history' }, [
+          el('summary', {}, [`查看历史版本（${rest.length}）`]),
+          ...rest.map((g) => versionCard(g, templates, '', false)),
         ]));
       }
     }
+    if (legacy.length) {
+      nodes.push(el('details', { class: 'cv-history legacy' }, [
+        el('summary', {}, [`旧演示记录（未经引擎解析）（${legacy.length}）`]),
+        ...legacy.map((rec) => el('div', { class: 'card cv-rec legacy' }, [
+          el('div', { class: 'row' }, [chip('旧演示记录', 'mode'), el('span', { class: 'muted small' }, [`v${safe(rec.v)} · ${safe(rec.status)} · ${safe(rec.candidateId)} · ${safe(rec.at)}`])]),
+          el('div', { class: 'calc-line' }, [safe(rec.text)]),
+          el('div', { class: 'muted small' }, ['未经契约引擎解析：不参与规则判定，无候选哈希。']),
+        ])),
+      ]));
+    }
+    recordsBox.replaceChildren(...nodes);
   }
 
   /* —— 历史情境模拟（交易来源由 adapter 按账单状态决定）—— */
@@ -256,7 +343,7 @@ export function renderContract(root, ctx) {
     simResultBox.replaceChildren(...(c.sim.result ? [simResult(c.sim.result)] : []));
   }
 
-  function paint() { paintLive(); paintSim(); }
+  function paint() { paintLive(); paintRecords(); paintSim(); }
   paint();
   root.append(wrap);
 }

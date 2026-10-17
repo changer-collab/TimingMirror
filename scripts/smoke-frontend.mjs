@@ -290,19 +290,19 @@ const sourceLine = () => texts(findByClass(current, 'cv-source')[0] ?? { childre
     && txt.includes('暂无记录') && txt.includes('仅备注，不参与规则判定'), JSON.stringify(tplOpts));
   let live = liveTxt();
   const hashDefault = hashOf(live);
-  check('契约·涨幅模板：默认解析预览（规则文本 / 阈值 5.0% / 提醒 / 候选哈希 + 算法）+ 候选未保存 + 改写不可用',
+  check('契约·涨幅模板：默认解析预览（规则文本 / 阈值 5.0% / 提醒 / 候选哈希 + 算法）+ 候选未保存 + 初始只有确认 / 拒绝',
     live.includes('当天涨幅超过 5% 的票，我绝不买入。') && live.includes('阈值：5.0%') && live.includes('提醒：申报买入时')
     && !!hashDefault && live.includes('fnv1a64-placeholder') && statusChip().text === '候选（未保存）'
-    && btnOf('改写').disabled === true && btnOf('确认').disabled === false, live.slice(0, 300));
+    && !btnOf('改写') && labelOf(btnOf('确认')) === '确认' && btnOf('确认').disabled === false && btnOf('拒绝').disabled === false, live.slice(0, 300));
   await fire(fieldInput('threshold_pct'), 'input', '3');
   live = liveTxt();
   const hash3 = hashOf(live);
   check('契约·涨幅模板：编辑阈值 → 实时预览更新（3% / 3.0%）且哈希随之变化', live.includes('当天涨幅超过 3% 的票') && live.includes('阈值：3.0%') && !!hash3 && hash3 !== hashDefault, live.slice(0, 300));
   await fire(fieldInput('threshold_pct'), 'input', '5%');
   live = liveTxt();
-  check('契约·非法参数：显示引擎错误（E_CONTRACT_FIELD_INVALID · 须为数字），不生成规则/哈希，三按钮与模拟均禁用',
+  check('契约·非法参数：显示引擎错误（E_CONTRACT_FIELD_INVALID · 须为数字），不生成规则/哈希，确认/拒绝与模拟均禁用',
     live.includes('E_CONTRACT_FIELD_INVALID') && live.includes('须为数字') && live.includes('收到「5%」') && !hashOf(live) && !live.includes('阈值：')
-    && btnOf('确认').disabled && btnOf('改写').disabled && btnOf('拒绝').disabled && btnOf('模拟申报买入').disabled, live.slice(0, 300));
+    && btnOf('确认').disabled && btnOf('拒绝').disabled && btnOf('模拟申报买入').disabled, live.slice(0, 300));
   await fire(fieldInput('threshold_pct'), 'input', '-1');
   check('契约·非法参数：负阈值显示“须 ≥ 0”（不自动纠正）', liveTxt().includes('须 ≥ 0') && liveTxt().includes('收到「-1」'), liveTxt().slice(0, 200));
   await fire(fieldInput('threshold_pct'), 'input', '3');
@@ -311,22 +311,41 @@ const sourceLine = () => texts(findByClass(current, 'cv-source')[0] ?? { childre
   txt = texts(current).join('|');
   check('契约：确认 → v1 已确认（ok）+ 记录含模板/参数/规则文本/哈希/备注', statusChip().text === '已确认 v1' && statusChip().cls.includes('ok')
     && txt.includes('涨幅超阈值不买入 · 涨幅阈值（%）：3') && txt.includes(hash3) && txt.includes('备注（仅备注，不参与规则判定）：追高总亏'), txt.slice(0, 400));
-  check('契约：确认后改写不可用（与最近版本相同，需先修改）', btnOf('改写').disabled === true && liveTxt().includes('与最近版本 v1相同'), liveTxt().slice(-200));
+  check('契约：确认后同一哈希确认禁用、无“未修改也可改写”的按钮，提示当前规则即 v1', btnOf('确认').disabled === true && !btnOf('改写') && btnOf('拒绝').disabled === false && liveTxt().includes('当前规则即 已确认 v1'), liveTxt().slice(-200));
+  await clickLabel('确认'); await clickLabel('确认');
+  check('状态机：同一哈希连续点击确认只保留一个版本（记录 1 条、仍为已确认 v1）', state.contracts.versions.length === 1 && statusChip().text === '已确认 v1' && (JSON.parse(store.get('tm.contracts.demo')).versions ?? []).length === 1, String(state.contracts.versions.length));
+  await fire(byRole('note'), 'input', '只改备注');
+  await clickLabel('确认');
+  check('状态机：只改备注不产生新版本（备注不进哈希）', state.contracts.versions.length === 1 && statusChip().text === '已确认 v1', String(state.contracts.versions.length));
   await fire(fieldInput('threshold_pct'), 'input', '4');
   const hash4 = hashOf(liveTxt());
-  check('契约：修改参数后改写可用', btnOf('改写').disabled === false && statusChip().text === '候选（未保存）');
-  await clickLabel('改写');
+  check('契约：在已确认规则上修改参数 → 主操作为“确认改写为新版本”且可用', !!btnOf('确认改写为新版本') && btnOf('确认改写为新版本').disabled === false && statusChip().text === '候选（未保存）' && liveTxt().includes('已在 已确认 v1 基础上修改'), liveTxt().slice(-200));
+  await clickLabel('确认改写为新版本');
   check('契约：改写 → v2 已改写（mode）', statusChip().text === '已改写 v2' && statusChip().cls.includes('mode'), statusChip().text);
   await clickLabel('拒绝');
-  check('契约：拒绝 → v3 已拒绝（warn）', statusChip().text === '已拒绝 v3' && statusChip().cls.includes('warn'), statusChip().text);
+  check('契约：拒绝同一哈希 → v2 变为已拒绝（warn，不新增版本）', statusChip().text === '已拒绝 v2' && statusChip().cls.includes('warn') && btnOf('拒绝').disabled === true && btnOf('确认').disabled === false, statusChip().text);
   const saved = JSON.parse(store.get('tm.contracts.demo') ?? '{}').versions ?? [];
   check('契约：持久化记录含 template/fields/text/hash/hash_algorithm/status/at',
     saved.length === 3 && saved.every((r) => r.schema === 'contract-v1' && r.template_id === 'no_buy_on_surge' && r.text && /^[0-9a-f]{16}$/.test(r.hash) && r.hash_algorithm === 'fnv1a64-placeholder' && r.at && r.fields)
-    && saved.map((r) => r.status).join(',') === '已确认,已改写,已拒绝' && saved[0].fields.threshold_pct === 3 && saved[2].hash === hash4, JSON.stringify(saved).slice(0, 300));
+    && saved.map((r) => r.status).join(',') === '已确认,已改写,已拒绝' && saved.map((r) => r.v).join(',') === '1,2,2' && saved[0].fields.threshold_pct === 3 && saved[2].hash === hash4 && saved[2].transition_from === '已改写', JSON.stringify(saved).slice(0, 300));
+  await clickLabel('拒绝'); await clickLabel('拒绝');
+  check('状态机：同一哈希连续点击拒绝不新增版本', state.contracts.versions.length === 3 && statusChip().text === '已拒绝 v2', String(state.contracts.versions.length));
+  await fire(fieldInput('threshold_pct'), 'input', '3');
+  check('状态机：改回历史哈希（阈值 3）→ 恢复“已确认 v1”、确认禁用、不新增版本', hashOf(liveTxt()) === hash3 && statusChip().text === '已确认 v1' && btnOf('确认').disabled === true && state.contracts.versions.length === 3, statusChip().text);
+  await clickLabel('确认');
+  check('状态机：历史哈希上强行点确认也不新增版本', state.contracts.versions.length === 3, String(state.contracts.versions.length));
+  {
+    const recTxt = texts(findByClass(current, 'cv-records')[0]).join('|');
+    const featured = findByClass(current, 'featured')[0];
+    check('版本展示：突出当前候选对应版本（v1），其余放入“查看历史版本（1）”，同一哈希只有一张卡',
+      !!featured && featured.attrs['data-hash'] === hash3 && texts(featured).join('|').includes('当前候选对应版本') && recTxt.includes('查看历史版本（1）')
+      && findByClass(current, 'cv-rec').filter((n) => n.attrs['data-hash'] === hash4).length === 1 && findByClass(current, 'cv-rec').length === 2, recTxt.slice(0, 300));
+  }
+  await fire(fieldInput('threshold_pct'), 'input', '4');
 
   state.contracts = { ...defaultContracts(), versions: loadContractsDemo() }; mountCycle(); await settle();
-  check('契约：刷新后记录恢复，草稿取最近版本参数，哈希一致且状态为“已拒绝 v3”',
-    state.contracts.versions.length === 3 && fieldInput('threshold_pct').value === '4' && hashOf(liveTxt()) === hash4 && statusChip().text === '已拒绝 v3', liveTxt().slice(0, 200));
+  check('契约：刷新后记录恢复，草稿取最近版本参数，哈希一致且状态为“已拒绝 v2”',
+    state.contracts.versions.length === 3 && fieldInput('threshold_pct').value === '4' && hashOf(liveTxt()) === hash4 && statusChip().text === '已拒绝 v2', liveTxt().slice(0, 200));
 
   await fire(byRole('template'), 'change', 'no_buy_back_within');
   live = liveTxt();
@@ -337,9 +356,9 @@ const sourceLine = () => texts(findByClass(current, 'cv-source')[0] ?? { childre
   check('契约·不追回模板：0 窗口 → 引擎错误（不纠正为 1）', liveTxt().includes('收到「0」') && !hashOf(liveTxt()), liveTxt().slice(0, 200));
   await fire(fieldInput('days'), 'input', '5');
   check('契约·不追回模板：编辑窗口 → 预览“卖出后 5 个交易日”', liveTxt().includes('卖出后 5 个交易日内不追回同一只票。') && liveTxt().includes('阈值：5 个交易日'), liveTxt().slice(0, 200));
-  await clickLabel('改写');
+  await clickLabel('确认改写为新版本');
   txt = texts(current).join('|');
-  check('契约：换模板后改写 → v4 已改写，记录为不追回模板', statusChip().text === '已改写 v4' && txt.includes('卖出后 N 个交易日内不追回 · 不追回窗口（交易日）：5'), txt.slice(0, 300));
+  check('契约：换模板后确认改写 → v3 已改写，记录为不追回模板', statusChip().text === '已改写 v3' && txt.includes('卖出后 N 个交易日内不追回 · 不追回窗口（交易日）：5'), txt.slice(0, 300));
 
   /* —— 历史情境模拟：不追回模板（演示账单 A 卖出 T004 000000 2024-10-08）—— */
   await fire(fieldInput('days'), 'input', '3');
@@ -385,6 +404,34 @@ const sourceLine = () => texts(findByClass(current, 'cv-source')[0] ?? { childre
   check('契约·旧记录：显示为“旧演示记录”且不崩溃，非对象条目被丢弃，不参与判定', state.contracts.versions.length === 1 && txt.includes('旧演示记录') && txt.includes('未经契约引擎解析') && statusChip().text === '候选（未保存）', txt.slice(0, 300));
   await clickLabel('确认');
   check('契约·旧记录：在旧记录后确认 → 新版本 v2（编号延续）', statusChip().text === '已确认 v2' && (JSON.parse(store.get('tm.contracts.demo')).versions ?? []).length === 2, statusChip().text);
+  check('版本展示：旧演示记录单独折叠在“旧演示记录（未经引擎解析）（1）”', texts(current).join('|').includes('旧演示记录（未经引擎解析）（1）') && findByClass(current, 'cv-rec').filter((n) => String(n.attrs.class).includes('legacy')).length === 1);
+
+  /* —— 状态机：全新候选连续拒绝 / 早期重复记录合并展示 —— */
+  store.delete('tm.contracts.demo');
+  state.contracts = { ...defaultContracts(), versions: loadContractsDemo() }; mountCycle(); await settle();
+  await clickLabel('拒绝'); await clickLabel('拒绝');
+  check('状态机：全新候选连续点击拒绝只保留一个版本（已拒绝 v1，拒绝禁用）', state.contracts.versions.length === 1 && statusChip().text === '已拒绝 v1' && btnOf('拒绝').disabled === true, String(state.contracts.versions.length));
+  await clickLabel('确认');
+  check('状态机：已拒绝的同一哈希重新确认 → 仍为 v1（已确认），不新增版本号', statusChip().text === '已确认 v1' && new Set(state.contracts.versions.map((r) => r.v)).size === 1 && state.contracts.versions.length === 2, statusChip().text);
+
+  const dupHash = adapterMod.previewContract({ template_id: 'no_buy_on_surge', fields: { threshold_pct: '5' } });
+  const dupRec = (v, at) => ({ schema: 'contract-v1', v, status: '已确认', template_id: dupHash.template_id, template_name: dupHash.template_name, fields: { ...dupHash.fields }, text: dupHash.text, threshold_display: dupHash.threshold.display, hash: dupHash.hash, hash_algorithm: dupHash.hash_algorithm, at, note: null });
+  const seeded = [dupRec(4, '2026-10-01T01:00:00Z'), dupRec(5, '2026-10-01T01:00:05Z'), dupRec(6, '2026-10-01T01:00:09Z')];
+  store.set('tm.contracts.demo', JSON.stringify({ versions: seeded }));
+  state.contracts = { ...defaultContracts(), versions: loadContractsDemo() }; mountCycle(); await settle();
+  {
+    const cards = findByClass(current, 'cv-rec').filter((n) => n.attrs['data-hash'] === dupHash.hash);
+    const cardTxt = cards[0] ? texts(cards[0]).join('|') : '';
+    check('旧重复记录：同一哈希的 v4/v5/v6 合并为一张卡（已确认 v4 + 早期重复记录 2 条），本地数据未删除',
+      cards.length === 1 && cardTxt.includes('已确认 v4') && cardTxt.includes('早期重复记录 2 条') && cardTxt.includes('v5、v6') && statusChip().text === '已确认 v4'
+      && (JSON.parse(store.get('tm.contracts.demo')).versions ?? []).length === 3 && !texts(current).join('|').includes('查看历史版本'), cardTxt.slice(0, 300));
+  }
+  await clickLabel('确认');
+  check('旧重复记录：同一哈希再点确认不再追加（仍 3 条）', (JSON.parse(store.get('tm.contracts.demo')).versions ?? []).length === 3);
+  await fire(fieldInput('threshold_pct'), 'input', '6');
+  await clickLabel('确认改写为新版本');
+  check('旧重复记录：修改参数后确认改写 → 新版本 v7（已改写），旧记录保留并进入历史', statusChip().text === '已改写 v7' && (JSON.parse(store.get('tm.contracts.demo')).versions ?? []).length === 4
+    && texts(current).join('|').includes('查看历史版本（1）'), statusChip().text);
   store.set('tm.contracts.demo', '{broken');
   check('契约·旧记录：损坏的本地存储 → 空记录（不崩溃）', loadContractsDemo().length === 0);
 }

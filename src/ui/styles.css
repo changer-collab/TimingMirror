@@ -80,6 +80,12 @@ body {
 .cv-hash { font-family: var(--mono); word-break: break-all; }
 .cv-error { border-left: 4px solid var(--red); background: var(--red-tint); border-radius: 8px; padding: 8px 12px; }
 .cv-rec.legacy { opacity: .8; border-style: dashed; }
+.cv-rec.featured { border-left: 4px solid var(--amber); }
+.cv-rec-text { color: var(--cream); font-weight: 600; }
+.cv-rec-detail summary, .cv-history > summary { cursor: pointer; font-size: 13px; color: var(--dim); }
+.cv-rec-detail[open] { display: flex; flex-direction: column; gap: 4px; }
+.cv-history { display: flex; flex-direction: column; gap: 10px; }
+.cv-history[open] > summary { margin-bottom: 8px; }
 .cv-source.user_bill { color: var(--green-ink); font-weight: 600; }
 .cv-sim-result { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
 .cv-sim-result.triggered { border-left: 4px solid var(--red); }
