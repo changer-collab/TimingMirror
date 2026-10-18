@@ -9,6 +9,7 @@ import { createMarketCache, fromFixtures } from '../engine/marketCache.js';
 import { computeIndicators, RESULT_LABELS } from '../engine/indicators.js';
 import { buildProvenanceReport } from '../engine/provenance.js';
 import { runReview } from '../agent/reviewPipeline.js';
+import { replaceSell } from '../engine/counterfactual.js';
 
 // 导入页使用的标准化夹具（保持现状：导入页未在本轮接线范围）
 const FIXTURE = {
@@ -169,6 +170,7 @@ export async function loadReportEngine(scenario = 'A') {
     prices: null,
     blockedSymbols: [],
     poolBlocked: false,
+    trades: [],
     perStock: {},
     pool: null,
     display: null,
@@ -189,6 +191,7 @@ export async function loadReportEngine(scenario = 'A') {
     return out;
   }
   const trades = normalized.trades;
+  out.trades = trades; // 供「单笔反事实」区复用同一标准化账单（页面不解析 CSV）
 
   // 2) 行情（合成夹具）→ 估值日解析 → 末笔检查 → 取价（缺价阻断，不回落）——共享市场段
   const stage = await runSyntheticMarketStage(trades);
@@ -316,6 +319,82 @@ export async function loadUserBillReport(bill) {
     out.status = review.status === 'degraded' ? 'partial' : 'ok';
   }
   return out;
+}
+
+// 单笔卖出反事实（S1 幽灵线缺口图）—— 演示账单与用户确认账单共用本入口。
+export const CF_CODES = Object.freeze({
+  NO_TRADES: 'E_CF_NO_TRADES',
+  BAD_SCOPE: 'E_CF_BAD_SCOPE',
+  SYMBOL_NOT_IN_BILL: 'E_CF_SYMBOL_NOT_IN_BILL',
+  NO_SELL: 'E_CF_NO_SELL',
+  TRADE_NOT_FOUND: 'E_CF_TRADE_NOT_FOUND',
+  NOT_SELL: 'E_CF_NOT_SELL',
+  MARKET_BLOCKED: 'E_CF_MARKET_BLOCKED',
+  PRICE_MISSING: 'E_CF_PRICE_MISSING',
+  ENGINE_ERROR: 'E_CF_ENGINE_ERROR',
+});
+
+export async function loadSellCounterfactual({ trades, symbol, tradeId } = {}) {
+  const fail = (code, message) => ({
+    ok: false, code, message, symbol: symbol ?? null, tradeId: tradeId ?? null,
+    sellOptions: [], markers: [], replace: null, series: null, valuation: null, marketRange: null, labels: RESULT_LABELS,
+  });
+  if (!Array.isArray(trades) || trades.length === 0) return fail(CF_CODES.NO_TRADES, '账单交易为空，无法计算单笔反事实');
+  if (!symbol || symbol === 'pool') return fail(CF_CODES.BAD_SCOPE, '单笔反事实仅支持单标的作用域（组合 scope 不进入 replaceSell）');
+  const symbolTrades = trades.filter((t) => t && t.symbol === symbol);
+  if (symbolTrades.length === 0) return fail(CF_CODES.SYMBOL_NOT_IN_BILL, `标的 ${symbol} 不在账单中`);
+  const sells = symbolTrades
+    .filter((t) => t.side === 'sell')
+    .sort((a, b) => (a.trade_date < b.trade_date ? -1 : a.trade_date > b.trade_date ? 1 : (a.source?.line ?? 0) - (b.source?.line ?? 0)));
+  if (sells.length === 0) {
+    return fail(CF_CODES.NO_SELL, `标的 ${symbol} 没有卖出记录：S1 仅支持替换卖出笔（买入侧替换 S3 未定义，v1 不做）`);
+  }
+
+  const stage = await runSyntheticMarketStage(symbolTrades);
+  if (!stage.ok) return fail(CF_CODES.MARKET_BLOCKED, stage.errors.map((e) => `${e.code} · ${e.message}`).join('；'));
+  if (stage.blockedSymbols.includes(symbol)) {
+    const e = stage.errors.find((x) => x.message && x.message.includes(symbol));
+    return fail(CF_CODES.PRICE_MISSING, e ? e.message : `标的 ${symbol} 在估值日 ${stage.val.effective_date} 缺价（不回落其他日期）`);
+  }
+
+  let selected;
+  if (tradeId === undefined || tradeId === null || tradeId === '') {
+    selected = sells[0]; // 默认：时间排序后的第一笔可替换卖出笔
+  } else {
+    selected = symbolTrades.find((t) => t.trade_id === tradeId);
+    if (!selected) return fail(CF_CODES.TRADE_NOT_FOUND, `找不到交易：${tradeId}（标的 ${symbol}）`);
+    if (selected.side !== 'sell') return fail(CF_CODES.NOT_SELL, `S1 仅支持替换卖出笔：${tradeId} 是买入（买入侧替换 S3 未定义）`);
+  }
+
+  let result;
+  try {
+    result = replaceSell({
+      symbol,
+      trades: symbolTrades, 
+      tradeId: selected.trade_id,
+      effectiveDate: stage.val.effective_date,
+      closeOf: (d) => stage.market.getClose(symbol, d),
+      tradingDays: stage.market.tradingDays,
+    });
+  } catch (e) {
+    return fail(CF_CODES.ENGINE_ERROR, String(e && e.message ? e.message : e));
+  }
+  return {
+    ok: true,
+    code: null,
+    symbol,
+    tradeId: selected.trade_id,
+    sellOptions: sells.map((t) => ({ trade_id: t.trade_id, trade_date: t.trade_date, price: t.price, quantity: t.quantity })),
+    markers: symbolTrades.map((t) => ({
+      trade_id: t.trade_id, trade_date: t.trade_date, side: t.side, price: t.price, quantity: t.quantity,
+      replaced: t.trade_id === selected.trade_id,
+    })),
+    replace: result.replace,
+    series: result.series,
+    valuation: stage.val,
+    marketRange: { ...stage.market.range },
+    labels: RESULT_LABELS,
+  };
 }
 
 /* —— A′ 与 A 的差异（引擎输出之间的字段对比；不引入夹具期望值）
