@@ -10,6 +10,95 @@ import * as demo from '../../demo/adapter.js';
 import { renderGhostChart } from '../components/ghostChart.js';
 
 const WIRING_NOTE = '契约页已接入候选模板与历史情境模拟（候选口径，哈希待 M0-C1 冻结），契约不会自动改变本报告结论。未接入：百炼（对话页为离线模式）、真实行情、对话页事实回跳。';
+const NO_TRADE_ADVICE = '不要据此作交易判断。';
+
+/* —— 本次分析摘要：只取 bundle / review 已有字段，不计算数字 —— */
+function sumItem(label, value, kind = '') {
+  return el('div', { class: `rp-sum-item ${kind}`.trim() }, [el('div', { class: 'k' }, [label]), el('div', { class: 'v' }, [value])]);
+}
+
+function valuationText(v) {
+  if (!v) return '不可用';
+  if (v.blocked) return `${v.requested_date} 无法解析（不改用其他日期）`;
+  return v.requested_date === v.effective_date ? v.effective_date : `${v.requested_date} → 有效交易日 ${v.effective_date}`;
+}
+
+function marketText(range) {
+  return `合成演示行情（非真实行情）${range ? ` · ${range.start} → ${range.end}` : ' · 不可用'}`;
+}
+
+function summaryCard(headline, ok, items) {
+  return el('div', { class: `rp-summary ${ok ? 'ok' : 'bad'}` }, [
+    el('div', { class: 'rp-sec' }, ['本次分析摘要']),
+    el('div', { class: 'rp-sum-head' }, [headline]),
+    el('div', { class: 'rp-sum-grid' }, items),
+  ]);
+}
+
+// 演示链路未经 runReview：不使用“发布 / 复核”措辞
+function demoSummary(b) {
+  const ok = b.status === 'ok';
+  const conclusion = ok
+    ? '组合结果：已由本地引擎算出（演示数据，未经复核发布流程）'
+    : b.status === 'partial' ? '组合结果：不可用（存在缺价标的，组合整体不出结论）' : '结果不可用：数据被阻断';
+  const reasons = b.errors.slice(0, 2).map((e) => e.message).join('；');
+  return summaryCard(
+    ok ? '演示结论：以下数字来自合成账单与合成行情，只用于熟悉流程，不代表你的真实交易。' : `存在阻断：${reasons || '数据不完整'}。${NO_TRADE_ADVICE}`,
+    ok,
+    [
+      sumItem('数据来源', `演示账单 · ${b.scenarioMeta.label}（合成）`),
+      sumItem('行情状态', marketText(b.marketRange)),
+      sumItem('估值日', valuationText(b.valuation)),
+      sumItem('结论状态', conclusion, ok ? 'ok' : 'bad'),
+    ],
+  );
+}
+
+function userSummary(b, review) {
+  const published = !!review && review.portfolio_published === true;
+  let headline;
+  if (published) {
+    headline = '本次结论：组合结果已通过复核并发布；数字基于合成演示行情，非真实行情。';
+  } else {
+    const reasons = review ? collectBlockReasons(b, review, 'pool') : b.errors.map((e) => ({ code: e.code, message: e.message }));
+    const text = reasons.slice(0, 3).map((i) => i.message ?? REASON_TEXT[i.code] ?? i.code).join('；') || '复核输出中没有具体阻断记录';
+    const partial = review && review.published_facts.length > 0 ? '部分标的结果已通过复核，可切换标的查看。' : '';
+    headline = `存在阻断：${text}。${NO_TRADE_ADVICE}${partial}`;
+  }
+  return summaryCard(headline, published, [
+    sumItem('数据来源', `已确认本地账单 · ${b.fileName || '（未知文件）'}`),
+    sumItem('行情状态', marketText(b.marketRange)),
+    sumItem('估值日', valuationText(b.valuation)),
+    sumItem('结论状态', !review ? '组合结果未发布（复核未运行）' : published ? '组合结果已发布（已通过复核）' : '组合结果未发布', published ? 'ok' : 'bad'),
+  ]);
+}
+
+function sectionHead(title, note) {
+  return el('div', { class: 'rp-sec-wrap' }, [el('div', { class: 'rp-sec' }, [title]), note ? el('div', { class: 'muted small' }, [note]) : null]);
+}
+
+const FACT_HELP = Object.freeze({
+  buyCost: '账单内全部买入成交金额之和（成交价 × 数量），用作收益率的分母。',
+  sellProceeds: '账单内全部卖出成交金额之和（成交价 × 数量）。',
+  heldShares: '买入总股数减去卖出总股数，即估值日仍持有的股数。',
+  actualValue: '你的实际结果：卖出所得加上剩余持仓按估值日收盘价折算的价值。',
+  ghostValue: '对照结果：假设每次买入后一直持有不动，按估值日收盘价折算的价值。',
+  actualRet: '实际期末价值相对买入成本的收益率。',
+  ghostRet: '对照期末价值相对买入成本的收益率。',
+  dragMoney: '对照期末价值减去实际期末价值；正值表示买卖时机让结果比持有不动少了这么多。',
+  drag: '对照收益减去实际收益（百分点）；正值＝相对损耗，负值＝实际操作优于对照。',
+});
+
+function factPlain(it, reviewLine) {
+  const i = String(it.fact_id).indexOf('.');
+  const key = i > 0 ? it.fact_id.slice(i + 1) : it.fact_id;
+  const ids = it.inputs && Array.isArray(it.inputs.trade_ids) ? it.inputs.trade_ids : [];
+  return el('div', { class: 'rp-plain' }, [
+    el('div', { class: 'rp-kv' }, [el('b', {}, ['这项结果代表什么']), FACT_HELP[key] ?? '引擎输出的一项计算结果。']),
+    el('div', { class: 'rp-kv' }, [el('b', {}, ['来源于哪些交易']), ids.length ? `成交 ${ids.join('、')}` : '没有可定位的成交']),
+    el('div', { class: 'rp-kv' }, [el('b', {}, [reviewLine[0]]), reviewLine[1]]),
+  ]);
+}
 
 function billStatusText(bill) {
   if (bill.status === 'confirmed') return `已确认（${bill.trades.length} 条）`;
@@ -31,7 +120,8 @@ function metric(label, value, note, kind, sub) {
    页面不计算 actual/ghost/cf/gap/收盘价，引擎 display 原样展示。 */
 function cfSection({ trades, symbol, selectedId, set }) {
   const box = el('div', { class: 'rp-cf' });
-  box.append(el('div', { class: 'rp-sub' }, ['单笔反事实：如果这笔卖出没有发生（S1 单笔卖出替换）']));
+  box.append(el('div', { class: 'rp-sub' }, ['如果当时没有卖出这一笔，结果会怎样？']));
+  box.append(el('div', { class: 'muted small' }, ['单笔反事实（S1 单笔卖出替换）：只假设选中的这一笔卖出没有发生，其余交易不变；不是对未来的预测。']));
   const body = el('div', {});
   box.append(body);
   // 跨标的/跨场景残留防护：selectedId 不属于当前标的的卖出笔时传 null（adapter 默认该标的按时间第一笔）
@@ -60,15 +150,24 @@ function cfSection({ trades, symbol, selectedId, set }) {
           `可替换卖出笔：${cf.sellOptions.map((o) => `${o.trade_id} · ${o.trade_date} · ${o.price} × ${o.quantity}`).join('；')}`,
         ]));
       }
+      const r = cf.replace;
+      const gap = !!cf.series && (cf.series.complete === false || cf.series.missing_dates.length > 0);
+      body.append(el('div', { class: 'rp-cf-lead' }, [
+        `当前选中：${r.replaced.trade_id}（${r.replaced.trade_date} 卖出 ${r.replaced.price} × ${r.replaced.quantity}）。`,
+        `结论：${gap ? `可发布，但价格序列不完整（缺 ${cf.series.missing_dates.join('、')}），图中对应日期断线` : '可发布'}；`,
+        `相对改善 ${r.display.recoveredPP}（正值表示不卖这笔会更好，负值表示这笔卖出更好）。`,
+      ]));
       const chartBox = el('div', {});
       body.append(chartBox);
       renderGhostChart(chartBox, cf);
-      const r = cf.replace;
       body.append(el('div', { class: 'rp-calc' }, [
         `本次模拟：不发生 ${r.replaced.trade_id} 这笔卖出（${r.replaced.trade_date} · ${r.replaced.price} × ${r.replaced.quantity}）｜假设结果价值 ${r.display.cfValue} ｜ 假设收益 ${r.display.cfRet} ｜ 相对改善 ${r.display.recoveredPP} ｜ 剩余损耗金额 ${r.display.remainingDragMoney}`,
       ]));
-      body.append(el('div', { class: 'rp-calc unchanged' }, [
-        `说明：正的“相对改善”表示不卖这笔会更好；负值表示这笔卖出反而优于持有，不是错误。公式标识：${[...new Set(Object.values(r.formula_ids))].join(' / ')}（可在「查看证据与计算路径」中复核）。`,
+      body.append(el('details', { class: 'rp-cf-tech' }, [
+        el('summary', {}, ['技术口径与公式标识']),
+        el('div', { class: 'rp-calc unchanged' }, [
+          `说明：正的“相对改善”表示不卖这笔会更好；负值表示这笔卖出反而优于持有，不是错误。公式标识：${[...new Set(Object.values(r.formula_ids))].join(' / ')}（可在「查看证据与计算路径」中复核）。`,
+        ]),
       ]));
     })
     .catch((e) => {
@@ -164,6 +263,7 @@ function buildPage(page, b, baseBundle, ctx) {
   controls.append(symGroup);
   top.append(controls);
   page.append(top);
+  page.append(demoSummary(b));
 
   /* —— 状态条：数据模式 / 行情 / 估值日 / 口径（常显，不折叠）—— */
   const status = el('div', { class: 'rp-status' });
@@ -197,6 +297,7 @@ function buildPage(page, b, baseBundle, ctx) {
   /* —— 当前范围：组合 / 标的 —— */
   const entry = scope === 'pool' ? b.pool : b.perStock[scope];
   const scopeBlocked = scope === 'pool' ? (!b.pool && b.poolBlocked) : (!entry && b.blockedSymbols.includes(scope));
+  page.append(sectionHead(`核心指标 · ${scopeLabel(scope)}`, '实际收益 vs 买入后持有不动（对照）；择时损耗＝对照 − 实际。'));
 
   if (scopeBlocked) {
     const blockedBox = el('div', { class: 'rp-error' });
@@ -241,6 +342,7 @@ function buildPage(page, b, baseBundle, ctx) {
   }
 
   /* —— 证据：演示计算路径（provenance；未经 runReview，不使用复核发布措辞）—— */
+  page.append(sectionHead('证据与计算路径', '每项先说明代表什么、来自哪些成交；公式编号、原始行号与 S1–S4 计算步骤在展开后查看。演示模式未经过复核发布流程。'));
   const det = el('details', { class: 'rp-evidence' });
   det.append(el('summary', {}, [
     '查看证据与计算路径',
@@ -311,6 +413,7 @@ function buildUserBillPage(page, b, ctx) {
   titleBox.append(el('div', { class: 'sub' }, ['本地确定性引擎计算 · 合成演示行情（非真实账户 / 非真实行情；原始 CSV 未上传）']));
   top.append(titleBox);
   page.append(top);
+  page.append(userSummary(b, review));
 
   const status = el('div', { class: 'rp-status' });
   status.append(el('span', { class: 'rp-chip demo' }, [`用户本地账单 · 文件名：${b.fileName || '（未知）'}`]));
@@ -349,6 +452,7 @@ function buildUserBillPage(page, b, ctx) {
   const blockedFactScopes = (review.blocked_facts ?? []).map((f) => f.scope).filter((s) => s !== 'portfolio');
   const symbolKeys = ['pool', ...new Set([...stockScopes, ...b.blockedSymbols, ...blockedFactScopes])];
   const scope = symbolKeys.includes(state.report.symbol) ? state.report.symbol : 'pool';
+  page.append(sectionHead(`核心指标 · ${scopeLabel(scope)}`, '实际收益 vs 买入后持有不动（对照）；择时损耗＝对照 − 实际。只展示已通过复核的数字。'));
   const symGroup = el('div', { class: 'rp-control-group' });
   symGroup.append(el('span', { class: 'rp-control-label' }, ['标的']));
   const symSeg = el('div', { class: 'rp-seg' });
@@ -392,6 +496,7 @@ function buildUserBillPage(page, b, ctx) {
     page.append(cfSection({ trades: state.bill.trades, symbol: scope, selectedId: state.report.cfTradeId, set: ctx.set }));
   }
 
+  page.append(sectionHead('证据与计算路径', '每项先说明代表什么、来自哪些成交、是否通过复核；公式编号、原始行号与 S1–S4 计算步骤在展开后查看。未发布的结果不显示任何数值。'));
   page.append(reviewSection(review));
   page.append(evidenceSection(b, review, scope));
 }
@@ -717,6 +822,7 @@ function factEvidence(it, pub, blk, verifyId) {
   det.append(sum);
 
   const body = el('div', { class: 'rp-fact-body' });
+  body.append(factPlain(it, ['是否已通过复核', published ? `已通过复核并发布（${verifyId}）` : '未发布：不能作为有效结果引用，原因见下']));
   if (published) {
     body.append(el('div', { class: 'rp-calc unchanged' }, [`复核通过并发布（${verifyId}）。`]));
   } else {
@@ -730,9 +836,15 @@ function factEvidence(it, pub, blk, verifyId) {
     body.append(warn);
   }
 
-  appendFactDetails(body, it, published, '未发布：不展示该步骤的中间数值。');
+  body.append(techDetails(it, published, '未发布：不展示该步骤的中间数值。'));
   det.append(body);
   return det;
+}
+
+function techDetails(it, showValues, hiddenStepText) {
+  const tech = el('details', { class: 'rp-tech' }, [el('summary', {}, ['技术细节：公式编号、原始行号与计算步骤（S1–S4）'])]);
+  appendFactDetails(tech, it, showValues, hiddenStepText);
+  return tech;
 }
 
 function appendFactDetails(body, it, showValues, hiddenStepText) {
@@ -790,13 +902,14 @@ function demoFactEvidence(it) {
   det.append(sum);
 
   const body = el('div', { class: 'rp-fact-body' });
+  body.append(factPlain(it, ['是否经过复核', '演示计算路径，未经过复核发布流程']));
   if (!usable) {
     const warn = el('div', { class: 'banner warn-banner' });
     warn.append(el('strong', {}, ['该条演示计算路径存在阻断项，不能作为有效结果引用']));
     for (const e of it.errors) warn.append(el('div', {}, [`${e.code} · ${e.message}`]));
     body.append(warn);
   }
-  appendFactDetails(body, it, usable, '存在阻断项：不展示该步骤的中间数值。');
+  body.append(techDetails(it, usable, '存在阻断项：不展示该步骤的中间数值。'));
   det.append(body);
   return det;
 }
