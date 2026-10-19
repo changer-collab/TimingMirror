@@ -30,7 +30,7 @@ function prepGuide() {
     el('div', { class: 'section-title' }, ['准备账单']),
     el('ul', { class: 'im-list' }, [
       el('li', {}, ['仅支持 CSV 文件（UTF-8 编码、逗号分隔、第一行为表头）。']),
-      el('li', {}, [LOCAL_NOTICE + '文件只在浏览器本机读取。']),
+      el('li', {}, [LOCAL_NOTICE]),
       el('li', {}, ['确认只用于生成本地分析，不会下单、不会执行交易。']),
       el('li', {}, ['必填列：日期（YYYY-MM-DD）、标的（6 位数字代码）、方向（买入 / 卖出）、价格（大于 0，最多 2 位小数）、数量（正整数）。']),
       el('li', {}, ['可选列：费用、税费（不小于 0，最多 2 位小数；缺失按 0 计并标注）。其他列会被忽略。']),
@@ -105,12 +105,37 @@ function errText(e) {
   return `${e.code}${e.line ? `（第 ${e.line} 行）` : ''} · ${e.message}`;
 }
 
+function stripSpecRefs(text) {
+  return String(text ?? '')
+    .replace(/（[^）]*\b(?:[BFRQS]-\d+|[BFRQS]\d+)\b[^）]*）/g, '')
+    .replace(/\b(?:[BFRQS]-\d+|[BFRQS]\d+)\b/g, '')
+    .trim();
+}
+
+function displayLabel(text) {
+  return String(text ?? '').replace(/（Q\d+）/g, '');
+}
+
 function warningsBlock(warnings) {
   const wl = el('div', { class: 'banner warn-banner' }, [el('strong', {}, ['警告（照实展示）'])]);
   for (const w of warnings) {
-    wl.append(el('div', {}, [`${w.code}（第 ${w.line} 行）${w.column ? ` · ${w.column}` : ''} · ${w.message}`]));
+    const meta = [w.line ? `第 ${w.line} 行` : '', w.column ? `列：${w.column}` : ''].filter(Boolean).join(' · ');
+    wl.append(el('div', {}, [`${meta ? `${meta} · ` : ''}${stripSpecRefs(w.message) || '未提供说明'}`]));
   }
+  wl.append(el('details', { class: 'im-tech' }, [
+    el('summary', {}, ['技术详情（警告码）']),
+    ...warnings.map((w) => el('div', { class: 'muted small' }, [
+      `${w.code}${w.line ? `（第 ${w.line} 行）` : ''}${w.column ? ` · ${w.column}` : ''}${w.message ? ` · ${w.message}` : ''}`,
+    ])),
+  ]));
   return wl;
+}
+
+// 用户可见的来源说明只做展示替换；原始 sourceNote 仍保留在 state.bill 中
+function sourceNoteText(note) {
+  return String(note || '')
+    .replace(/m0\/csv-input\/fixtures/gi, '内置演示夹具')
+    .replace(/\bschema\s+(\S+)/gi, '数据格式版本 $1');
 }
 
 function dataModeLine(dataMode) {
@@ -242,7 +267,7 @@ export function renderImport(root, ctx) {
 
   if (bill.fileName && (bill.status === 'invalid' || bill.status === 'loaded' || bill.status === 'confirmed')) {
     wrap.append(el('div', { class: 'muted small' }, [
-      `已选择：${bill.fileName}（${fmtSize(bill.fileSize)}）· ${LOCAL_NOTICE}`,
+      `已选择：${bill.fileName}（${fmtSize(bill.fileSize)}）`,
     ]));
   }
 
@@ -261,10 +286,8 @@ export function renderImport(root, ctx) {
         ? '待确认：请核对交易数、日期、标的和费用税费'
         : `已确认：已用于本地分析${bill.sourceType === 'local' ? '' : '（演示账单）'}`,
     ]));
-    wrap.append(el('div', { class: 'row' }, [
-      el('div', { class: 'section-title' }, [`交易列表（${t.length} 条）· ${bill.sourceNote}`]),
-      bill.status === 'loaded' ? el('span', { class: 'chip mode' }, ['待确认']) : el('span', { class: 'chip ok' }, ['已确认']),
-    ]));
+    wrap.append(el('div', { class: 'section-title' }, [`交易列表（${t.length} 条）`]));
+    wrap.append(el('div', { class: 'muted small' }, [sourceNoteText(bill.sourceNote)]));
 
     const feeTax = feeTaxSummary(t);
     if (feeTax) wrap.append(feeTax);
@@ -274,7 +297,13 @@ export function renderImport(root, ctx) {
     if (bill.dataMode) wrap.append(dataModeLine(bill.dataMode));
 
     const lab = bill.resultLabelling;
-    if (lab) wrap.append(el('div', { class: 'muted small' }, [`结果口径：${lab.fees_taxes}；${lab.dividend}。`]));
+    if (lab) {
+      wrap.append(el('div', { class: 'muted small' }, [`结果口径：${displayLabel(lab.fees_taxes)}；${displayLabel(lab.dividend)}。`]));
+      wrap.append(el('details', { class: 'im-tech' }, [
+        el('summary', {}, ['技术说明（口径编号）']),
+        el('div', { class: 'muted small' }, [`费用税费口径：${lab.fees_taxes}；分红口径：${lab.dividend}`]),
+      ]));
+    }
 
     if (bill.status === 'loaded') {
       const canConfirm = bill.status === 'loaded' && !bill.blocked && bill.errors.length === 0 && t.length > 0;
