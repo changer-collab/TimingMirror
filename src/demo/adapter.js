@@ -4,7 +4,8 @@
 // 数据链路（导入页·用户账单）：本地 CSV 文本（FileReader）→ csvNormalize 校验（仅本机，不上传、不落 localStorage）。
 // 数据链路（契约页）：CONTRACT_TEMPLATES → parseContract 预览；版本记录 → contractRuleSet（按哈希合并、重新解析、每个模板派生唯一当前规则）；
 //   历史情境：每个模板的当前规则 → marketCache（合成夹具）→ dayChangePct / 交易来源（已确认本地账单，否则演示账单 A）→ matchContract。
-// 未接线：真实行情、百炼；契约为候选口径（占位哈希，待 M0-C1 冻结）；行情为 m0 合成夹具（草案·演示口径，非真实行情）。
+// 未接线：真实行情、百炼真实调用；契约为候选口径（占位哈希，待 M0-C1 冻结）；行情为 m0 合成夹具（草案·演示口径，非真实行情）。
+// 对话页在线复述：仅复用已确认本地账单的 review，经站点同源边界发送组合四事实（当前 fake 验证；函数未发布/激活时走兜底）。
 // 边界：本层只做取数与编排，不实现计算口径；数字与展示字符串一律来自 src/engine/*（页面不重新格式化）。
 import { parseCsvText, normalizeRows } from '../engine/csvNormalize.js';
 import { createMarketCache, fromFixtures } from '../engine/marketCache.js';
@@ -35,7 +36,7 @@ export const DEMO_VALUATION_DATE = '2024-10-11';
 // 能力状态（供页面准确显示；ready 仅在完整链路验收后才置 true——PR #6 §6）
 export const CAPABILITY = {
   engine: { ready: false, label: '计算引擎·仅报告页接入' },
-  bailian: { ready: false, label: '百炼·未接入（离线）' },
+  bailian: { ready: false, label: '百炼·未接通（对话页 fake 验证）' },
   marketCache: { ready: false, label: '行情缓存·合成夹具（草案·演示口径）' },
   contractEngine: { ready: false, label: '契约引擎·已接入（候选口径）' },
 };
@@ -322,6 +323,32 @@ export async function loadUserBillReport(bill) {
     out.status = review.status === 'degraded' ? 'partial' : 'ok';
   }
   return out;
+}
+
+/* —— 对话页在线复述：只取已确认本地账单的复核输出 ——
+   演示账单未经 runReview，不生成 review、不回退演示数据；页面据此给出明确兜底。 */
+export const CHAT_REVIEW_CODES = Object.freeze({
+  BILL_NOT_CONFIRMED: 'W_CHAT_BILL_NOT_CONFIRMED',
+  REVIEW_UNAVAILABLE: 'W_CHAT_REVIEW_UNAVAILABLE',
+});
+
+export async function loadChatReview(bill) {
+  if (!isConfirmedLocalBill(bill)) {
+    return {
+      ok: false,
+      code: CHAT_REVIEW_CODES.BILL_NOT_CONFIRMED,
+      message: '在线复述仅使用已确认的本地账单；演示账单未经复核发布流程，不参与在线复述。',
+    };
+  }
+  const bundle = await loadUserBillReport(bill);
+  if (!bundle.review) {
+    return {
+      ok: false,
+      code: CHAT_REVIEW_CODES.REVIEW_UNAVAILABLE,
+      message: '复核未运行或行情层阻断：没有可复述的已发布事实（不回退演示数据）。',
+    };
+  }
+  return { ok: true, review: bundle.review };
 }
 
 // 单笔卖出反事实（S1 幽灵线缺口图）—— 演示账单与用户确认账单共用本入口。
@@ -728,15 +755,5 @@ export async function simulateContracts({ versions, symbol, date, bill } = {}) {
     })),
     summary,
     results,
-  };
-}
-
-// 对话离线降级占位（百炼未接入；不引用事实 JSON）
-export function offlineChatReply(question) {
-  const q = String(question || '').trim();
-  const base = q ? `已记录你的问题：「${q}」` : '（空问题）';
-  return {
-    text: `${base}\n\n百炼未接入：当前为离线降级模式，无法执行意图分类与事实复述。接入后，回答将基于事实 JSON 复述（数字不离开事实 JSON、不外推）。可先在「报告 · 证据」页查看演示数据。`,
-    mode: 'offline',
   };
 }

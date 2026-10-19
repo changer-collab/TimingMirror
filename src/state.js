@@ -19,7 +19,7 @@ export const state = {
   route: 'import',
   bill: defaultBill(),
   report: { scenario: 'A', symbol: 'pool' },
-  chat: { messages: [], draft: '' },
+  chat: { messages: [], draft: '', pending: false },
   contracts: defaultContracts(),
 };
 

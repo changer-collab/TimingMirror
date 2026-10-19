@@ -10,7 +10,7 @@ import { renderContract } from './ui/views/contractView.js';
 const NAV = [
   { id: 'import', label: '导入 · 确认', hash: '#/import' },
   { id: 'report', label: '报告 · 证据', hash: '#/report' },
-  { id: 'chat', label: '分析问答（离线演示）', hash: '#/chat' },
+  { id: 'chat', label: '分析问答（组合复述）', hash: '#/chat' },
   { id: 'contract', label: '交易规则（契约）', hash: '#/contract' },
 ];
 

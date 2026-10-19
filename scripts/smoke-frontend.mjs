@@ -51,7 +51,20 @@ globalThis.document = {
   createTextNode,
   addEventListener: (type, fn) => { (docListeners[type] ??= []).push(fn); },
 };
-globalThis.fetch = async (url) => {
+// 站点同源函数 fake：页面链路测试只替换响应内容，不发起真实网络。
+let siteResponse = { status: 200, body: { rawText: JSON.stringify({ answer_text: '' }) } };
+const siteCalls = [];
+const isSiteFunction = (url) => String(url).startsWith('/functions/v1/app/');
+globalThis.fetch = async (url, options = {}) => {
+  if (isSiteFunction(url)) {
+    siteCalls.push({ url: String(url), options });
+    return {
+      ok: siteResponse.status >= 200 && siteResponse.status < 300,
+      status: siteResponse.status,
+      json: async () => siteResponse.body,
+      text: async () => JSON.stringify(siteResponse.body),
+    };
+  }
   const rel = String(url).replace(/^\//, '');
   const raw = readFileSync(join(ROOT, rel), 'utf8');
   return { ok: true, status: 200, json: async () => JSON.parse(raw), text: async () => raw };
@@ -294,13 +307,84 @@ await clickLabel('888888'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('反事实：切标的后残留 tradeId 不报错（无 E_CF_TRADE_NOT_FOUND），落 B 默认第一笔 T005', !txt.includes('E_CF_TRADE_NOT_FOUND') && !txt.includes('该反事实结论不发布') && txt.includes('T005 · 2024-10-10') && txt.includes('假设结果价值 ¥15,800.00'), txt.slice(0, 300));
 
-/* ==== 对话页 ==== */
-state.route = 'chat'; state.chat = { messages: [], draft: '' }; mountCycle();
-await clickLabel('为什么说我追高？');
-txt = texts(current).join('|');
-check('对话：发送后两条消息 + 离线模式标注', state.chat.messages.length === 2 && txt.includes('离线模式（百炼未接入）') && txt.includes('事实 JSON'), txt.slice(0, 200));
-check('对话·离线演示：标题“分析问答（离线演示）”+“当前仅演示界面交互，不基于你的账单生成结论。”+ 中性提示词（无“最错的一笔”）',
-  txt.includes('分析问答（离线演示）') && txt.includes('当前仅演示界面交互，不基于你的账单生成结论。') && !!findButtons(current).find((b) => labelOf(b) === '哪一笔最值得复核？') && !txt.includes('最错的一笔'), txt.slice(0, 300));
+/* ==== 对话页：组合四事实在线复述（站点同源 fake；不调用百炼） ==== */
+{
+  const chatOnlineMod = await imp('src/agent/chatOnline.js');
+  const chatCsv = '日期,标的,方向,价格,数量,费用,税费\n2024-09-25,000000,买入,100,100,5,0\n2024-10-09,000000,卖出,104,100,5,1\n';
+  const settleChat = async () => { for (let i = 0; i < 8; i++) await flush(); };
+  const lastAssistant = () => state.chat.messages.filter((m) => m.role === 'assistant').at(-1) ?? null;
+  const pageTxt = () => texts(current).join('|');
+
+  /* 1) 未确认本地账单：不发起在线请求，明确兜底 */
+  state.route = 'chat'; state.bill = defaultBill(); state.chat = { messages: [], draft: '', pending: false }; mountCycle();
+  check('对话·范围提示：标题/仅组合四事实/失败不展示模型原文/fake 验证说明',
+    pageTxt().includes('分析问答（组合四事实复述）') && pageTxt().includes('loss_overview · portfolio 四事实')
+    && pageTxt().includes('不展示模型原文') && pageTxt().includes('fake 链路验证'), pageTxt().slice(0, 300));
+  const callsBeforeBill = siteCalls.length;
+  await clickLabel('组合整体表现如何？'); await settleChat();
+  {
+    const a = lastAssistant();
+    check('对话·未确认账单：固定兜底 + 明确原因，不发起在线请求',
+      state.chat.messages.length === 2 && !!a && a.text === chatOnlineMod.CHAT_ONLINE_FALLBACK_TEXT
+      && a.tag.includes('已兜底') && a.detail.includes('W_CHAT_BILL_NOT_CONFIRMED') && siteCalls.length === callsBeforeBill,
+      JSON.stringify(state.chat));
+  }
+
+  /* 2) 已确认本地账单 + fake 成功：仅展示通过数字校验的复述 */
+  state.route = 'import'; state.bill = defaultBill(); mountCycle();
+  await pickFile({ name: 'chat-bill.csv', size: chatCsv.length, __content: chatCsv }); await flush();
+  await clickLabel('确认交易列表'); await flush(); await flush(); await flush();
+  state.route = 'chat'; state.chat = { messages: [], draft: '', pending: false }; mountCycle();
+  const okAnswer = '组合实际收益 +4.0%，对照收益 +8.0%，择时损耗 +4.0pp，损耗金额 ¥400.00。';
+  siteResponse = { status: 200, body: { rawText: JSON.stringify({ answer_text: okAnswer }) } };
+  await clickLabel('组合整体表现如何？'); await settleChat();
+  {
+    const a = lastAssistant();
+    const call = siteCalls.at(-1);
+    const body = call ? JSON.parse(call.options.body) : null;
+    check('对话·在线成功：仅展示通过本地数字校验的复述 + 成功标签 + 账单来源',
+      state.chat.messages.length === 2 && !!a && a.text === okAnswer
+      && a.tag.includes('本地数字校验通过') && a.detail.includes('已核对 4 个可识别数字')
+      && pageTxt().includes('已确认本地账单 · chat-bill.csv'), JSON.stringify(state.chat));
+    check('对话·同源 transport：POST /functions/v1/app/api/llm/restate，body 仅 question + F-6 四事实',
+      !!call && call.url === '/functions/v1/app/api/llm/restate' && call.options.method === 'POST'
+      && Object.keys(body).join(',') === 'question,facts' && body.facts.length === 4
+      && body.facts.every((f) => Object.keys(f).every((k) => ['value', 'unit', 'display', 'formula_ref', 'source_ref'].includes(k)))
+      && body.facts.every((f) => !('key' in f) && !('fact_ref' in f) && !('scope' in f))
+      && body.facts.every((f) => ['%', 'pp', '元'].includes(f.unit)), JSON.stringify({ url: call && call.url, body }));
+    check('对话·出站不含账单文件名/成交/复核痕迹，请求头无 Key，pending 复位',
+      !JSON.stringify(body).includes('chat-bill.csv') && !JSON.stringify(body).includes('T001')
+      && !JSON.stringify(body).includes('provenance')
+      && !Object.keys(call.options.headers).some((h) => /authorization|api[-_]?key/i.test(h))
+      && state.chat.pending === false);
+  }
+
+  /* 3) 伪造数字：固定兜底，不回显候选数字 */
+  siteResponse = { status: 200, body: { rawText: JSON.stringify({ answer_text: '组合实际收益 +99.9%。' }) } };
+  state.chat = { messages: [], draft: '', pending: false }; mountCycle();
+  await clickLabel('组合整体表现如何？'); await settleChat();
+  {
+    const a = lastAssistant();
+    check('对话·数字失败：固定兜底、不回显候选数字',
+      state.chat.messages.length === 2 && !!a && a.text === chatOnlineMod.CHAT_ONLINE_FALLBACK_TEXT
+      && a.tag.includes('已兜底') && a.detail.includes('W_ANSWER_NUMBERS_FAILED') && a.detail.includes('未通过 1')
+      && !JSON.stringify(state.chat).includes('99.9') && !pageTxt().includes('99.9'), JSON.stringify(state.chat));
+  }
+
+  /* 4) 站点函数未就绪（503）：明确兜底，不展示任何模型文本 */
+  siteResponse = { status: 503, body: {} };
+  state.chat = { messages: [], draft: '', pending: false }; mountCycle();
+  await clickLabel('组合整体表现如何？'); await settleChat();
+  {
+    const a = lastAssistant();
+    check('对话·服务未就绪：E_HTTP_STATUS 兜底，不展示模型文本',
+      state.chat.messages.length === 2 && !!a && a.text === chatOnlineMod.CHAT_ONLINE_FALLBACK_TEXT
+      && a.detail.includes('E_HTTP_STATUS') && a.detail.includes('函数未发布'), JSON.stringify(state.chat));
+  }
+  siteResponse = { status: 200, body: { rawText: JSON.stringify({ answer_text: '' }) } };
+  // 恢复对话前的演示账单已确认态，避免影响后续契约情境用例
+  state.bill = { ...defaultBill(), status: 'confirmed' };
+}
 
 /* ==== 契约页：当前规则（每种类型一条）→ 新增 / 修改弹窗 → 历史规则 → 历史情境测试（合成行情）==== */
 const fire = async (node, type, value) => { node.value = value; for (const fn of node.listeners[type] ?? []) await fn({ target: { value } }); };
@@ -375,7 +459,7 @@ const saveModal = async () => { await clickRole('modal-save'); await settle(); }
   check('契约：页面只经 adapter 取数（不 import contractMatch / marketCache / engine），当前 / 历史划分由 adapter 提供（页面不自行比较版本或排序），旧的并行 / 整理接口已移除',
     !/from\s+['"][^'"]*engine\//.test(viewSrc) && !viewSrc.includes('contractMatch') && !viewSrc.includes('marketCache') && !viewSrc.includes('.activated') && !/\.sort\(/.test(viewSrc)
     && typeof adapterMod.contractOrganizeRecords === 'undefined' && typeof adapterMod.contractToggleRecord === 'undefined' && typeof adapterMod.contractEditorRecord === 'undefined'
-    && adapterMod.CAPABILITY.contractEngine.label.includes('已接入（候选口径）') && adapterMod.CAPABILITY.bailian.label.includes('未接入'), adapterMod.CAPABILITY.contractEngine.label);
+    && adapterMod.CAPABILITY.contractEngine.label.includes('已接入（候选口径）') && adapterMod.CAPABILITY.bailian.label.includes('未接通'), adapterMod.CAPABILITY.contractEngine.label);
   const H = (template_id, fields) => adapterMod.previewContract({ template_id, fields }).hash;
   const hS3 = H('no_buy_on_surge', { threshold_pct: '3' }), hS4 = H('no_buy_on_surge', { threshold_pct: '4' }), hS5 = H('no_buy_on_surge', { threshold_pct: '5' });
   const hB3 = H('no_buy_back_within', { days: '3' }), hB5 = H('no_buy_back_within', { days: '5' });
@@ -967,9 +1051,9 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
   check('外壳·流程提示：1 导入账单 → 2 核对交易 → 3 查看报告 → 4 查看证据 / 设置规则；导入页未选账单时第 1 步为当前（文字标注“当前”）',
     shell().includes('1 导入账单') && shell().includes('2 核对交易') && shell().includes('3 查看报告') && shell().includes('4 查看证据 / 设置规则')
     && currentStep() === '1 导入账单当前', currentStep());
-  check('外壳·数据状态：默认“演示账单 + 合成行情”，导航改为“交易规则（契约）/ 分析问答（离线演示）”，页脚不再写“非真实账户交易结果”',
+  check('外壳·数据状态：默认“演示账单 + 合成行情”，导航改为“交易规则（契约）/ 分析问答（组合复述）”，页脚不再写“非真实账户交易结果”',
     shell().includes('数据状态：演示账单 + 合成行情') && shell().includes('非真实账户、非真实行情')
-    && texts(els.nav).join('|').includes('交易规则（契约）') && texts(els.nav).join('|').includes('分析问答（离线演示）')
+    && texts(els.nav).join('|').includes('交易规则（契约）') && texts(els.nav).join('|').includes('分析问答（组合复述）')
     && !texts(els['footer-labels']).join('|').includes('非真实账户交易结果') && texts(els['footer-labels']).join('|').includes('不构成投资建议'), shell());
   check('外壳·了解口径：折叠区解释估值日 / 择时损耗 / 反事实 / 阻断 / 证据', findByClass(els.flow, 'glossary')[0]?.tagName === 'DETAILS'
     && ['估值日', '择时损耗', '反事实', '阻断', '证据'].every((k) => shell().includes(k)) && shell().includes('不会改用其他日期'), shell().slice(-300));
