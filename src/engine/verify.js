@@ -7,7 +7,7 @@
 //       错误分类：计算错误（双路径实现不一致 / 恒等式破坏 / 独立重算不一致 → 可被本报告捕获）；
 //       数据源错误（行情/成交源数据错误；双路径共用同源时可能同时算错 → 不承诺必然捕获，
 //       以本模块 source_validation 告警为检测依据之一，疑似错误仍须口径核对兜底——附 A.2 明示）。
-// 边界：本模块不做“重算回流”（A.3，changer 侧）；verify_id 为内容摘要（确定性），重算/编排归 M1-C7。
+// 边界：本模块不做“重算回流”（A.3，changer 侧）；verify_id 为内容摘要（数值 + verdict + provenance_complete，确定性；不含 source_refs/reasons），重算/编排归 M1-C7。
 
 import { INDICATOR_FORMULA_IDS, PORTFOLIO_FORMULA_IDS } from './indicators.js';
 
@@ -202,9 +202,11 @@ export function buildVerifyReport({ report, trades, closes }) {
 
   const provenance_complete = facts.every((f) => f.formula_id !== null && f.source_refs.length > 0) && dangling_refs.length === 0;
   const n_pass = facts.filter((f) => f.verdict === 'pass').length;
+  // verdict 纳入摘要：来源修复可在数值不变时改变可发布性，verify_id 不应保持不变。
   const digest = fnv1a64(JSON.stringify({
-    facts: facts.map((f) => [f.fact_id, f.value]),
-    identities: identity_checks.map((i) => [i.identity_id, i.scope, i.lhs, i.rhs]),
+    facts: facts.map((f) => [f.fact_id, f.value, f.verdict]),
+    identities: identity_checks.map((i) => [i.identity_id, i.scope, i.lhs, i.rhs, i.verdict]),
+    provenance_complete,
   })).slice(0, 8);
 
   return {

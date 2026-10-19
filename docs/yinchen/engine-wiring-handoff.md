@@ -88,6 +88,7 @@ CSV 文本（FileReader / 演示夹具 fetch）
 
 ### 3.7 verify / decompose / provenance（验算视图、占比条、计算路径）
 - `buildVerifyReport({report, trades, closes})` → `{verify_id, facts[26项 {fact_id('000000.dragMoney'…'portfolio.drag'), key, value, path_a, path_b, diff, tol, formula_id, reasons[], verdict}], identity_checks[11项], provenance_complete, dangling_refs, data_source_notes, error_taxonomy, summary:{n_facts, pass, fail, identities_fail}}`。
+- `verify_id` 摘要覆盖 facts/identities 的数值与 `verdict`、以及 `provenance_complete`；不含 `source_refs`/`reasons`（2026-10-19 候选口径，待 M0 冻结裁定）。同一数值但来源修复导致 verdict 变化时，ID 会变化。
 - `buildDragDecomposition({report, trades})` → `{total:{value, display, formula_id, formula_text, line_count}, items[按 dragMoney 降序 {trade_id, symbol, dragMoney, display:{dragMoney, share}, share, source}], by_symbol, checks, blocked, errors, notes}`；`blocked`（悬空/加总破坏）→ 该视图不发布。
 - `buildProvenanceReport({report, trades, closes, valuation})` → `{blocked, dangling_refs, items[26], summary:{n, blocked_n}}`；单项 `buildProvenance({…, fact_id})` → `{blocked, fact_id, formula_id, formula_text, unit, value, display, inputs, source_refs(匿名 {type:'trade', key, file, line}), steps[S1口径→S2批次→S3逐笔→S4排序], errors}`。
 - 三类阻断语义：`blocked=true` → 对应视图显示阻断原因，不发布部分结果（附A.4 悬空引用阻断）。
@@ -106,7 +107,7 @@ CSV 文本（FileReader / 演示夹具 fetch）
 
 **（a）演示路径（现在就能接）**：`fromFixtures(m0/market-cache/fixtures/mock-calendar.json, mock-daily-bars.json)`——覆盖 000000/888888/001234（合成占位码），交易日历 2024-09-23 … 2024-10-11（10 天）。
 
-**（b）真实路径（上传 CSV / 签收后）**：`fetch('/data/market-cache.json')` → `fromPullDraft`——600519/300750/601318，2023-01-03 … 2025-12-31，asOfDate=2025-12-31。**该文件是未签收草案**：签收前页面必须标注"草案范围·演示口径"，**不得声称真实支持范围（R2）**；演示账单避开 300750 跨越 2023-04-26（送转跳变，B5 未决）。
+**（b）真实路径（已签收）**：`fetch('/data/market-cache.json')` → `fromPullDraft`（保留函数名兼容）——600519/300750/601318，2023-01-03 … 2025-12-31，asOfDate=2025-12-31。**该文件已于 2026-10-19 签收**（`artifact=market-cache-signed`、`frozen=true`、`manifest-0.2`）：产品接入必须先过 `assessCacheDoc` 签收门，按独立 PR 进行；页面可标注正式支持范围，但不得超出 manifest 声明。演示账单仍需避开 300750 跨越 2023-04-26（A1 避让约定）。
 
 **重要：接线后演示数字会变化，不是 bug。** 现行报告页读的是 `m0/csv-input` 手算夹具（声明合成价 000000=125、888888=1560）；接上引擎＋合成缓存后，估值日用缓存夹具真实 close（**000000=108、888888=1580 @2024-10-11**），数字按下表重算（以下为真实运行输出，可作你的接线验收向量）：
 
@@ -153,12 +154,12 @@ CSV 文本（FileReader / 演示夹具 fetch）
 | S3 买入侧替换 | 未实现（C1 未定），抛错——备用演示页待负责人定夺后 |
 | 序列缺价日 | points 值为 null；画法（断线/留空）由你定 |
 | 复核容差 | 金额到分、收益率 1e-9 相对（**候选**）；别在 UI 硬编码其他容差 |
-| 行情清单 | `data/market-cache.json` 未签收（R2 守则见 §5） |
+| 行情清单 | `data/market-cache.json` 已于 2026-10-19 签收（manifest-0.2）；产品接入须过 `assessCacheDoc` 并按独立 PR（R2 守则见 §5） |
 | 行为参数 | PATTERN_CONFIG candidate-1（回看 5 日/阈值 10%/最小样本 2），待负责人确认按此替换 |
 | 复核编排/重算回流 | 归 changer（M1-C7）；百炼链路归 changer（M1-C10）；对本文件标的 I/O 即接口 |
 
 ## 9. 验证与求助
 
-- 本地：仓库根 `npm run dev`（端口 5180）→ 页内自测；`npm run check`（624 项）/ `npm run smoke`（15 项）。
+- 本地：仓库根 `npm run dev`（端口 5180）→ 页内自测；`npm run check`（1061 项）/ `npm run smoke`（180 项）/ `node scripts/drill-data-evidence.mjs`（20 项）。
 - 每个模块的行为边界都有单测可抄：`tests/*.test.mjs`（自查用例时以这些断言为准）。
 - 接线中如发现引擎行为与本说明不符：先跑对应单测定位；确认是引擎问题请把失败命令+输出发我（或开 issue），我按「最小改动＋单测＋如实标注」修复并同步本文件。
