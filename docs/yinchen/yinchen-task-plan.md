@@ -185,7 +185,7 @@ M1-C11 契约匹配纯函数（依赖 M0-C1）
 
 ### P2-10 · A–E 签收落档 + 引擎签收门（10/19，方式一授权代行）
 
-- 状态：已完成（待提交/推送）——用户转述组长授权由本人决策 A–E 并选方式一，已按 A1/B1/C1/D1/E1 落档：
+- 状态：已完成并推送（提交 `2c0ab3d`，origin/yinchen；同分支另有 `95f79aa` 修复合并后 smoke 断言）——用户转述组长授权由本人决策 A–E 并选方式一，已按 A1/B1/C1/D1/E1 落档：
   1. `m0/market-cache/manifest.candidate.json`：`artifact=manifest-signed`、`frozen=true`、`version=manifest-0.2`；新增 `decisions` A–E、`sign_off.accepted_by=changer-collab`/`accepted_date=2026-10-19`/`mode=方式一：授权代行签收`/`authorization` 授权来源如实记录；七字段 field_status 全部签收。
   2. `data/market-cache.json`：升级为 `artifact=market-cache-signed`、`frozen=true`、`manifest_version=manifest-0.2`，内嵌同 `sign_off`（行情数据本体未改动）。
   3. `src/engine/marketCache.js`：新增 `assessCacheDoc` 签收门——`artifact=market-cache-signed` + `frozen=true` + 非空 `accepted_by` + 合法 `accepted_date` + manifest 校验（symbols/date_range/asOfDate/calendar/覆盖）；错误码 `NOT_FROZEN`/`NOT_SIGNED`/`MALFORMED`。产品未过门不得声称真实支持范围（R2）。

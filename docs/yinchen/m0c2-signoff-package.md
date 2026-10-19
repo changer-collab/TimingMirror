@@ -128,7 +128,7 @@ grep -rln "E_SHARE_EVENT" m0/   → m0/market-cache/check-market-cache.mjs
 
 ## 6. 签收记录与后续
 
-已执行（2026-10-19）：
+已执行（2026-10-19，提交 `2c0ab3d`，origin/yinchen）：
 
 1. `m0/market-cache/manifest.candidate.json`：`artifact=manifest-signed`、`frozen=true`、`version=manifest-0.2`；`sign_off.accepted_by=changer-collab`、`accepted_date=2026-10-19`、`mode=方式一：授权代行签收`；新增 `decisions` A1/B1/C1/D1/E1 与授权来源说明。
 2. `data/market-cache.json`：升级为 `artifact=market-cache-signed`、`frozen=true`、`manifest_version=manifest-0.2`，内嵌同一 `sign_off`；行情数据本身未改动。
