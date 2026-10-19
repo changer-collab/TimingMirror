@@ -1,32 +1,38 @@
 // 数据适配层 —— 页面唯一数据出口。
-// 行情来源：默认已签收真实历史缓存（data/market-cache.json，过 R2 签收门）；A/A′ 保留 m0 合成夹具作回归场景。
-// 数据链路（报告页·场景）：夹具 CSV 文本 → csvNormalize → marketCache（按场景来源）→ indicators → provenance。
-// 数据链路（报告页·用户账单）：确认后的标准化 state.bill → 已签收真实缓存 → runReview 复核与发布门槛 → published_facts。
+// 行情来源：默认 Tushare 动态日线（同源站点 Function 取最新已收盘日线，服务端持有 token；非实时）；
+//   A/A′ 保留 m0 合成夹具作回归场景。动态响应过 assessDynamicCacheDoc 校验；不可用即明确阻断，不回落静态缓存。
+// 数据链路（报告页·场景）：夹具 CSV 文本 → csvNormalize → 按交易标的/日期取动态行情 → indicators → provenance。
+// 数据链路（报告页·用户账单）：确认后的标准化 state.bill → 按账单标的取动态行情 → runReview 复核与发布门槛 → published_facts。
 // 数据链路（导入页·用户账单）：本地 CSV 文本（FileReader）→ csvNormalize 校验（仅本机，不上传、不落 localStorage）。
+//   浏览器只向同源函数发送标的代码与日期范围；不发送成交、数量、价格、文件名或 CSV 内容，计算全部在本地。
 // 数据链路（契约页）：CONTRACT_TEMPLATES → parseContract 预览；版本记录 → contractRuleSet（按哈希合并、重新解析、每个模板派生唯一当前规则）；
 //   历史情境：每个模板的当前规则 → 选定行情来源 → dayChangePct / 交易来源（已确认本地账单，否则对应来源的示例账单）→ matchContract。
-// 未接线：实时行情（当前为已签收历史快照）、百炼真实调用；契约为候选口径（占位哈希，待 M0-C1 冻结）。
+// 未接线：实时/分钟级行情（当前为最新已收盘日线）、百炼真实调用；契约为候选口径（占位哈希，待 M0-C1 冻结）。
 // 对话页在线复述：仅复用已确认本地账单的 review，经站点同源边界发送组合四事实（当前 fake 验证；函数未发布/激活时走兜底）。
 // 边界：本层只做取数与编排，不实现计算口径；数字与展示字符串一律来自 src/engine/*（页面不重新格式化）。
 import { parseCsvText, normalizeRows } from '../engine/csvNormalize.js';
-import { assessCacheDoc, createMarketCache, fromFixtures, fromPullDraft } from '../engine/marketCache.js';
+import { assessDynamicCacheDoc, createMarketCache, fromFixtures, fromPullDraft } from '../engine/marketCache.js';
 import { computeIndicators, RESULT_LABELS } from '../engine/indicators.js';
 import { buildProvenanceReport } from '../engine/provenance.js';
 import { runReview } from '../agent/reviewPipeline.js';
 import { replaceSell } from '../engine/counterfactual.js';
 import { CONTRACT_TEMPLATES, parseContract, dayChangePct, matchContract } from '../engine/contractMatch.js';
 
-// 已签收真实缓存（R2：artifact/frozen/sign_off 缺一不可；不可用时不回退合成行情）
-export const REAL_CACHE_URL = '/data/market-cache.json';
-export const DEFAULT_MARKET_SOURCE = 'real-cache';
+// 动态行情 Endpoint（同源；服务端注入 TUSHARE_TOKEN，浏览器不接触 token）
+export const MARKET_SNAPSHOT_URL = '/functions/v1/app/api/market/snapshot';
+export const DEFAULT_MARKET_SOURCE = 'dynamic-tushare';
+export const MARKET_SYMBOL_LIMIT = 10;
+const MARKET_RANGE_PADDING_DAYS = 14;
+const MARKET_TTL_MS = 60 * 1000;
+const DEMO_SYMBOLS = Object.freeze(['600519', '300750', '601318']);
 
 const MARKET_SOURCE_META = Object.freeze({
-  'real-cache': Object.freeze({
-    id: 'real-cache',
-    label: '真实历史行情缓存（已签收）',
-    shortLabel: '真实历史行情（已签收）',
-    cacheName: '真实行情缓存',
-    note: '已签收历史快照，非实时行情；支持范围以缓存清单为准',
+  'dynamic-tushare': Object.freeze({
+    id: 'dynamic-tushare',
+    label: 'Tushare 动态日线（服务端获取，非实时）',
+    shortLabel: 'Tushare 动态日线',
+    cacheName: '动态行情（Tushare）',
+    note: '每次打开或刷新页面时由服务端取最新已收盘日线；非实时、不含分钟级数据',
   }),
   'synthetic-fixture': Object.freeze({
     id: 'synthetic-fixture',
@@ -42,7 +48,7 @@ const MARKET_FIXTURES = {
   calendar: '/m0/market-cache/fixtures/mock-calendar.json',
   bars: '/m0/market-cache/fixtures/mock-daily-bars.json',
 };
-// 合成夹具固定估值日（真实缓存使用 manifest.asOfDate）
+// 合成夹具固定估值日（动态行情使用服务端返回的 asOfDate）
 export const SYNTHETIC_VALUATION_DATE = '2024-10-11';
 export const DEMO_VALUATION_DATE = SYNTHETIC_VALUATION_DATE;
 
@@ -50,15 +56,15 @@ export const DEMO_VALUATION_DATE = SYNTHETIC_VALUATION_DATE;
 export const CAPABILITY = {
   engine: { ready: false, label: '计算引擎·仅报告页接入' },
   bailian: { ready: false, label: '百炼·未接通（对话页 fake 验证）' },
-  marketCache: { ready: true, label: '行情缓存·真实历史快照（已签收）' },
+  marketCache: { ready: true, label: 'Tushare 动态日线·服务端获取（非实时）' },
   contractEngine: { ready: false, label: '契约引擎·已接入（候选口径）' },
 };
 
 // 数据模式标识（PR #6 §1.1：模式必须显式标注）
 export const DATA_MODE = Object.freeze({
-  id: 'demo_bill_real_cache',
-  label: '示例交易 + 真实行情缓存（已签收）',
-  note: '示例交易为合成构造，非真实账户；行情为已签收历史快照，非实时、非投资建议；数字由本地确定性引擎计算',
+  id: 'demo_bill_dynamic_market',
+  label: '示例交易 + Tushare 动态行情',
+  note: '示例交易为合成构造，非真实账户；行情为服务端取最新已收盘日线，非实时、非投资建议；数字由本地确定性引擎计算',
 });
 export const SYNTHETIC_DATA_MODE = Object.freeze({
   id: 'synthetic_demo',
@@ -66,15 +72,15 @@ export const SYNTHETIC_DATA_MODE = Object.freeze({
   note: '占位代码与合成价格（m0 夹具）；非真实账户、非真实行情；数字由本地确定性引擎计算',
 });
 
-// 场景定义：R/R′ 用真实历史缓存；A/A′ 保留合成夹具作回归场景。
+// 场景定义：R/R′ 用 Tushare 动态行情；A/A′ 保留合成夹具作回归场景。
 export const SCENARIOS = Object.freeze({
   R: {
-    key: 'R', base: 'R', marketSource: 'real-cache', label: '示例 R · 真实行情',
+    key: 'R', base: 'R', marketSource: 'dynamic-tushare', label: '示例 R · Tushare 动态行情',
     csv: '/m0/csv-input/fixtures/demo-bill-real.csv',
-    note: '示例交易（600519 / 300750 / 601318）+ 已签收真实历史行情；全部交易在缓存范围内',
+    note: '示例交易（600519 / 300750 / 601318）+ Tushare 最新已收盘日线（服务端获取，非实时）',
   },
   Rprime: {
-    key: 'Rprime', base: 'R', marketSource: 'real-cache', label: '示例 R′ · 仅改一笔卖出',
+    key: 'Rprime', base: 'R', marketSource: 'dynamic-tushare', label: '示例 R′ · 仅改一笔卖出',
     csv: '/m0/csv-input/fixtures/demo-bill-real-aprime.csv',
     note: 'R′ 场景定义：仅改第 7 行 600519 卖出价 1389.72 → 1400.00，其余交易不变',
   },
@@ -138,41 +144,102 @@ function syntheticMarket() {
   return syntheticPromise;
 }
 
-let realPromise = null;
-function realMarket() {
-  if (!realPromise) {
-    realPromise = (async () => {
-      const doc = await fetchJson(REAL_CACHE_URL);
-      const gate = assessCacheDoc(doc);
-      if (!gate.usable) {
-        throw new Error(`已签收行情缓存未通过签收门：${gate.reason}${gate.detail ? `（${gate.detail}）` : ''}；不自动回退合成行情`);
-      }
-      const market = createMarketCache(fromPullDraft(doc));
-      return {
-        market,
-        valuationDate: gate.asOfDate,
-        source: {
-          ...MARKET_SOURCE_META['real-cache'],
-          signed: true,
-          artifact: doc.artifact,
-          manifestVersion: gate.manifest_version,
-          acceptedBy: gate.accepted_by,
-          acceptedDate: gate.accepted_date,
-          snapshotId: doc.snapshot?.snapshot_id ?? null,
-          fetchTime: doc.snapshot?.fetch_time ?? null,
-          range: { ...gate.range },
-          symbols: [...gate.symbols],
-          asOfDate: gate.asOfDate,
-          snapshot: doc.snapshot ?? null,
-        },
-      };
-    })().catch((e) => { realPromise = null; throw e; });
-  }
-  return realPromise;
+function localTodayIso(now = new Date()) {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
-async function loadMarket(sourceId = DEFAULT_MARKET_SOURCE) {
-  if (sourceId === 'real-cache') return realMarket();
+function shiftDate(iso, days) {
+  return new Date(Date.parse(`${iso}T00:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
+}
+
+// 动态行情请求范围：只含标的代码与日期区间，不含任何成交/账单信息。
+// 报告与反事实只取账单标的；契约情境额外加入 3 个示例标的，便于在示例上测试规则。
+export function marketScopeFromTrades(trades, { includeDemo = false } = {}) {
+  const set = new Set(includeDemo ? DEMO_SYMBOLS : []);
+  for (const t of trades ?? []) if (t && typeof t.symbol === 'string') set.add(t.symbol);
+  const symbols = [...set].sort();
+  if (symbols.length === 0) throw new Error('没有可用于行情请求的标的');
+  if (symbols.length > MARKET_SYMBOL_LIMIT) {
+    throw new Error(`行情标的数 ${symbols.length} 超过单次上限 ${MARKET_SYMBOL_LIMIT}：不截断、不用部分标的冒充完整组合；请拆分账单后重试`);
+  }
+  const dates = (trades ?? [])
+    .map((t) => t && t.trade_date)
+    .filter((d) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d))
+    .sort();
+  if (dates.length === 0) throw new Error('交易缺少可比对日期，无法确定行情范围');
+  return { symbols, start: shiftDate(dates[0], -MARKET_RANGE_PADDING_DAYS), end: localTodayIso() };
+}
+
+// 短 TTL 缓存：同一标的/范围在 60 秒内复用；过期后刷新页面或再次操作会重新取最新已收盘日线。
+const dynamicCache = new Map();
+async function dynamicMarket(scope) {
+  const key = `${scope.start}|${scope.end}|${scope.symbols.join(',')}`;
+  const hit = dynamicCache.get(key);
+  if (hit && Date.now() - hit.at <= MARKET_TTL_MS) return hit.promise;
+  const promise = (async () => {
+    let res;
+    try {
+      res = await fetch(MARKET_SNAPSHOT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbols: scope.symbols, start: scope.start, end: scope.end }),
+      });
+    } catch {
+      throw new Error('动态行情请求失败：无法连接服务端；不回落静态缓存或合成行情');
+    }
+    let payload = null;
+    try { payload = await res.json(); } catch { payload = null; }
+    if (!res.ok || !payload || payload.ok !== true) {
+      const code = payload && typeof payload.code === 'string' ? payload.code : `HTTP_${res.status}`;
+      const message = payload && typeof payload.message === 'string' ? payload.message : '服务端未返回可用响应';
+      throw new Error(`动态行情获取失败：${code} · ${message}；不回落静态缓存或合成行情`);
+    }
+    const doc = payload.market;
+    const gate = assessDynamicCacheDoc(doc);
+    if (!gate.usable) {
+      throw new Error(`动态行情未通过校验：${gate.reason}${gate.detail ? `（${gate.detail}）` : ''}；不回落静态缓存或合成行情`);
+    }
+    const missing = scope.symbols.filter((s) => !gate.symbols.includes(s));
+    if (missing.length > 0) {
+      throw new Error(`动态行情响应缺少请求标的：${missing.join('、')}；不回落静态缓存或合成行情`);
+    }
+    const market = createMarketCache(fromPullDraft(doc));
+    return {
+      market,
+      valuationDate: gate.asOfDate,
+      source: {
+        ...MARKET_SOURCE_META['dynamic-tushare'],
+        signed: false,
+        dynamic: true,
+        artifact: doc.artifact,
+        provider: gate.provider,
+        manifestVersion: gate.manifest_version,
+        fetchedAt: gate.fetched_at,
+        latestTradeDate: gate.latest_trade_date,
+        snapshotId: gate.snapshot_id,
+        checksum: gate.checksum,
+        range: { ...gate.range },
+        symbols: [...gate.symbols],
+        asOfDate: gate.asOfDate,
+        snapshot: doc.snapshot ?? null,
+      },
+    };
+  })().catch((e) => {
+    dynamicCache.delete(key);
+    throw e;
+  });
+  dynamicCache.set(key, { at: Date.now(), promise });
+  return promise;
+}
+
+async function loadMarket(sourceId = DEFAULT_MARKET_SOURCE, scope = null) {
+  if (sourceId === 'dynamic-tushare') {
+    if (!scope) throw new Error('动态行情缺少标的与日期范围（内部调用未提供）');
+    return dynamicMarket(scope);
+  }
   if (sourceId === 'synthetic-fixture') return syntheticMarket();
   throw new Error(`未知行情来源：${sourceId}`);
 }
@@ -185,11 +252,13 @@ function marketMeta(mkt) {
     shortLabel: source.shortLabel,
     note: source.note,
     signed: source.signed === true,
-    acceptedBy: source.acceptedBy ?? null,
-    acceptedDate: source.acceptedDate ?? null,
+    dynamic: source.dynamic === true,
+    provider: source.provider ?? null,
+    fetchedAt: source.fetchedAt ?? null,
+    latestTradeDate: source.latestTradeDate ?? null,
+    checksum: source.checksum ?? null,
     manifestVersion: source.manifestVersion ?? null,
     snapshotId: source.snapshotId ?? null,
-    fetchTime: source.fetchTime ?? null,
     asOfDate: mkt.valuationDate,
     range: { ...market.range },
     symbols: [...market.symbols],
@@ -199,7 +268,18 @@ function marketMeta(mkt) {
 
 function supportScope(mkt) {
   const meta = marketMeta(mkt);
-  return { signed: meta.signed, symbols: meta.symbols, range: meta.range, asOfDate: meta.asOfDate, acceptedDate: meta.acceptedDate };
+  return {
+    signed: meta.signed,
+    dynamic: meta.dynamic,
+    provider: meta.provider,
+    fetchedAt: meta.fetchedAt,
+    latestTradeDate: meta.latestTradeDate,
+    checksum: meta.checksum,
+    snapshotId: meta.snapshotId,
+    symbols: meta.symbols,
+    range: meta.range,
+    asOfDate: meta.asOfDate,
+  };
 }
 
 // 共享市场段：估值日 → 末笔检查 → 取价；缺价/超范围阻断，不回落其他日期或另一行情源
@@ -233,30 +313,32 @@ async function normalizeBillCsv(url, fileName) {
   return normalizeRows(parseCsvText(text), fileName ?? url.split('/').pop());
 }
 
-/* —— 导入页：示例账单（按场景来源标注；R 为真实历史行情） —— */
+/* —— 导入页：示例账单（按场景来源标注；R 为 Tushare 动态行情） —— */
 export const DEMO_SOURCE_NOTE = '示例数据 · m0/csv-input/fixtures（交易为合成构造，非真实账户）';
 
 export async function loadDemoBill(scenario = DEFAULT_SCENARIO) {
   const cfg = SCENARIOS[scenario] ?? SCENARIOS[DEFAULT_SCENARIO];
-  const mkt = await loadMarket(cfg.marketSource);
   const normalized = await normalizeBillCsv(cfg.csv);
+  const scope = cfg.marketSource === 'dynamic-tushare' ? marketScopeFromTrades(normalized.trades) : null;
+  const mkt = await loadMarket(cfg.marketSource, scope);
+  const dynamic = cfg.marketSource === 'dynamic-tushare';
   return {
     scenario: cfg.key,
     trades: normalized.trades,
     warnings: normalized.warnings,
     blocked: normalized.blocked,
-    dataMode: cfg.marketSource === 'real-cache' ? DATA_MODE : SYNTHETIC_DATA_MODE,
+    dataMode: dynamic ? DATA_MODE : SYNTHETIC_DATA_MODE,
     marketSource: marketMeta(mkt),
     supportScope: supportScope(mkt),
-    sourceNote: `来源：${cfg.csv.split('/').pop()}（${cfg.marketSource === 'real-cache' ? '示例交易 + 已签收真实历史行情' : '合成夹具；占位代码非真实证券'}）`,
+    sourceNote: `来源：${cfg.csv.split('/').pop()}（${dynamic ? '示例交易 + Tushare 动态日线（非实时）' : '合成夹具；占位代码非真实证券'}）`,
     resultLabelling: RESULT_LABELS,
   };
 }
 
 export const USER_BILL_DATA_MODE = Object.freeze({
-  id: 'user_bill_real_cache',
-  label: '用户本地账单 + 真实行情缓存（已签收）',
-  note: '交易文件仅在本机处理；行情为已签收历史快照（非实时），标的不在缓存清单或日期超出范围时报告明确阻断，不回退合成行情',
+  id: 'user_bill_dynamic_market',
+  label: '用户本地账单 + Tushare 动态行情',
+  note: '交易文件仅在本机处理；服务端只接收标的代码与日期范围，取最新已收盘日线（非实时）；取数失败或超出单次标的上限时报告明确阻断，不回退静态缓存或合成行情',
 });
 
 export async function loadUserBillFromText(csvText, fileName) {
@@ -287,7 +369,7 @@ export async function loadReportEngine(scenario = DEFAULT_SCENARIO) {
   const out = {
     scenario: key,
     scenarioMeta: cfg,
-    dataMode: cfg.marketSource === 'real-cache' ? DATA_MODE : SYNTHETIC_DATA_MODE,
+    dataMode: cfg.marketSource === 'dynamic-tushare' ? DATA_MODE : SYNTHETIC_DATA_MODE,
     marketSource: null,
     supportScope: null,
     status: 'ok',
@@ -324,7 +406,8 @@ export async function loadReportEngine(scenario = DEFAULT_SCENARIO) {
   // 2) 行情来源 → 共享市场段（估值日 → 末笔检查 → 取价）；来源不可用即阻断，不回退另一来源
   let mkt;
   try {
-    mkt = await loadMarket(cfg.marketSource);
+    const scope = cfg.marketSource === 'dynamic-tushare' ? marketScopeFromTrades(trades) : null;
+    mkt = await loadMarket(cfg.marketSource, scope);
   } catch (e) {
     out.status = 'blocked';
     out.blocked = true;
@@ -422,7 +505,8 @@ export async function loadUserBillReport(bill, { marketSource = DEFAULT_MARKET_S
   // 1) 行情来源 → 共享市场段（来源不可用即阻断，不回退合成行情）
   let mkt;
   try {
-    mkt = await loadMarket(marketSource);
+    const scope = marketSource === 'dynamic-tushare' ? marketScopeFromTrades(trades) : null;
+    mkt = await loadMarket(marketSource, scope);
   } catch (e) {
     out.status = 'blocked';
     out.blocked = true;
@@ -531,7 +615,8 @@ export async function loadSellCounterfactual({ trades, symbol, tradeId, marketSo
 
   let mkt;
   try {
-    mkt = await loadMarket(marketSource);
+    const scope = marketSource === 'dynamic-tushare' ? marketScopeFromTrades(trades) : null;
+    mkt = await loadMarket(marketSource, scope);
   } catch (e) {
     return fail(CF_CODES.MARKET_SOURCE, String(e && e.message ? e.message : e));
   }
@@ -606,24 +691,24 @@ export function computeScopeDelta(baseBundle, altBundle, scope) {
 }
 
 /* —— 契约：模板读取 / 规则预览 / 历史情境判定（src/engine/contractMatch.js；候选口径，哈希为占位算法，待 M0-C1 冻结） —— */
-export const CONTRACT_SIM_LABEL = '已签收真实历史行情 · 不构成投资建议';
-export const CONTRACT_SIM_SCOPE_NOTE = '历史快照（非实时）· 候选规则口径（待 M0-C1 冻结）· 不构成投资建议';
+export const CONTRACT_SIM_LABEL = 'Tushare 动态日线（服务端获取，非实时）· 不构成投资建议';
+export const CONTRACT_SIM_SCOPE_NOTE = '最新已收盘日线（非实时）· 候选规则口径（待 M0-C1 冻结）· 不构成投资建议';
 export const CONTRACT_SIM_LABEL_SYNTHETIC = '合成回归行情 · 不构成投资建议';
 export const CONTRACT_SIM_SCOPE_NOTE_SYNTHETIC = '合成夹具（非真实行情）· 候选口径（待 M0-C1 冻结）· 不构成投资建议';
 export const CONTRACT_HASH_NOTE = '候选哈希，待 M0-C1 冻结';
 export const CONTRACT_SIM_INPUT_INVALID = 'E_CONTRACT_SIM_INPUT_INVALID';
 export const CONTRACT_MARKET_OPTIONS = Object.freeze([
-  { id: 'real-cache', label: '真实行情（已签收）' },
+  { id: 'dynamic-tushare', label: 'Tushare 动态行情' },
   { id: 'synthetic-fixture', label: '合成回归' },
 ]);
 
 export function contractSimLabels(sourceId = DEFAULT_MARKET_SOURCE) {
   const synthetic = sourceId === 'synthetic-fixture';
   return {
-    id: synthetic ? 'synthetic-fixture' : 'real-cache',
+    id: synthetic ? 'synthetic-fixture' : 'dynamic-tushare',
     label: synthetic ? CONTRACT_SIM_LABEL_SYNTHETIC : CONTRACT_SIM_LABEL,
     scopeNote: synthetic ? CONTRACT_SIM_SCOPE_NOTE_SYNTHETIC : CONTRACT_SIM_SCOPE_NOTE,
-    marketLabel: synthetic ? MARKET_SOURCE_META['synthetic-fixture'].label : MARKET_SOURCE_META['real-cache'].label,
+    marketLabel: synthetic ? MARKET_SOURCE_META['synthetic-fixture'].label : MARKET_SOURCE_META['dynamic-tushare'].label,
   };
 }
 
@@ -838,7 +923,7 @@ function isConfirmedLocalBill(bill) {
 }
 
 export function contractTradeSource(bill, marketSource = DEFAULT_MARKET_SOURCE) {
-  const sourceId = marketSource === 'synthetic-fixture' ? 'synthetic-fixture' : 'real-cache';
+  const sourceId = marketSource === 'synthetic-fixture' ? 'synthetic-fixture' : 'dynamic-tushare';
   const marketLabel = MARKET_SOURCE_META[sourceId].label;
   if (isConfirmedLocalBill(bill)) {
     const name = String(bill.fileName || 'user-bill.csv');
@@ -878,9 +963,11 @@ async function sourceTrades(bill, marketSource) {
 
 export async function contractSimContext({ bill, marketSource = DEFAULT_MARKET_SOURCE } = {}) {
   const labels = contractSimLabels(marketSource);
-  const [mkt, { source, trades }] = await Promise.all([loadMarket(labels.id), sourceTrades(bill, labels.id)]);
-  const market = mkt.market;
+  const { source, trades } = await sourceTrades(bill, labels.id);
   const billSymbols = [...new Set(trades.map((t) => t.symbol))].sort();
+  const scope = labels.id === 'dynamic-tushare' ? marketScopeFromTrades(trades, { includeDemo: true }) : null;
+  const mkt = await loadMarket(labels.id, scope);
+  const market = mkt.market;
   const symbols = [...billSymbols, ...market.symbols.filter((s) => !billSymbols.includes(s))];
   return {
     label: labels.label,
@@ -906,7 +993,9 @@ async function evaluateRule(rule, { symbol, date, bill, marketSource }) {
   if (!rule.integrity.ok) return { ...out, code: rule.integrity.code, message: rule.integrity.message };
   const parsed = rule.parsed;
   try {
-    const market = (await loadMarket(labels.id)).market;
+    const { source, trades } = await sourceTrades(bill, labels.id);
+    const scope = labels.id === 'dynamic-tushare' ? marketScopeFromTrades(trades, { includeDemo: true }) : null;
+    const market = (await loadMarket(labels.id, scope)).market;
     out.in_market_cache = market.symbols.includes(symbol);
     if (parsed.kind === 'change_pct_threshold') {
       const change = dayChangePct(market, symbol, date);
@@ -916,9 +1005,8 @@ async function evaluateRule(rule, { symbol, date, bill, marketSource }) {
         changePct: change.complete ? change.change_pct : null,
         reason_code: change.complete ? null : change.code,
       });
-      return { ...out, ok: true, verdict: match.verdict, code: match.code, message: match.message, change, match };
+      return { ...out, ok: true, verdict: match.verdict, code: match.code, message: match.message, change, match, tradesSource: source };
     }
-    const { source, trades } = await sourceTrades(bill, labels.id);
     const match = matchContract(parsed, { symbol, date, trades, tradingDays: market.tradingDays });
     return { ...out, ok: true, verdict: match.verdict, code: match.code, message: match.message, match, tradesSource: source };
   } catch (e) {

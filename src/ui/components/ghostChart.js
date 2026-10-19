@@ -248,8 +248,8 @@ export function renderGhostChart(root, cf) {
     ]));
   }
 
-  const marketCaption = cf.marketSource && cf.marketSource.signed
-    ? '已签收真实历史行情（历史快照，非实时，草案口径）'
+  const marketCaption = cf.marketSource && cf.marketSource.dynamic
+    ? 'Tushare 动态日线（最新已收盘，服务端获取，非实时，草案口径）'
     : '合成行情 · 非真实行情（m0 合成夹具，草案口径）';
   wrap.append(div('gc-caption', [
     textNode(`${marketCaption}｜ S1 单笔卖出替换：仅替换所选卖出笔，其余成交不变；不构成投资建议`),

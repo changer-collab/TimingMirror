@@ -11,6 +11,13 @@ import {
   DASHSCOPE_ENDPOINT,
   createDashScopeTransport,
 } from '../../server/site-functions/dashscope.mjs';
+import {
+  DYNAMIC_CACHE_ARTIFACT,
+  MARKET_TRANSPORT_CODES,
+  MarketTransportError,
+  createTushareMarketTransport,
+  marketSymbolToTsCode,
+} from '../../server/site-functions/market.mjs';
 import { projectOnlineFacts } from '../../src/agent/onlineBoundary.js';
 
 const results = [];
@@ -257,6 +264,186 @@ function streamOfChunks(chunks) {
   try { await delayedBodyTransport.intent({ question: QUESTION }); } catch (error) { delayedError = error; }
   check('DashScope transport：响应头先返回、正文延迟 → E_MODEL_TIMEOUT',
     delayedError && delayedError.code === 'E_MODEL_TIMEOUT', delayedError && delayedError.code);
+}
+
+/* ==== 行情路由：成功、校验、限额、错误映射（fake market transport，不联网） ==== */
+{
+  const doc = { artifact: DYNAMIC_CACHE_ARTIFACT, manifest_version: 'dynamic-v1', marker: 'synthetic-market-doc' };
+  const calls = [];
+  const handler = createHandler({
+    transport: createFakeTransport(),
+    marketTransport: { async snapshot(request) { calls.push(request); return doc; } },
+    maxBodyBytes: 4096,
+  });
+
+  const ok = await invoke(handler, '/api/market/snapshot', { body: { symbols: ['600519', '000001'], start: '2024-12-20', end: '2025-01-06' } });
+  check('行情路由：200 且返回 dynamic 文档', ok.status === 200 && ok.json?.ok === true
+    && JSON.stringify(ok.json.market) === JSON.stringify(doc) && ok.headers.get('cache-control') === 'no-store', ok.text);
+  check('行情路由：transport 只收到 symbols/start/end（无成交/文件信息）', calls.length === 1
+    && Object.keys(calls[0]).sort().join(',') === 'end,start,symbols'
+    && JSON.stringify(calls[0].symbols) === JSON.stringify(['600519', '000001']), JSON.stringify(calls[0]));
+
+  const missing = await invoke(createHandler({ transport: null }), '/api/market/snapshot', {
+    body: { symbols: ['600519'], start: '2024-12-20', end: '2025-01-06' },
+  });
+  check('行情路由：未配置 token → 503 E_MARKET_NOT_CONFIGURED', missing.status === 503
+    && missing.json.code === SITE_FUNCTION_CODES.MARKET_NOT_CONFIGURED, missing.text);
+
+  const before = calls.length;
+  const invalidBodies = [
+    ['未知字段', { symbols: ['600519'], start: '2024-12-20', end: '2025-01-06', trades: [{ symbol: '600519' }] }],
+    ['空标的', { symbols: [], start: '2024-12-20', end: '2025-01-06' }],
+    ['超过 10 个标的', { symbols: Array.from({ length: 11 }, (_, i) => `60000${i % 10}`), start: '2024-12-20', end: '2025-01-06' }],
+    ['重复标的', { symbols: ['600519', '600519'], start: '2024-12-20', end: '2025-01-06' }],
+    ['非 6 位标的', { symbols: ['60051'], start: '2024-12-20', end: '2025-01-06' }],
+    ['非法日期', { symbols: ['600519'], start: '2024/12/20', end: '2025-01-06' }],
+    ['起止颠倒', { symbols: ['600519'], start: '2025-01-06', end: '2024-12-20' }],
+    ['范围超限', { symbols: ['600519'], start: '2000-01-01', end: '2025-01-06' }],
+  ];
+  for (const [name, body] of invalidBodies) {
+    const r = await invoke(handler, '/api/market/snapshot', { body });
+    const expected = name === '未知字段' ? SITE_FUNCTION_CODES.UNKNOWN_FIELD : SITE_FUNCTION_CODES.MARKET_REQUEST_INVALID;
+    check(`行情路由：${name} → 400`, r.status === 400 && r.json.code === expected, r.text);
+  }
+  check('行情路由：非法请求不调用 transport', calls.length === before, `calls=${calls.length}`);
+
+  const codeCases = [
+    [MARKET_TRANSPORT_CODES.TIMEOUT, 504],
+    [MARKET_TRANSPORT_CODES.NO_DATA, 422],
+    [MARKET_TRANSPORT_CODES.REQUEST_INVALID, 400],
+    [MARKET_TRANSPORT_CODES.UPSTREAM, 502],
+    ['E_UNKNOWN_MARKET_FAILURE', 502],
+  ];
+  for (const [code, status] of codeCases) {
+    const h = createHandler({
+      transport: null,
+      marketTransport: { async snapshot() { throw new MarketTransportError(code); } },
+    });
+    const r = await invoke(h, '/api/market/snapshot', { body: { symbols: ['600519'], start: '2024-12-20', end: '2025-01-06' } });
+    check(`行情路由：${code} → ${status} 且脱敏`, r.status === status
+      && r.json.code === (code === 'E_UNKNOWN_MARKET_FAILURE' ? SITE_FUNCTION_CODES.MARKET_UNAVAILABLE : code)
+      && !r.text.includes('token'), r.text);
+  }
+
+  const malformed = await invoke(createHandler({
+    transport: null,
+    marketTransport: { async snapshot() { return { artifact: 'not-dynamic' }; } },
+  }), '/api/market/snapshot', { body: { symbols: ['600519'], start: '2024-12-20', end: '2025-01-06' } });
+  check('行情路由：transport 返回非 dynamic 文档 → 502 E_MARKET_RESPONSE', malformed.status === 502
+    && malformed.json.code === SITE_FUNCTION_CODES.MARKET_RESPONSE, malformed.text);
+}
+
+/* ==== Tushare transport 契约（fake fetch，不联网） ==== */
+{
+  const TOKEN = 'synthetic-tushare-token-marker';
+  const calendar = ['2025-01-02', '2025-01-03', '2025-01-06'];
+  const closes = {
+    '600519.SH': [
+      ['20250102', 1500], ['20250103', 1510], ['20250106', 1520],
+    ],
+    '000001.SZ': [
+      ['20250102', 10.5], ['20250103', 10.6], ['20250106', 10.7],
+    ],
+  };
+  const factors = {
+    '600519.SH': [['20250102', 2.0], ['20250103', 2.1], ['20250106', 2.1]],
+    '000001.SZ': [['20250102', 1.0], ['20250103', 1.0], ['20250106', 1.0]],
+  };
+  const upstreamCalls = [];
+  const fakeFetch = async (url, options) => {
+    const sent = JSON.parse(options.body);
+    upstreamCalls.push({ url, sent, headers: options.headers });
+    let payload;
+    if (sent.api_name === 'trade_cal') {
+      payload = { code: 0, data: { fields: ['cal_date'], items: calendar.map((d) => [d.replace(/-/g, '')]) } };
+    } else if (sent.api_name === 'daily') {
+      payload = {
+        code: 0,
+        data: {
+          fields: ['ts_code', 'trade_date', 'close'],
+          items: (closes[sent.params.ts_code] ?? []).map(([d, c]) => [sent.params.ts_code, d, c]),
+        },
+      };
+    } else if (sent.api_name === 'adj_factor') {
+      payload = {
+        code: 0,
+        data: {
+          fields: ['ts_code', 'trade_date', 'adj_factor'],
+          items: (factors[sent.params.ts_code] ?? []).map(([d, f]) => [sent.params.ts_code, d, f]),
+        },
+      };
+    } else {
+      payload = { code: 1, msg: 'unexpected api' };
+    }
+    return new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  const transport = createTushareMarketTransport({
+    token: TOKEN,
+    fetchImpl: fakeFetch,
+    timeoutMs: 1000,
+    ttlMs: 60000,
+    now: () => new Date('2026-10-19T01:30:00.000Z'),
+  });
+  const doc = await transport.snapshot({ symbols: ['600519', '000001'], start: '2024-12-20', end: '2025-01-06' });
+
+  check('Tushare：artifact/manifest 为 dynamic-v1', doc.artifact === DYNAMIC_CACHE_ARTIFACT
+    && doc.manifest_version === 'dynamic-v1' && doc.source.provider === 'tushare');
+  check('Tushare：asOfDate/最新交易日取实际最新 bar，范围收窄', doc.asOfDate === '2025-01-06'
+    && doc.snapshot.latest_trade_date === '2025-01-06' && doc.manifest.date_range.end === '2025-01-06');
+  check('Tushare：交易日历来自 trade_cal（SSE/is_open=1）', doc.calendar.trading_days.join(',') === calendar.join(',')
+    && upstreamCalls.some((c) => c.sent.api_name === 'trade_cal' && c.sent.params.exchange === 'SSE' && c.sent.params.is_open === '1'));
+  check('Tushare：ts_code 映射（沪/深）', marketSymbolToTsCode('600519') === '600519.SH'
+    && marketSymbolToTsCode('000001') === '000001.SZ' && marketSymbolToTsCode('300750') === '300750.SZ'
+    && marketSymbolToTsCode('830799') === '830799.BJ');
+  check('Tushare：每标的调用 daily + adj_factor', ['600519.SH', '000001.SZ'].every((code) =>
+    upstreamCalls.some((c) => c.sent.api_name === 'daily' && c.sent.params.ts_code === code)
+    && upstreamCalls.some((c) => c.sent.api_name === 'adj_factor' && c.sent.params.ts_code === code)));
+  check('Tushare：bar 仅含 date/close（不返回成交量）', doc.symbols['600519'].bars.length === 3
+    && Object.keys(doc.symbols['600519'].bars[0]).sort().join(',') === 'close,date'
+    && doc.symbols['600519'].bars[2].close === 1520);
+  check('Tushare：前复权 close = close × adj_factor / 最新 adj_factor', doc.symbols['600519'].bars_fwdadj[0].close === 1428.5714
+    && doc.symbols['600519'].bars_fwdadj[2].close === 1520);
+  check('Tushare：checksum 为 64 位十六进制，snapshot_id 带日期与摘要', /^[0-9a-f]{64}$/.test(doc.checksum)
+    && doc.snapshot.snapshot_id.startsWith('tushare-20250106-') && doc.snapshot.snapshot_id.endsWith(doc.checksum.slice(0, 8)));
+  check('Tushare：fetched_at 来自注入时钟', doc.fetched_at === '2026-10-19T01:30:00.000Z' && doc.snapshot.fetch_time === doc.fetched_at);
+  check('Tushare：响应不含 token', !JSON.stringify(doc).includes(TOKEN) && upstreamCalls.every((c) => c.sent.token === TOKEN));
+
+  const callsBefore = upstreamCalls.length;
+  const cached = await transport.snapshot({ symbols: ['000001', '600519'], start: '2024-12-20', end: '2025-01-06' });
+  check('Tushare：相同范围（标的顺序不同）命中短 TTL 缓存、不重复请求上游', cached === doc
+    && upstreamCalls.length === callsBefore, `calls=${upstreamCalls.length - callsBefore}`);
+
+  let invalidError = null;
+  try { await transport.snapshot({ symbols: ['60051'], start: '2024-12-20', end: '2025-01-06' }); } catch (e) { invalidError = e; }
+  check('Tushare：非法标的 → E_MARKET_REQUEST_INVALID', invalidError && invalidError.code === MARKET_TRANSPORT_CODES.REQUEST_INVALID);
+
+  const emptyCal = createTushareMarketTransport({
+    token: TOKEN,
+    fetchImpl: async () => new Response(JSON.stringify({ code: 0, data: { fields: ['cal_date'], items: [] } }), { status: 200 }),
+  });
+  let noDataError = null;
+  try { await emptyCal.snapshot({ symbols: ['600519'], start: '2024-12-20', end: '2025-01-06' }); } catch (e) { noDataError = e; }
+  check('Tushare：空交易日历 → E_MARKET_NO_DATA', noDataError && noDataError.code === MARKET_TRANSPORT_CODES.NO_DATA);
+
+  const upstreamFail = createTushareMarketTransport({
+    token: TOKEN,
+    fetchImpl: async () => new Response(JSON.stringify({ code: 500, msg: 'provider-secret-marker' }), { status: 200 }),
+  });
+  let upstreamError = null;
+  try { await upstreamFail.snapshot({ symbols: ['600519'], start: '2024-12-20', end: '2025-01-06' }); } catch (e) { upstreamError = e; }
+  check('Tushare：上游 code≠0 → E_MARKET_UNAVAILABLE 且不转发上游文本', upstreamError
+    && upstreamError.code === MARKET_TRANSPORT_CODES.UPSTREAM && !upstreamError.message.includes('provider-secret-marker'));
+
+  const timeoutTransport = createTushareMarketTransport({
+    token: TOKEN,
+    timeoutMs: 10,
+    fetchImpl: (url, { signal }) => new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true });
+    }),
+  });
+  let timeoutError = null;
+  try { await timeoutTransport.snapshot({ symbols: ['600519'], start: '2024-12-20', end: '2025-01-06' }); } catch (e) { timeoutError = e; }
+  check('Tushare：超时 → E_MARKET_TIMEOUT', timeoutError && timeoutError.code === MARKET_TRANSPORT_CODES.TIMEOUT);
 }
 
 const failed = results.filter((r) => !r.ok);

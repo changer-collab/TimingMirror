@@ -25,7 +25,7 @@ export function defaultChat(contextId = null) {
 }
 
 export function defaultContracts() {
-  return { versions: [], draft: null, marketSource: 'real-cache', sim: { symbol: '', date: '', result: null, running: false }, simContext: null };
+  return { versions: [], draft: null, marketSource: 'dynamic-tushare', sim: { symbol: '', date: '', result: null, running: false }, simContext: null };
 }
 
 export const state = {
