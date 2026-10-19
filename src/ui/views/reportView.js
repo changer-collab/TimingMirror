@@ -9,7 +9,7 @@ import { el } from '../components.js';
 import * as demo from '../../demo/adapter.js';
 import { renderGhostChart } from '../components/ghostChart.js';
 
-const WIRING_NOTE = '契约页已接入候选模板与历史情境模拟（候选口径，哈希待 M0-C1 冻结），契约不会自动改变本报告结论。未接入：百炼（对话页为离线模式）、真实行情、对话页事实回跳。';
+const WIRING_NOTE = '契约页已接入候选模板与历史情境模拟（候选口径，哈希待 M0-C1 冻结），契约不会自动改变本报告结论。未接入：百炼真实调用（对话页已接站点同源复述边界，当前仅 fake 验证）、真实行情、对话页事实回跳。';
 const NO_TRADE_ADVICE = '不要据此作交易判断。';
 
 /* —— 本次分析摘要：只取 bundle / review 已有字段，不计算数字 —— */

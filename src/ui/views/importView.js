@@ -2,7 +2,7 @@
 // 用户账单链路：选择文件 → readAsText → adapter.loadUserBillFromText（引擎 csvNormalize，页面不自行实现校验）→ invalid/loaded → 确认。
 // 确认后：state.bill 标记 confirmed 并进入报告页；报告页按 sourceType 选择用户账单链路（adapter.loadUserBillReport）。
 import { el } from '../components.js';
-import { defaultBill } from '../../state.js';
+import { defaultBill, defaultChat, createBillContextId } from '../../state.js';
 import * as demo from '../../demo/adapter.js';
 
 const LOCAL_NOTICE = '原始 CSV 仅在本机读取和校验，不上传。';
@@ -144,16 +144,24 @@ async function onFilePicked(ev, ctx) {
   const file = ev && ev.target && ev.target.files && ev.target.files[0];
   if (!file || state.bill.status === 'loading') return;
   const scenario = state.bill.scenario;
+  const contextId = createBillContextId();
   if (!isCsvFile(file)) {
-    set({ bill: freshBill(scenario, { status: 'none', error: `文件类型不符合预期：${file.name}（请选择 .csv 账单文件；未读取该文件）` }) });
+    set({
+      bill: freshBill(scenario, { contextId, status: 'none', error: `文件类型不符合预期：${file.name}（请选择 .csv 账单文件；未读取该文件）` }),
+      chat: defaultChat(contextId),
+    });
     return;
   }
-  set({ bill: freshBill(scenario, { status: 'loading', sourceType: 'local', fileName: file.name, fileSize: file.size }) });
+  set({
+    bill: freshBill(scenario, { contextId, status: 'loading', sourceType: 'local', fileName: file.name, fileSize: file.size }),
+    chat: defaultChat(contextId),
+  });
   try {
     const text = await readAsText(file);
     const bill = await demo.loadUserBillFromText(text, file.name);
     set({
       bill: freshBill(scenario, {
+        contextId,
         status: bill.blocked ? 'invalid' : 'loaded',
         sourceType: bill.sourceType,
         fileName: bill.fileName,
@@ -170,6 +178,7 @@ async function onFilePicked(ev, ctx) {
   } catch (e) {
     set({
       bill: freshBill(scenario, {
+        contextId,
         status: 'error',
         sourceType: 'local',
         fileName: file.name,
@@ -200,12 +209,17 @@ export function renderImport(root, ctx) {
     disabled: bill.status === 'loading' ? '' : null,
     onclick: async () => {
       if (state.bill.status === 'loading') return;
-      set({ bill: freshBill(state.bill.scenario, { status: 'loading' }) });
+      const scenario = state.bill.scenario;
+      const contextId = createBillContextId();
+      set({
+        bill: freshBill(scenario, { contextId, status: 'loading' }),
+        chat: defaultChat(contextId),
+      });
       try {
-        const b = await demo.loadDemoBill(state.bill.scenario);
-        set({ bill: freshBill(state.bill.scenario, { status: 'loaded', trades: b.trades, warnings: b.warnings, sourceNote: b.sourceNote, resultLabelling: b.resultLabelling }) });
+        const b = await demo.loadDemoBill(scenario);
+        set({ bill: freshBill(scenario, { contextId, status: 'loaded', trades: b.trades, warnings: b.warnings, sourceNote: b.sourceNote, resultLabelling: b.resultLabelling }) });
       } catch (e) {
-        set({ bill: freshBill(state.bill.scenario, { status: 'error', error: e.message }) });
+        set({ bill: freshBill(scenario, { contextId, status: 'error', error: e.message }) });
       }
     },
   }, [bill.status === 'loading' ? '加载中…' : '加载演示账单']);
