@@ -28,6 +28,13 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://localhost:${PORT}`);
     let p = decodeURIComponent(url.pathname);
     if (p === '/') p = '/index.html';
+    // 不公开服务端目录与点文件（含 .env）；静态服务仅面向浏览器资源。
+    const segments = p.replace(/^\/+/, '').replace(/\\/g, '/').split('/');
+    if (segments.some((s) => s.toLowerCase() === 'server' || s.startsWith('.'))) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('404 Not Found');
+      return;
+    }
     const filePath = normalize(join(ROOT, p));
     if (!filePath.startsWith(ROOT + sep)) { res.writeHead(403); res.end('403 Forbidden'); return; }
     const data = await readFile(filePath);
