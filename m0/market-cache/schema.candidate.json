@@ -24,16 +24,16 @@
     ]
   },
   "support_scope": {
-    "status": "清单草案已提出（2026-10-13 拉数完成，七字段值见 manifest.candidate.json；待 changer 签收）",
-    "target_demo_range": "三只 A 股、2023–2025（草案；待签收）",
+    "status": "已签收（2026-10-19；A1/B1/C1/D1/E1；签收与授权说明见 manifest.candidate.json sign_off）",
+    "target_demo_range": "三只 A 股、2023–2025（已签收）",
     "manifest_fields": [
-      { "name": "symbols", "type": "string[]（6 位数字代码）", "required": true, "value": null, "value_note": "见 manifest.candidate.json（草案值；待签收）" },
-      { "name": "date_range", "type": "{start, end}", "required": true, "value": null, "value_note": "见 manifest.candidate.json（草案值；待签收）" },
-      { "name": "data_source", "type": "string", "required": true, "value": null, "value_note": "见 manifest.candidate.json（草案值；待签收）" },
-      { "name": "calendar_source", "type": "string", "required": true, "value": null, "value_note": "见 manifest.candidate.json（草案值；待签收）" },
-      { "name": "adjustment_basis", "type": "string", "required": true, "value": null, "value_note": "见 manifest.candidate.json（草案值；待签收）" },
-      { "name": "pull_evidence", "type": "string", "required": true, "value": null, "value_note": "见 manifest.candidate.json（草案值；待签收）" },
-      { "name": "asOfDate", "type": "string(YYYY-MM-DD)", "required": true, "value": null, "value_note": "见 manifest.candidate.json（草案值；待签收）" }
+      { "name": "symbols", "type": "string[]（6 位数字代码）", "required": true, "value": null, "value_note": "见 manifest.candidate.json（已签收值；A1）" },
+      { "name": "date_range", "type": "{start, end}", "required": true, "value": null, "value_note": "见 manifest.candidate.json（已签收值）" },
+      { "name": "data_source", "type": "string", "required": true, "value": null, "value_note": "见 manifest.candidate.json（已签收值）" },
+      { "name": "calendar_source", "type": "string", "required": true, "value": null, "value_note": "见 manifest.candidate.json（已签收值）" },
+      { "name": "adjustment_basis", "type": "string", "required": true, "value": null, "value_note": "见 manifest.candidate.json（已签收值）" },
+      { "name": "pull_evidence", "type": "string", "required": true, "value": null, "value_note": "见 manifest.candidate.json（已签收值）" },
+      { "name": "asOfDate", "type": "string(YYYY-MM-DD)", "required": true, "value": null, "value_note": "见 manifest.candidate.json（已签收值；B1=2025-12-31）" }
     ],
     "manifest_fields_note": "本节为接口结构模板；2026-10-13 拉数后清单值已落在 m0/market-cache/manifest.candidate.json（下称 manifest），本表不再表示「未提供」——先前表述易被误读，2026-10-16 修正",
     "fixture_policy": "合成占位代码（000000/001234/888888）与合成价格仅用于夹具；不冒充真实支持清单",
@@ -120,9 +120,9 @@
     "resolution": "已收口（本次审校确认）：产品继续固定使用数据集 asOfDate；未来任意日期选择放在当前范围外，不作为本轮冻结阻塞项（原 M4 关闭）"
   },
   "open_items": [
-    { "id": "M1", "question": "真实支持清单（symbols/date_range/data_source/calendar_source/pull_evidence/asOfDate）", "status": "草案已提出（2026-10-13，m0/market-cache/manifest.candidate.json；symbols 与 asOfDate 为【建议】）；待 changer 签收", "affects": "冻结与真实运行" },
-    { "id": "M2", "question": "复权基准（adjustment_basis）核验记录", "status": "初核完成（2026-10-13，观测见 data/market-cache.pull-record.json）；随 M1 签收归档", "affects": "前复权快照口径" },
-    { "id": "M3", "question": "股数事件数据的来源与识别依据；事件生效日口径（登记日 vs 除权日）", "status": "未提供（待审）", "affects": "股数事件检测" },
+    { "id": "M1", "question": "真实支持清单（symbols/date_range/data_source/calendar_source/pull_evidence/asOfDate）", "status": "已签收（2026-10-19；A1/B1；见 manifest.candidate.json sign_off）", "affects": "冻结与真实运行" },
+    { "id": "M2", "question": "复权基准（adjustment_basis）核验记录", "status": "已随 M1 签收归档（2026-10-19；观测见 data/market-cache.pull-record.json）", "affects": "前复权快照口径" },
+    { "id": "M3", "question": "股数事件数据的来源与识别依据；事件生效日口径（登记日 vs 除权日）", "status": "口径已定：D1 除权日（2026-10-19）；v1 不实现事件检测（C1），事件数据来源与识别依据未提供", "affects": "股数事件检测（v1 不做）" },
     { "id": "M5", "question": "候选错误码字样与结构化细节", "status": "候选（随三方审校定稿）", "affects": "接口文本" }
   ],
   "out_of_scope": [
@@ -141,14 +141,15 @@
   },
   "sub_interface_status": {
     "freeze": "未冻结",
-    "reason": "候选语义与离线夹具已就绪；冻结待：①三方对最终版本与验证证据的覆盖确认（队友对本版确认未提供）②真实清单与证据（M1/M2）到位",
-    "note": "Step 3 / M0-C1 整体未完成；其余六类接口不在本轮"
+    "reason": "缓存清单（M1/M2）已于 2026-10-19 签收；八类接口整体的 M0-C1 三方冻结仍未完成（队友对本版最终确认未提供）",
+    "note": "Step 3 / M0-C1 整体未完成；其余六类接口不在本轮；缓存清单签收不等于接口冻结"
   },
   "review_history": {
     "v1": "首版候选：负责人本次确认的 B1–B7 落实；合成夹具与离线校验；M1–M5 未决项",
     "v1.1": "本次审校修订：OHLC 按基线 §4-2 纠正为必填（两个序列）并补齐夹具；M4 收口；分红混算差值单位更正为 pp",
     "2026-10-13·M0-C2（尹辰）": "M1/M2 状态指针更新：拉数草案 m0/market-cache/manifest.candidate.json 与运行记录 data/market-cache.pull-record.json 已提出；候选语义未变更；仍待签收与三方确认",
     "2026-10-13·M1-C1（尹辰）": "候选细化：新增 E_NO_EFFECTIVE_TRADING_DAY（区间内早于首个交易日的请求）；引擎 src/engine/marketCache.js 实现并有单测覆盖；待三方审校",
-    "2026-10-16·任务B（尹辰）": "support_scope 指针修正：七字段草案值统一指向已填写的 manifest.candidate.json（原「未提供」为拉数前模板，避免与拉数后实际值混淆）；收口包 docs/yinchen/m0c2-signoff-package.md 交付（R1–R7 签收表＋决策 A–E＋回涵晶 §8.2 两问）"
+    "2026-10-16·任务B（尹辰）": "support_scope 指针修正：七字段草案值统一指向已填写的 manifest.candidate.json（原「未提供」为拉数前模板，避免与拉数后实际值混淆）；收口包 docs/yinchen/m0c2-signoff-package.md 交付（R1–R7 签收表＋决策 A–E＋回涵晶 §8.2 两问）",
+    "2026-10-19·签收（尹辰经授权）": "A–E 按 A1/B1/C1/D1/E1 落档：维持三只符号并避让 300750 2023-04-26、asOfDate=2025-12-31、v1 不做公司行为检测、事件生效日口径=除权日、采用 §5.1 缺价文案；manifest 与 data/market-cache.json 均标记 frozen/sign_off；引擎新增 assessCacheDoc 签收门（R2）"
   }
 }

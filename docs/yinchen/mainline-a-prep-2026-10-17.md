@@ -2,8 +2,9 @@
 
 > 性质：技术预案（【建议】），**非接口冻结、非交接记录、未实施**。所有决策仍以 Issue #13（主线 A）、#8 及负责人签收为准。
 > 依据：#13「当前可独立开展（不等待签收）」三项；`docs/yinchen/m0c2-signoff-package.md` §4–§5；`docs/wuhanjing/m0c1-ui-interface-confirmation.md` §3.1/§3.3/§4.1。
-> 纪律：R2——签收前 `data/market-cache.json`（`artifact=market-cache-pull-draft`、`frozen=false`、无 `sign_off`）不得被产品作为真实支持范围引用；本包不触碰产品接入、不改变演示链路。
-> 验证基线（2026-10-17 同步 main `268074e` 后）：`npm run check` 798/798（17 脚本）、`npm run smoke` 52/52；远程无 CI（no checks reported，未配置）。
+> **2026-10-19 状态更新**：A–E 已按 A1/B1/C1/D1/E1 签收（manifest-0.2）；`data/market-cache.json` 已升级为 `artifact=market-cache-signed`/`frozen=true` 并内嵌 `sign_off`；引擎侧签收门 `assessCacheDoc` 已实现并有测试（本文 §1.2 的设计已部分落地）。产品接入（adapter/UI）仍未实施，按独立 PR 与吴涵晶协调。
+> 纪律：R2——签收门通过前不得把缓存当作真实支持范围；本包不触碰产品接入、不改变演示链路。
+> 验证基线（2026-10-19 签收后）：`npm run check` 1060/1060（24 脚本）、`npm run smoke` 180/180、`node scripts/drill-data-evidence.mjs` 20/20；远程无 CI（no checks reported，未配置）。
 
 ## 0. 一页结论
 

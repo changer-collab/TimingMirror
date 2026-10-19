@@ -1,8 +1,8 @@
 // M2-C4 数据侧证据复跑（R1 可复算 + R2 缓存范围提示）。
-// 仅本地合成夹具与拉数草案；不联网、不读账户数据、不替代页面演练。
+// 仅本地合成夹具与已签收行情缓存；不联网、不读账户数据、不替代页面演练。
 // 断言值来自 docs/yinchen/m2c4-drill-prep.md §1.3/§2.3；若引擎或夹具口径变化，本脚本失败并提示同步文档。
 import { readFileSync } from 'node:fs';
-import { createMarketCache, fromFixtures, fromPullDraft } from '../src/engine/marketCache.js';
+import { assessCacheDoc, createMarketCache, fromFixtures, fromPullDraft } from '../src/engine/marketCache.js';
 import { parseCsvText, normalizeRows } from '../src/engine/csvNormalize.js';
 import { computeIndicators } from '../src/engine/indicators.js';
 import { buildVerifyReport } from '../src/engine/verify.js';
@@ -68,27 +68,33 @@ check('R1 A 验算 26/26、恒等式 0 失败', vA.summary.n_facts === 26 && vA.
 check('R1 A′ 验算 26/26、恒等式 0 失败', vAp.summary.n_facts === 26 && vAp.summary.pass === 26 && vAp.summary.fail === 0 && vAp.summary.identities_fail === 0, JSON.stringify(vAp.summary));
 
 /* ---- R2：范围映射 / 范围外日期 / 范围外标的 / 早于末笔 / 缺价不回落 ---- */
-const draftMarket = createMarketCache(fromPullDraft(readJson('data/market-cache.json')));
-const days = draftMarket.tradingDays;
-check('R2 草案范围 2023-01-01..2025-12-31、727 个交易日、首末 2023-01-03..2025-12-31',
-  eq(draftMarket.range, { start: '2023-01-01', end: '2025-12-31' })
+const cacheDoc = readJson('data/market-cache.json');
+const gate = assessCacheDoc(cacheDoc);
+check('R2 签收门：data/market-cache.json 通过（signed、manifest-0.2）',
+  gate.usable === true && gate.signed === true && gate.manifest_version === 'manifest-0.2'
+  && gate.accepted_by === 'changer-collab' && gate.accepted_date === '2026-10-19',
+  JSON.stringify(gate));
+const signedMarket = createMarketCache(fromPullDraft(cacheDoc));
+const days = signedMarket.tradingDays;
+check('R2 签收范围 2023-01-01..2025-12-31、727 个交易日、首末 2023-01-03..2025-12-31',
+  eq(signedMarket.range, { start: '2023-01-01', end: '2025-12-31' })
   && days.length === 727 && days[0] === '2023-01-03' && days.at(-1) === '2025-12-31',
-  `${JSON.stringify(draftMarket.range)} / ${days.length} / ${days[0]}..${days.at(-1)}`);
+  `${JSON.stringify(signedMarket.range)} / ${days.length} / ${days[0]}..${days.at(-1)}`);
 
-const vHol = draftMarket.resolveValuation('2025-10-01');
+const vHol = signedMarket.resolveValuation('2025-10-01');
 check('R2 非交易日 2025-10-01 → 2025-09-30', !vHol.blocked && vHol.effective_date === '2025-09-30', JSON.stringify(vHol));
 for (const d of ['2022-06-01', '2026-01-05']) {
-  const v = draftMarket.resolveValuation(d);
+  const v = signedMarket.resolveValuation(d);
   check(`R2 范围外日期 ${d} → E_VALUATION_OUT_OF_RANGE`, v.blocked && v.code === 'E_VALUATION_OUT_OF_RANGE', JSON.stringify(v));
 }
-const rUnknown = draftMarket.resolvePrices(['000001'], '2025-12-31');
+const rUnknown = signedMarket.resolvePrices(['000001'], '2025-12-31');
 check('R2 范围外标的 000001 → E_PRICE_MISSING 且 no_fallback_used、组合阻断',
   rUnknown.per_symbol['000001'].blocked === true
   && rUnknown.per_symbol['000001'].code === 'E_PRICE_MISSING'
   && rUnknown.per_symbol['000001'].no_fallback_used === true
   && rUnknown.portfolio.blocked === true,
   JSON.stringify(rUnknown));
-const lastCheck = draftMarket.checkLastTrade('2024-10-01', '2024-10-08');
+const lastCheck = signedMarket.checkLastTrade('2024-10-01', '2024-10-08');
 check('R2 估值日 2024-10-01 早于末笔 2024-10-08 → E_VALUATION_BEFORE_LAST_TRADE', lastCheck.blocked && lastCheck.code === 'E_VALUATION_BEFORE_LAST_TRADE', JSON.stringify(lastCheck));
 const fxMissing = fxMarket.resolvePrices(fxMarket.symbols, '2024-10-10');
 check('R2 合成夹具 2024-10-10：888888 缺价阻断、000000/001234 正常、组合阻断',

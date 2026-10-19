@@ -3,15 +3,15 @@
  * M1-C1 · 行情缓存引擎单测（零依赖；node tests/market-cache.test.mjs）
  *
  * 输入：① 合成夹具 m0/market-cache/fixtures/（S1–S5 场景语义移植）
- *       ② 拉数草案 data/market-cache.json（范围/节假日/无可用交易日/快照边界用例；
+ *       ② 已签收缓存 data/market-cache.json（范围/节假日/无可用交易日/快照边界/签收门用例；
  *          该文件结构已由 npm run check 的核验区覆盖）
- * 边界：仅证明引擎函数语义与候选口径一致；不证明真实行情可用；
- *       不涉及股数事件检测（事件数据未提供，M3 未决；B5）。
+ * 边界：仅证明引擎函数语义与候选口径一致；不证明真实行情正确性；
+ *       不涉及股数事件检测（C1：v1 不实现；300750 2023-04-26 靠演示避让与披露）。
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { createMarketCache, fromFixtures, fromPullDraft } from '../src/engine/marketCache.js';
+import { assessCacheDoc, createMarketCache, fromFixtures, fromPullDraft, MARKET_CACHE_GATE_CODES } from '../src/engine/marketCache.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..');
@@ -79,36 +79,58 @@ const mc = createMarketCache(fromFixtures(
   check('边界：未知标的 → null（不抛错、不假造价格）', mc.getClose('999999', '2024-10-09') === null);
 }
 
-/* ---- 拉数草案（data/market-cache.json）：范围/节假日/首个交易日/快照 ---- */
+/* ---- R2 签收门：未冻结/未签收/形状不全一律不可用（不静默回退） ---- */
 {
   const raw = load('data/market-cache.json');
-  const draft = createMarketCache(fromPullDraft(raw));
-  const days = draft.tradingDays;
+  const ok = assessCacheDoc(raw);
+  check('签收门：已签收缓存 usable（frozen + sign_off + 形状）', ok.usable === true && ok.signed === true && ok.accepted_by === raw.sign_off.accepted_by, JSON.stringify(ok));
+  check('签收门：返回支持范围与固定 asOfDate', JSON.stringify(ok.symbols) === JSON.stringify(raw.manifest.symbols) && ok.asOfDate === raw.manifest.asOfDate && ok.range.start === raw.manifest.date_range.start, JSON.stringify(ok));
+  const unsigned = structuredClone(raw); unsigned.sign_off.accepted_by = '';
+  const r1 = assessCacheDoc(unsigned);
+  check('签收门：sign_off 缺失 → NOT_SIGNED', r1.usable === false && r1.reason === MARKET_CACHE_GATE_CODES.NOT_SIGNED, JSON.stringify(r1));
+  const unfrozen = structuredClone(raw); unfrozen.frozen = false;
+  const r2 = assessCacheDoc(unfrozen);
+  check('签收门：frozen=false → NOT_FROZEN', r2.usable === false && r2.reason === MARKET_CACHE_GATE_CODES.NOT_FROZEN, JSON.stringify(r2));
+  const malformed = structuredClone(raw); delete malformed.calendar;
+  const r3 = assessCacheDoc(malformed);
+  check('签收门：结构缺失 → MALFORMED', r3.usable === false && r3.reason === MARKET_CACHE_GATE_CODES.MALFORMED, JSON.stringify(r3));
+  const draft = structuredClone(raw); draft.artifact = 'market-cache-pull-draft';
+  const r4 = assessCacheDoc(draft);
+  check('签收门：草案 artifact → MALFORMED（不得冒充签收件）', r4.usable === false && r4.reason === MARKET_CACHE_GATE_CODES.MALFORMED, JSON.stringify(r4));
+  const r5 = assessCacheDoc(null);
+  check('签收门：空文档 → MALFORMED', r5.usable === false && r5.reason === MARKET_CACHE_GATE_CODES.MALFORMED, JSON.stringify(r5));
+}
+
+/* ---- 已签收缓存（data/market-cache.json）：范围/节假日/首个交易日/快照 ---- */
+{
+  const raw = load('data/market-cache.json');
+  const signed = createMarketCache(fromPullDraft(raw));
+  const days = signed.tradingDays;
   const asOf = '2025-12-31';
 
-  const vEnd = draft.resolveValuation(asOf);
-  check('草案：asOfDate 2025-12-31 为交易日、未阻断', days.includes(asOf) && !vEnd.blocked && vEnd.effective_date === asOf, JSON.stringify(vEnd));
+  const vEnd = signed.resolveValuation(asOf);
+  check('已签收缓存：asOfDate 2025-12-31 为交易日、未阻断', days.includes(asOf) && !vEnd.blocked && vEnd.effective_date === asOf, JSON.stringify(vEnd));
 
   const hol = '2025-10-01';
-  const vHol = draft.resolveValuation(hol);
+  const vHol = signed.resolveValuation(hol);
   const expectedHol = [...days].reverse().find((d) => d <= hol);
-  check('草案：国庆 2025-10-01 非交易日 → 取不晚于请求日的最近交易日', !days.includes(hol) && !vHol.blocked && vHol.effective_date === expectedHol, JSON.stringify(vHol));
+  check('已签收缓存：国庆 2025-10-01 非交易日 → 取不晚于请求日的最近交易日', !days.includes(hol) && !vHol.blocked && vHol.effective_date === expectedHol, JSON.stringify(vHol));
 
-  const vEarly = draft.resolveValuation('2023-01-02');
-  check('草案：2023-01-02（区间内、首个交易日前）→ E_NO_EFFECTIVE_TRADING_DAY（候选新增码）', vEarly.blocked === true && vEarly.code === 'E_NO_EFFECTIVE_TRADING_DAY' && vEarly.effective_date === null, JSON.stringify(vEarly));
+  const vEarly = signed.resolveValuation('2023-01-02');
+  check('已签收缓存：2023-01-02（区间内、首个交易日前）→ E_NO_EFFECTIVE_TRADING_DAY（候选新增码）', vEarly.blocked === true && vEarly.code === 'E_NO_EFFECTIVE_TRADING_DAY' && vEarly.effective_date === null, JSON.stringify(vEarly));
 
-  const vFirst = draft.resolveValuation('2023-01-03');
-  check('草案：首个交易日 2023-01-03 正常取价', !vFirst.blocked && vFirst.effective_date === '2023-01-03');
+  const vFirst = signed.resolveValuation('2023-01-03');
+  check('已签收缓存：首个交易日 2023-01-03 正常取价', !vFirst.blocked && vFirst.effective_date === '2023-01-03');
 
-  const r = draft.resolvePrices(['600519', '300750', '601318'], asOf);
+  const r = signed.resolvePrices(['600519', '300750', '601318'], asOf);
   const rawClose = (sym) => raw.symbols[sym].bars.find((b) => b.date === asOf).close;
-  check('草案：三标的组合未阻断且金额与数据文件直读一致', !r.portfolio.blocked && ['600519', '300750', '601318'].every((s) => r.per_symbol[s].close === rawClose(s)));
+  check('已签收缓存：三标的组合未阻断且金额与数据文件直读一致', !r.portfolio.blocked && ['600519', '300750', '601318'].every((s) => r.per_symbol[s].close === rawClose(s)));
 
-  const snap = draft.snapshot;
-  check('草案：快照要素分离（标识/抓取时间/复权基准分列；B6）', !!snap.snapshot_id && !!snap.fetch_time && !!snap.adjustment_basis && snap.snapshot_id !== snap.fetch_time && snap.adjustment_basis !== snap.fetch_time);
+  const snap = signed.snapshot;
+  check('已签收缓存：快照要素分离（标识/抓取时间/复权基准分列；B6）', !!snap.snapshot_id && !!snap.fetch_time && !!snap.adjustment_basis && snap.snapshot_id !== snap.fetch_time && snap.adjustment_basis !== snap.fetch_time);
 
-  const vOut = draft.resolveValuation('2026-01-05');
-  check('草案：超出 2025-12-31 → E_VALUATION_OUT_OF_RANGE', vOut.blocked === true && vOut.code === 'E_VALUATION_OUT_OF_RANGE');
+  const vOut = signed.resolveValuation('2026-01-05');
+  check('已签收缓存：超出 2025-12-31 → E_VALUATION_OUT_OF_RANGE', vOut.blocked === true && vOut.code === 'E_VALUATION_OUT_OF_RANGE');
 }
 
 /* ---- 输出 ---- */

@@ -1,10 +1,11 @@
 {
   "interface": "market-cache",
-  "artifact": "manifest-candidate-draft",
-  "frozen": false,
-  "version": "manifest-0.1",
+  "artifact": "manifest-signed",
+  "frozen": true,
+  "version": "manifest-0.2",
   "date": "2026-10-13",
-  "status": "草案：待负责人签收（M0-C2，尹辰 2026-10-13 提出）；签收前产品不得声称真实支持范围（R2）",
+  "signed_date": "2026-10-19",
+  "status": "已签收（2026-10-19）：A1/B1/C1/D1/E1；签收与授权说明见 sign_off；产品接入须经签收门（R2）",
   "basis": [
     "docs/implementation-baseline.md §2.1 F-3、§3 R2；PRD:156,162（演示 3 只真实股票 2023–2025；akshare 预拉缓存）",
     "m0/market-cache/schema.candidate.json B1（真实清单与证据由尹辰拉数后提出、changer 签收）、B6（复权基准核验与记录）"
@@ -20,12 +21,19 @@
     "asOfDate": "2025-12-31"
   },
   "field_status": [
-    { "field": "symbols", "value_note": "【建议】跨板块 3 只大市值示例（沪主板消费 / 创业板制造 / 沪主板金融）。注意：300750 于 2023-04-26 存在送转量级复权跳变（≈×1.82，不复权收盘 385.90→224.50，观测③）——签收请二选一：a) 维持名单并约定演示账单避开跨越该日（推荐）；b) 替换 300750 为区间内无送转事件标的（已扫描核验干净的候选：300760 迈瑞医疗，创业板，2023–2025 无 ≥0.05 跳变）。待 changer 签收确认" },
-    { "field": "asOfDate", "value_note": "【建议】= date_range.end；2025-12-31 为交易日（日历已核）；待 changer 签收确认" },
-    { "field": "date_range", "value_note": "目标 2023–2025；实际首末交易日 2023-01-03..2025-12-31；逐标的 727/727 行、日历内缺失 0 日" },
-    { "field": "adjustment_basis", "value_note": "M2 初核完成，观测与推导详见 pull-record（事实记录，不含解释性结论；B6）" }
+    { "field": "symbols", "value_note": "已签收（A1，2026-10-19）：维持 600519/300750/601318；演示账单避开跨越 2023-04-26 的 300750 持有区间；用户账单涉及跨事件区间须如实披露公司行为风险（v1 不检测）" },
+    { "field": "asOfDate", "value_note": "已签收（B1，2026-10-19）：固定 2025-12-31 = date_range.end；产品运行时不可改（F-3）" },
+    { "field": "date_range", "value_note": "已签收：目标 2023–2025；实际首末交易日 2023-01-03..2025-12-31；逐标的 727/727 行、日历内缺失 0 日" },
+    { "field": "adjustment_basis", "value_note": "已签收（R6 观测）：M2 初核完成，观测与推导详见 pull-record（事实记录，不含解释性结论；B6）" }
   ],
-  "closure_note": "2026-10-15 收口（任务 B/Issue #13）：七字段值齐备复核（R2/R3/R4/R5/R6 为已核事实值；R1/R7 两项为【建议】）；公司行为边界、300750 处置、缺价文案为待签收决策项（逐项建议与证据见 docs/yinchen/m0c2-signoff-package.md）。签收前本文件不得被产品作为真实支持范围引用（R2）。",
+  "decisions": {
+    "A": { "choice": "A1", "value": "维持 symbols [600519,300750,601318]", "note": "演示账单避开跨越 2023-04-26 的 300750 持有区间；用户账单跨事件风险如实披露（v1 不检测）", "decided_by": "尹辰（经 changer 授权）", "decided_date": "2026-10-19" },
+    "B": { "choice": "B1", "value": "asOfDate=2025-12-31", "note": "等于 date_range.end，交易日已核；运行时固定（F-3）", "decided_by": "尹辰（经 changer 授权）", "decided_date": "2026-10-19" },
+    "C": { "choice": "C1", "value": "v1 不实现公司行为检测；约定避让 + 页面/文档如实标注", "note": "事件数据源与检测实现不在 v1；超出支持范围的风险须披露", "decided_by": "尹辰（经 changer 授权）", "decided_date": "2026-10-19" },
+    "D": { "choice": "D1", "value": "事件生效日口径=除权日", "note": "未来实现事件检测时适用；登记日备选不采用", "decided_by": "尹辰（经 changer 授权）", "decided_date": "2026-10-19" },
+    "E": { "choice": "E1", "value": "采用 m0c2-signoff-package.md §5.1 三类缺价/超范围文案", "note": "标的级/组合级/范围声明；签收后移除“草案·演示口径”中的未签收限定", "decided_by": "尹辰（经 changer 授权）", "decided_date": "2026-10-19" }
+  },
+  "closure_note": "2026-10-19 签收：A–E 按 A1/B1/C1/D1/E1 落档（组长授权尹辰决策，方式一授权代行签收）。R1–R7 七字段值生效；R1=symbols、R7=asOfDate 随 A/B 确认。产品接入须经签收门（R2），并走独立 PR。",
   "evidence_summary": {
     "calendar_days_in_range": 727,
     "symbols_rows": { "600519": { "bars": 727, "bars_fwdadj": 727 }, "300750": { "bars": 727, "bars_fwdadj": 727 }, "601318": { "bars": 727, "bars_fwdadj": 727 } },
@@ -37,19 +45,23 @@
   "sign_off": {
     "proposed_by": "尹辰",
     "proposed_date": "2026-10-13",
-    "accepted_by": null,
-    "accepted_date": null,
-    "note": "签收方式：负责人审查本文件与 pull-record 后填写 accepted_by / accepted_date；随后同步更新 data/market-cache.json 的 status 与 m0/market-cache/schema.candidate.json 的 M1/M2 状态"
+    "decided_by": "尹辰（NanyuDeer）",
+    "decision_date": "2026-10-19",
+    "authorization": "组长 changer 授权尹辰决策 A–E（2026-10-19 用户转述；GitHub 无书面评论留痕）",
+    "accepted_by": "changer-collab",
+    "accepted_date": "2026-10-19",
+    "mode": "方式一：授权代行签收",
+    "note": "A–E 按 A1/B1/C1/D1/E1 决策并落档；签收人字段记为 changer-collab，决策人为尹辰（经授权）。同步更新 data/market-cache.json 为 market-cache-signed（frozen=true、内嵌 sign_off）。"
   },
   "artifacts": [
-    "data/market-cache.json（缓存草案本体：manifest + snapshot + calendar + symbols；artifact=market-cache-pull-draft）",
+    "data/market-cache.json（已签收缓存本体：artifact=market-cache-signed、frozen=true、内嵌 sign_off；manifest + snapshot + calendar + symbols）",
     "data/market-cache.pull-record.json（拉数运行记录：请求明细 / 行数 / 缺失日 / 前复权观测 / 硬校验）",
     "scripts/pull-market.py（拉数脚本；失败即停不重试不换源）"
   ],
   "caveats": [
-    "本草案数据为公开行情；不含任何账户/成交数据",
-    "缓存文件在签收前不得被产品作为真实支持范围引用（R2）；M1-C1 联调沿用合成占位",
+    "本缓存数据为公开行情；不含任何账户/成交数据",
+    "缓存已签收（2026-10-19）；产品接入仍须经签收门校验（R2），并走独立 PR",
     "近窗末行（2026-10-13）可能为盘中未收盘数据，仅用于前复权基准核验，不进入 2023–2025 缓存",
-    "已知区间内股数事件候选：300750 于 2023-04-26（复权比值跳变 ≈×1.82；不复权收盘 385.90→224.50 单日 ≈×1.72）——事件性质、生效日口径与识别依据属 M3 未决项；签收前任何涉及 300750 的演示账单不得跨越该日期持有，否则将命中 B5「超出支持范围」阻断口径"
+    "已知区间内股数事件候选：300750 于 2023-04-26（复权比值跳变 ≈×1.82；不复权收盘 385.90→224.50 单日 ≈×1.72）——按 C1/D1：v1 不实现事件检测，演示账单避开跨越该日期的持有区间，用户账单跨事件风险须如实披露；事件数据源与识别依据不在 v1"
   ]
 }
