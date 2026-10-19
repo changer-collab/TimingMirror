@@ -150,6 +150,7 @@ try {
   check('站点 transport：同源平台路径', calls[0].url === SITE_FUNCTION_PATHS.restate
     && calls[0].url === '/functions/v1/app/api/llm/restate');
   check('站点 transport：body 仅 question + facts', Object.keys(body).join(',') === 'question,facts');
+  check('站点 transport：携带同源登录会话（credentials=same-origin）', calls[0].options.credentials === 'same-origin', calls[0].options.credentials);
   check('站点 transport：无 Authorization/API Key 头', !Object.keys(calls[0].options.headers).some((h) => /authorization|api[-_]?key/i.test(h)));
   check('站点 transport：返回 rawText', result.rawText === '{"answer_text":"ok"}');
 }
@@ -174,6 +175,7 @@ try {
       && intentHttp.url === `http://127.0.0.1:${port}/api/llm/intent`, intentHttp.url);
     check('HTTP intent：body 仅 question', Object.keys(intentBody).join(',') === 'question' && intentBody.question === QUESTION);
     check('HTTP intent：signal 不进入 JSON', !intentHttp.options.body.includes('signal'));
+    check('HTTP intent：本地代理不带凭证（credentials=omit）', intentHttp.options.credentials === 'omit', intentHttp.options.credentials);
     check('HTTP intent：无 Authorization/API Key 头', !Object.keys(intentHttp.options.headers).some((h) => /authorization|api[-_]?key/i.test(h))
       && intentHttp.options.headers['Content-Type'] === 'application/json');
     const proxyIntent = proxyTransport.calls.find((c) => c.stage === 'intent');
@@ -190,6 +192,10 @@ try {
     check('HTTP restate：facts 仅 F-6 字段', restateBody.facts.every((f) => Object.keys(f).every((k) => F6.has(k))));
     check('HTTP restate：无 key/fact_ref/scope', restateBody.facts.every((f) => !('key' in f) && !('fact_ref' in f) && !('scope' in f)));
     check('HTTP restate：signal 不进入 JSON', !restateHttp.options.body.includes('signal'));
+    check('HTTP restate：本地代理不带凭证（credentials=omit）', restateHttp.options.credentials === 'omit', restateHttp.options.credentials);
+    check('HTTP restate：无 Authorization/API Key 头', !Object.keys(restateHttp.options.headers).some((h) => /authorization|api[-_]?key/i.test(h)));
+    check('本地代理 intent/restate：均不带凭证或认证头', [intentHttp, restateHttp].every((c) => c.options.credentials === 'omit'
+      && !Object.keys(c.options.headers).some((h) => /authorization|api[-_]?key/i.test(h))));
     check('HTTP 请求全部指向本机回环', recording.calls.every((c) => c.url.startsWith(`http://127.0.0.1:${port}/`)));
     const proxyRestate = proxyTransport.calls.find((c) => c.stage === 'restate');
     check('代理 fake restate：仅收到 question + facts 且 unit 为短单位', proxyRestate

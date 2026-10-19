@@ -2,6 +2,7 @@
 // 职责：把 onlineBoundary 的 transport 接口映射到本地代理的两个 POST 端点。
 // 不实现：真实百炼供应商请求、API Key 配置、UI 接线或云部署。
 // 请求体严格为 { question } 或 { question, facts }；signal 只用于 fetch 取消，不进入 JSON。
+// 站点同源请求携带浏览器登录会话（same-origin）；本地代理不携带凭证（omit）。
 import { TransportError } from './onlineBoundary.js';
 
 export const DEFAULT_PROXY_BASE_URL = 'http://127.0.0.1:5181';
@@ -91,7 +92,7 @@ export function createHttpTransport({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
         signal,
-        credentials: 'omit',
+        credentials: sameOrigin ? 'same-origin' : 'omit',
       });
     } catch (error) {
       if ((signal && signal.aborted) || (error && error.name === 'AbortError')) {
