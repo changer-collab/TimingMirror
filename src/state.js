@@ -3,12 +3,25 @@ const CONTRACT_STORE_KEY = 'tm.contracts.demo';
 
 const listeners = new Set();
 
+let billContextSeq = 0;
+
+// 每次重新导入/加载演示账单都生成新上下文；同名文件重导入也视为新上下文。
+export function createBillContextId() {
+  billContextSeq += 1;
+  return `bill-${billContextSeq}`;
+}
+
 export function defaultBill() {
   return {
     status: 'none', scenario: 'A', trades: [], warnings: [], errors: [],
     sourceNote: '', resultLabelling: null, error: '',
     sourceType: null, fileName: '', fileSize: 0, blocked: false, dataMode: null,
+    contextId: null,
   };
+}
+
+export function defaultChat(contextId = null) {
+  return { messages: [], draft: '', pending: false, contextId, requestId: null };
 }
 
 export function defaultContracts() {
@@ -19,7 +32,7 @@ export const state = {
   route: 'import',
   bill: defaultBill(),
   report: { scenario: 'A', symbol: 'pool' },
-  chat: { messages: [], draft: '', pending: false },
+  chat: defaultChat(),
   contracts: defaultContracts(),
 };
 

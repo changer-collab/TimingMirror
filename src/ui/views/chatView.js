@@ -14,9 +14,21 @@ import {
 const PROMPTS = ['组合整体表现如何？'];
 
 let client = null;
+let requestSeq = 0;
 function onlineClient() {
   if (!client) client = createChatOnline();
   return client;
+}
+
+function nextRequestId() {
+  requestSeq += 1;
+  return `chat-req-${requestSeq}`;
+}
+
+const contextKey = (id) => (id === null || id === undefined ? null : id);
+
+function inBillContext(state) {
+  return contextKey(state.chat.contextId) === contextKey(state.bill.contextId);
 }
 
 function successMessage(result) {
@@ -49,6 +61,9 @@ function sourceLine(bill) {
 export function renderChat(root, ctx) {
   const { state, set } = ctx;
   const wrap = el('div', { class: 'stack' });
+  const inContext = inBillContext(state);
+  const messages = inContext ? state.chat.messages : [];
+  const pending = inContext && state.chat.pending === true;
 
   wrap.append(el('div', { class: 'section-title ch-title' }, ['分析问答（组合四事实复述）']));
   wrap.append(el('div', { class: 'banner' }, [
@@ -58,17 +73,17 @@ export function renderChat(root, ctx) {
   wrap.append(el('div', { class: 'muted small' }, [sourceLine(state.bill)]));
 
   const msgs = el('div', { class: 'chat' });
-  if (!state.chat.messages.length) {
+  if (!messages.length) {
     msgs.append(el('div', { class: 'msg assistant' }, ['这里只复述已复核的组合四事实（实际收益、对照收益、择时损耗、损耗金额）。请先在导入页确认本地账单，再到报告页完成复核；之后可以问「组合整体表现如何？」。']));
   }
-  for (const m of state.chat.messages) {
+  for (const m of messages) {
     msgs.append(el('div', { class: `msg ${m.role === 'user' ? 'user' : 'assistant'}`.trim() }, [
       el('div', { class: 'msg-text' }, [m.text]),
       m.detail ? el('div', { class: 'muted small' }, [m.detail]) : null,
       m.tag ? el('span', { class: `chip ${m.tone === 'ok' ? 'ok' : 'warn'}`.trim() }, [m.tag]) : null,
     ]));
   }
-  if (state.chat.pending) {
+  if (pending) {
     msgs.append(el('div', { class: 'msg assistant' }, [
       el('div', { class: 'msg-text' }, ['正在请求在线复述并做本地数字校验…']),
       el('span', { class: 'chip' }, ['处理中']),
@@ -78,9 +93,16 @@ export function renderChat(root, ctx) {
 
   async function send(text) {
     const q = String(text || '').trim();
-    if (!q || state.chat.pending) return;
+    if (!q || !inBillContext(state) || state.chat.pending) return;
+    const contextId = contextKey(state.bill.contextId);
+    const requestId = nextRequestId();
+    const isCurrent = () => contextKey(state.bill.contextId) === contextId
+      && contextKey(state.chat.contextId) === contextId
+      && state.chat.requestId === requestId;
     set({
       chat: {
+        contextId,
+        requestId,
         draft: '',
         pending: true,
         messages: [...state.chat.messages, { role: 'user', text: q }],
@@ -89,25 +111,29 @@ export function renderChat(root, ctx) {
     let reply;
     try {
       const source = await demo.loadChatReview(state.bill);
+      if (!isCurrent()) return;
       if (!source.ok) {
         reply = fallbackMessage(source.code, source.message);
       } else {
         const result = await onlineClient().ask({ question: q, review: source.review });
+        if (!isCurrent()) return;
         reply = result.ok
           ? successMessage(result)
           : fallbackMessage(result.code, numberCheckDetail(result.number_check));
       }
     } catch {
+      if (!isCurrent()) return;
       reply = fallbackMessage(CHAT_ONLINE_CODES.UNEXPECTED);
     }
-    set({ chat: { pending: false, messages: [...state.chat.messages, reply] } });
+    if (!isCurrent()) return;
+    set({ chat: { pending: false, requestId: null, messages: [...state.chat.messages, reply] } });
   }
 
   const chips = el('div', { class: 'row' });
   for (const q of PROMPTS) {
     chips.append(el('button', {
       class: 'btn small',
-      disabled: state.chat.pending ? 'disabled' : null,
+      disabled: pending ? 'disabled' : null,
       onclick: () => send(q),
     }, [q]));
   }
@@ -118,13 +144,13 @@ export function renderChat(root, ctx) {
     class: 'input',
     placeholder: '输入关于组合整体表现的问题（仅支持 loss_overview · portfolio）',
     value: state.chat.draft,
-    disabled: state.chat.pending ? 'disabled' : null,
+    disabled: pending ? 'disabled' : null,
   });
   input.addEventListener('input', () => { state.chat.draft = input.value; });
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(input.value); });
   row.append(input, el('button', {
     class: 'btn primary',
-    disabled: state.chat.pending ? 'disabled' : null,
+    disabled: pending ? 'disabled' : null,
     onclick: () => send(input.value),
   }, ['发送']));
   wrap.append(row);

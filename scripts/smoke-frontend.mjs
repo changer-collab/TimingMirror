@@ -53,17 +53,28 @@ globalThis.document = {
 };
 // 站点同源函数 fake：页面链路测试只替换响应内容，不发起真实网络。
 let siteResponse = { status: 200, body: { rawText: JSON.stringify({ answer_text: '' }) } };
+const siteQueue = [];
 const siteCalls = [];
 const isSiteFunction = (url) => String(url).startsWith('/functions/v1/app/');
+function siteHttpResponse({ status = 200, body = {} } = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  };
+}
+function deferredSiteResponse(body) {
+  let resolve;
+  const promise = new Promise((r) => { resolve = r; });
+  return { promise, resolve: () => resolve(siteHttpResponse({ body })) };
+}
 globalThis.fetch = async (url, options = {}) => {
   if (isSiteFunction(url)) {
     siteCalls.push({ url: String(url), options });
-    return {
-      ok: siteResponse.status >= 200 && siteResponse.status < 300,
-      status: siteResponse.status,
-      json: async () => siteResponse.body,
-      text: async () => JSON.stringify(siteResponse.body),
-    };
+    const queued = siteQueue.shift();
+    if (queued) return queued.promise ? queued.promise : siteHttpResponse(queued);
+    return siteHttpResponse(siteResponse);
   }
   const rel = String(url).replace(/^\//, '');
   const raw = readFileSync(join(ROOT, rel), 'utf8');
@@ -83,7 +94,7 @@ class FakeFileReader {
 }
 globalThis.FileReader = FakeFileReader;
 
-const { state, subscribe, notify, defaultBill, defaultContracts, loadContractsDemo } = await imp('src/state.js');
+const { state, subscribe, notify, defaultBill, defaultChat, defaultContracts, loadContractsDemo } = await imp('src/state.js');
 const { renderImport } = await imp('src/ui/views/importView.js');
 const { renderReport } = await imp('src/ui/views/reportView.js');
 const { renderChat } = await imp('src/ui/views/chatView.js');
@@ -311,12 +322,32 @@ check('反事实：切标的后残留 tradeId 不报错（无 E_CF_TRADE_NOT_FOU
 {
   const chatOnlineMod = await imp('src/agent/chatOnline.js');
   const chatCsv = '日期,标的,方向,价格,数量,费用,税费\n2024-09-25,000000,买入,100,100,5,0\n2024-10-09,000000,卖出,104,100,5,1\n';
+  const chatCsv2 = '日期,标的,方向,价格,数量,费用,税费\n2024-09-25,000000,买入,100,100,5,0\n2024-10-09,000000,卖出,110,100,5,1\n';
+  const chatCsv3 = '日期,标的,方向,价格,数量,费用,税费\n2024-09-25,000000,买入,100,100,5,0\n2024-10-09,000000,卖出,106,100,5,1\n';
+  const answerCsv1 = '组合实际收益 +4.0%，对照收益 +8.0%，择时损耗 +4.0pp，损耗金额 ¥400.00。';
+  const answerCsv2 = '组合实际收益 +10.0%，对照收益 +8.0%，择时损耗 -2.0pp，损耗金额 ¥-200.00。';
+  const answerCsv3 = '组合实际收益 +6.0%，对照收益 +8.0%，择时损耗 +2.0pp，损耗金额 ¥200.00。';
   const settleChat = async () => { for (let i = 0; i < 8; i++) await flush(); };
   const lastAssistant = () => state.chat.messages.filter((m) => m.role === 'assistant').at(-1) ?? null;
   const pageTxt = () => texts(current).join('|');
+  const chatButton = () => findButtons(current).find((b) => labelOf(b) === '组合整体表现如何？');
+  const startChatSend = () => {
+    const b = chatButton();
+    if (!b) throw new Error('找不到对话发送按钮');
+    return b.listeners.click[0]({});
+  };
+  const importChatBill = async (name, csv) => {
+    state.route = 'import'; mountCycle();
+    await pickFile({ name, size: csv.length, __content: csv }); await flush();
+    await clickLabel('确认交易列表'); await flush(); await flush(); await flush();
+    return state.bill.contextId;
+  };
+  const waitForSiteCalls = async (expected) => {
+    for (let i = 0; i < 30 && siteCalls.length < expected; i++) await flush();
+  };
 
   /* 1) 未确认本地账单：不发起在线请求，明确兜底 */
-  state.route = 'chat'; state.bill = defaultBill(); state.chat = { messages: [], draft: '', pending: false }; mountCycle();
+  state.route = 'chat'; state.bill = defaultBill(); state.chat = defaultChat(); mountCycle();
   check('对话·范围提示：标题/仅组合四事实/失败不展示模型原文/fake 验证说明',
     pageTxt().includes('分析问答（组合四事实复述）') && pageTxt().includes('loss_overview · portfolio 四事实')
     && pageTxt().includes('不展示模型原文') && pageTxt().includes('fake 链路验证'), pageTxt().slice(0, 300));
@@ -331,11 +362,9 @@ check('反事实：切标的后残留 tradeId 不报错（无 E_CF_TRADE_NOT_FOU
   }
 
   /* 2) 已确认本地账单 + fake 成功：仅展示通过数字校验的复述 */
-  state.route = 'import'; state.bill = defaultBill(); mountCycle();
-  await pickFile({ name: 'chat-bill.csv', size: chatCsv.length, __content: chatCsv }); await flush();
-  await clickLabel('确认交易列表'); await flush(); await flush(); await flush();
-  state.route = 'chat'; state.chat = { messages: [], draft: '', pending: false }; mountCycle();
-  const okAnswer = '组合实际收益 +4.0%，对照收益 +8.0%，择时损耗 +4.0pp，损耗金额 ¥400.00。';
+  const context1 = await importChatBill('chat-bill.csv', chatCsv);
+  state.route = 'chat'; state.chat = defaultChat(state.bill.contextId); mountCycle();
+  const okAnswer = answerCsv1;
   siteResponse = { status: 200, body: { rawText: JSON.stringify({ answer_text: okAnswer }) } };
   await clickLabel('组合整体表现如何？'); await settleChat();
   {
@@ -343,7 +372,8 @@ check('反事实：切标的后残留 tradeId 不报错（无 E_CF_TRADE_NOT_FOU
     const call = siteCalls.at(-1);
     const body = call ? JSON.parse(call.options.body) : null;
     check('对话·在线成功：仅展示通过本地数字校验的复述 + 成功标签 + 账单来源',
-      state.chat.messages.length === 2 && !!a && a.text === okAnswer
+      state.bill.contextId === context1 && state.chat.contextId === context1
+      && state.chat.messages.length === 2 && !!a && a.text === okAnswer
       && a.tag.includes('本地数字校验通过') && a.detail.includes('已核对 4 个可识别数字')
       && pageTxt().includes('已确认本地账单 · chat-bill.csv'), JSON.stringify(state.chat));
     check('对话·同源 transport：POST /functions/v1/app/api/llm/restate，body 仅 question + F-6 四事实',
@@ -361,7 +391,7 @@ check('反事实：切标的后残留 tradeId 不报错（无 E_CF_TRADE_NOT_FOU
 
   /* 3) 伪造数字：固定兜底，不回显候选数字 */
   siteResponse = { status: 200, body: { rawText: JSON.stringify({ answer_text: '组合实际收益 +99.9%。' }) } };
-  state.chat = { messages: [], draft: '', pending: false }; mountCycle();
+  state.chat = defaultChat(state.bill.contextId); mountCycle();
   await clickLabel('组合整体表现如何？'); await settleChat();
   {
     const a = lastAssistant();
@@ -373,7 +403,7 @@ check('反事实：切标的后残留 tradeId 不报错（无 E_CF_TRADE_NOT_FOU
 
   /* 4) 站点函数未就绪（503）：明确兜底，不展示任何模型文本 */
   siteResponse = { status: 503, body: {} };
-  state.chat = { messages: [], draft: '', pending: false }; mountCycle();
+  state.chat = defaultChat(state.bill.contextId); mountCycle();
   await clickLabel('组合整体表现如何？'); await settleChat();
   {
     const a = lastAssistant();
@@ -382,8 +412,63 @@ check('反事实：切标的后残留 tradeId 不报错（无 E_CF_TRADE_NOT_FOU
       && a.detail.includes('E_HTTP_STATUS') && a.detail.includes('函数未发布'), JSON.stringify(state.chat));
   }
   siteResponse = { status: 200, body: { rawText: JSON.stringify({ answer_text: '' }) } };
+
+  /* 5) 已完成回答后更换账单（同名重导入）：旧回答不再展示 */
+  const contextBeforeReplace = state.bill.contextId;
+  const context2 = await importChatBill('chat-bill.csv', chatCsv2);
+  check('对话·换账单（同名重导入）：生成新上下文并清理旧聊天',
+    context2 !== contextBeforeReplace && state.bill.fileName === 'chat-bill.csv'
+    && state.bill.contextId === context2 && state.chat.contextId === context2
+    && state.chat.messages.length === 0 && state.chat.pending === false, JSON.stringify(state.chat));
+  state.route = 'chat'; mountCycle();
+  check('对话·换账单：旧回答不再展示',
+    !pageTxt().includes('+4.0%') && !pageTxt().includes('¥400.00') && !pageTxt().includes(answerCsv1), pageTxt().slice(0, 300));
+
+  /* 6) 请求未完成时更换账单：旧响应返回后不污染新聊天状态 */
+  const contextBeforePending = state.bill.contextId;
+  const callsBeforeOld = siteCalls.length;
+  const oldDeferred = deferredSiteResponse({ rawText: JSON.stringify({ answer_text: answerCsv2 }) });
+  siteQueue.push(oldDeferred);
+  state.route = 'chat'; mountCycle();
+  const oldPending = startChatSend();
+  await waitForSiteCalls(callsBeforeOld + 1);
+  check('对话·待定请求：已发出且 pending',
+    state.chat.pending === true && state.chat.contextId === contextBeforePending && siteCalls.length === callsBeforeOld + 1,
+    JSON.stringify(state.chat));
+
+  const context3 = await importChatBill('chat-bill.csv', chatCsv3);
+  check('对话·请求未完成时换账单：清空旧聊天并生成新上下文',
+    context3 !== contextBeforePending && state.bill.contextId === context3 && state.chat.contextId === context3
+    && state.chat.messages.length === 0 && state.chat.pending === false, JSON.stringify(state.chat));
+
+  const callsBeforeNew = siteCalls.length;
+  const newDeferred = deferredSiteResponse({ rawText: JSON.stringify({ answer_text: answerCsv3 }) });
+  siteQueue.push(newDeferred);
+  state.route = 'chat'; mountCycle();
+  const newPending = startChatSend();
+  await waitForSiteCalls(callsBeforeNew + 1);
+  check('对话·新上下文请求 pending',
+    state.chat.pending === true && state.chat.messages.length === 1 && state.chat.messages[0].role === 'user',
+    JSON.stringify(state.chat));
+
+  oldDeferred.resolve();
+  await oldPending; await flush();
+  check('对话·旧响应返回：不追加回答、不覆盖新 pending',
+    state.chat.messages.length === 1 && state.chat.messages[0].role === 'user'
+    && state.chat.pending === true && !JSON.stringify(state.chat).includes(answerCsv2), JSON.stringify(state.chat));
+
+  newDeferred.resolve();
+  await newPending; await settleChat();
+  {
+    const a = lastAssistant();
+    check('对话·新响应正常写回',
+      state.chat.pending === false && state.chat.messages.length === 2 && !!a && a.text === answerCsv3
+      && a.tag.includes('本地数字校验通过'), JSON.stringify(state.chat));
+  }
+
   // 恢复对话前的演示账单已确认态，避免影响后续契约情境用例
   state.bill = { ...defaultBill(), status: 'confirmed' };
+  state.chat = defaultChat();
 }
 
 /* ==== 契约页：当前规则（每种类型一条）→ 新增 / 修改弹窗 → 历史规则 → 历史情境测试（合成行情）==== */
