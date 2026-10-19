@@ -13,11 +13,20 @@ export const NUMBER_CHECK_CODES = Object.freeze({
   NOT_IN_FACTS: 'E_NUMCHECK_NOT_IN_FACTS',
 });
 
-const MONEY_RE = /[+-]?¥[+-]?\d[\d,]*(?:\.\d+)?/g;
-const PCT_RE = /[+-]?\d+(?:\.\d+)?%/g;
-const PP_RE = /[+-]?\d+(?:\.\d+)?pp/gi;
+const MONEY_PATTERN = '[+-]?¥[+-]?\\d[\\d,]*(?:\\.\\d+)?';
+const PCT_PATTERN = '[+-]?\\d+(?:\\.\\d+)?%';
+const PP_PATTERN = '[+-]?\\d+(?:\\.\\d+)?pp';
+const MONEY_RE = new RegExp(MONEY_PATTERN, 'g');
+const PCT_RE = new RegExp(PCT_PATTERN, 'g');
+const PP_RE = new RegExp(PP_PATTERN, 'gi');
 const UNIT_RE = /[+-]?\d[\d,]*(?:\.\d+)?\s?(元|股|手|份)/g;
 const UNIT_PARSE_RE = /^([+-]?\d[\d,]*(?:\.\d+)?)\s?(元|股|手|份)$/;
+const DISPLAY_EXACT_RES = Object.freeze([
+  new RegExp(`^(?:${MONEY_PATTERN})$`),
+  new RegExp(`^(?:${PCT_PATTERN})$`),
+  new RegExp(`^(?:${PP_PATTERN})$`, 'i'),
+]);
+const MAX_DISPLAY_LENGTH = 64;
 
 /* 全角/异体符号 → ASCII 等长映射（1 字符 ↔ 1 字符：归一文本与原文同长，可按索引取回原文片段） */
 const CANON_MAP = Object.freeze((() => {
@@ -38,6 +47,14 @@ function collect(text, canon, re, type, out) {
 function normalizeNumber(raw) {
   const n = Number(String(raw).replace(/[,＋+\s]/g, ''));
   return Number.isFinite(n) ? n : NaN;
+}
+
+/* 出站 display 内容契约：复用下面的百分比/pp/人民币展示语法，要求整串匹配且长度受限。 */
+export function isSupportedDisplay(value) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_DISPLAY_LENGTH) return false;
+  const canon = canonText(value);
+  if (canon !== canon.trim()) return false;
+  return DISPLAY_EXACT_RES.some((re) => re.test(canon));
 }
 
 /**
