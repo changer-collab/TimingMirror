@@ -56,7 +56,7 @@ export const DEMO_VALUATION_DATE = SYNTHETIC_VALUATION_DATE;
 export const CAPABILITY = {
   engine: { ready: false, label: '计算引擎·仅报告页接入' },
   bailian: { ready: false, label: '百炼·未接通（对话页 fake 验证）' },
-  marketCache: { ready: true, label: 'Tushare 动态日线·服务端获取（非实时）' },
+  marketCache: { ready: false, label: 'Tushare 动态日线·服务端获取（非实时）' },
   contractEngine: { ready: false, label: '契约引擎·已接入（候选口径）' },
 };
 

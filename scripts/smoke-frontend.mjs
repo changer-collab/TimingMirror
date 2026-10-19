@@ -1312,6 +1312,11 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
     && findByClass(els['capability-chips'], 'cap-details')[0]?.tagName === 'DETAILS'
     && !texts(els['capability-chips']).join('|').includes('fake')
     && texts(els['capability-chips']).join('|').includes('Tushare 动态日线'), texts(els['capability-chips']).join('|').slice(0, 300));
+  const adapterShell = await imp('src/demo/adapter.js');
+  check('外壳·能力状态：动态行情在真实网络 E2E 验收前保持“待验收”（不得提前置 ready）',
+    adapterShell.CAPABILITY.marketCache.ready === false
+    && texts(els['capability-chips']).join('|').includes('Tushare 动态日线·服务端获取（非实时）')
+    && texts(els['capability-chips']).join('|').includes('待验收'), texts(els['capability-chips']).join('|').slice(0, 300));
   check('外壳·了解口径：折叠区解释估值日 / 择时损耗 / 反事实 / 阻断 / 证据', findByClass(els.flow, 'glossary')[0]?.tagName === 'DETAILS'
     && ['估值日', '择时损耗', '反事实', '阻断', '证据'].every((k) => shell().includes(k)) && shell().includes('不会改用其他日期'), shell().slice(-300));
   state.bill = { ...defaultBill(), status: 'loaded', sourceType: 'local', fileName: 'pending.csv' };
