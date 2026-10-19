@@ -243,7 +243,7 @@ export function renderGhostChart(root, cf) {
 
   if (series.complete === false || series.missing_dates.length > 0) {
     wrap.append(div('banner warn-banner gc-missing', [
-      textNode(`序列不完整：缺少价格数据，路径已断开（${series.missing_dates.join('、')}）缺价日不回退其他日期（B4），相应日期不参与连线。`),
+      textNode(`序列不完整：缺少价格数据，路径已断开（${series.missing_dates.join('、')}）缺价日不回退其他日期，相应日期不参与连线。`),
       textNode(' 底缘买卖标记表示该交易日缺价，不表示价格为零或跌到底部。'),
     ]));
   }
@@ -252,7 +252,7 @@ export function renderGhostChart(root, cf) {
     ? 'Tushare 动态日线（最新已收盘，服务端获取，非实时，草案口径）'
     : '合成行情 · 非真实行情（m0 合成夹具，草案口径）';
   wrap.append(div('gc-caption', [
-    textNode(`${marketCaption}｜ S1 单笔卖出替换：仅替换所选卖出笔，其余成交不变；不构成投资建议`),
+    textNode(`${marketCaption}：仅替换所选卖出笔，其余成交不变；不构成投资建议`),
   ]));
 
   //  十字线：上下面板同步 

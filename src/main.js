@@ -10,8 +10,8 @@ import { renderContract } from './ui/views/contractView.js';
 const NAV = [
   { id: 'import', label: '导入 · 确认', hash: '#/import' },
   { id: 'report', label: '报告 · 证据', hash: '#/report' },
-  { id: 'chat', label: '分析问答（组合复述）', hash: '#/chat' },
-  { id: 'contract', label: '交易规则（契约）', hash: '#/contract' },
+  { id: 'chat', label: '分析问答', hash: '#/chat' },
+  { id: 'contract', label: '交易规则', hash: '#/contract' },
 ];
 
 const FLOW = [
@@ -76,6 +76,23 @@ function dataState(bill) {
   return { kind: 'demo', label: '示例交易 + Tushare 动态行情', text: '当前使用示例交易与 Tushare 最新已收盘日线（服务端获取，非实时）；可在报告页切换到合成回归场景。' };
 }
 
+// 能力文案只做展示替换；ready 状态原样取自 adapter，不在此提升
+function capabilityLabel(c) {
+  return String(c.label || '').replace('fake 验证', '模拟验证');
+}
+
+function capabilityDetails() {
+  const list = el('div', { class: 'cap-list' });
+  for (const c of Object.values(adapter.CAPABILITY)) {
+    list.append(el('div', { class: 'cap-item' }, [
+      el('span', { class: `chip ${c.ready ? 'ok' : 'mode'}`.trim() }, [c.ready ? '已就绪' : '待验收']),
+      el('span', {}, [capabilityLabel(c)]),
+    ]));
+  }
+  list.append(el('div', { class: 'muted small' }, ['能力状态为开发口径；候选口径与模拟验证不代表正式可用。']));
+  return el('details', { class: 'cap-details' }, [el('summary', {}, ['查看能力状态']), list]);
+}
+
 function shellHost() {
   let host = document.getElementById('flow');
   if (!host) {
@@ -89,8 +106,7 @@ function renderShell() {
   const chips = document.getElementById('capability-chips');
   clear(chips);
   const syntheticScene = state.report && (state.report.scenario === 'A' || state.report.scenario === 'Aprime');
-  chips.append(chip(syntheticScene ? '合成回归场景' : '示例交易 + Tushare 动态行情', syntheticScene ? 'mode' : 'ok'));
-  for (const c of Object.values(adapter.CAPABILITY)) chips.append(chip(c.label, c.ready ? 'ok' : 'warn'));
+  chips.append(chip(syntheticScene ? '合成回归场景' : '示例交易 + Tushare 动态行情', syntheticScene ? 'mode' : 'ok'), capabilityDetails());
 
   const nav = document.getElementById('nav');
   clear(nav);
@@ -119,8 +135,7 @@ function renderShell() {
 
   const footer = document.getElementById('footer-labels');
   clear(footer);
-  footer.append(el('div', {}, ['行情默认由服务端从 Tushare 获取最新已收盘日线（非实时）；合成回归场景会明确标注。结果不构成投资建议，决定权在你。']));
-  footer.append(el('div', {}, ['口径：未计入费用、税费；分红未计入（v1）。']));
+  footer.append(el('div', {}, ['行情由服务端从 Tushare 获取最新已收盘日线（非实时）；合成回归场景会明确标注。口径：未计入费用、税费，分红未计入（v1）；结果不构成投资建议。']));
 }
 
 function renderView() {

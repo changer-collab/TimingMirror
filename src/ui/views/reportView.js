@@ -9,7 +9,7 @@ import { el } from '../components.js';
 import * as demo from '../../demo/adapter.js';
 import { renderGhostChart } from '../components/ghostChart.js';
 
-const WIRING_NOTE = '契约页已接入候选模板与历史情境模拟（候选口径，哈希待 M0-C1 冻结），契约不会自动改变本报告结论。未接入：百炼真实调用（对话页已接站点同源复述边界，当前仅 fake 验证）、实时/分钟级行情（当前为最新已收盘日线，非实时）、对话页事实回跳。';
+const WIRING_NOTE = '契约页已接入候选模板与历史情境模拟（候选口径，哈希待 M0-C1 冻结），契约不会自动改变本报告结论。未接入：实时/分钟级行情（当前为最新已收盘日线，非实时）、对话页事实回跳；在线问答仅接站点同源复述边界，尚未完成真实服务验证。';
 const NO_TRADE_ADVICE = '不要据此作交易判断。';
 
 /* —— 本次分析摘要：只取 bundle / review 已有字段，不计算数字 —— */
@@ -96,7 +96,7 @@ function userSummary(b, review) {
       : '本次结论：组合结果已通过复核并发布；数字基于合成演示行情，非真实行情。';
   } else {
     const reasons = review ? collectBlockReasons(b, review, 'pool') : b.errors.map((e) => ({ code: e.code, message: e.message }));
-    const text = reasons.slice(0, 3).map((i) => i.message ?? REASON_TEXT[i.code] ?? i.code).join('；') || '复核输出中没有具体阻断记录';
+    const text = reasons.slice(0, 3).map((i) => visibleReason(i.message, i.code)).join('；') || '复核输出中没有具体阻断记录';
     const partial = review && review.published_facts.length > 0 ? '部分标的结果已通过复核，可切换标的查看。' : '';
     headline = `存在阻断：${text}。${NO_TRADE_ADVICE}${partial}`;
   }
@@ -141,13 +141,68 @@ function billStatusText(bill) {
   return '未加载（演示数据可直接查看）';
 }
 
-function metric(label, value, note, kind, sub) {
+function metric(label, value, note, kind, sub, tech = null) {
   const card = el('div', { class: `rp-metric ${kind}`.trim() });
   card.append(el('div', { class: 'label' }, [label]));
   card.append(el('div', { class: 'value' }, [value]));
   if (sub) card.append(el('div', { class: 'value-sub' }, [sub]));
   if (note) card.append(el('div', { class: 'note' }, [note]));
+  if (tech) card.append(tech);
   return card;
+}
+
+function stripErrorCodes(text) {
+  return String(text ?? '')
+    .replace(/（[^）]*\b(?:[BFRQS]-\d+|[BFRQS]\d+)\b[^）]*）/g, '')
+    .replace(/\b(?:[BFRQS]-\d+|[BFRQS]\d+)\b/g, '')
+    .replace(/\b[EW]_[A-Z0-9_]+\b\s*·?\s*/g, '')
+    .trim();
+}
+
+function visibleReason(text, code) {
+  return stripErrorCodes(text) || REASON_TEXT[code] || '未提供具体原因';
+}
+
+function displayLabel(text) {
+  return String(text ?? '').replace(/（Q\d+）/g, '');
+}
+
+function labelsTechNote(labels) {
+  return el('details', { class: 'rp-tech' }, [
+    el('summary', {}, ['技术说明（口径编号）']),
+    el('div', { class: 'muted small' }, [`费用税费口径：${labels.fees_taxes}；分红口径：${labels.dividend}`]),
+  ]);
+}
+
+function stockTechNote() {
+  return el('details', { class: 'rp-tech rp-metric-tech' }, [
+    el('summary', {}, ['技术说明']),
+    el('div', { class: 'muted small' }, ['口径编号 Q9：股票本身涨幅的公式尚未定义，暂不计算，也不使用替代值。']),
+  ]);
+}
+
+// 报告错误/警告：中文说明与行号保持可见，原始错误码收进技术详情
+function reportIssues(title, items, warn = true) {
+  const box = el('div', { class: `banner ${warn ? 'warn-banner' : ''}`.trim() });
+  box.append(el('strong', {}, [title]));
+  for (const e of items) {
+    const meta = [e.line ? `第 ${e.line} 行` : '', e.column ? `列：${e.column}` : ''].filter(Boolean).join(' · ');
+    box.append(el('div', {}, [`${meta ? `${meta} · ` : ''}${visibleReason(e.message, e.code)}`]));
+  }
+  box.append(el('details', { class: 'rp-tech' }, [
+    el('summary', {}, ['技术详情（错误码）']),
+    ...items.map((e) => el('div', { class: 'muted small' }, [
+      `${e.code}${e.line ? `（第 ${e.line} 行）` : ''}${e.column ? ` · ${e.column}` : ''}${e.message ? ` · ${e.message}` : ''}`,
+    ])),
+  ]));
+  return box;
+}
+
+function blockedReasonDetails(items, label = '技术详情（错误码）') {
+  return el('details', { class: 'rp-tech' }, [
+    el('summary', {}, [label]),
+    ...items.map((i) => el('div', { class: 'muted small' }, [i.code])),
+  ]);
 }
 
 /* —— 单笔反事实区（S1 幽灵线；演示与用户账单共用）——
@@ -156,7 +211,7 @@ function metric(label, value, note, kind, sub) {
 function cfSection({ trades, symbol, selectedId, set, marketSource }) {
   const box = el('div', { class: 'rp-cf' });
   box.append(el('div', { class: 'rp-sub' }, ['如果当时没有卖出这一笔，结果会怎样？']));
-  box.append(el('div', { class: 'muted small' }, ['单笔反事实（S1 单笔卖出替换）：只假设选中的这一笔卖出没有发生，其余交易不变；不是对未来的预测。']));
+  box.append(el('div', { class: 'muted small' }, ['单笔反事实：只假设选中的这一笔卖出没有发生，其余交易不变；不是对未来的预测。']));
   const body = el('div', {});
   box.append(body);
   // 跨标的/跨场景残留防护：selectedId 不属于当前标的的卖出笔时传 null（adapter 默认该标的按时间第一笔）
@@ -165,7 +220,13 @@ function cfSection({ trades, symbol, selectedId, set, marketSource }) {
   demo.loadSellCounterfactual({ trades, symbol, tradeId: applicable ? selectedId : null, marketSource })
     .then((cf) => {
       if (!cf.ok) {
-        body.replaceChildren(el('div', { class: 'rp-error' }, [`该反事实结论不发布：${cf.code} · ${cf.message}`]));
+        body.replaceChildren(el('div', { class: 'rp-error' }, [
+          el('div', {}, [`该反事实结论不发布：${visibleReason(cf.message, cf.code)}`]),
+          el('details', { class: 'rp-tech' }, [
+            el('summary', {}, ['技术详情（错误码）']),
+            el('div', { class: 'muted small' }, [cf.code]),
+          ]),
+        ]));
         return;
       }
       body.replaceChildren();
@@ -201,7 +262,7 @@ function cfSection({ trades, symbol, selectedId, set, marketSource }) {
       body.append(el('details', { class: 'rp-cf-tech' }, [
         el('summary', {}, ['技术口径与公式标识']),
         el('div', { class: 'rp-calc unchanged' }, [
-          `说明：正的“相对改善”表示不卖这笔会更好；负值表示这笔卖出反而优于持有，不是错误。公式标识：${[...new Set(Object.values(r.formula_ids))].join(' / ')}（可在「查看证据与计算路径」中复核）。`,
+          `说明：正的“相对改善”表示不卖这笔会更好；负值表示这笔卖出反而优于持有，不是错误。方法：S1 单笔卖出替换。公式标识：${[...new Set(Object.values(r.formula_ids))].join(' / ')}（可在「查看证据与计算路径」中复核）。`,
         ]),
       ]));
     })
@@ -214,7 +275,7 @@ function cfSection({ trades, symbol, selectedId, set, marketSource }) {
 }
 
 function cfPoolHint() {
-  return el('div', { class: 'rp-cf rp-cf-hint muted' }, ['请选择一个标的查看单笔卖出反事实（组合 scope 不绘制单笔反事实图）。']);
+  return el('div', { class: 'rp-cf rp-cf-hint muted' }, ['请选择一个标的查看单笔卖出反事实（组合范围不绘制单笔反事实图）。']);
 }
 
 export function renderReport(root, ctx) {
@@ -244,7 +305,7 @@ export function renderReport(root, ctx) {
     })
     .catch((e) => {
       page.replaceChildren(el('div', { class: 'rp-error' }, [
-        `报告数据加载失败：${String(e && e.message ? e.message : e)}（本地开发请先运行 npm run dev 并配置 TUSHARE_TOKEN）`,
+        `报告数据加载失败：${String(e && e.message ? e.message : e)}（请确认本地服务或站点函数已就绪后刷新页面）`,
       ]));
     });
 }
@@ -265,7 +326,7 @@ function buildPage(page, b, baseBundle, ctx) {
   /* —— 页头：标题 + 场景/标的切换 —— */
   const top = el('div', { class: 'rp-top' });
   const titleBox = el('div', { class: 'rp-title' });
-  titleBox.append(el('div', { class: 'rp-kicker' }, ['REPORT · EVIDENCE']));
+  titleBox.append(el('div', { class: 'rp-kicker' }, ['演示报告']));
   titleBox.append(el('h1', {}, ['报告 · 证据']));
   titleBox.append(el('div', { class: 'sub' }, [isDynamic(b)
     ? '本地确定性引擎计算 · 示例交易 + Tushare 动态日线（服务端获取，非实时）'
@@ -307,32 +368,18 @@ function buildPage(page, b, baseBundle, ctx) {
   const status = el('div', { class: 'rp-status' });
   status.append(el('span', { class: 'rp-chip demo' }, [b.dataMode.label]));
   status.append(el('span', { class: 'rp-chip' }, [
-    b.marketRange
-      ? `行情：${b.marketSource ? b.marketSource.label : '行情'} · ${b.marketRange.start} → ${b.marketRange.end}`
-      : '行情：不可用',
-  ]));
-  status.append(el('span', { class: 'rp-chip' }, [
     b.valuation
-      ? (b.valuation.blocked ? `估值日：${b.valuation.requested_date} 无法解析（${b.valuation.code}）` : `估值日：${b.valuation.requested_date} → ${b.valuation.effective_date}`)
+      ? (b.valuation.blocked ? `估值日：${b.valuation.requested_date} 无法解析` : `估值日：${b.valuation.requested_date} → ${b.valuation.effective_date}`)
       : '估值日：不可用',
   ]));
-  status.append(el('span', { class: 'rp-chip' }, [`口径：${b.labels.fees_taxes}；${b.labels.dividend}`]));
-  status.append(el('span', { class: 'rp-chip cap' }, [marketFetchText(b.marketSource) || '行情拉取：不可用']));
+  status.append(el('span', { class: 'rp-chip' }, [`口径：${displayLabel(b.labels.fees_taxes)}；${displayLabel(b.labels.dividend)}`]));
+  if (isDynamic(b) && b.marketSource) status.append(el('span', { class: 'rp-chip cap' }, [marketFetchText(b.marketSource)]));
   page.append(status);
+  page.append(labelsTechNote(b.labels));
 
-  /* —— 诊断：错误（阻断）与警告（照实展示，不静默隐藏）—— */
-  if (b.errors.length > 0) {
-    const eb = el('div', { class: 'banner warn-banner' });
-    eb.append(el('strong', {}, ['阻断/错误（对应结论不发布）']));
-    for (const e of b.errors) eb.append(el('div', {}, [`${e.code}${e.line ? `（第 ${e.line} 行）` : ''} · ${e.message}`]));
-    page.append(eb);
-  }
-  if (b.warnings.length > 0) {
-    const wb = el('div', { class: 'banner' });
-    wb.append(el('strong', {}, ['警告（照实展示）']));
-    for (const w of b.warnings) wb.append(el('div', {}, [`${w.code}${w.line ? `（第 ${w.line} 行）` : ''}${w.column ? ` · ${w.column}` : ''} · ${w.message}`]));
-    page.append(wb);
-  }
+  /* —— 诊断：错误（阻断）与警告（照实展示，不静默隐藏；错误码折叠）—— */
+  if (b.errors.length > 0) page.append(reportIssues('阻断/错误（对应结论不发布）', b.errors));
+  if (b.warnings.length > 0) page.append(reportIssues('警告（照实展示）', b.warnings, false));
 
   /* —— 当前范围：组合 / 标的 —— */
   const entry = scope === 'pool' ? b.pool : b.perStock[scope];
@@ -345,8 +392,10 @@ function buildPage(page, b, baseBundle, ctx) {
     const reasons = scope === 'pool'
       ? b.errors.filter((e) => e.code && (e.code.indexOf('E_PRICE') === 0 || e.code.indexOf('E_VALUATION') === 0))
       : b.errors.filter((e) => e.message && e.message.includes(scope));
-    for (const r of (reasons.length ? reasons : b.errors)) blockedBox.append(el('div', {}, [`· ${r.code} · ${r.message}`]));
-    blockedBox.append(el('div', { class: 'muted small' }, ['不使用替代值、其他估值日或“剩余标的组合”冒充完整结果（B4）。']));
+    const items = reasons.length ? reasons : b.errors;
+    for (const r of items) blockedBox.append(el('div', {}, [`· ${visibleReason(r.message, r.code)}`]));
+    blockedBox.append(el('div', { class: 'muted small' }, ['不使用替代值、其他估值日或“剩余标的组合”冒充完整结果。']));
+    blockedBox.append(blockedReasonDetails(items));
     page.append(blockedBox);
   } else if (!entry) {
     page.append(el('div', { class: 'rp-error' }, [`未找到「${scope}」的结果（引擎输出不含该范围，照实提示，不猜测）。`]));
@@ -355,7 +404,7 @@ function buildPage(page, b, baseBundle, ctx) {
     metrics.append(metric('实际收益', entry.display.actualRet, isDynamic(b) ? '你的实际操作结果（示例交易 · Tushare 动态行情估值）' : '你的实际操作结果（合成样例）', 'actual'));
     metrics.append(metric('对照收益', entry.display.ghostRet, '买入不动口径：买入后持有不动的对照路径', 'ghost'));
     metrics.append(metric('择时损耗', entry.display.drag, '对照 − 实际；正值＝相对损耗，负值＝实际操作优于对照', 'drag', entry.display.dragMoney));
-    metrics.append(metric('股票本身涨幅', '口径未定义', 'Q9：公式未定（待负责人定夺）——不临时计算、不用 — 掩盖', 'stock'));
+    metrics.append(metric('股票本身涨幅', '口径未定义', '暂不计算，也不使用替代值。', 'stock', null, stockTechNote()));
     page.append(metrics);
 
     /* —— 信息行 —— */
@@ -369,10 +418,14 @@ function buildPage(page, b, baseBundle, ctx) {
     page.append(meta);
 
     const rec = el('div', { class: 'rp-calc unchanged' }, [
-      `记录值（仅记录与标注，不入公式，Q1）：费用合计 ${Number(entry.recorded.fee_recorded_sum).toFixed(2)} 元；税费合计 ${Number(entry.recorded.tax_recorded_sum).toFixed(2)} 元；` +
+      `记录值（仅记录与标注，不计入收益公式）：费用合计 ${entry.recorded.fee_recorded_sum} 元；税费合计 ${entry.recorded.tax_recorded_sum} 元；` +
       `费用缺失行 ${entry.recorded.fee_missing_lines.length ? entry.recorded.fee_missing_lines.join('、') : '无'}；税费缺失行 ${entry.recorded.tax_missing_lines.length ? entry.recorded.tax_missing_lines.join('、') : '无'}`,
     ]);
     page.append(rec);
+    page.append(el('details', { class: 'rp-tech' }, [
+      el('summary', {}, ['技术说明']),
+      el('div', { class: 'muted small' }, ['口径编号 Q1：费用与税费未计入收益公式；缺失行按 0 计并标注，仅用于对账记录。']),
+    ]));
   }
 
   if (scope === 'pool') {
@@ -430,7 +483,7 @@ function buildPage(page, b, baseBundle, ctx) {
       const grid = el('div', { class: 'rp-delta-grid' });
       for (const c of delta.changed) {
         grid.append(el('div', { class: 'rp-delta-row' }, [
-          el('span', { class: 'p' }, [c.field]),
+          el('span', { class: 'p' }, [FACT_LABELS[c.field] ?? c.field]),
           el('span', { class: 'from' }, [c.from]),
           el('span', { class: 'arrow' }, ['→']),
           el('span', { class: 'to' }, [c.to]),
@@ -439,7 +492,7 @@ function buildPage(page, b, baseBundle, ctx) {
       if (delta.changed.length === 0) grid.append(el('div', { class: 'rp-delta-row' }, [el('span', { class: 'p' }, ['无字段变化'])]));
       d.append(grid);
       d.append(el('div', { class: 'rp-sub2' }, ['保持不变']));
-      d.append(el('div', { class: 'rp-calc unchanged' }, [delta.unchanged.join('、') || '（无）']));
+      d.append(el('div', { class: 'rp-calc unchanged' }, [delta.unchanged.map((f) => FACT_LABELS[f] ?? f).join('、') || '（无）']));
     }
     page.append(d);
   }
@@ -451,41 +504,31 @@ function buildUserBillPage(page, b, ctx) {
 
   const top = el('div', { class: 'rp-top' });
   const titleBox = el('div', { class: 'rp-title' });
-  titleBox.append(el('div', { class: 'rp-kicker' }, ['REPORT · EVIDENCE']));
-  titleBox.append(el('h1', {}, ['报告 · 证据（用户本地账单）']));
-  titleBox.append(el('div', { class: 'sub' }, ['本地确定性引擎计算 · Tushare 动态日线（服务端获取，非实时；原始 CSV 未上传）']));
+  titleBox.append(el('div', { class: 'rp-kicker' }, ['用户账单报告']));
+  titleBox.append(el('h1', {}, ['报告 · 证据（本地账单）']));
+  titleBox.append(el('div', { class: 'sub' }, ['本地账单 · 本地确定性引擎计算 · Tushare 动态行情（服务端获取，非实时；原始 CSV 未上传）']));
   top.append(titleBox);
   page.append(top);
   page.append(userSummary(b, review));
 
   const status = el('div', { class: 'rp-status' });
-  status.append(el('span', { class: 'rp-chip demo' }, [`用户本地账单 · 文件名：${b.fileName || '（未知）'}`]));
+  status.append(el('span', { class: 'rp-chip demo' }, [`本地账单 · 文件名：${b.fileName || '（未知）'}（本机，未上传）`]));
   status.append(el('span', { class: 'rp-chip demo' }, [b.dataMode ? b.dataMode.label : '数据模式未知']));
   status.append(el('span', { class: 'rp-chip' }, [
-    b.marketRange ? `行情：${b.marketSource ? b.marketSource.label : '行情'} · ${b.marketRange.start} → ${b.marketRange.end}` : '行情：不可用',
-  ]));
-  status.append(el('span', { class: 'rp-chip' }, [
     b.valuation
-      ? (b.valuation.blocked ? `估值日：${b.valuation.requested_date} 无法解析（${b.valuation.code}）` : `估值日：${b.valuation.requested_date} → ${b.valuation.effective_date}`)
+      ? (b.valuation.blocked ? `估值日：${b.valuation.requested_date} 无法解析` : `估值日：${b.valuation.requested_date} → ${b.valuation.effective_date}`)
       : '估值日：不可用',
   ]));
-  status.append(el('span', { class: 'rp-chip' }, [`口径：${b.labels.fees_taxes}；${b.labels.dividend}`]));
-  status.append(el('span', { class: 'rp-chip cap' }, [marketFetchText(b.marketSource) || '行情拉取：不可用']));
-  status.append(el('span', { class: `rp-chip ${review ? (review.status === 'published' ? 'ok' : review.status === 'degraded' ? 'demo' : 'cap') : 'cap'}` }, [`复核：${review ? review.status : '未运行'}`]));
+  status.append(el('span', { class: 'rp-chip' }, [`口径：${displayLabel(b.labels.fees_taxes)}；${displayLabel(b.labels.dividend)}`]));
+  if (isDynamic(b) && b.marketSource) status.append(el('span', { class: 'rp-chip cap' }, [marketFetchText(b.marketSource)]));
+  status.append(el('span', { class: `rp-chip ${review ? (review.status === 'published' ? 'ok' : review.status === 'degraded' ? 'demo' : 'cap') : 'cap'}` }, [
+    review ? `复核：${reviewStatusText(review.status)}` : '复核未运行',
+  ]));
   page.append(status);
+  page.append(labelsTechNote(b.labels));
 
-  if (b.errors.length > 0) {
-    const eb = el('div', { class: 'banner warn-banner' });
-    eb.append(el('strong', {}, ['阻断/错误（对应结论不发布）']));
-    for (const e of b.errors) eb.append(el('div', {}, [`${e.code}${e.line ? `（第 ${e.line} 行）` : ''} · ${e.message}`]));
-    page.append(eb);
-  }
-  if (b.warnings.length > 0) {
-    const wb = el('div', { class: 'banner' });
-    wb.append(el('strong', {}, ['警告（照实展示）']));
-    for (const w of b.warnings) wb.append(el('div', {}, [`${w.code}（第 ${w.line} 行）${w.column ? ` · ${w.column}` : ''} · ${w.message}`]));
-    page.append(wb);
-  }
+  if (b.errors.length > 0) page.append(reportIssues('阻断/错误（对应结论不发布）', b.errors));
+  if (b.warnings.length > 0) page.append(reportIssues('警告（照实展示）', b.warnings, false));
 
   if (!review) {
     page.append(el('div', { class: 'rp-error' }, ['复核未运行：行情层阻断，无已发布事实（不回退演示数据）。']));
@@ -521,7 +564,7 @@ function buildUserBillPage(page, b, ctx) {
     metrics.append(metric('实际收益', entry.actualRet.display, '你的实际操作结果（本机账单 · Tushare 动态行情估值）', 'actual'));
     metrics.append(metric('对照收益', entry.ghostRet.display, '买入不动口径：买入后持有不动的对照路径', 'ghost'));
     metrics.append(metric('择时损耗', entry.drag.display, '对照 − 实际；正值＝相对损耗，负值＝实际操作优于对照', 'drag', entry.dragMoney.display));
-    metrics.append(metric('股票本身涨幅', '口径未定义', 'Q9：公式未定（待负责人定夺）——不临时计算、不用 — 掩盖', 'stock'));
+    metrics.append(metric('股票本身涨幅', '口径未定义', '暂不计算，也不使用替代值。', 'stock', null, stockTechNote()));
     page.append(metrics);
 
     const meta = el('div', { class: 'rp-meta' });
@@ -540,7 +583,7 @@ function buildUserBillPage(page, b, ctx) {
     page.append(cfSection({ trades: state.bill.trades, symbol: scope, selectedId: state.report.cfTradeId, set: ctx.set, marketSource: b.marketSource ? b.marketSource.id : demo.DEFAULT_MARKET_SOURCE }));
   }
 
-  page.append(sectionHead('证据与计算路径', '每项先说明代表什么、来自哪些成交、是否通过复核；公式编号、原始行号与 S1–S4 计算步骤在展开后查看。未发布的结果不显示任何数值。'));
+  page.append(sectionHead('证据与计算路径', '每项先说明代表什么、来自哪些成交、是否通过复核；公式编号、原始行号与计算步骤在展开后查看。未发布的结果不显示任何数值。'));
   page.append(reviewSection(review));
   page.append(evidenceSection(b, review, scope));
 }
@@ -561,10 +604,14 @@ const FACT_LABELS = Object.freeze({
 });
 
 const REVIEW_STATUS_TEXT = Object.freeze({
-  published: '全部事实通过复核并发布',
-  degraded: '部分发布：有事实被扣发',
-  blocked: '未发布：没有可发布的事实',
+  published: '全部事实已发布',
+  degraded: '部分事实已发布',
+  blocked: '无可发布事实',
 });
+
+function reviewStatusText(status) {
+  return REVIEW_STATUS_TEXT[status] ?? '状态未知';
+}
 
 const FINAL_STATUS_TEXT = Object.freeze({ blocked: '阻断', insufficient_evidence: '证据不足' });
 
@@ -625,12 +672,13 @@ function userBlockedBox(b, review, scope) {
   if (items.length === 0) {
     box.append(el('div', {}, ['· 复核输出中没有该范围的具体阻断记录（照实提示，不猜测原因）。']));
   }
-  for (const i of items) box.append(el('div', {}, [i.message ? `· ${i.code} · ${i.message}` : `· ${reasonText(i.code)}`]));
+  for (const i of items) box.append(el('div', {}, [`· ${visibleReason(i.message, i.code)}`]));
+  if (items.length) box.append(blockedReasonDetails(items));
   if (priceRelated) {
     box.append(el('div', { class: 'muted small' }, [
       scope === 'pool'
-        ? '存在缺价/超范围标的时不按剩余标的重新计算组合（B4），也不回退其他日期；部分标的可显示不代表完整组合结论。'
-        : '不使用替代值或其他估值日冒充该标的结果（B4）。',
+        ? '存在缺价/超范围标的时不按剩余标的重新计算组合，也不回退其他日期；部分标的可显示不代表完整组合结论。'
+        : '不使用替代值或其他估值日冒充该标的结果。',
     ]));
   }
   if (evidenceRelated) {
@@ -707,12 +755,13 @@ function reviewSection(review) {
   /* 复核概览 */
   body.append(el('div', { class: 'rp-sub' }, ['复核概览']));
   const ov = el('div', { class: 'rp-overview' });
-  ov.append(overviewItem('复核状态', `${review.status} · ${REVIEW_STATUS_TEXT[review.status] ?? '未知状态'}`, review.status === 'published' ? 'ok' : 'bad'));
-  ov.append(overviewItem('复核编号 verify_id', review.meta.verify_id ?? '未产出（复核未运行）', review.meta.verify_id ? '' : 'bad'));
+  ov.append(overviewItem('复核状态', reviewStatusText(review.status), review.status === 'published' ? 'ok' : 'bad'));
+  ov.append(overviewItem('复核编号', review.meta.verify_id ?? '未产出（复核未运行）', review.meta.verify_id ? '' : 'bad'));
   ov.append(overviewItem('已发布事实', `已发布事实 ${review.published_facts.length} 项`));
   ov.append(overviewItem('阻断事实', `阻断事实 ${review.blocked_facts.length} 项`, review.blocked_facts.length ? 'bad' : ''));
   ov.append(overviewItem('组合结论', review.portfolio_published ? '组合已发布' : '组合不发布', review.portfolio_published ? 'ok' : 'bad'));
   body.append(ov);
+  body.append(el('div', { class: 'muted small' }, [`内部状态标识：${review.status}；组合结论以 portfolio_published 为准。`]));
   if (review.degraded.length > 0) {
     const db = el('div', { class: 'banner warn-banner' });
     db.append(el('strong', {}, ['降级说明']));
@@ -848,7 +897,7 @@ function evidenceSection(b, review, scope) {
   }
 
   body.append(el('div', { class: 'rp-dev' }, [
-    `口径与来源：数字由本地确定性引擎计算，并经复核（runReview）筛选后才发布；${isDynamic(b)
+    `口径与来源：数字由本地确定性引擎计算，并经本地复核流程筛选后才发布；${isDynamic(b)
       ? dynamicSourceNote(b.marketSource)
       : '行情为 m0 合成夹具（占位代码、合成价格；非真实行情）'}。原始 CSV 仅在本机读取与校验，未上传。${WIRING_NOTE}`,
   ]));
@@ -943,7 +992,6 @@ function demoFactEvidence(it, dynamic) {
   const sum = el('summary', {});
   sum.append(el('span', { class: 'rp-fact-name' }, [factName(it.fact_id)]));
   sum.append(el('span', { class: 'rp-fact-val' }, [usable ? (it.display ?? '（引擎未提供展示值）') : '演示计算路径不可用']));
-  sum.append(el('span', { class: 'rp-fact-fid' }, [it.formula_id ?? '缺少公式编号']));
   if (!usable) sum.append(statusTag('存在阻断项', 'bad'));
   det.append(sum);
 
