@@ -10,8 +10,8 @@ import { renderContract } from './ui/views/contractView.js';
 const NAV = [
   { id: 'import', label: '导入 · 确认', hash: '#/import' },
   { id: 'report', label: '报告 · 证据', hash: '#/report' },
-  { id: 'chat', label: '分析问答（组合复述）', hash: '#/chat' },
-  { id: 'contract', label: '交易规则（契约）', hash: '#/contract' },
+  { id: 'chat', label: '分析问答', hash: '#/chat' },
+  { id: 'contract', label: '交易规则', hash: '#/contract' },
 ];
 
 const FLOW = [
@@ -71,9 +71,26 @@ function dataState(bill) {
     return { kind: 'user', label: '已确认本地账单 + 合成行情', text: `正在分析：${bill.fileName}（仅本机处理，未上传）；行情为合成演示数据，非真实行情，超出支持范围的部分会明确阻断。` };
   }
   if (bill.status === 'loaded' && bill.sourceType === 'local') {
-    return { kind: 'demo', label: '演示账单 + 合成行情', text: `本地账单 ${bill.fileName} 尚未确认，还没有用于分析；报告与规则测试当前使用演示账单。` };
+    return { kind: 'demo', label: '待确认本地账单 + 合成行情', text: `本地账单 ${bill.fileName} 已读取但尚未确认，还没有用于分析；报告与规则测试当前使用演示账单。` };
   }
   return { kind: 'demo', label: '演示账单 + 合成行情', text: '当前使用合成演示账单与合成行情：非真实账户、非真实行情。' };
+}
+
+// 能力文案只做展示替换；ready 状态原样取自 adapter，不在此提升
+function capabilityLabel(c) {
+  return String(c.label || '').replace('fake 验证', '模拟验证');
+}
+
+function capabilityDetails() {
+  const list = el('div', { class: 'cap-list' });
+  for (const c of Object.values(adapter.CAPABILITY)) {
+    list.append(el('div', { class: 'cap-item' }, [
+      el('span', { class: `chip ${c.ready ? 'ok' : 'mode'}`.trim() }, [c.ready ? '已就绪' : '待验收']),
+      el('span', {}, [capabilityLabel(c)]),
+    ]));
+  }
+  list.append(el('div', { class: 'muted small' }, ['能力状态为开发口径；候选口径与模拟验证不代表正式可用。']));
+  return el('details', { class: 'cap-details' }, [el('summary', {}, ['查看能力状态']), list]);
 }
 
 function shellHost() {
@@ -88,8 +105,7 @@ function shellHost() {
 function renderShell() {
   const chips = document.getElementById('capability-chips');
   clear(chips);
-  chips.append(chip('演示数据模式', 'mode'));
-  for (const c of Object.values(adapter.CAPABILITY)) chips.append(chip(c.label, c.ready ? 'ok' : 'warn'));
+  chips.append(chip('合成行情', 'mode'), capabilityDetails());
 
   const nav = document.getElementById('nav');
   clear(nav);
@@ -118,8 +134,7 @@ function renderShell() {
 
   const footer = document.getElementById('footer-labels');
   clear(footer);
-  footer.append(el('div', {}, ['行情为合成演示数据（非真实行情）；结果不构成投资建议，决定权在你。']));
-  footer.append(el('div', {}, ['口径：未计入费用、税费；分红未计入（v1）。']));
+  footer.append(el('div', {}, ['行情为合成演示数据（非真实行情）；口径：未计入费用、税费，分红未计入（v1）；结果不构成投资建议。']));
 }
 
 function renderView() {
