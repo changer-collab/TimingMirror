@@ -6,7 +6,7 @@ import { defaultBill, defaultChat, createBillContextId } from '../../state.js';
 import * as demo from '../../demo/adapter.js';
 
 const LOCAL_NOTICE = '原始 CSV 仅在本机读取和校验，不上传。';
-const MARKET_NOTICE = '当前用户账单仅使用合成演示行情；不在支持范围内时，下一阶段报告将明确阻断。';
+const MARKET_NOTICE = '当前用户账单使用已签收真实历史行情缓存（历史快照，非实时）；标的或日期超出缓存清单时，报告会明确阻断，不回退合成行情。';
 const CONFIRM_NOTE = '确认后进入分析报告；不会上传账单、不会执行交易。';
 const FEE_TAX_NOTE = '部分费用或税费缺失，当前结果按现有口径计算，可能与实际对账结果不同。';
 
@@ -98,7 +98,7 @@ function isCsvFile(file) {
 
 // 每次状态迁移都基于 defaultBill() 全量重建，避免上一份账单的 trades/warnings/dataMode 等残留到下一状态
 function freshBill(scenario, fields = {}) {
-  return { ...defaultBill(), scenario: scenario || 'A', ...fields };
+  return { ...defaultBill(), scenario: scenario || 'R', ...fields };
 }
 
 function errText(e) {
@@ -115,6 +115,14 @@ function warningsBlock(warnings) {
 
 function dataModeLine(dataMode) {
   return el('div', { class: 'muted small' }, [`数据模式：${dataMode.label} —— ${dataMode.note}`]);
+}
+
+function marketLine(marketSource, supportScope) {
+  if (!marketSource) return null;
+  const scope = supportScope
+    ? ` · 支持范围 ${supportScope.range.start} → ${supportScope.range.end}（${supportScope.symbols.join(' / ')}，估值日 ${supportScope.asOfDate}）`
+    : '';
+  return el('div', { class: 'muted small' }, [`行情：${marketSource.label}${scope}`]);
 }
 
 function tradesTable(trades) {
@@ -217,7 +225,19 @@ export function renderImport(root, ctx) {
       });
       try {
         const b = await demo.loadDemoBill(scenario);
-        set({ bill: freshBill(scenario, { contextId, status: 'loaded', trades: b.trades, warnings: b.warnings, sourceNote: b.sourceNote, resultLabelling: b.resultLabelling }) });
+        set({
+          bill: freshBill(scenario, {
+            contextId,
+            status: 'loaded',
+            trades: b.trades,
+            warnings: b.warnings,
+            dataMode: b.dataMode,
+            marketSource: b.marketSource,
+            supportScope: b.supportScope,
+            sourceNote: b.sourceNote,
+            resultLabelling: b.resultLabelling,
+          }),
+        });
       } catch (e) {
         set({ bill: freshBill(scenario, { contextId, status: 'error', error: e.message }) });
       }
@@ -256,10 +276,11 @@ export function renderImport(root, ctx) {
 
   if (bill.status === 'loaded' || bill.status === 'confirmed') {
     const t = bill.trades;
+    const signed = !!(bill.marketSource && bill.marketSource.signed);
     wrap.append(el('div', { class: `im-status ${bill.status}` }, [
       bill.status === 'loaded'
         ? '待确认：请核对交易数、日期、标的和费用税费'
-        : `已确认：已用于本地分析${bill.sourceType === 'local' ? '' : '（演示账单）'}`,
+        : `已确认：已用于本地分析${bill.sourceType === 'local' ? '' : signed ? '（示例交易）' : '（演示账单）'}`,
     ]));
     wrap.append(el('div', { class: 'row' }, [
       el('div', { class: 'section-title' }, [`交易列表（${t.length} 条）· ${bill.sourceNote}`]),
@@ -272,6 +293,8 @@ export function renderImport(root, ctx) {
 
     if (bill.warnings && bill.warnings.length) wrap.append(warningsBlock(bill.warnings));
     if (bill.dataMode) wrap.append(dataModeLine(bill.dataMode));
+    const mktLine = marketLine(bill.marketSource, bill.supportScope);
+    if (mktLine) wrap.append(mktLine);
 
     const lab = bill.resultLabelling;
     if (lab) wrap.append(el('div', { class: 'muted small' }, [`结果口径：${lab.fees_taxes}；${lab.dividend}。`]));
@@ -286,10 +309,12 @@ export function renderImport(root, ctx) {
       wrap.append(el('div', { class: 'muted small im-confirm-note' }, [CONFIRM_NOTE]));
       if (!canConfirm) wrap.append(el('div', { class: 'muted small' }, ['当前状态不可确认（有错误或无交易）。']));
     } else if (bill.sourceType === 'local') {
-      wrap.append(el('div', { class: 'ok-line' }, ['已确认 ✓（报告页展示你的账单结果；行情为合成演示口径，非真实行情）']));
+      wrap.append(el('div', { class: 'ok-line' }, ['已确认 ✓（报告页展示你的账单结果；行情为已签收真实历史快照，非实时）']));
       wrap.append(el('button', { class: 'btn', onclick: () => go('report') }, ['前往报告 · 证据']));
     } else {
-      wrap.append(el('div', { class: 'ok-line' }, ['已确认 ✓（演示账单：确认动作仅切换应用状态）']));
+      wrap.append(el('div', { class: 'ok-line' }, [signed
+        ? '已确认 ✓（示例交易 + 已签收真实历史行情：确认动作仅切换应用状态）'
+        : '已确认 ✓（演示账单：确认动作仅切换应用状态）']));
       wrap.append(el('button', { class: 'btn', onclick: () => go('report') }, ['前往报告 · 证据']));
     }
   }

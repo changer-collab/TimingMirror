@@ -13,7 +13,7 @@ export function createBillContextId() {
 
 export function defaultBill() {
   return {
-    status: 'none', scenario: 'A', trades: [], warnings: [], errors: [],
+    status: 'none', scenario: 'R', trades: [], warnings: [], errors: [],
     sourceNote: '', resultLabelling: null, error: '',
     sourceType: null, fileName: '', fileSize: 0, blocked: false, dataMode: null,
     contextId: null,
@@ -25,13 +25,13 @@ export function defaultChat(contextId = null) {
 }
 
 export function defaultContracts() {
-  return { versions: [], draft: null, sim: { symbol: '', date: '', result: null, running: false }, simContext: null };
+  return { versions: [], draft: null, marketSource: 'real-cache', sim: { symbol: '', date: '', result: null, running: false }, simContext: null };
 }
 
 export const state = {
   route: 'import',
   bill: defaultBill(),
-  report: { scenario: 'A', symbol: 'pool' },
+  report: { scenario: 'R', symbol: 'pool' },
   chat: defaultChat(),
   contracts: defaultContracts(),
 };

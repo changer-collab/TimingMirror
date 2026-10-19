@@ -1,6 +1,6 @@
 // M1-C6 · 工具注册表（离线最小实现；接口候选，未冻结——依据 implementation-baseline 附A.1）
 // 边界：只登记当前仓库已能确定性调用的引擎能力（src/engine/*，只调用不修改）；
-//       **未接入能力不注册、不可调用**（百炼在线意图、真实行情缓存、页面接线），仅在 UNAVAILABLE_CAPABILITIES 中如实说明。
+//       **未接入能力不注册、不可调用**（百炼在线意图、实时/分钟级行情、部分页面接线），仅在 UNAVAILABLE_CAPABILITIES 中如实说明。
 // 纯函数/纯数据；不操作 DOM / localStorage / 网络。
 import { normalizeRows } from '../engine/csvNormalize.js';
 import { createMarketCache, fromFixtures, fromPullDraft } from '../engine/marketCache.js';
@@ -15,7 +15,7 @@ import { buildProvenanceReport } from '../engine/provenance.js';
 // 如实登记“未接入能力”（不可调用；供页面/日志与交接说明引用）
 export const UNAVAILABLE_CAPABILITIES = Object.freeze([
   { id: 'bailian.online_intent', note: '百炼在线意图分类：未接入（M1-C10 / 代理未连通）；离线桩见 offlineIntent.js' },
-  { id: 'market.real_cache', note: '真实行情缓存：清单草案待签收、产品未接入（data/market-cache.json 为合成缓存）' },
+  { id: 'market.realtime', note: '实时/分钟级行情：未接入（产品当前使用已签收历史日线快照，非实时）' },
   { id: 'page.import_wiring', note: '导入页用户 CSV 闭链：未接入（FileReader/Papa Parse 待定）' },
   { id: 'page.chat_wiring', note: '对话页 planner 消费：未接入（本模块仅产出 plan，不接线页面）' },
 ]);
@@ -31,7 +31,7 @@ const TOOL_DEFS = [
   {
     id: 'market.fromPullDraft',
     status: 'offline_available',
-    description: '由拉数草案结构构建行情实例（data/market-cache.json 为草案，值未签收；产品未接入）',
+    description: '由已签收行情缓存结构（data/market-cache.json）构建行情实例；签收门槛由调用方校验',
     params: { required: ['doc'], optional: [] },
     invoke: ({ doc }) => createMarketCache(fromPullDraft(doc)),
   },
