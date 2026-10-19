@@ -25,10 +25,10 @@ M1-C11 契约匹配纯函数（依赖 M0-C1）
 
 | 阶段 | 目标日期 | 卡片 | 状态 |
 |---|---|---|---|
-| P0 收尾 | 10/13–10/14 | M0-C2 拉数＋缓存清单草案；M0-C1 参与三方确认（行情缓存/CSV/计算结果三接口出具意见） | M0-C2 草案已交付（2a24b1c；待 changer 签收）；M0-C1 我方意见已出具（2167319），待三方合并（吴涵晶方确认仍待补，changer 主持） |
+| P0 收尾 | 10/13–10/14 | M0-C2 拉数＋缓存清单草案；M0-C1 参与三方确认（行情缓存/CSV/计算结果三接口出具意见） | M0-C2 已签收（2026-10-19，A1/B1/C1/D1/E1，manifest-0.2）；M0-C1 我方意见已出具（2167319），待三方合并（吴涵晶方确认仍待补，changer 主持；接口整体仍未冻结） |
 | P1 引擎 | 10/13–10/16 | M1-C1、M1-C2（格式）、M1-C3、M1-C4、M1-C5、M1-C11（纯函数） | 全部完成：M1-C1（2387a72）、M1-C2（e3422d5）、M1-C3（9dd2fab）、M1-C4（8d5e0df）、M1-C5（f93370b）、M1-C11（b474f27）——纯函数与单测就绪；页面接线/状态机在 UI 侧（吴涵晶） |
-| P2 完善 | 10/17–10/23 | M2-C1（数据侧）、M2-C5；参与 M2-C4 真实运行验收演练；UI 接线支持；任务 B 缓存签收收口（Issue #13，10/15 派发）；任务 A 支持（adapter 修订意见，10/16 组长消息） | 进行中（提前启动）：M2-C1 数据侧主体完成（61e0f7a / 7929f8c）；M2-C5 数据侧报告已交付（ac6c7c1，待负责人选型）；M2-C4 数据侧准备材料已就绪（a4eca65；证据同步接线口径 68bfad7），演练本体待全链路就绪后三人执行；P2-4 引擎对接说明已交付（68bfad7，致吴涵晶）；任务 B 收口包已交付（e0493e6）＋任务 A 支持 adapter 修订意见已交付（e41cb80）——**PR #15 已开待组长合并**（含签收收口包，签收落档后另开缓存接入 PR） |
-| P3 交付 | 10/24–10/25 | 支持 M3 提交材料（清单签收归档、复算记录）、回归修复 | 未开始 |
+| P2 完善 | 10/17–10/23 | M2-C1（数据侧）、M2-C5；参与 M2-C4 真实运行验收演练；UI 接线支持；任务 B 缓存签收收口（Issue #13，10/15 派发）；任务 A 支持（adapter 修订意见，10/16 组长消息） | 进行中（提前启动）：M2-C1 数据侧主体完成（61e0f7a / 7929f8c）；M2-C5 数据侧报告已交付（ac6c7c1，待负责人选型）；M2-C4 数据侧准备材料已就绪（a4eca65；证据同步接线口径 68bfad7；2026-10-19 脚本化复跑 20/20，`scripts/drill-data-evidence.mjs`）；**2026-10-19 完成数据侧页面预走查**（R1 主链路与 CLI 逐项一致、用户上传路径验算 26/26；R2 五类阻断页面可见，但真实签收范围声明未上线，见 `m2c4-drill-prep.md` §0.1），正式三人签认待执行；P2-4 引擎对接说明已交付（68bfad7，致吴涵晶）；任务 B 收口包已交付（e0493e6）＋任务 A 支持 adapter 修订意见已交付（e41cb80）——**PR #15 已合并（squash 8f93f92，2026-10-16）**（含签收收口包；签收落档〔changer〕后另开缓存接入 PR）；同步 main（PR #16，7807dee）后完成跨区回归修复并提 **PR #19**（演示 provenance val→stage.val，2026-10-16；后由组长 PR #21 等效并入并关闭 #19）；10/17 同步 main `268074e`（PR #18/#20/#21/#22，merge `7a65573`），验证 check 798/798、smoke 52/52；#13「当前可独立开展」三项预备设计已交付（`mainline-a-prep-2026-10-17.md`，仅设计不实施） |
+| P3 交付 | 10/24–10/25 | 支持 M3 提交材料（清单签收归档、复算记录）、回归修复 | 进行中（数据侧材料已就绪，2026-10-19）；数据侧页面预走查已完成（同日前置），正式三人演练/视频/部署待执行 |
 
 已完成的基础交付（供 P1 直接复用）：
 
@@ -39,8 +39,8 @@ M1-C11 契约匹配纯函数（依赖 M0-C1）
 
 ### P0-1 · M0-C2 akshare 前复权拉数【我的唯一 M0 主责卡】
 
-- 状态：已完成（2a24b1c 起，另有补充提交）——交付 `m0/market-cache/manifest.candidate.json`（待签收）、`data/market-cache.json`（727/727 行、日历内缺失 0）、`data/market-cache.pull-record.json`（前复权基准 + 送转跳变观测）、`scripts/pull-market.py`；`npm run check` 247 项 / `smoke` 15/15 通过。
-- 签收待办（请 changer 定夺）：① symbols 与 asOfDate=2025-12-31 两项【建议】；② 300750 区间内 2023-04-26 送转量级复权跳变（≈×1.82，不复权价单日 ×1.72）处置——维持名单并约定演示账单避让该日（推荐），或替换为 300760 迈瑞医疗（已扫描核验区间内无送转事件）。
+- 状态：已完成（2a24b1c 起，另有补充提交）——交付 `m0/market-cache/manifest.candidate.json`（**2026-10-19 已签收**：manifest-0.2、frozen=true）、`data/market-cache.json`（**artifact=market-cache-signed**；727/727 行、日历内缺失 0）、`data/market-cache.pull-record.json`（前复权基准 + 送转跳变观测）、`scripts/pull-market.py`；`npm run check` / `smoke` 全过（最新计数见 P2-10）。
+- 签收结果（方式一授权代行）：① symbols 维持三只（A1）、asOfDate=2025-12-31（B1）；② 300750 2023-04-26 送转量级跳变（≈×1.82）按 A1 维持名单 + 演示账单避让该日；③ 公司行为 v1 不检测（C1）、未来生效日锚定除权日（D1）；④ 缺价文案采用 §5.1（E1）。
 - 目标：产出可签收的「行情支持清单草案」＋拉数成功证据。
 - 步骤：
   1. 本机 Python 环境安装/确认 akshare（不引入凭证类依赖）；
@@ -136,6 +136,7 @@ M1-C11 契约匹配纯函数（依赖 M0-C1）
 ### P2-3 · M2-C4 真实运行验收演练（参与）
 
 - 状态：数据侧准备材料已就绪（a4eca65，提前启动）——`docs/yinchen/m2c4-drill-prep.md`：R1 演示脚本（A/A′ 受影响指标按预期变化，CLI 基线证据：000000 与组合 +1,000/−1,000/drag 变化 −5.0pp，888888 允许不变，双路径 26/26 全过）＋ R2 演示脚本（声明四要素＋五类提示：非交易日映射 2025-10-01→2025-09-30、范围外日期/标的阻断、早于末笔阻断、缺价不回落——真实输出留档）＋ F-7 数据口径核对表（演示账单/用户上传/统一禁止/数字层/前复权展示五项）＋ 留档模板。演练本体（页面真实运行环境）待导入与报告链路就绪后三人执行；不以 CLI 证据替代演练。
+- 复跑（2026-10-17）：证据已脚本化为 `scripts/drill-data-evidence.mjs`（无网络、无账户数据；R1 12 项＋R2 7 项，输出与 2026-10-13 内联证据一致），`node scripts/drill-data-evidence.mjs` → 19/19 通过、exit 0；复跑记录见 `m2c4-drill-prep.md` §0（未并入 `npm run check`，避免页面/行情口径变更后误报）。演练本体链路已接线（PR #16；幽灵图 PR #22；smoke 52/52），仍待三人浏览器执行留档。
 - 我方：R1（可复算）、R2（缓存范围提示）的演示与留档；F-7 标注核对中数据口径部分。
 
 ### P2-4 · UI 接线支持：引擎对接说明（致吴涵晶）
@@ -148,27 +149,85 @@ M1-C11 契约匹配纯函数（依赖 M0-C1）
 
 ### P2-5 · 任务 B：缓存签收收口（Issue #13，10/15 派发）
 
-- 状态：已交付（e0493e6）——`docs/yinchen/m0c2-signoff-package.md`（三件套：明确候选清单〔R1–R7 七字段签收表，R2–R6 已核事实 / R1·R7【建议】〕＋验证依据〔拉数硬校验 PASS、结构核验入 check、混合标的与 300750 复跑证据逐字留档〕＋限制〔§3 六条〕）；Issue #13 六项逐项收口对照；待签收决策 A–E（300750 处置 / asOfDate / 公司行为边界 / 生效日口径 / 缺价文案）；回涵晶 §8.2(2) 阻断语义与三类文案拟案、§8.2(3) 公司行为码如实告知（引擎未实现，E_SHARE_EVENT 仅存于 m0 候选层——grep 逐字证据）。manifest 增 closure_note。验证：npm run check 624/624（exit 0）、smoke 15/15（exit 0）。
+- 状态：已交付（e0493e6），**已于 2026-10-19 签收落档**——`docs/yinchen/m0c2-signoff-package.md` v2（三件套：明确候选清单〔R1–R7，全部签收〕＋验证依据〔拉数硬校验 PASS、结构核验入 check、混合标的与 300750 复跑证据逐字留档〕＋限制〔§3 六条〕）；Issue #13 六项逐项收口对照；A–E 决策已按 A1/B1/C1/D1/E1 落档；回涵晶 §8.2(2) 阻断语义与三类文案（E1 定稿）、§8.2(3) 公司行为码如实告知（引擎未实现，E_SHARE_EVENT 仅存于 m0 候选层——grep 逐字证据）。manifest 增 closure_note / decisions / sign_off。
 - 背景：Issue #13（10/15 派发）目标「把支持边界收口为可签收清单」；签收人 changer；产品接入 PR 前置=本签收完成（独立 PR，R2）。
+- 授权说明：GitHub 无组长书面评论；授权来源为用户 2026-10-19 转述，`sign_off.authorization` 如实记录；`accepted_by=changer-collab`、`accepted_date=2026-10-19`（方式一授权代行）。
 - 备注：Issue #13 描述「symbols/date_range/asOfDate 未提供」与仓库现状不符——七字段自 PR #5（2026-10-13）起已全部填写，疑混淆 `schema.candidate.json` 拉数前模板段（收口包 §2 注已澄清；模板指针已修正 e41cb80）；本地 gh 登录账号 NanyuDeer 为本人（尹辰），供负责人设置 Issue assignee 参考。
 
 ### P2-6 · 任务 A 支持：用户 CSV adapter 修订意见（10/16 组长消息）
 
 - 状态：已交付（e41cb80，随 PR #15）——`docs/yinchen/adapter-user-csv-opinions.md`（【建议】非冻结，实施归任务 A 吴涵晶）：①`computeIndicators({trades, closes})` 调用约束表（缺 close 抛 TypeError / 排序在引擎内 / 调用方先经缓存解析 / 保留 source 回源）；②多标的 pool 语义（pool=传入 trades 涉及标的加总；B4 组合扣发责任在调用方〔现状 poolBlocked 实现〕；「不在支持范围」预检 vs「当日缺价」E_PRICE_MISSING 两类区分；合成期日期阻断为预期行为需文案说明）；③估值日传参（v1 固定数据集估值日、不开放 UI 任选〔asof_linkage 已收口〕；链路顺序 resolveValuation→checkLastTrade→resolvePrices；四类代码分别展示）；④文本入口共享链路建议（loadUserBillFromText 与 loadReportEngine 用单一内部函数防 gating 分叉；state.bill 字段清单）；⑤【建议】用户路径消费 runReview（对齐 Issue #12 验收 #6，单一源头/分步两形态 + 输出契约增补 review{...}）。
-- 背景：组长 10/16 消息对报告页接线现状确认（PR #7 合成夹具路径）+ 三问；缺价/不匹配最终文案与行为由收口包 §5.1 拟案，等签收。
+- 背景：组长 10/16 消息对报告页接线现状确认（PR #7 合成夹具路径）+ 三问；缺价/不匹配最终文案与行为由收口包 §5.1 定稿（E1，2026-10-19 签收）。
 - 附带（e41cb80）：`schema.candidate.json` support_scope 七字段「未提供」模板修正为指向 manifest 草案值（消除组长消息中「全部未提供」误读诱因）+ review_history 记录。
+
+### P2-7 · 跨区回归修复：演示链路 provenance（PR #19，10/16）
+
+- 状态：已修复；PR #19 由组长于 2026-10-16 关闭（未合并），同一修复随组长 **PR #21**（squash `ae6f7a4`）等效并入 main，且附带更完整的 A/A′ smoke 断言与浏览器验证；我的演示段 smoke 断言保留在 yinchen，10/17 合并后自动共存（无重复标题）。基线＝同步 main 后（7807dee，含 PR #16）。
+- 内容：`src/demo/adapter.js` `loadReportEngine` 第 4 步 `valuation: val` → `stage.val`（PR #16 共享市场段重构遗漏引用；ReferenceError 被 provenance 专用 catch 吞掉 → 演示 A/A′ 证据区恒为「fact 0 项 + E_PROVENANCE」）；`scripts/smoke-frontend.mjs` 演示段补断言（fact>0、阻断 0、无 E_PROVENANCE；原 35 项只查入口存在未覆盖）。
+- 验证：红绿（临时回退该行 → smoke 35/36 新断言失败；恢复 → 36/36）；check 729/729（15 脚本，exit 0）；smoke 36/36（exit 0）；远程 no checks reported（未配置 CI）。
+- 备注：adapter 归属主线 B（#17）；本修复为一行回归修正由主线 A 实施，PR 内已说明共享文件（smoke）改动范围；主线 B 后续调整可在此基础上继续。
+
+### P2-8 · 同步 main（268074e）与跨区回归复核（10/17）
+
+- 状态：已完成（merge `7a65573`，2026-10-17）。main 领先 yinchen 的 5 个提交全部并入：PR #18/#20（M1-C10 离线 fact 导出与数字校验）、PR #21（组长 provenance 修复＋A/A′ smoke）、PR #22（涵晶 S1 幽灵线图）。
+- 合并结果：`scripts/smoke-frontend.mjs`、`src/demo/adapter.js` 自动合并无冲突；`package.json` 取 main 的 17 脚本 check 链；我的演示 provenance 断言与组长 A/A′ 断言共存（无重复标题）。
+- 验证：`npm run check` 798/798（17 脚本，exit 0）；`npm run smoke` 52/52（exit 0）；远程 no checks reported（未配置 CI）。
+- 边界：本次只同步与验证，不改产品行为；main 新增的 fact/number-check 与幽灵线图代码已进入 yinchen，后续跨区改动按归属处理。
+
+### P2-9 · 主线 A「当前可独立开展」三项预备设计（#13，10/17）
+
+- 状态：已交付（文档 `docs/yinchen/mainline-a-prep-2026-10-17.md`，仅设计、不实施）。对应 #13 三项：
+  1. **缓存接入前置设计＋阻断文案对齐**：签收门（`frozen`＋`sign_off` 自描述打包、禁止静默回退）、真实源加载与共享市场段参数化、固定估值日、支持范围/模式输出字段、三类阻断文案映射（与涵晶 §3.1/收口包 §5.1 对齐）、三模式标注、改动归属与验证清单。
+  2. **300750 两方案**：A 维持名单＋演示避开 2023-04-26（含用户账单跨事件风险披露）；B 替换 300760（重拉数据、11 文件引用、重签、验证与回滚）；对比表供签收定夺。
+  3. **契约哈希与行为参数替换预案**：哈希算法/canonical 版本/存储迁移/测试影响（含同步 API 与 WebCrypto 异步风险）；behavior `candidate-1` 转正步骤（注入 seam 已具备、版本/测试/UI 标注、无历史持久化迁移）。
+- 边界：不替代 A–E、M0-C1 冻结与 PRD 参数决定；未改 adapter/页面/数据；未使用未签收真实缓存作为产品支持范围。基线验证同 P2-8。
+- 后续：签收后按预案开独立缓存接入 PR；M0 §4-7 冻结后替换哈希；PRD 参数到位后升行为配置版本。
+
+### P2-10 · A–E 签收落档 + 引擎签收门（10/19，方式一授权代行）
+
+- 状态：已完成并推送（提交 `2c0ab3d`，origin/yinchen；同分支另有 `95f79aa` 修复合并后 smoke 断言）——用户转述组长授权由本人决策 A–E 并选方式一，已按 A1/B1/C1/D1/E1 落档：
+  1. `m0/market-cache/manifest.candidate.json`：`artifact=manifest-signed`、`frozen=true`、`version=manifest-0.2`；新增 `decisions` A–E、`sign_off.accepted_by=changer-collab`/`accepted_date=2026-10-19`/`mode=方式一：授权代行签收`/`authorization` 授权来源如实记录；七字段 field_status 全部签收。
+  2. `data/market-cache.json`：升级为 `artifact=market-cache-signed`、`frozen=true`、`manifest_version=manifest-0.2`，内嵌同 `sign_off`（行情数据本体未改动）。
+  3. `src/engine/marketCache.js`：新增 `assessCacheDoc` 签收门——`artifact=market-cache-signed` + `frozen=true` + 非空 `accepted_by` + 合法 `accepted_date` + manifest 校验（symbols/date_range/asOfDate/calendar/覆盖）；错误码 `NOT_FROZEN`/`NOT_SIGNED`/`MALFORMED`。产品未过门不得声称真实支持范围（R2）。
+  4. `m0/market-cache/check-market-cache.mjs`：原「未签收」断言改为签收态校验（frozen、sign_off、A–E 选择、data/manifest 一致）；`tests/market-cache.test.mjs` 增补 6 项门禁测试（正例/未签收/未冻结/缺日历/草案 artifact/null）。
+  5. `m0/market-cache/schema.candidate.json`：support_scope 与 M1/M2/M3 指针同步签收状态；M0-C1 八类接口整体仍未冻结（缓存签收≠接口冻结）。
+- 后续：真实缓存接入 adapter/页面属独立 PR（跨区，需与吴涵晶协调；本轮不实施）；300750 演示账单避让（A1）需在演示脚本落实。
+- 验证（2026-10-19）：`npm run check` 1060/1060（24 脚本，exit 0）；`npm run smoke` 180/180（exit 0）；`node scripts/drill-data-evidence.mjs` 20/20（新增签收门项）；三个 JSON 均解析通过；远程 no checks reported（未配置 CI）。
+
+### P2-11 · verify_id 摘要口径候选改动（10/19，回应 Issue #8）
+
+- 状态：已完成（yinchen，未合并）——按 #8 建议将 `facts` / `identities` 的 `verdict` 与报告级 `provenance_complete` 纳入 `verify_id` 摘要；仍不纳入 `source_refs` / `reasons`（行号属输入溯源，会漂移）。
+- 影响：来源修复使数值不变、`verdict` 由 fail→0 时，`verify_id` 现在会变化；`tests/agent/review-pipeline.test.mjs` 的“重算前后 ID 不变”断言改为“ID 变化”；`tests/verify.test.mjs` 新增 1 项“同数值、来源修复 → ID 变化”断言（29 项）。
+- 验证：`npm run check` 1061/1061（24 脚本，exit 0）；`npm run smoke` 180/180；`node scripts/drill-data-evidence.mjs` 20/20；远程 no checks reported（未配置 CI）。
+- 边界：候选口径，最终以 M0-C1 冻结裁定为准；若保留纯数值摘要，回滚点为 digest 元组与上述两项断言。
+
+### P2-12 · M2-C4 数据侧页面预走查（10/19，浏览器留档）
+
+- 状态：已完成数据侧预走查（非三人正式签认）。环境 `767b026`＋`npm run dev`（localhost:5180），合成夹具口径。
+- R1：A/A′ 同一系统两次运行，组合/000000/888888 的 actualRet、drag、dragMoney 与 §1.3 CLI 基线逐项一致；888888 差异表「无字段变化」；S1 T004/T005 与计算路径（双路径 P-A=P-B=1100、diff 0、源行）页面可见。演示路径不运行 `runReview`，按 A/A′ 原字节走用户上传路径复现验算：A `V-beb6e687`、A′ `V-03b62534`，均 26/26 事实、11/11 恒等式、provenance 完整。
+- R2：契约页实测非交易日映射（2024-09-28→2024-09-27）、范围外日期 `E_VALUATION_OUT_OF_RANGE`、缺价 `E_CHANGE_PCT_MISSING`；用户 CSV 实测范围外标的 `E_PRICE_MISSING`（组合阻断、无数字）与早于末笔 `E_VALUATION_BEFORE_LAST_TRADE`。五类提示均在页面可见。
+- 偏差（转 B 侧）：① 页面仍标注「合成夹具（草案·演示口径）」「行情清单未签收·草案口径」，与 2026-10-19 签收件不一致；真实签收范围四要素与真实缓存映射（2025-10-01→2025-09-30）页面不可演示 → R2 不得记为通过，待任务 #33 完成后重跑。② 演示账单路径未接 runReview（不影响用户上传路径与 CLI 证据）。
+- 证据：`docs/yinchen/evidence/m2c4-2026-10-19/`（10 张截图）；记录与判读写入 `docs/yinchen/m2c4-drill-prep.md` §0.1/§1.4/§2.4/§5。
+- 验证：仅文档与截图，无代码改动；提交后复跑 `npm run check` / `npm run smoke` / `node scripts/drill-data-evidence.mjs` 作为文档提交的回归基线。
 
 ## 6. P3 明细（10/24–10/25）
 
-- 支持 M3-C2 提交四件套中数据侧材料：缓存清单签收件、复算记录、拉数脚本与说明。
-- 回归修复与 M2-C4 遗留问题；Plan B 视频的数据部分（合成夹具流程复现）。
+- 状态（2026-10-19）：M3-C2 数据侧提交材料已就绪，路径与复现命令如下：
+  1. **缓存签收件**：`m0/market-cache/manifest.candidate.json`（manifest-signed、frozen、manifest-0.2）、`data/market-cache.json`（market-cache-signed、内嵌 sign_off）、`m0/market-cache/schema.candidate.json`；支撑文档 `docs/yinchen/m0c2-signoff-package.md`。
+  2. **拉数证据**：`scripts/pull-market.py`、`data/market-cache.pull-record.json`（snapshot `pull-20261013-095402`；三标的各 727 行，2023-01-03…2025-12-31；日历内缺失 0；300750 2023-04-26 跳变观测）。复现命令：`python scripts/pull-market.py`（离线证据已留档，重新拉数会更新快照）。
+  3. **复算/复核记录**：`npm run check` 1061/1061（24 脚本）、`npm run smoke` 180/180、`node scripts/drill-data-evidence.mjs` 20/20；含双路径、错误注入、provenance、反事实、签收门与签收范围断言。
+  4. **支持范围文案**：收口包 §5.1（E1）；缓存支持 600519/300750/601318、2023-01-01…2025-12-31、asOfDate=2025-12-31、快照 2026-10-13；产品接入须过 `assessCacheDoc`。
+  5. **口径说明**：`docs/yinchen/engine-wiring-handoff.md`（引擎 I/O、`verify_id` 摘要口径、阻断语义）；Plan B 合成夹具复现路径见 `docs/yinchen/m2c4-drill-prep.md` §0。
+- 待他人：M2-C4 正式三人演练签认（数据侧预走查已完成，见 P2-12）、真实缓存接入 adapter/页面并更新签收标注（任务 #33，吴涵晶侧）、M3-C1 部署、视频/排练与提交四件套。
+- 回归修复与 M2-C4 遗留问题。
+- Plan B 视频数据段脚本已交付（2026-10-19）：`docs/yinchen/m3-planb-video-data-segment.md`——分镜＋逐字口播（约 70 秒，可压至 60 秒）＋实测值＋可选复核 26/26 补拍＋禁止表述；录制环境与停止条件已写明。
 
 ## 7. 阻塞与外部依赖
 
 | 依赖 | 归属 | 影响 | 未到位时的替代 |
 |---|---|---|---|
 | M0-C1 三方接口冻结 | changer 主持，我参与 | M1-C1/C11 接口若变更需返工 | 先按候选语义实现，模块头注明对齐版本 |
-| 行情支持清单签收（E） | 我产出→负责人签收 | R2 验收、契约历史情境模拟 | 合成缓存占位并标注"演示口径"（收口包已交付 e0493e6，待 changer 签收；签收前维持占位） |
+| 行情支持清单签收（E） | 我产出→负责人签收 | R2 验收、契约历史情境模拟 | **已完成 2026-10-19（A1/B1/C1/D1/E1，manifest-0.2）**；产品接入另开独立 PR 并经 `assessCacheDoc` 门 |
 | PRD 副本（E:\changer_learning\...） | 负责人 | 行为发现阈值规则、20 问语料 | 用基线/候选已固化的阈值先行，缺规则处标注 |
 | akshare 本机环境 | 我 | M0-C2 预研 | 报负责人定夺，不换未验证源 |
 | facts 结构（formula_id/display） | 我产出，changer 复核/provenance 消费 | M1-C7/C8、M2-C1 | 结构按 §4-3/附A.2 先定候选版 |

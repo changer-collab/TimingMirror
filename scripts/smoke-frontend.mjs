@@ -267,6 +267,8 @@ check('报告：A′ 演示计算路径完整（9 项、无阻断项、无复核
 await clickLabel('基准账单 A'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('报告：切回 A 恢复（实际收益卡与证据入口正常）', state.report.scenario === 'A' && txt.includes('实际收益') && txt.includes('查看证据与计算路径'));
+const provM = txt.match(/演示计算路径（当前范围「[^」]+」· (\d+) 项）/);
+check('报告：切回 A 后演示计算路径仍完整（9 项、无阻断、无 E_PROVENANCE）', !!provM && Number(provM[1]) === 9 && demoFacts().length === 9 && !txt.includes('存在阻断项') && !txt.includes('E_PROVENANCE'), txt.slice(0, 320));
 
 /* ==== 单笔反事实（S1 幽灵线双面板）：演示账单 000000 → T004 ==== */
 await flush(); await flush(); await flush();

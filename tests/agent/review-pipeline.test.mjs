@@ -84,9 +84,9 @@ const CLOSES2 = { '000000': 12, '888888': 110 };
   check('重算：日志字段完整（attempt/path_used/result=pass/adopted/trigger）', r.recompute_log[0].attempt === 1 && r.recompute_log[0].path_used === 'reload-fixture'
     && r.recompute_log[0].result === 'pass' && r.recompute_log[0].final_status === 'adopted'
     && r.recompute_log[0].trigger.failed_facts === 17 && /^R-[0-9a-f]{8}$/.test(r.recompute_log[0].recompute_id), JSON.stringify(r.recompute_log[0]));
-  check('重算：最终复核 verdict 变化（fail 17→0）；verify_id 摘要覆盖数值——来源修复不改数值故摘要不变（verify.js 既有口径，如实记录）',
-    r.recompute_log[0].trigger.failed_facts === 17 && r.verify.summary.fail === 0 && r.meta.verify_id === r.recompute_log[0].trigger.verify_id,
-    JSON.stringify({ triggerFail: r.recompute_log[0].trigger.failed_facts, finalFail: r.verify.summary.fail, sameId: r.meta.verify_id === r.recompute_log[0].trigger.verify_id }));
+  check('重算：最终复核 verdict 变化（fail 17→0）；verify_id 覆盖 verdict/provenance_complete——来源修复后摘要变化',
+    r.recompute_log[0].trigger.failed_facts === 17 && r.verify.summary.fail === 0 && r.meta.verify_id !== r.recompute_log[0].trigger.verify_id,
+    JSON.stringify({ triggerFail: r.recompute_log[0].trigger.failed_facts, finalFail: r.verify.summary.fail, idChanged: r.meta.verify_id !== r.recompute_log[0].trigger.verify_id }));
   check('重算结果可追溯到 provenance：17 项全部链接且非阻断', r.published_facts.length === 17
     && r.published_facts.every((f) => f.provenance_fact_id === f.fact_id)
     && r.provenance.items.every((i) => !i.blocked) && r.provenance.dangling_refs.length === 0, `${r.provenance.summary.n} items`);

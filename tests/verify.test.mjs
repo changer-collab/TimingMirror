@@ -7,7 +7,7 @@
  *   ② 计算错误注入（单侧实现中间值）→ 可捕获（双路径 diff / 独立重算 / 恒等式破坏）
  *   ③ 数据源错误注入（共享行情缓存行）→ 注明检测依据；不承诺双路径必然捕获（同源同错时如实不报）
  *   ④ 抽掉 source → provenance 缺失 / 源行不可定位 → fact 阻断发布（verdict=fail）
- *   ⑤ 全量 fact 必有 verdict；verify_id 确定性
+ *   ⑤ 全量 fact 必有 verdict；verify_id 确定性（数值 + verdict + provenance_complete）
  * 边界：重算回流（A.3）与复核编排属 M1-C7（changer）；容差为候选值（金额到分、收益率 1e-9），正式容差随 M0。
  * 运行：node tests/verify.test.mjs
  */
@@ -111,6 +111,8 @@ const reportA = computeIndicators({ trades: normA, closes: CLOSES });
   check('④ 组合 fact 同样阻断（T003 属其输入），888888 不受影响仍 pass', vr4.facts.filter((f) => f.fact_id.startsWith('portfolio.')).every((f) => f.verdict === 'fail') && vr4.facts.filter((f) => f.fact_id.startsWith('888888.')).every((f) => f.verdict === 'pass'), JSON.stringify(vr4.summary));
   check('④ provenance_complete = false 且 dangling_refs 记录 T003（含组合作用域）', vr4.provenance_complete === false && vr4.dangling_refs.some((d) => d.fact_scope === '000000' && d.ref.key === 'T003') && vr4.dangling_refs.some((d) => d.fact_scope === 'portfolio' && d.ref.key === 'T003'), JSON.stringify(vr4.dangling_refs));
   check('④ 源校验同时给出“源行不完整”告警（检测依据）', vr4.data_source_notes.some((n) => n.scope === 'T003' && n.message.includes('源行不完整')), '');
+  const vrClean = buildVerifyReport({ report: computeIndicators({ trades: normA, closes: CLOSES }), trades: normA, closes: CLOSES });
+  check('④ 数值不变但来源修复改变 verdict 时 verify_id 同步变化（不误作同一证据）', vr4.verify_id !== vrClean.verify_id, `${vr4.verify_id} / ${vrClean.verify_id}`);
 }
 
 /* ---- 入参校验 ---- */
