@@ -1,19 +1,22 @@
-// 对话：输入、芯片、离线降级回复（百炼未接入）
+// 分析问答（离线演示）：输入、提示词、离线降级回复（百炼未接入；不基于账单生成结论）
 import { el } from '../components.js';
 import * as demo from '../../demo/adapter.js';
+
+const PROMPTS = ['哪一笔最值得复核？', '为什么说我追高？', '我该怎么改？', '我是谁？'];
 
 export function renderChat(root, ctx) {
   const { state, set } = ctx;
   const wrap = el('div', { class: 'stack' });
 
+  wrap.append(el('div', { class: 'section-title ch-title' }, ['分析问答（离线演示）']));
   wrap.append(el('div', { class: 'banner' }, [
-    el('strong', {}, ['百炼未接入（离线降级模式）']),
-    '无法执行意图分类与事实复述；以下回答为离线占位，不引用事实 JSON（计算引擎未接入）。',
+    el('strong', {}, ['当前仅演示界面交互，不基于你的账单生成结论。']),
+    '百炼未接入（离线降级模式）：无法执行意图分类与事实复述；以下回答为离线占位，不引用事实 JSON。需要查看结论请到「报告 · 证据」页。',
   ]));
 
   const msgs = el('div', { class: 'chat' });
   if (!state.chat.messages.length) {
-    msgs.append(el('div', { class: 'msg assistant' }, ['你好，我是镜子（开发骨架 · 离线模式）。计算与模型接入后，我会基于你的事实 JSON 回答问题；当前可以先到「报告 · 证据」页看演示数据。']));
+    msgs.append(el('div', { class: 'msg assistant' }, ['你好，这里是分析问答的离线演示。模型接入后，回答会基于报告的事实 JSON 复述；现在可以先试试下面的提问方式，或到「报告 · 证据」页查看演示数据。']));
   }
   for (const m of state.chat.messages) {
     msgs.append(el('div', { class: `msg ${m.role === 'user' ? 'user' : 'assistant'}`.trim() }, [
@@ -40,7 +43,7 @@ export function renderChat(root, ctx) {
   }
 
   const chips = el('div', { class: 'row' });
-  for (const q of ['我最错的一笔是哪个？', '为什么说我追高？', '我该怎么改？', '我是谁？']) {
+  for (const q of PROMPTS) {
     chips.append(el('button', { class: 'btn small', onclick: () => send(q) }, [q]));
   }
   wrap.append(chips);
