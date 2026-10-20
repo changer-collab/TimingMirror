@@ -1,15 +1,15 @@
 // 报告 · 证据（引擎接线版，浅色样板）
 // 数据链路：页面只调 src/demo/adapter.js；adapter 内部走引擎。
 //   场景模式：夹具 CSV → csvNormalize → marketCache（R/R′ Tushare 动态日线；A/A′ 合成回归）→ indicators → provenance。
-//   用户账单模式（bill.confirmed 且 sourceType=local）：确认后的标准化账单 → Tushare 动态日线 → runReview 发布门槛 → published_facts。
-// 标注：行情来源、范围与拉取信息一律来自 adapter 输出；动态行情为最新已收盘日线（非实时），示例交易为合成构造。
+//   用户账单模式（bill.confirmed 且 sourceType=local）：确认后的标准化账单 → 真实行情缓存签收门 → runReview 发布门槛 → published_facts。
+// 标注：行情来源、范围与拉取信息一律来自 adapter 输出；示例交易为合成构造（动态行情为最新已收盘日线，非实时），用户模式额外标注文件名与数据模式。
 // 展示规则：数字一律使用引擎 display 字段（F-2），页面不重新格式化；用户模式只发布 runReview.published_facts 中的事实，
 //   组合结论只在 review.portfolio_published 时展示（B4）；阻断时不发布对应结论，不回退演示数据或另一行情来源。
 import { el } from '../components.js';
 import * as demo from '../../demo/adapter.js';
 import { renderGhostChart } from '../components/ghostChart.js';
 
-const WIRING_NOTE = '契约页已接入候选模板与历史情境模拟（候选口径，哈希待 M0-C1 冻结），契约不会自动改变本报告结论。未接入：实时/分钟级行情（当前为最新已收盘日线，非实时）、对话页事实回跳；在线问答仅接站点同源复述边界，尚未完成真实服务验证。';
+const WIRING_NOTE = '契约页已接入候选模板与历史情境模拟（候选口径，哈希待 M0-C1 冻结），契约不会自动改变本报告结论。未接入：实时/分钟级行情（示例账单走最新已收盘日线、本地账单走已签收静态缓存，均非实时）、对话页事实回跳；在线问答仅接站点同源复述边界，尚未完成真实服务验证。';
 const NO_TRADE_ADVICE = '不要据此作交易判断。';
 const CORPORATE_ACTION_NOTICE = '公司行为限制：v1 不自动识别送转、拆合股、配股等股数事件；涉及相关区间的账单可能估值不准确，请核对后再使用。';
 
@@ -31,10 +31,21 @@ function valuationText(v) {
   return v.requested_date === v.effective_date ? v.effective_date : `${v.requested_date} → 有效交易日 ${v.effective_date}`;
 }
 
+function marketSourceLabel(b) {
+  const source = b.marketSource;
+  if (source?.id === 'real-cache' && (source.signed !== true || source.gate?.signed !== true || source.gate?.usable !== true)) {
+    return '真实行情缓存（不可用）';
+  }
+  return source?.label || (b.sourceType === 'local' ? '行情来源不可用' : '行情来源未标注');
+}
+
 function marketText(b) {
-  if (!b || !b.marketRange) return '行情：不可用';
-  const source = b.marketSource ? b.marketSource.label : '行情';
-  return `${source} · ${b.marketRange.start} → ${b.marketRange.end}`;
+  const range = b.supportScope?.range ?? b.marketRange;
+  return `${marketSourceLabel(b)} · ${range ? `${range.start} → ${range.end}` : '支持日期不可用'}`;
+}
+
+function metadataText(value) {
+  return value === null || value === undefined || value === '' ? '不可用' : typeof value === 'object' ? JSON.stringify(value) : String(value);
 }
 
 function isDynamic(b) {
@@ -58,6 +69,26 @@ function marketFetchText(market) {
 function dynamicSourceNote(market) {
   if (!market || !market.dynamic) return '行情未获取（动态行情被阻断，不回落静态缓存或合成行情）';
   return `行情为 Tushare 最新已收盘日线（服务端获取，非实时；拉取 ${fmtWhen(market.fetchedAt)}，最新交易日 ${market.latestTradeDate ?? market.asOfDate}${market.snapshotId ? `，快照 ${market.snapshotId}` : ''}${market.checksum ? `，校验 ${market.checksum}` : ''}）`;
+}
+
+function marketSourceSection(b) {
+  const source = b.marketSource ?? {};
+  const support = b.supportScope ?? {};
+  const snapshot = support.snapshot ?? b.snapshot ?? {};
+  const gate = source.gate;
+  const signedText = (value) => value === true ? 'true' : value === false ? 'false' : '未知';
+  return el('div', { class: 'rp-market-source' }, [
+    sectionHead('行情来源与支持范围', marketText(b)),
+    el('div', {}, [`支持日期范围：${support.range ? `${support.range.start} 至 ${support.range.end}` : '不可用'}`]),
+    el('div', {}, [`支持标的：${support.symbols?.join('、') || '不可用'}；固定行情截止日（asOfDate）：${metadataText(b.asOfDate)}`]),
+    el('div', {}, [`签收状态 signed：${signedText(source.signed)}；支持范围 signed：${signedText(support.signed)}；签收门 gate：usable=${signedText(gate?.usable)}，signed=${signedText(gate?.signed)}`]),
+    el('div', {}, [`签收门原因：${gate ? metadataText(gate.reason ?? '无') : '不可用'}；详情：${gate ? metadataText(gate.detail ?? '无') : '不可用'}`]),
+    el('div', {}, [`来源标识：${metadataText(source.id)}；artifact：${metadataText(source.artifact)}；manifestVersion：${metadataText(source.manifestVersion)}`]),
+    el('div', {}, [`快照 snapshot：${metadataText(source.snapshotId ?? snapshot.snapshot_id)}；抓取时间 fetchTime：${metadataText(source.fetchTime ?? snapshot.fetch_time)}`]),
+    el('div', {}, [`行情数据来源 dataSource：${metadataText(source.dataSource)}；交易日历来源 calendarSource：${metadataText(source.calendarSource)}`]),
+    el('div', {}, ['计算口径：金额估值使用不复权价格；前复权仅用于走势展示；费用、税费仅记录，不计入收益公式。']),
+    el('div', {}, ['公司行为边界：v1 不检测、不校正送转/拆合股；300750 任一 2023-04-26 事件前交易都会保守阻断（即使实际持仓在事件前已清仓，买入后持有的对照路径仍可能跨越该事件，无法断言放行是安全的），不用不复权价格跳变推断交易损耗；这是针对已知事件的额外限制，不是通用公司行为检测。']),
+  ]);
 }
 
 function summaryCard(headline, ok, items) {
@@ -96,12 +127,9 @@ function demoSummary(b) {
 
 function userSummary(b, review) {
   const published = !!review && review.portfolio_published === true;
-  const dynamic = isDynamic(b);
   let headline;
   if (published) {
-    headline = dynamic
-      ? '本次结论：组合结果已通过复核并发布；数字基于 Tushare 最新已收盘日线（服务端获取，非实时）。'
-      : '本次结论：组合结果已通过复核并发布；数字基于合成演示行情，非真实行情。';
+    headline = `本次结论：组合结果已通过复核并发布；数字基于${marketSourceLabel(b)}与本次已确认账单，不构成投资建议。`;
   } else {
     const reasons = review ? collectBlockReasons(b, review, 'pool') : b.errors.map((e) => ({ code: e.code, message: e.message }));
     const text = reasons.slice(0, 3).map((i) => visibleReason(i.message, i.code)).join('；') || '复核输出中没有具体阻断记录';
@@ -111,6 +139,8 @@ function userSummary(b, review) {
   return summaryCard(headline, published, [
     sumItem('数据来源', `已确认本地账单 · ${b.fileName || '（未知文件）'}`),
     sumItem('行情状态', marketText(b)),
+    sumItem('支持标的', b.supportScope?.symbols?.join('、') || '不可用'),
+    sumItem('行情截止日（asOfDate）', metadataText(b.asOfDate)),
     sumItem('估值日', valuationText(b.valuation)),
     sumItem('结论状态', !review ? '组合结果未发布（复核未运行）' : published ? '组合结果已发布（已通过复核）' : '组合结果未发布', published ? 'ok' : 'bad'),
   ]);
@@ -194,13 +224,13 @@ function reportIssues(title, items, warn = true) {
   const box = el('div', { class: `banner ${warn ? 'warn-banner' : ''}`.trim() });
   box.append(el('strong', {}, [title]));
   for (const e of items) {
-    const meta = [e.line ? `第 ${e.line} 行` : '', e.column ? `列：${e.column}` : ''].filter(Boolean).join(' · ');
+    const meta = [e.symbol ? `标的：${e.symbol}` : '', e.line ? `第 ${e.line} 行` : '', e.column ? `列：${e.column}` : ''].filter(Boolean).join(' · ');
     box.append(el('div', {}, [`${meta ? `${meta} · ` : ''}${visibleReason(e.message, e.code)}`]));
   }
   box.append(el('details', { class: 'rp-tech' }, [
     el('summary', {}, ['技术详情（错误码）']),
     ...items.map((e) => el('div', { class: 'muted small' }, [
-      `${e.code}${e.line ? `（第 ${e.line} 行）` : ''}${e.column ? ` · ${e.column}` : ''}${e.message ? ` · ${e.message}` : ''}`,
+      `${e.code}${e.kind ? ` · kind：${e.kind}` : ''}${e.symbol ? ` · symbol：${e.symbol}` : ''}${e.line ? `（第 ${e.line} 行）` : ''}${e.column ? ` · ${e.column}` : ''}${e.message ? ` · ${e.message}` : ''}`,
     ])),
   ]));
   return box;
@@ -216,7 +246,7 @@ function blockedReasonDetails(items, label = '技术详情（错误码）') {
 /* —— 单笔反事实区（S1 幽灵线；演示与用户账单共用）——
    数据一律来自 adapter.loadSellCounterfactual（内部唯一调用 replaceSell）；
    页面不计算 actual/ghost/cf/gap/收盘价，引擎 display 原样展示。 */
-function cfSection({ trades, symbol, selectedId, set, marketSource }) {
+function cfSection({ trades, symbol, selectedId, set, bill = null, marketSource = demo.DEFAULT_MARKET_SOURCE }) {
   const box = el('div', { class: 'rp-cf' });
   box.append(el('div', { class: 'rp-sub' }, ['如果当时没有卖出这一笔，结果会怎样？']));
   box.append(el('div', { class: 'muted small' }, ['单笔反事实：只假设选中的这一笔卖出没有发生，其余交易不变；不是对未来的预测。']));
@@ -225,7 +255,7 @@ function cfSection({ trades, symbol, selectedId, set, marketSource }) {
   // 跨标的/跨场景残留防护：selectedId 不属于当前标的的卖出笔时传 null（adapter 默认该标的按时间第一笔）
   const applicable = typeof selectedId === 'string'
     && trades.some((t) => t && t.symbol === symbol && t.side === 'sell' && t.trade_id === selectedId);
-  demo.loadSellCounterfactual({ trades, symbol, tradeId: applicable ? selectedId : null, marketSource })
+  demo.loadSellCounterfactual({ trades, symbol, tradeId: applicable ? selectedId : null, bill, marketSource })
     .then((cf) => {
       if (!cf.ok) {
         body.replaceChildren(el('div', { class: 'rp-error' }, [
@@ -264,6 +294,11 @@ function cfSection({ trades, symbol, selectedId, set, marketSource }) {
       const chartBox = el('div', {});
       body.append(chartBox);
       renderGhostChart(chartBox, cf);
+      if (bill) {
+        chartBox.querySelector('.gc-caption')?.replaceChildren(el('span', {}, [
+          `${cf.marketSource?.label || '行情来源不可用'}：仅替换所选卖出笔，其余成交不变；不构成投资建议`,
+        ]));
+      }
       body.append(el('div', { class: 'rp-calc' }, [
         `本次模拟：不发生 ${r.replaced.trade_id} 这笔卖出（${r.replaced.trade_date} · ${r.replaced.price} × ${r.replaced.quantity}）｜假设结果价值 ${r.display.cfValue} ｜ 假设收益 ${r.display.cfRet} ｜ 相对改善 ${r.display.recoveredPP} ｜ 剩余损耗金额 ${r.display.remainingDragMoney}`,
       ]));
@@ -287,11 +322,13 @@ function cfPoolHint() {
 }
 
 export function renderReport(root, ctx) {
-  const page = el('div', { class: 'report-page' });
-  root.append(page);
   const bill = ctx.state.bill;
+  const report = { ...ctx.state.report };
+  ctx = { ...ctx, state: { ...ctx.state, bill, report } };
+  const page = el('div', { class: 'report-page' });
+  root.replaceChildren(page);
   if (bill.status === 'confirmed' && bill.sourceType === 'local') {
-    page.append(el('div', { class: 'rp-loading' }, ['加载用户账单报告…（Tushare 动态日线，服务端获取）']));
+    page.append(el('div', { class: 'rp-loading' }, ['加载用户账单报告…（校验真实行情缓存签收门）']));
     demo.loadUserBillReport(bill)
       .then((bundle) => {
         page.replaceChildren();
@@ -515,15 +552,17 @@ function buildUserBillPage(page, b, ctx) {
   const titleBox = el('div', { class: 'rp-title' });
   titleBox.append(el('div', { class: 'rp-kicker' }, ['用户账单报告']));
   titleBox.append(el('h1', {}, ['报告 · 证据（本地账单）']));
-  titleBox.append(el('div', { class: 'sub' }, ['本地账单 · 本地确定性引擎计算 · Tushare 动态行情（服务端获取，非实时；原始 CSV 未上传）']));
+  titleBox.append(el('div', { class: 'sub' }, [`本地账单 · 本地确定性引擎计算 · ${marketSourceLabel(b)}（原始 CSV 未上传）`]));
   top.append(titleBox);
   page.append(top);
   page.append(userSummary(b, review));
   page.append(corporateActionNotice());
 
   const status = el('div', { class: 'rp-status' });
-  status.append(el('span', { class: 'rp-chip demo' }, [`本地账单 · 文件名：${b.fileName || '（未知）'}（本机，未上传）`]));
-  status.append(el('span', { class: 'rp-chip demo' }, [b.dataMode ? b.dataMode.label : '数据模式未知']));
+  status.append(el('span', { class: 'rp-chip' }, [`已确认本地账单（${b.fileName || '未知文件'}）· 文件名：${b.fileName || '未知文件'}（本机，未上传）`]));
+  status.append(el('span', { class: 'rp-chip' }, [b.dataMode ? b.dataMode.label : '数据模式未知']));
+  status.append(el('span', { class: `rp-chip ${b.marketSource?.signed === true && b.marketSource?.gate?.usable === true && b.marketSource?.gate?.signed === true ? 'ok' : 'cap'}` }, [marketSourceLabel(b)]));
+  status.append(el('span', { class: 'rp-chip' }, [`固定 asOfDate：${metadataText(b.asOfDate)}`]));
   status.append(el('span', { class: 'rp-chip' }, [
     b.valuation
       ? (b.valuation.blocked ? `估值日：${b.valuation.requested_date} 无法解析` : `估值日：${b.valuation.requested_date} → ${b.valuation.effective_date}`)
@@ -535,6 +574,7 @@ function buildUserBillPage(page, b, ctx) {
     review ? `复核：${reviewStatusText(review.status)}` : '复核未运行',
   ]));
   page.append(status);
+  page.append(marketSourceSection(b));
   page.append(labelsTechNote(b.labels));
 
   if (b.errors.length > 0) page.append(reportIssues('阻断/错误（对应结论不发布）', b.errors));
@@ -571,7 +611,7 @@ function buildUserBillPage(page, b, ctx) {
     page.append(el('div', { class: 'rp-error' }, [`未找到「${scope}」的已发布事实（照实提示，不猜测）。`]));
   } else {
     const metrics = el('div', { class: 'rp-metrics' });
-    metrics.append(metric('实际收益', entry.actualRet.display, '你的实际操作结果（本机账单 · Tushare 动态行情估值）', 'actual'));
+    metrics.append(metric('实际收益', entry.actualRet.display, `你的实际操作结果（本机账单 · ${marketSourceLabel(b)}估值）`, 'actual'));
     metrics.append(metric('对照收益', entry.ghostRet.display, '买入不动口径：买入后持有不动的对照路径', 'ghost'));
     metrics.append(metric('择时损耗', entry.drag.display, '对照 − 实际；正值＝相对损耗，负值＝实际操作优于对照', 'drag', entry.dragMoney.display));
     metrics.append(metric('股票本身涨幅', '口径未定义', '暂不计算，也不使用替代值。', 'stock', null, stockTechNote()));
@@ -590,11 +630,11 @@ function buildUserBillPage(page, b, ctx) {
   if (scope === 'pool') {
     page.append(cfPoolHint());
   } else if (!scopeBlocked && entry) {
-    page.append(cfSection({ trades: state.bill.trades, symbol: scope, selectedId: state.report.cfTradeId, set: ctx.set, marketSource: b.marketSource ? b.marketSource.id : demo.DEFAULT_MARKET_SOURCE }));
+    page.append(cfSection({ trades: state.bill.trades, symbol: scope, selectedId: state.report.cfTradeId, set: ctx.set, bill: state.bill }));
   }
 
   page.append(sectionHead('证据与计算路径', '每项先说明代表什么、来自哪些成交、是否通过复核；公式编号、原始行号与计算步骤在展开后查看。未发布的结果不显示任何数值。'));
-  page.append(reviewSection(review));
+  page.append(reviewSection(review, b));
   page.append(evidenceSection(b, review, scope));
 }
 
@@ -626,8 +666,17 @@ function reviewStatusText(status) {
 const FINAL_STATUS_TEXT = Object.freeze({ blocked: '阻断', insufficient_evidence: '证据不足' });
 
 const REASON_TEXT = Object.freeze({
-  E_PRICE_MISSING: '估值日缺价或超出行情支持范围',
-  E_REVIEW_PORTFOLIO_WITHHELD: '存在缺价标的，组合结论整体扣发（不按剩余标的重算）',
+  E_MARKET_CACHE_LOAD: '真实行情缓存加载失败，不回退演示行情',
+  E_MARKET_CACHE_GATE: '真实行情缓存未通过签收门，不运行复核',
+  E_MARKET_OUT_OF_SUPPORT: '标的不在已签收行情缓存支持清单（范围外，非当日缺价）',
+  E_MARKET_TRADE_OUT_OF_RANGE: '成交日期超出行情缓存支持日期范围',
+  E_MARKET_CORPORATE_ACTION_BOUNDARY: '账单跨越公司行为边界，当前口径无法处理',
+  E_MARKET_ASOF_NOT_TRADING_DAY: '固定 asOfDate 不在缓存交易日历中，不改用其他日期',
+  E_VALUATION_OUT_OF_RANGE: '估值日超出行情缓存支持日期范围',
+  E_NO_EFFECTIVE_TRADING_DAY: '支持范围内没有不晚于请求估值日的交易日',
+  E_VALUATION_BEFORE_LAST_TRADE: '有效估值日早于账单末笔成交日期',
+  E_PRICE_MISSING: '估值日缺少不复权收盘价，不回退其他日期',
+  E_REVIEW_PORTFOLIO_WITHHELD: '存在被阻断标的，组合结论整体扣发（不按剩余标的重算）',
   E_REVIEW_PROVENANCE_BLOCKED: '计算路径不完整，不能追溯',
   E_REVIEW_PROVENANCE_FAILED: '计算路径生成失败',
   E_REVIEW_RECOMPUTE_NO_ALTERNATIVE: '复核未通过，且没有备用重算来源',
@@ -645,12 +694,22 @@ const REASON_TEXT = Object.freeze({
   E_REVIEW_CANDIDATE_CLOSE_INVALID: '重算候选缺少有效收盘价，未采纳',
 });
 
-// 只有这两类原因才属于“行情侧”阻断（B4）；其余均视为复核/证据问题，照实列码，不归因到缺价。
-const PRICE_BLOCK_CODES = new Set(['E_PRICE_MISSING', 'E_REVIEW_PORTFOLIO_WITHHELD']);
+const MARKET_BLOCK_CODES = new Set([
+  'E_MARKET_CACHE_LOAD', 'E_MARKET_CACHE_GATE', 'E_MARKET_OUT_OF_SUPPORT',
+  'E_MARKET_TRADE_OUT_OF_RANGE', 'E_MARKET_CORPORATE_ACTION_BOUNDARY', 'E_MARKET_ASOF_NOT_TRADING_DAY',
+  'E_VALUATION_OUT_OF_RANGE', 'E_NO_EFFECTIVE_TRADING_DAY', 'E_VALUATION_BEFORE_LAST_TRADE',
+  'E_PRICE_MISSING', 'E_REVIEW_PORTFOLIO_WITHHELD',
+]);
+
+// 范围外（准入阻断）标的集合：这类标的的复核对 null close 的记录会误称“缺价”，页面一律用 adapter 的准入原因。
+function admissionBlockedSymbols(b) {
+  return new Set((b.errors ?? []).filter((e) => e.code === 'E_MARKET_OUT_OF_SUPPORT' && e.symbol).map((e) => e.symbol));
+}
 
 function collectBlockReasons(b, review, scope) {
   const isPool = scope === 'pool';
   const factScope = isPool ? 'portfolio' : scope;
+  const admission = admissionBlockedSymbols(b);
   const items = [];
   const add = (code, message) => {
     if (!code) return;
@@ -659,13 +718,13 @@ function collectBlockReasons(b, review, scope) {
     if (same && !same.message) { same.message = message; return; }
     items.push({ code, message: message || null });
   };
-  for (const s of review.blocked_symbols ?? []) if (isPool || s.symbol === scope) add(s.code, s.message);
+  for (const s of review.blocked_symbols ?? []) if ((isPool || s.symbol === scope) && !admission.has(s.symbol)) add(s.code, s.message);
   for (const e of b.errors) {
-    if (!e.message) continue;
-    if (isPool ? PRICE_BLOCK_CODES.has(e.code) : e.message.includes(scope)) add(e.code, e.message);
+    if (isPool ? MARKET_BLOCK_CODES.has(e.code) : e.symbol === scope || (!e.symbol && e.message?.includes(scope))) add(e.code, e.message);
   }
   for (const d of review.degraded ?? []) {
-    const related = !d.scope || d.scope === factScope || (isPool && PRICE_BLOCK_CODES.has(d.code));
+    if (admission.has(d.scope)) continue;
+    const related = !d.scope || d.scope === factScope || (isPool && MARKET_BLOCK_CODES.has(d.code));
     if (related) add(d.code, d.message);
   }
   for (const f of review.blocked_facts ?? []) if (f.scope === factScope) for (const c of f.reason_codes) add(c, null);
@@ -675,8 +734,8 @@ function collectBlockReasons(b, review, scope) {
 function userBlockedBox(b, review, scope) {
   const name = scope === 'pool' ? '组合' : scope;
   const items = collectBlockReasons(b, review, scope);
-  const priceRelated = items.some((i) => PRICE_BLOCK_CODES.has(i.code));
-  const evidenceRelated = items.some((i) => !PRICE_BLOCK_CODES.has(i.code));
+  const marketRelated = items.some((i) => MARKET_BLOCK_CODES.has(i.code));
+  const evidenceRelated = items.some((i) => !MARKET_BLOCK_CODES.has(i.code));
   const box = el('div', { class: 'rp-error' });
   box.append(el('div', {}, [`「${name}」结果不发布：`]));
   if (items.length === 0) {
@@ -684,10 +743,10 @@ function userBlockedBox(b, review, scope) {
   }
   for (const i of items) box.append(el('div', {}, [`· ${visibleReason(i.message, i.code)}`]));
   if (items.length) box.append(blockedReasonDetails(items));
-  if (priceRelated) {
+  if (marketRelated) {
     box.append(el('div', { class: 'muted small' }, [
       scope === 'pool'
-        ? '存在缺价/超范围标的时不按剩余标的重新计算组合，也不回退其他日期；部分标的可显示不代表完整组合结论。'
+        ? '存在行情侧阻断时不按剩余标的重新计算组合，也不回退其他日期；部分标的可显示不代表完整组合结论。'
         : '不使用替代值或其他估值日冒充该标的结果。',
     ]));
   }
@@ -756,7 +815,7 @@ function publishedDisplay(fact, provItem) {
   return fact.display ?? (provItem && provItem.display) ?? '（引擎未提供展示值）';
 }
 
-function reviewSection(review) {
+function reviewSection(review, b = null) {
   const det = el('details', { class: 'rp-evidence' });
   det.append(el('summary', {}, ['复核与发布记录']));
   const body = el('div', { class: 'rp-evidence-body' });
@@ -773,10 +832,15 @@ function reviewSection(review) {
   body.append(ov);
   body.append(el('div', { class: 'muted small' }, [`内部状态标识：${review.status}；组合结论以 portfolio_published 为准。`]));
   if (review.degraded.length > 0) {
-    const db = el('div', { class: 'banner warn-banner' });
-    db.append(el('strong', {}, ['降级说明']));
-    for (const d of review.degraded) db.append(el('div', {}, [`${d.scope ? `「${scopeLabel(d.scope)}」` : ''}${reasonText(d.code)}：${d.message}`]));
-    body.append(db);
+    // 范围外标的的复核降级记录（null close → 缺价措辞）会误称缺价：只显示非准入标的的降级记录，准入原因见上方阻断/错误。
+    const admission = b ? admissionBlockedSymbols(b) : new Set();
+    const shown = review.degraded.filter((d) => !admission.has(d.scope));
+    if (shown.length > 0) {
+      const db = el('div', { class: 'banner warn-banner' });
+      db.append(el('strong', {}, ['降级说明']));
+      for (const d of shown) db.append(el('div', {}, [`${d.scope ? `「${scopeLabel(d.scope)}」` : ''}${reasonText(d.code)}：${d.message}`]));
+      body.append(db);
+    }
   }
 
   /* 已发布事实 */
@@ -809,9 +873,12 @@ function reviewSection(review) {
       ]),
     ));
   }
+  const admission = b ? admissionBlockedSymbols(b) : new Set();
   for (const s of review.blocked_symbols) {
+    // 范围外标的的复核 null close 记录会误称缺价；这里照实改为准入原因（不在支持清单）。
+    const code = admission.has(s.symbol) ? 'E_MARKET_OUT_OF_SUPPORT' : s.code;
     body.append(el('div', { class: 'rp-calc rp-bad-text' }, [
-      `「${s.symbol}」未进入计算（${reasonText(s.code)}）：该标的没有任何事实条目，也不展示替代数字。`,
+      `「${s.symbol}」未进入计算（${reasonText(code)}）：该标的没有任何事实条目，也不展示替代数字。`,
     ]));
   }
 
@@ -900,16 +967,14 @@ function evidenceSection(b, review, scope) {
     }
     if (items.length === 0) {
       body.append(el('div', { class: 'rp-calc rp-bad-text' }, [
-        `「${scopeLabel(scope)}」没有计算路径：${b.blockedSymbols.includes(scope) ? '该标的缺价或超出行情支持范围，未进入计算' : '引擎未输出该范围的事实'}，不展示替代数字。`,
+        `「${scopeLabel(scope)}」没有计算路径：${b.blockedSymbols.includes(scope) ? '该标的被阻断，未进入计算（具体原因见阻断/错误与复核记录）' : '引擎未输出该范围的事实'}，不展示替代数字。`,
       ]));
     }
     for (const it of items) body.append(factEvidence(it, pubById.get(it.fact_id), blkById.get(it.fact_id), review.meta.verify_id, isDynamic(b)));
   }
 
   body.append(el('div', { class: 'rp-dev' }, [
-    `口径与来源：数字由本地确定性引擎计算，并经本地复核流程筛选后才发布；${isDynamic(b)
-      ? dynamicSourceNote(b.marketSource)
-      : '行情为 m0 合成夹具（占位代码、合成价格；非真实行情）'}。原始 CSV 仅在本机读取与校验，未上传。${WIRING_NOTE}`,
+    `口径与来源：数字由本地确定性引擎计算，并经本地复核流程筛选后才发布；行情来源：${marketText(b)}；固定 asOfDate：${metadataText(b.asOfDate)}。金额估值使用不复权价格，前复权仅用于走势；费用、税费仅记录，不计入收益公式。原始 CSV 仅在本机读取与校验，未上传。${WIRING_NOTE}`,
   ]));
   evd.append(body);
   return evd;
@@ -958,7 +1023,7 @@ function appendFactDetails(body, it, showValues, hiddenStepText, dynamic) {
   const inputs = it.inputs || {};
   body.append(el('div', { class: 'rp-kv' }, [
     el('b', {}, ['输入']),
-    `成交 ${Array.isArray(inputs.trade_ids) ? inputs.trade_ids.join('、') : '无'}；${inputs.close_basis ?? `估值日收盘价${dynamic ? '（Tushare 动态行情）' : '（合成行情）'}${inputs.close}`}`,
+    `成交 ${Array.isArray(inputs.trade_ids) ? inputs.trade_ids.join('、') : '无'}；${showValues ? (inputs.close_basis ?? `估值日不复权收盘价 ${inputs.close ?? '不可用'}`) : '未发布：不展示收盘价输入数值'}`,
   ]));
 
   const refs = el('div', { class: 'rp-kv' }, [el('b', {}, ['来源引用'])]);

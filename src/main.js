@@ -68,7 +68,7 @@ function dataState(bill) {
     return { kind: 'blocked', label: '阻断 · 本地账单不能分析', text: '账单读取失败或校验未通过，不能用于分析；请在导入页查看原因并修正。报告与规则测试仍使用示例账单，不读取该文件。' };
   }
   if (bill.status === 'confirmed' && bill.sourceType === 'local') {
-    return { kind: 'user', label: '已确认本地账单 + Tushare 动态行情', text: `正在分析：${bill.fileName}（仅本机处理，未上传；服务端只收到标的代码与日期范围）；行情为 Tushare 最新已收盘日线（非实时），取数失败或超出单次标的上限时会明确阻断。` };
+    return { kind: 'user', label: '已确认本地账单 + 真实行情缓存', text: `正在分析：${bill.fileName}（仅本机处理，未上传）；仅使用通过签收门的真实缓存，实际签收状态与支持范围见报告或规则页；不满足条件时阻断，不回退合成行情。` };
   }
   if (bill.status === 'loaded' && bill.sourceType === 'local') {
     return { kind: 'demo', label: '待确认本地账单', text: `本地账单 ${bill.fileName} 尚未确认，还没有用于分析；报告与规则测试当前使用示例账单。` };
@@ -105,8 +105,12 @@ function shellHost() {
 function renderShell() {
   const chips = document.getElementById('capability-chips');
   clear(chips);
+  const local = state.bill.status === 'confirmed' && state.bill.sourceType === 'local';
   const syntheticScene = state.report && (state.report.scenario === 'A' || state.report.scenario === 'Aprime');
-  chips.append(chip(syntheticScene ? '合成回归场景' : '示例交易 + Tushare 动态行情', syntheticScene ? 'mode' : 'ok'), capabilityDetails());
+  chips.append(
+    local ? chip('真实行情缓存 · 签收门校验', 'mode') : chip(syntheticScene ? '合成回归场景' : '示例交易 + Tushare 动态行情', syntheticScene ? 'mode' : 'ok'),
+    capabilityDetails(),
+  );
 
   const nav = document.getElementById('nav');
   clear(nav);
@@ -135,7 +139,9 @@ function renderShell() {
 
   const footer = document.getElementById('footer-labels');
   clear(footer);
-  footer.append(el('div', {}, ['行情由服务端从 Tushare 获取最新已收盘日线（非实时）；合成回归场景会明确标注。口径：未计入费用、税费，分红未计入（v1）；结果不构成投资建议。']));
+  footer.append(el('div', {}, [`${local
+    ? '本地账单仅使用签收门通过的真实行情缓存（非实时行情），金额使用不复权价格、前复权仅用于走势展示'
+    : '行情由服务端从 Tushare 获取最新已收盘日线（非实时）；合成回归场景会明确标注'}；口径：费用、税费仅记录、未计入公式，分红未计入（v1）；结果不构成投资建议。`]));
 }
 
 function renderView() {
