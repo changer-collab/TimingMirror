@@ -1,17 +1,19 @@
 // 数据适配层 —— 页面唯一数据出口。
-// 行情来源：默认 Tushare 动态日线（同源站点 Function 取最新已收盘日线，服务端持有 token；非实时）；
-//   A/A′ 保留 m0 合成夹具作回归场景。动态响应过 assessDynamicCacheDoc 校验；不可用即明确阻断，不回落静态缓存。
-// 数据链路（报告页·场景）：夹具 CSV 文本 → csvNormalize → 按交易标的/日期取动态行情 → indicators → provenance。
-// 数据链路（报告页·用户账单）：确认后的标准化 state.bill → 按账单标的取动态行情 → runReview 复核与发布门槛 → published_facts。
+// 行情来源：示例场景默认 Tushare 动态日线（同源站点 Function 取最新已收盘日线，服务端持有 token；非实时）；
+//   A/A′ 保留 m0 合成夹具作回归场景。动态响应过 assessDynamicCacheDoc 校验；不可用即明确阻断，不回落静态缓存或合成夹具。
+// 本地账单（已确认用户 CSV）仅使用已签收真实行情缓存（data/market-cache.json；签收门 assessCacheDoc、固定估值日不回退）；
+//   签收门失败、加载失败、固定估值日不在日历等一律明确阻断，不回退动态行情、静态缓存或合成夹具。
+// 数据链路（报告页·示例场景）：夹具 CSV 文本 → csvNormalize → 按交易标的/日期取所选行情 → indicators → provenance。
+// 数据链路（报告页·用户账单）：确认后的标准化 state.bill → 签收真实缓存共享市场段 → runReview 复核与发布门槛 → published_facts。
 // 数据链路（导入页·用户账单）：本地 CSV 文本（FileReader）→ csvNormalize 校验（仅本机，不上传、不落 localStorage）。
 //   浏览器只向同源函数发送标的代码与日期范围；不发送成交、数量、价格、文件名或 CSV 内容，计算全部在本地。
 // 数据链路（契约页）：CONTRACT_TEMPLATES → parseContract 预览；版本记录 → contractRuleSet（按哈希合并、重新解析、每个模板派生唯一当前规则）；
-//   历史情境：每个模板的当前规则 → 选定行情来源 → dayChangePct / 交易来源（已确认本地账单，否则对应来源的示例账单）→ matchContract。
+//   历史情境：每个模板的当前规则 → 按账单模式选择行情（本地账单＝已签收缓存；示例＝所选行情来源）→ dayChangePct / 交易来源 → matchContract。
 // 未接线：实时/分钟级行情（当前为最新已收盘日线）、百炼真实调用；契约为候选口径（占位哈希，待 M0-C1 冻结）。
 // 对话页在线复述：仅复用已确认本地账单的 review，经站点同源边界发送组合四事实（当前 fake 验证；函数未发布/激活时走兜底）。
 // 边界：本层只做取数与编排，不实现计算口径；数字与展示字符串一律来自 src/engine/*（页面不重新格式化）。
 import { parseCsvText, normalizeRows } from '../engine/csvNormalize.js';
-import { assessDynamicCacheDoc, createMarketCache, fromFixtures, fromPullDraft } from '../engine/marketCache.js';
+import { assessCacheDoc, assessDynamicCacheDoc, createMarketCache, fromFixtures, fromPullDraft } from '../engine/marketCache.js';
 import { computeIndicators, RESULT_LABELS } from '../engine/indicators.js';
 import { buildProvenanceReport } from '../engine/provenance.js';
 import { runReview } from '../agent/reviewPipeline.js';
@@ -25,6 +27,11 @@ export const MARKET_SYMBOL_LIMIT = 10;
 const MARKET_RANGE_PADDING_DAYS = 14;
 const MARKET_TTL_MS = 60 * 1000;
 const DEMO_SYMBOLS = Object.freeze(['600519', '300750', '601318']);
+
+// 已签收真实行情缓存（本地账单专用；冻结快照，非实时）
+const REAL_MARKET_URL = '/data/market-cache.json';
+const REAL_MARKET_LABEL = '已签收真实行情缓存';
+let signedMarketPromise = null;
 
 const MARKET_SOURCE_META = Object.freeze({
   'dynamic-tushare': Object.freeze({
@@ -41,6 +48,13 @@ const MARKET_SOURCE_META = Object.freeze({
     cacheName: '合成行情缓存',
     note: '占位代码与合成价格（m0 夹具）',
   }),
+  'signed-cache': Object.freeze({
+    id: 'signed-cache',
+    label: REAL_MARKET_LABEL,
+    shortLabel: '已签收真实缓存',
+    cacheName: '已签收真实行情缓存',
+    note: '本地签收的冻结行情快照（data/market-cache.json）；本地账单仅使用该缓存，非实时',
+  }),
 });
 export const MARKET_SOURCES = Object.freeze(Object.values(MARKET_SOURCE_META));
 
@@ -48,7 +62,7 @@ const MARKET_FIXTURES = {
   calendar: '/m0/market-cache/fixtures/mock-calendar.json',
   bars: '/m0/market-cache/fixtures/mock-daily-bars.json',
 };
-// 合成夹具固定估值日（动态行情使用服务端返回的 asOfDate）
+// 合成夹具固定估值日（动态行情使用服务端返回的 asOfDate；已签收缓存使用 manifest 固定估值日）
 export const SYNTHETIC_VALUATION_DATE = '2024-10-11';
 export const DEMO_VALUATION_DATE = SYNTHETIC_VALUATION_DATE;
 
@@ -56,11 +70,11 @@ export const DEMO_VALUATION_DATE = SYNTHETIC_VALUATION_DATE;
 export const CAPABILITY = {
   engine: { ready: false, label: '计算引擎·仅报告页接入' },
   bailian: { ready: false, label: '百炼·未接通（对话页 fake 验证）' },
-  marketCache: { ready: false, label: 'Tushare 动态日线·服务端获取（非实时）' },
+  marketCache: { ready: false, label: '行情：示例走 Tushare 动态日线（非实时）；本地账单走已签收真实缓存（签收门）' },
   contractEngine: { ready: false, label: '契约引擎·已接入（候选口径）' },
 };
 
-// 数据模式标识（PR #6 §1.1：模式必须显式标注）
+// 数据模式标识（PR #6 §1.1：模式必须显式标注）；本地账单模式由 USER_BILL_DATA_MODE 单独标注。
 export const DATA_MODE = Object.freeze({
   id: 'demo_bill_dynamic_market',
   label: '示例交易 + Tushare 动态行情',
@@ -282,7 +296,7 @@ function supportScope(mkt) {
   };
 }
 
-// 共享市场段：估值日 → 末笔检查 → 取价；缺价/超范围阻断，不回落其他日期或另一行情源
+// 共享市场段（示例场景）：估值日 → 末笔检查 → 取价；缺价/超范围阻断，不回落其他日期或另一行情源
 function runMarketStage(trades, mkt) {
   const { market, source } = mkt;
   const val = market.resolveValuation(mkt.valuationDate);
@@ -306,6 +320,116 @@ function runMarketStage(trades, mkt) {
       : `标的 ${s} 不在${source.cacheName}支持范围（${market.symbols.join('、')}）：该标的结果不发布；组合结果同样不发布`,
   }));
   return { ok: true, market, val, source, prices, symbols, unblocked, blockedSymbols, errors };
+}
+
+/* —— 已签收真实行情缓存：本地账单专用市场段（签收门 → 固定估值日 → 准入边界 → 取价）—— */
+function sourceMetadata(market, gate = null, doc = null) {
+  const signed = gate?.usable === true;
+  const marketSource = {
+    id: doc || gate ? 'real-cache' : 'synthetic-fixture',
+    label: signed ? REAL_MARKET_LABEL : doc || gate ? '真实行情缓存（不可用）' : '合成演示行情（非真实行情）',
+    signed, artifact: doc?.artifact ?? null, manifestVersion: gate?.manifest_version ?? null,
+    snapshotId: market?.snapshot?.snapshot_id ?? null, fetchTime: market?.snapshot?.fetch_time ?? null,
+    dataSource: doc?.manifest?.data_source ?? (doc || gate ? '不可用' : 'm0 合成夹具'), calendarSource: doc?.manifest?.calendar_source ?? null,
+    gate,
+  };
+  return {
+    marketSource,
+    supportScope: market ? { symbols: [...(gate?.symbols ?? market.symbols)], range: { ...market.range }, snapshot: market.snapshot, signed } : null,
+    asOfDate: signed ? gate.asOfDate : doc || gate ? null : DEMO_VALUATION_DATE,
+    marketRange: market ? { ...market.range } : null, snapshot: market?.snapshot ?? null,
+  };
+}
+
+async function marketContext(bill) {
+  if (!(bill?.status === 'confirmed' && bill.sourceType === 'local')) {
+    const market = (await syntheticMarket()).market;
+    return { ok: true, market, ...sourceMetadata(market), errors: [] };
+  }
+  if (!signedMarketPromise) {
+    signedMarketPromise = (async () => {
+      try {
+        const doc = await fetchJson(REAL_MARKET_URL);
+        const gate = assessCacheDoc(doc);
+        if (!gate.usable) return {
+          ok: false, market: null, ...sourceMetadata(null, gate, doc),
+          errors: [{ line: 0, kind: 'CACHE_GATE', code: 'E_MARKET_CACHE_GATE', message: `真实行情缓存签收门失败：${gate.reason}${gate.detail ? `（${gate.detail}）` : ''}；禁止回退合成行情。` }],
+        };
+        const market = createMarketCache(fromPullDraft(doc));
+        const context = { ok: true, market, ...sourceMetadata(market, gate, doc), errors: [] };
+        const val = market.resolveValuation(gate.asOfDate);
+        if (val.blocked) return { ...context, ok: false, val, errors: [{ line: 0, kind: 'VALUATION_OUT_OF_RANGE', code: val.code, message: `估值日 ${val.requested_date} 超出支持范围或无法解析有效交易日（不改用其他日期）` }] };
+        if (val.effective_date !== gate.asOfDate) return { ...context, ok: false, val: { ...val, blocked: true, code: 'E_MARKET_ASOF_NOT_TRADING_DAY' }, errors: [{ line: 0, kind: 'NO_EFFECTIVE_DAY', code: 'E_MARKET_ASOF_NOT_TRADING_DAY', message: `已签收固定估值日 ${gate.asOfDate} 不在缓存交易日历中，禁止改用 ${val.effective_date}。` }] };
+        return { ...context, val };
+      } catch (e) {
+        return {
+          ok: false, market: null, ...sourceMetadata(null, { usable: false, signed: false, reason: 'LOAD_FAILED', detail: null }),
+          errors: [{ line: 0, kind: 'CACHE_LOAD', code: 'E_MARKET_CACHE_LOAD', message: `真实行情缓存加载失败：${String(e?.message ?? e)}；禁止回退合成行情。` }],
+        };
+      }
+    })();
+  }
+  const context = await signedMarketPromise;
+  if (!context.ok) signedMarketPromise = null;
+  return context;
+}
+
+// 本地账单准入边界：global（末笔早于估值日 / 成交日期超范围 / 已知公司行为事件）整批阻断；
+// unsupported（范围外标的）不整批阻断——该标的不取价、随复核按 B4 扣发，其余受支持标的照常发布。
+function localMarketBoundary(trades, context) {
+  const { market, asOfDate } = context;
+  const global = [];
+  const unsupported = [];
+  for (const symbol of new Set(trades.map((t) => t.symbol))) {
+    if (!market.symbols.includes(symbol)) unsupported.push({ line: 0, kind: 'OUT_OF_SUPPORT', symbol, code: 'E_MARKET_OUT_OF_SUPPORT', message: `标的 ${symbol} 不在已签收真实行情缓存支持清单（${market.symbols.join('、')}）：该标的结果不发布；组合结果同样不发布（不按剩余标的重算）。` });
+  }
+  const last = trades.map((t) => t.trade_date).sort().at(-1);
+  if (last > asOfDate) global.push({ line: 0, kind: 'BEFORE_LAST_TRADE', code: 'E_VALUATION_BEFORE_LAST_TRADE', message: `估值日 ${asOfDate} 早于账单末笔交易日 ${last}，本次结果阻断（不改用其他日期）。` });
+  for (const t of trades) {
+    if (t.trade_date < market.range.start || t.trade_date > market.range.end) global.push({ line: t.source?.line ?? 0, kind: 'TRADE_OUT_OF_RANGE', symbol: t.symbol, code: 'E_MARKET_TRADE_OUT_OF_RANGE', message: `成交日期 ${t.trade_date} 超出行情支持范围 ${market.range.start} 至 ${market.range.end}，本次结果阻断。` });
+  }
+  // C1 不检测或校正公司行为；已知事件前的 300750 交易一律不准入（即使实际持仓已清仓，买入后持有的对照路径仍可能跨越事件，不能断言放行是安全的），是针对已知事件的额外限制，不是通用公司行为检测。
+  if (trades.some((t) => t.symbol === '300750' && t.trade_date < '2023-04-26')) global.push({ line: 0, kind: 'CORPORATE_ACTION_BOUNDARY', symbol: '300750', code: 'E_MARKET_CORPORATE_ACTION_BOUNDARY', message: '300750 涉及 2023-04-26 已知股数事件前交易，超出当前公司行为支持边界；v1 不检测、不校正公司行为，本次结果阻断（不是缺价）。即使实际持仓在事件前已清仓，买入后持有的对照路径仍可能跨越该事件，当前无法断言放行是安全的，故一律保守阻断。' });
+  return { global, unsupported };
+}
+
+// 共享市场段（本地账单）：签收缓存上下文 → 准入边界 → 末笔检查 → 取价（范围外标的不取价，随复核按 B4 扣发）
+async function runUserMarketStage(trades, bill = null) {
+  const context = await marketContext(bill);
+  if (!context.ok) return { ...context, val: context.val ?? null };
+  const { market, asOfDate } = context;
+  const val = context.val ?? market.resolveValuation(asOfDate);
+  if (val.blocked) return { ...context, ok: false, val, errors: [{ line: 0, kind: 'VALUATION_OUT_OF_RANGE', code: val.code, message: `估值日 ${val.requested_date} 超出支持范围或无法解析有效交易日（不改用其他日期）` }] };
+  let admissionErrors = [];
+  if (isConfirmedLocalBill(bill)) {
+    const boundary = localMarketBoundary(trades, context);
+    if (boundary.global.length) return { ...context, ok: false, val, errors: boundary.global };
+    admissionErrors = boundary.unsupported;
+    // 全部标的都范围外：没有可发布标的，整批阻断（复核不运行，避免把准入问题误标为缺价）。
+    if (admissionErrors.length && admissionErrors.length === new Set(trades.map((t) => t.symbol)).size) {
+      return { ...context, ok: false, val, errors: admissionErrors };
+    }
+  }
+  const lastTradeDate = trades.map((t) => t.trade_date).sort().at(-1);
+  const lastCheck = market.checkLastTrade(val.effective_date, lastTradeDate);
+  if (lastCheck.blocked) return { ...context, ok: false, val, errors: [{ line: 0, kind: 'BEFORE_LAST_TRADE', code: lastCheck.code, message: `有效估值日 ${val.effective_date} 早于账单末笔交易日 ${lastTradeDate}` }] };
+  const symbols = [...new Set(trades.map((t) => t.symbol))];
+  const unsupportedSymbols = admissionErrors.map((e) => e.symbol);
+  const priceSymbols = unsupportedSymbols.length ? symbols.filter((s) => !unsupportedSymbols.includes(s)) : symbols;
+  const prices = market.resolvePrices(priceSymbols, val.effective_date);
+  const priceBlocked = priceSymbols.filter((s) => prices.per_symbol[s].blocked);
+  const unblocked = priceSymbols.filter((s) => !prices.per_symbol[s].blocked);
+  const blockedSymbols = [...unsupportedSymbols, ...priceBlocked];
+  const stageErrors = [
+    ...admissionErrors,
+    ...priceBlocked.map((s) => ({
+      line: 0, symbol: s, kind: market.symbols.includes(s) ? 'MISSING_PRICE' : 'OUT_OF_SUPPORT', code: prices.per_symbol[s].code,
+      message: market.symbols.includes(s)
+        ? `标的 ${s} 在有效估值日 ${val.effective_date} 当日缺收盘价：该标的及组合结果不发布（未回退其他日期）`
+        : `标的 ${s} 不在行情缓存支持范围（${market.symbols.join('、')}）：该标的及组合结果不发布`,
+    })),
+  ];
+  return { ...context, ok: true, val, prices, symbols, unblocked, blockedSymbols, errors: stageErrors };
 }
 
 async function normalizeBillCsv(url, fileName) {
@@ -335,10 +459,11 @@ export async function loadDemoBill(scenario = DEFAULT_SCENARIO) {
   };
 }
 
+// 本地账单模式：仅接已签收真实行情缓存（签收门）；失败明确阻断、不回退动态行情或合成夹具。
 export const USER_BILL_DATA_MODE = Object.freeze({
-  id: 'user_bill_dynamic_market',
-  label: '用户本地账单 + Tushare 动态行情',
-  note: '交易文件仅在本机处理；服务端只接收标的代码与日期范围，取最新已收盘日线（非实时）；取数失败或超出单次标的上限时报告明确阻断，不回退静态缓存或合成行情',
+  id: 'user_bill_real_cache',
+  label: '用户本地账单 + 真实行情缓存（须通过签收门）',
+  note: '交易文件仅在本机处理；确认后只使用签收门通过的真实缓存，失败明确阻断、不回退动态行情或合成行情',
 });
 
 export async function loadUserBillFromText(csvText, fileName) {
@@ -357,7 +482,7 @@ export async function loadUserBillFromText(csvText, fileName) {
   };
 }
 
-/* —— 报告页：引擎链路 ——
+/* —— 报告页：示例场景引擎链路 ——
    输出契约（页面消费）：
    { scenario, scenarioMeta, dataMode, marketSource, supportScope,
      status('ok'|'partial'|'blocked'|'error'), blocked, warnings[], errors[],
@@ -471,11 +596,17 @@ export async function loadReportEngine(scenario = DEFAULT_SCENARIO) {
   return out;
 }
 
-export async function loadUserBillReport(bill, { marketSource = DEFAULT_MARKET_SOURCE } = {}) {
+/* —— 报告页：用户账单引擎链路（仅已签收真实行情缓存）——
+   输出契约（页面消费）：
+   { sourceType:'local', fileName, dataMode, marketSource, supportScope, asOfDate,
+     status('ok'|'partial'|'blocked'|'error'), blocked, warnings[], errors[],
+     valuation, marketRange, snapshot, prices, blockedSymbols[], poolBlocked,
+     review, factsByScope{}, provenance, labels } */
+export async function loadUserBillReport(bill) {
   const out = {
     sourceType: 'local',
     fileName: bill && bill.fileName ? bill.fileName : '',
-    dataMode: (bill && bill.dataMode) || USER_BILL_DATA_MODE,
+    dataMode: USER_BILL_DATA_MODE,
     marketSource: null,
     supportScope: null,
     status: 'ok',
@@ -502,23 +633,8 @@ export async function loadUserBillReport(bill, { marketSource = DEFAULT_MARKET_S
   const trades = bill.trades;
   out.warnings = [...(bill.warnings ?? [])];
 
-  // 1) 行情来源 → 共享市场段（来源不可用即阻断，不回退合成行情）
-  let mkt;
-  try {
-    const scope = marketSource === 'dynamic-tushare' ? marketScopeFromTrades(trades) : null;
-    mkt = await loadMarket(marketSource, scope);
-  } catch (e) {
-    out.status = 'blocked';
-    out.blocked = true;
-    out.errors.push({ line: 0, code: 'E_MARKET_SOURCE', message: String(e && e.message ? e.message : e) });
-    return out;
-  }
-  out.marketSource = marketMeta(mkt);
-  out.supportScope = supportScope(mkt);
-  out.marketRange = { ...mkt.market.range };
-  out.snapshot = mkt.market.snapshot;
-  const stage = runMarketStage(trades, mkt);
-  out.valuation = stage.val;
+  const stage = await runUserMarketStage(trades, bill);
+  Object.assign(out, { marketSource: stage.marketSource, supportScope: stage.supportScope, asOfDate: stage.asOfDate, marketRange: stage.marketRange, snapshot: stage.snapshot, valuation: stage.val });
   if (!stage.ok) {
     out.status = 'blocked';
     out.blocked = true;
@@ -529,9 +645,12 @@ export async function loadUserBillReport(bill, { marketSource = DEFAULT_MARKET_S
   out.blockedSymbols = [...stage.blockedSymbols];
   out.errors.push(...stage.errors);
 
-  // 2) runReview（全量标的 closes：缺价置 null，由复核统一扣发该标的与组合）
+  // 2) runReview（全量标的 closes：范围外/缺价置 null，由复核统一扣发该标的与组合）
   const closes = {};
-  for (const s of stage.symbols) closes[s] = stage.prices.per_symbol[s].blocked ? null : stage.prices.per_symbol[s].close;
+  for (const s of stage.symbols) {
+    const p = stage.prices.per_symbol[s];
+    closes[s] = p ? (p.blocked ? null : p.close) : null;
+  }
   const review = runReview({ trades, closes, valuation: stage.val });
   out.review = review;
   out.provenance = review.provenance;
@@ -558,7 +677,7 @@ export async function loadUserBillReport(bill, { marketSource = DEFAULT_MARKET_S
 }
 
 /* —— 对话页在线复述：只取已确认本地账单的复核输出 ——
-   演示账单未经 runReview，不生成 review、不回退演示数据；页面据此给出明确兜底。 */
+   示例账单未经 runReview，不生成 review、不回退演示数据；页面据此给出明确兜底。 */
 export const CHAT_REVIEW_CODES = Object.freeze({
   BILL_NOT_CONFIRMED: 'W_CHAT_BILL_NOT_CONFIRMED',
   REVIEW_UNAVAILABLE: 'W_CHAT_REVIEW_UNAVAILABLE',
@@ -569,7 +688,7 @@ export async function loadChatReview(bill) {
     return {
       ok: false,
       code: CHAT_REVIEW_CODES.BILL_NOT_CONFIRMED,
-      message: '在线复述仅使用已确认的本地账单；演示账单未经复核发布流程，不参与在线复述。',
+      message: '在线复述仅使用已确认的本地账单；示例账单未经复核发布流程，不参与在线复述。',
     };
   }
   const bundle = await loadUserBillReport(bill);
@@ -583,7 +702,8 @@ export async function loadChatReview(bill) {
   return { ok: true, review: bundle.review };
 }
 
-// 单笔卖出反事实（S1 幽灵线缺口图）—— 演示账单与用户确认账单共用本入口。
+// 单笔卖出反事实（S1 幽灵线缺口图）—— 示例场景与用户确认账单共用本入口。
+// 用户账单（bill）走已签收缓存；示例场景按 marketSource 选择行情，两者不互相回退。
 export const CF_CODES = Object.freeze({
   NO_TRADES: 'E_CF_NO_TRADES',
   BAD_SCOPE: 'E_CF_BAD_SCOPE',
@@ -597,11 +717,13 @@ export const CF_CODES = Object.freeze({
   ENGINE_ERROR: 'E_CF_ENGINE_ERROR',
 });
 
-export async function loadSellCounterfactual({ trades, symbol, tradeId, marketSource = DEFAULT_MARKET_SOURCE } = {}) {
+export async function loadSellCounterfactual({ trades, symbol, tradeId, bill = null, marketSource = DEFAULT_MARKET_SOURCE } = {}) {
+  const sourceId = bill ? 'signed-cache' : (marketSource === 'synthetic-fixture' ? 'synthetic-fixture' : 'dynamic-tushare');
   const fail = (code, message) => ({
     ok: false, code, message, symbol: symbol ?? null, tradeId: tradeId ?? null,
-    sellOptions: [], markers: [], replace: null, series: null, valuation: null, marketRange: null, marketSourceId: marketSource, labels: RESULT_LABELS,
+    sellOptions: [], markers: [], replace: null, series: null, valuation: null, marketRange: null, marketSourceId: sourceId, labels: RESULT_LABELS,
   });
+  if (bill && !isConfirmedLocalBill(bill)) return fail(CF_CODES.MARKET_BLOCKED, '本地账单未确认或校验未通过，不回退示例行情。');
   if (!Array.isArray(trades) || trades.length === 0) return fail(CF_CODES.NO_TRADES, '账单交易为空，无法计算单笔反事实');
   if (!symbol || symbol === 'pool') return fail(CF_CODES.BAD_SCOPE, '单笔反事实仅支持单标的作用域（组合 scope 不进入 replaceSell）');
   const symbolTrades = trades.filter((t) => t && t.symbol === symbol);
@@ -613,14 +735,19 @@ export async function loadSellCounterfactual({ trades, symbol, tradeId, marketSo
     return fail(CF_CODES.NO_SELL, `标的 ${symbol} 没有卖出记录：S1 仅支持替换卖出笔（买入侧替换 S3 未定义，v1 不做）`);
   }
 
-  let mkt;
-  try {
-    const scope = marketSource === 'dynamic-tushare' ? marketScopeFromTrades(trades) : null;
-    mkt = await loadMarket(marketSource, scope);
-  } catch (e) {
-    return fail(CF_CODES.MARKET_SOURCE, String(e && e.message ? e.message : e));
+  let stage;
+  if (bill) {
+    stage = await runUserMarketStage(trades, bill);
+  } else {
+    let mkt;
+    try {
+      const scope = marketSource === 'synthetic-fixture' ? null : marketScopeFromTrades(trades);
+      mkt = await loadMarket(marketSource, scope);
+    } catch (e) {
+      return fail(CF_CODES.MARKET_SOURCE, String(e && e.message ? e.message : e));
+    }
+    stage = runMarketStage(symbolTrades, mkt);
   }
-  const stage = runMarketStage(symbolTrades, mkt);
   if (!stage.ok) return fail(CF_CODES.MARKET_BLOCKED, stage.errors.map((e) => `${e.code} · ${e.message}`).join('；'));
   if (stage.blockedSymbols.includes(symbol)) {
     const e = stage.errors.find((x) => x.message && x.message.includes(symbol));
@@ -640,7 +767,7 @@ export async function loadSellCounterfactual({ trades, symbol, tradeId, marketSo
   try {
     result = replaceSell({
       symbol,
-      trades: symbolTrades, 
+      trades: symbolTrades,
       tradeId: selected.trade_id,
       effectiveDate: stage.val.effective_date,
       closeOf: (d) => stage.market.getClose(symbol, d),
@@ -649,9 +776,10 @@ export async function loadSellCounterfactual({ trades, symbol, tradeId, marketSo
   } catch (e) {
     return fail(CF_CODES.ENGINE_ERROR, String(e && e.message ? e.message : e));
   }
-  return {
+  const out = {
     ok: true,
     code: null,
+    marketSourceId: sourceId,
     symbol,
     tradeId: selected.trade_id,
     sellOptions: sells.map((t) => ({ trade_id: t.trade_id, trade_date: t.trade_date, price: t.price, quantity: t.quantity })),
@@ -663,9 +791,10 @@ export async function loadSellCounterfactual({ trades, symbol, tradeId, marketSo
     series: result.series,
     valuation: stage.val,
     marketRange: { ...stage.market.range },
-    marketSource: marketMeta(mkt),
     labels: RESULT_LABELS,
   };
+  if (bill) return { ...out, marketSource: stage.marketSource, supportScope: stage.supportScope, asOfDate: stage.asOfDate };
+  return { ...out, marketSource: marketMeta({ market: stage.market, valuationDate: stage.val.effective_date, source: stage.source ?? { ...MARKET_SOURCE_META[sourceId] } }) };
 }
 
 /* —— A′ 与 A 的差异（引擎输出之间的字段对比；不引入夹具期望值）
@@ -693,16 +822,27 @@ export function computeScopeDelta(baseBundle, altBundle, scope) {
 /* —— 契约：模板读取 / 规则预览 / 历史情境判定（src/engine/contractMatch.js；候选口径，哈希为占位算法，待 M0-C1 冻结） —— */
 export const CONTRACT_SIM_LABEL = 'Tushare 动态日线（服务端获取，非实时）· 不构成投资建议';
 export const CONTRACT_SIM_SCOPE_NOTE = '最新已收盘日线（非实时）· 候选规则口径（待 M0-C1 冻结）· 不构成投资建议';
+export const CONTRACT_SIM_LABEL_SIGNED = `${REAL_MARKET_LABEL} · 不构成投资建议`;
+export const CONTRACT_SIM_SCOPE_NOTE_SIGNED = '真实缓存快照 · 非实时行情 · 候选口径（待 M0-C1 冻结）· 不构成投资建议';
 export const CONTRACT_SIM_LABEL_SYNTHETIC = '合成回归行情 · 不构成投资建议';
 export const CONTRACT_SIM_SCOPE_NOTE_SYNTHETIC = '合成夹具（非真实行情）· 候选口径（待 M0-C1 冻结）· 不构成投资建议';
 export const CONTRACT_HASH_NOTE = '候选哈希，待 M0-C1 冻结';
 export const CONTRACT_SIM_INPUT_INVALID = 'E_CONTRACT_SIM_INPUT_INVALID';
+
 export const CONTRACT_MARKET_OPTIONS = Object.freeze([
   { id: 'dynamic-tushare', label: 'Tushare 动态行情' },
   { id: 'synthetic-fixture', label: '合成回归' },
 ]);
 
 export function contractSimLabels(sourceId = DEFAULT_MARKET_SOURCE) {
+  if (sourceId === 'signed-cache') {
+    return {
+      id: 'signed-cache',
+      label: CONTRACT_SIM_LABEL_SIGNED,
+      scopeNote: CONTRACT_SIM_SCOPE_NOTE_SIGNED,
+      marketLabel: MARKET_SOURCE_META['signed-cache'].label,
+    };
+  }
   const synthetic = sourceId === 'synthetic-fixture';
   return {
     id: synthetic ? 'synthetic-fixture' : 'dynamic-tushare',
@@ -917,25 +1057,29 @@ function demoTradesFor(marketSource) {
   return demoTradesPromises.get(scenarioKey);
 }
 
-// 交易来源：已确认、未阻断、有标准化交易的本地账单 → 用户账单；其余用所选行情来源对应的示例账单（不混用、不互相回退）
+// 交易来源：已确认、未阻断、有标准化交易的本地账单 → 用户账单（仅签收缓存）；其余用所选行情来源对应的示例账单（不混用、不互相回退）
 function isConfirmedLocalBill(bill) {
   return !!bill && bill.status === 'confirmed' && bill.sourceType === 'local' && !bill.blocked && Array.isArray(bill.trades) && bill.trades.length > 0;
 }
 
+function isLocalBill(bill) {
+  return !!bill && bill.status === 'confirmed' && bill.sourceType === 'local';
+}
+
 export function contractTradeSource(bill, marketSource = DEFAULT_MARKET_SOURCE) {
-  const sourceId = marketSource === 'synthetic-fixture' ? 'synthetic-fixture' : 'dynamic-tushare';
-  const marketLabel = MARKET_SOURCE_META[sourceId].label;
-  if (isConfirmedLocalBill(bill)) {
+  if (isLocalBill(bill)) {
     const name = String(bill.fileName || 'user-bill.csv');
     return {
       kind: 'user_bill',
       label: `已确认本地账单（${name}）`,
       fileName: name,
-      market_label: marketLabel,
-      marketSource: sourceId,
-      key: `user:${sourceId}:${name}:${JSON.stringify(bill.trades.map((t) => [t.trade_id, t.symbol, t.side, t.trade_date]))}`,
+      market_label: REAL_MARKET_LABEL,
+      marketSource: 'signed-cache',
+      key: `user:${bill.contextId ?? ''}:${name}:${JSON.stringify(bill.trades)}`,
     };
   }
+  const sourceId = marketSource === 'synthetic-fixture' ? 'synthetic-fixture' : 'dynamic-tushare';
+  const marketLabel = MARKET_SOURCE_META[sourceId].label;
   if (sourceId === 'synthetic-fixture') {
     return {
       kind: 'demo_bill_a',
@@ -961,7 +1105,33 @@ async function sourceTrades(bill, marketSource) {
   return { source, trades: source.kind === 'user_bill' ? bill.trades : await demoTradesFor(marketSource) };
 }
 
+// 本地账单的契约情境标签（签收缓存口径；签收门/加载/固定估值日失败时随 error 返回，不回退示例行情）
+function simulationLabels(context) {
+  return context.marketSource.id === 'real-cache'
+    ? { label: context.marketSource.label, scopeNote: '真实缓存快照 · 非实时行情 · 不构成投资建议' }
+    : { label: CONTRACT_SIM_LABEL_SYNTHETIC, scopeNote: CONTRACT_SIM_SCOPE_NOTE_SYNTHETIC };
+}
+
 export async function contractSimContext({ bill, marketSource = DEFAULT_MARKET_SOURCE } = {}) {
+  if (isLocalBill(bill)) {
+    const context = await marketContext(bill);
+    const source = contractTradeSource(bill, marketSource);
+    const meta = { ...simulationLabels(context), sourceKey: source.key, marketSource: context.marketSource, supportScope: context.supportScope, asOfDate: context.asOfDate };
+    if (!context.ok) return { ...meta, error: context.errors.map((e) => `${e.code} · ${e.message}`).join('；') };
+    if (source.kind === 'user_bill' && !isConfirmedLocalBill(bill)) return { ...meta, error: 'E_BILL_NOT_CONFIRMED · 本地账单校验未通过，禁止回退演示数据。' };
+    const { market } = context;
+    const { trades } = await sourceTrades(bill, marketSource);
+    const boundary = localMarketBoundary(trades, context);
+    if (boundary.global.length) return { ...meta, error: boundary.global.map((e) => `${e.code} · ${e.message}`).join('；') };
+    const billSymbols = [...new Set(trades.map((t) => t.symbol))].sort();
+    const symbols = [...billSymbols, ...market.symbols.filter((s) => !billSymbols.includes(s))];
+    return {
+      ...meta, tradesSource: { ...source, market_label: context.marketSource.label },
+      symbols: symbols.map((s) => ({ symbol: s, in_market_cache: market.symbols.includes(s), in_bill: billSymbols.includes(s) })),
+      range: { ...market.range }, tradingDays: [...market.tradingDays],
+      sells: trades.filter((t) => t.side === 'sell').map((t) => ({ trade_id: t.trade_id, symbol: t.symbol, trade_date: t.trade_date })),
+    };
+  }
   const labels = contractSimLabels(marketSource);
   const { source, trades } = await sourceTrades(bill, labels.id);
   const billSymbols = [...new Set(trades.map((t) => t.symbol))].sort();
@@ -982,7 +1152,47 @@ export async function contractSimContext({ bill, marketSource = DEFAULT_MARKET_S
   };
 }
 
-async function evaluateRule(rule, { symbol, date, bill, marketSource }) {
+async function evaluateRuleSigned(rule, { symbol, date, bill, context }) {
+  const out = {
+    ok: false, ...simulationLabels(context), symbol: symbol ?? null, requested_date: date ?? null,
+    rule: { hash: rule.hash, short_hash: rule.short_hash, v: rule.v, status: rule.status, text: rule.text, template_name: rule.template_name, fields_text: rule.fields_text },
+    verdict: null, code: null, message: '', change: null, match: null,
+    tradesSource: { ...contractTradeSource(bill), market_label: context.marketSource.label }, uses_trades: CONTRACT_TEMPLATES[rule.template_id]?.kind === 'sell_buyback_window', in_market_cache: null,
+  };
+  if (!rule.integrity.ok) return { ...out, code: rule.integrity.code, message: rule.integrity.message };
+  if (out.tradesSource.kind === 'user_bill' && !isConfirmedLocalBill(bill)) return { ...out, code: 'E_BILL_NOT_CONFIRMED', message: '本地账单校验未通过，禁止回退演示数据。' };
+  if (!context.ok) return { ...out, code: context.errors[0].code, message: context.errors.map((e) => e.message).join('；') };
+  const parsed = rule.parsed;
+  try {
+    const market = context.market;
+    out.in_market_cache = market.symbols.includes(symbol);
+    if (context.marketSource.signed) {
+      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ...out, code: CONTRACT_SIM_INPUT_INVALID, message: '情境日期无效（须为 YYYY-MM-DD）' };
+      if (date < market.range.start || date > market.range.end) return { ...out, ok: true, verdict: 'missing_data', code: 'E_VALUATION_OUT_OF_RANGE', message: `情境日期 ${date} 超出已签收缓存日期范围，不改用其他日期。` };
+      if (!market.symbols.includes(symbol)) return { ...out, code: 'E_MARKET_OUT_OF_SUPPORT', message: `标的 ${symbol} 不在已签收缓存支持清单，不能进行本次测试（不是缺价）。` };
+      if (!market.tradingDays.includes(date)) return { ...out, ok: true, verdict: 'missing_data', code: 'E_DATE_NOT_IN_CALENDAR', message: `日期 ${date} 不在已签收缓存交易日历中，不改用其他日期。` };
+      const boundary = localMarketBoundary(bill.trades, context);
+      if (boundary.global.length) return { ...out, code: boundary.global[0].code, message: boundary.global.map((e) => e.message).join('；') };
+    }
+    if (parsed.kind === 'change_pct_threshold') {
+      const change = dayChangePct(market, symbol, date);
+      const match = matchContract(parsed, {
+        symbol,
+        date: change.complete ? change.effective_date : date,
+        changePct: change.complete ? change.change_pct : null,
+        reason_code: change.complete ? null : change.code,
+      });
+      return { ...out, ok: true, verdict: match.verdict, code: match.code, message: match.message, change, match };
+    }
+    const { source, trades } = await sourceTrades(bill, 'signed-cache');
+    const match = matchContract(parsed, { symbol, date, trades, tradingDays: market.tradingDays });
+    return { ...out, ok: true, verdict: match.verdict, code: match.code, message: match.message, match, tradesSource: { ...source, market_label: context.marketSource.label } };
+  } catch (e) {
+    return { ...out, code: CONTRACT_SIM_INPUT_INVALID, message: `情境输入无效：${String(e && e.message ? e.message : e)}` };
+  }
+}
+
+async function evaluateRuleDemo(rule, { symbol, date, bill, marketSource }) {
   const labels = contractSimLabels(marketSource);
   const out = {
     ok: false, label: labels.label, scopeNote: labels.scopeNote, symbol: symbol ?? null, requested_date: date ?? null,
@@ -1016,12 +1226,38 @@ async function evaluateRule(rule, { symbol, date, bill, marketSource }) {
 
 // 一次情境、每个模板唯一的当前规则逐条判定（各自走引擎链路，结果按规则分别返回，互不覆盖）；
 // 历史规则不参与；完整性失败的启用规则不参与判定，仅在 needs_reconfirm 中如实回传（不猜测、不改写记录）。
+// 本地账单走已签收缓存（marketSource 参数不改变本地账单的行情来源）；示例账单按所选行情来源判定。
 export async function simulateContracts({ versions, symbol, date, bill, marketSource = DEFAULT_MARKET_SOURCE } = {}) {
-  const labels = contractSimLabels(marketSource);
   const { executable, needsReconfirm } = contractRuleSet(versions);
-  const results = [];
-  for (const rule of executable) results.push(await evaluateRule(rule, { symbol, date, bill, marketSource: labels.id }));
+  const needsReconfirmOut = needsReconfirm.map((r) => ({
+    hash: r.hash, short_hash: r.short_hash, v: r.v, status: r.status, text: r.text,
+    template_name: r.template_name, fields_text: r.fields_text, code: r.integrity.code, message: r.integrity.message,
+  }));
+  const rulesUsed = executable.map((r) => ({ hash: r.hash, v: r.v, text: r.text, template_name: r.template_name }));
   const summary = { triggered: 0, not_triggered: 0, missing_data: 0, error: 0 };
+  if (isLocalBill(bill)) {
+    const context = await marketContext(bill);
+    const results = [];
+    for (const rule of executable) results.push(await evaluateRuleSigned(rule, { symbol, date, bill, context }));
+    for (const r of results) summary[r.ok ? r.verdict : 'error'] += 1;
+    return {
+      ...simulationLabels(context), marketSource: context.marketSource, supportScope: context.supportScope, asOfDate: context.asOfDate,
+      marketSourceId: 'signed-cache',
+      symbol: symbol ?? null,
+      requested_date: date ?? null,
+      tradesSource: { ...contractTradeSource(bill), market_label: context.marketSource.label },
+      rules_n: executable.length,
+      rules_used: rulesUsed,
+      empty: executable.length === 0,
+      needs_reconfirm_n: needsReconfirm.length,
+      needs_reconfirm: needsReconfirmOut,
+      summary,
+      results,
+    };
+  }
+  const labels = contractSimLabels(marketSource);
+  const results = [];
+  for (const rule of executable) results.push(await evaluateRuleDemo(rule, { symbol, date, bill, marketSource: labels.id }));
   for (const r of results) summary[r.ok ? r.verdict : 'error'] += 1;
   return {
     label: labels.label,
@@ -1031,13 +1267,10 @@ export async function simulateContracts({ versions, symbol, date, bill, marketSo
     requested_date: date ?? null,
     tradesSource: contractTradeSource(bill, labels.id),
     rules_n: executable.length,
-    rules_used: executable.map((r) => ({ hash: r.hash, v: r.v, text: r.text, template_name: r.template_name })),
+    rules_used: rulesUsed,
     empty: executable.length === 0,
     needs_reconfirm_n: needsReconfirm.length,
-    needs_reconfirm: needsReconfirm.map((r) => ({
-      hash: r.hash, short_hash: r.short_hash, v: r.v, status: r.status, text: r.text,
-      template_name: r.template_name, fields_text: r.fields_text, code: r.integrity.code, message: r.integrity.message,
-    })),
+    needs_reconfirm: needsReconfirmOut,
     summary,
     results,
   };
