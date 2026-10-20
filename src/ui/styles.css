@@ -18,6 +18,11 @@ body {
 .brand { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .brand strong { font-size: 20px; letter-spacing: .04em; }
 .brand .sub { font-size: 14px; color: var(--dim); }
+.topbar-side { display: flex; align-items: center; justify-content: flex-end; gap: 12px; flex-wrap: wrap; }
+.view-switch { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255, 255, 255, .8); }
+.view-option { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; color: var(--dim); font-size: 12px; line-height: 1.5; text-decoration: none; white-space: nowrap; }
+.view-option:hover { color: var(--cream); }
+.view-option.is-active { background: var(--cream); color: #fff; }
 .chips { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .chip { font-size: 13px; padding: 4px 11px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); white-space: nowrap; }
 .cap-details { font-size: 14px; color: var(--dim); }
@@ -388,6 +393,7 @@ body {
 }
 @media (max-width: 640px) {
   .topbar, .flow-bar, .footer { padding-left: 16px; padding-right: 16px; }
+  .topbar-side { width: 100%; justify-content: flex-start; }
   .tabs { padding: 0 12px; }
   .view { padding: 18px 14px 34px; }
   .brand strong { font-size: 18px; }
