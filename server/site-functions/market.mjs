@@ -213,17 +213,8 @@ async function loadStockBasicMappings({ callTushare, rowLimit }) {
       for (const row of rows) {
         const symbol = String(row.symbol ?? '').trim();
         const tsCode = String(row.ts_code ?? '').trim();
-        if (!SYMBOL_RE.test(symbol) || !TS_CODE_RE.test(tsCode) || !tsCode.startsWith(symbol)) {
-          throw fail(MARKET_TRANSPORT_CODES.RESPONSE, false, {
-            api_name: 'stock_basic',
-            stage: 'stock_basic_row',
-            exchange,
-            list_status: listStatus,
-            symbol_length: symbol.length,
-            ts_code_suffix: tsCode.includes('.') ? tsCode.slice(tsCode.lastIndexOf('.')) : null,
-            starts_with_symbol: tsCode.startsWith(symbol),
-          });
-        }
+        // 单条异常记录不应阻断整批快照；只有能通过严格校验的行才进入映射。
+        if (!SYMBOL_RE.test(symbol) || !TS_CODE_RE.test(tsCode) || !tsCode.startsWith(symbol)) continue;
         if (!mapping.has(symbol)) mapping.set(symbol, tsCode);
       }
     }
@@ -296,7 +287,12 @@ async function buildSnapshot({
   symbols, start, end, callTushare, getStockBasicMappings, now,
   chunkTradingDays, rowLimit, maxConcurrency,
 }) {
-  const mapping = await getStockBasicMappings();
+  // 共享索引只保留通过严格校验的行；本次请求再收窄到请求标的，避免无关记录参与判定。
+  const allMapping = await getStockBasicMappings();
+  const mapping = new Map();
+  for (const symbol of symbols) {
+    if (allMapping.has(symbol)) mapping.set(symbol, allMapping.get(symbol));
+  }
   const tsCodes = resolveTsCodes(symbols, mapping);
 
   const calendarRows = await callTushare({

@@ -638,17 +638,48 @@ function streamOfChunks(chunks) {
     retryDelayMs: 0, sleepImpl: async () => {},
   });
   let badStockBasicError = null;
-  try { await badStockBasicTransport.snapshot({ symbols: ['600519'], start: START, end: END }); } catch (e) { badStockBasicError = e; }
-  check('Tushare 诊断：stock_basic 行校验失败 → stock_basic_row + exchange/list_status，不记录完整代码',
-    badStockBasicError?.code === MARKET_TRANSPORT_CODES.RESPONSE
-    && badStockBasicError.diagnostics?.stage === 'stock_basic_row'
-    && badStockBasicError.diagnostics?.api_name === 'stock_basic'
-    && badStockBasicError.diagnostics?.exchange === 'SSE'
-    && badStockBasicError.diagnostics?.list_status === 'L'
-    && badStockBasicError.diagnostics?.ts_code_suffix === '.SH'
-    && badStockBasicError.diagnostics?.starts_with_symbol === false
-    && !JSON.stringify(badStockBasicError.diagnostics).includes('BAD.SH'),
-    JSON.stringify(badStockBasicError?.diagnostics));
+  let badStockBasicDoc = null;
+  try { badStockBasicDoc = await badStockBasicTransport.snapshot({ symbols: ['600519'], start: START, end: END }); } catch (e) { badStockBasicError = e; }
+  check('Tushare 修复：无关的 7 位 stock_basic 异常行被跳过，请求标的有有效行时快照成功',
+    !badStockBasicError && badStockBasicDoc?.symbols['600519']?.ts_code === '600519.SH'
+    && badStockBasicDoc?.snapshot?.mapping_source.includes('stock_basic'),
+    JSON.stringify(badStockBasicError?.diagnostics ?? badStockBasicDoc?.symbols));
+
+  const targetOnlyInvalidUpstream = createFakeUpstream({
+    stockBasicData: {
+      L: [['600519.SH', '600519'], ['BAD.SH', '000001']],
+      P: [],
+      D: [],
+    },
+  });
+  const targetOnlyInvalidTransport = createTushareMarketTransport({
+    token: TOKEN, fetchImpl: targetOnlyInvalidUpstream.fetchImpl, timeoutMs: 1000,
+    retryDelayMs: 0, sleepImpl: async () => {},
+  });
+  let targetOnlyInvalidError = null;
+  try { await targetOnlyInvalidTransport.snapshot({ symbols: ['000001'], start: START, end: END }); } catch (e) { targetOnlyInvalidError = e; }
+  check('Tushare 修复：请求标的只存在于异常行 → E_MARKET_SYMBOL_UNKNOWN/422，不误判为格式错误',
+    targetOnlyInvalidError?.code === MARKET_TRANSPORT_CODES.SYMBOL_UNKNOWN,
+    JSON.stringify(targetOnlyInvalidError?.diagnostics ?? targetOnlyInvalidError?.code));
+
+  const allInvalidStockBasicUpstream = createFakeUpstream({
+    stockBasicData: {
+      L: [['BAD.SH', '600519']],
+      P: [],
+      D: [],
+    },
+  });
+  const allInvalidStockBasicTransport = createTushareMarketTransport({
+    token: TOKEN, fetchImpl: allInvalidStockBasicUpstream.fetchImpl, timeoutMs: 1000,
+    retryDelayMs: 0, sleepImpl: async () => {},
+  });
+  let allInvalidStockBasicError = null;
+  try { await allInvalidStockBasicTransport.snapshot({ symbols: ['600519'], start: START, end: END }); } catch (e) { allInvalidStockBasicError = e; }
+  check('Tushare 修复：所有 stock_basic 行均无效 → 仍为 mapping_empty / E_MARKET_RESPONSE_INVALID',
+    allInvalidStockBasicError?.code === MARKET_TRANSPORT_CODES.RESPONSE
+    && allInvalidStockBasicError.diagnostics?.stage === 'mapping_empty'
+    && allInvalidStockBasicError.diagnostics?.api_name === 'stock_basic',
+    JSON.stringify(allInvalidStockBasicError?.diagnostics));
 
   const htmlUpstream = createFakeUpstream({
     failAt: ({ sent }) => (sent.api_name === 'trade_cal' ? { body: undefined } : null),
