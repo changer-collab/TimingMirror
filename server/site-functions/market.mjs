@@ -114,9 +114,17 @@ function createTushareCaller({ token, fetchImpl, timeoutMs, maxAttempts, retryDe
       if (payload.code !== 0) {
         throw fail(MARKET_TRANSPORT_CODES.UPSTREAM, RETRYABLE_TUSHARE_CODES.has(Number(payload.code)));
       }
-      const names = payload.data?.fields;
-      const rows = payload.data?.items;
-      if (!Array.isArray(names) || !Array.isArray(rows)) throw fail(MARKET_TRANSPORT_CODES.RESPONSE);
+      // Tushare 对无记录的查询可能返回 data:null 或 items:null（例如某交易所没有对应 list_status 的股票）；
+      // 这是合法空结果，不是响应损坏。只有“非空结果缺少字段名”才按格式非法处理。
+      const data = payload.data;
+      if (data === null || data === undefined) return [];
+      if (typeof data !== 'object') throw fail(MARKET_TRANSPORT_CODES.RESPONSE);
+      const rows = data.items;
+      if (rows === null || rows === undefined) return [];
+      if (!Array.isArray(rows)) throw fail(MARKET_TRANSPORT_CODES.RESPONSE);
+      if (rows.length === 0) return [];
+      const names = data.fields;
+      if (!Array.isArray(names)) throw fail(MARKET_TRANSPORT_CODES.RESPONSE);
       return rows.map((row) => {
         const out = {};
         names.forEach((name, i) => { out[name] = Array.isArray(row) ? row[i] : undefined; });

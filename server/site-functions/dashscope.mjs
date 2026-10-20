@@ -17,7 +17,13 @@ const INTENT_SYSTEM = [
 
 const RESTATE_SYSTEM = [
   '你只做已复核事实的复述。',
-  '只能使用用户消息 facts 数组中的数字与展示值，不得生成新数字、外推收益或提供投资建议。',
+  '用户消息是 JSON：{"question":"...","facts":[...]}；facts 每项的 display 是唯一允许在回答中出现的数字文本。',
+  '必须遵守：',
+  '1. 只能引用 facts 中的数字；不得计算、换算、四舍五入、补零，也不得改写正负号、小数位、千分位或单位。',
+  '2. 引用某个数值时必须逐字符原样复制该 fact 的 display，不得根据 value 自行拼写。',
+  '3. pp 不得写成 %、百分数或“个百分点”；% 不得写成 pp；¥ 不得省略或写成“元”。',
+  '4. 例如 display 为 "+2.0pp" 就写 "+2.0pp"（不能写 "+2.0%"）；display 为 "¥-2,805.00" 就写 "¥-2,805.00"（不能写 "-2805 元"）；display 为 "+5.4%" 就写 "+5.4%"（不能写 "5.4%"）。',
+  '5. 不确定 display 时宁可不引用该数值，也不得凭印象改写。',
   '输出 JSON 对象：{"answer_text":"..."}。',
   'answer_text 使用简体中文，简洁；不要输出 Markdown、代码块或额外字段。',
 ].join('\n');
@@ -48,7 +54,7 @@ export function createDashScopeTransport({
   if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl 必须为函数');
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) throw new TypeError('timeoutMs 必须为正整数');
 
-  async function call(messages) {
+  async function call(messages, overrides = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -67,6 +73,7 @@ export function createDashScopeTransport({
               result_format: 'message',
               enable_thinking: false,
               response_format: { type: 'json_object' },
+              ...overrides,
             },
           }),
           signal: controller.signal,
@@ -114,10 +121,11 @@ export function createDashScopeTransport({
       ]);
     },
     restate({ question, facts }) {
+      // 低温度只用于降低复述时的格式漂移；数字仍由浏览器端逐项核对。
       return call([
         { role: 'system', content: RESTATE_SYSTEM },
         { role: 'user', content: JSON.stringify({ question, facts }) },
-      ]);
+      ], { temperature: 0.1 });
     },
   });
 }

@@ -73,6 +73,8 @@ const buildDegraded = () => runReview({ trades: FULL_TRADES(), closes: { '000000
     && result.number_check.failed_codes.includes('E_NUMCHECK_NOT_IN_FACTS'), JSON.stringify(result.number_check));
   check('数字失败：不泄出候选回答与伪造数字', !JSON.stringify(result).includes('99.9')
     && !JSON.stringify(result).includes('999') && !JSON.stringify(result).includes(forged), JSON.stringify(result));
+  check('数字失败：本地重试一次仍失败（共 2 次 restate）', transport.calls.length === 2
+    && transport.calls.every((c) => c.stage === 'restate'), JSON.stringify(transport.calls.map((c) => c.stage)));
 }
 
 /* ==== 失败：网络/超时/响应异常 ==== */
