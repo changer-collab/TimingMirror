@@ -547,6 +547,50 @@ function streamOfChunks(chunks) {
   try { await emptyCalTransport.snapshot({ symbols: ['600519'], start: START, end: END }); } catch (e) { noDataError = e; }
   check('Tushare：空交易日历 → E_MARKET_NO_DATA', noDataError && noDataError.code === MARKET_TRANSPORT_CODES.NO_DATA);
 
+  // Tushare 对无记录查询可能返回 data:null（如北交所没有某 list_status 的股票），合法空结果不能判成响应损坏。
+  const nullDataUpstream = createFakeUpstream({
+    failAt: ({ sent }) => (sent.api_name === 'stock_basic' && sent.params.exchange === 'BSE'
+      ? { body: { code: 0, data: null } }
+      : null),
+  });
+  const nullDataTransport = createTushareMarketTransport({
+    token: TOKEN, fetchImpl: nullDataUpstream.fetchImpl, timeoutMs: 1000, retryDelayMs: 0, sleepImpl: async () => {},
+    now: () => new Date('2026-10-19T01:30:00.000Z'),
+  });
+  const nullDataDoc = await nullDataTransport.snapshot({ symbols: ['600519'], start: START, end: END });
+  check('Tushare：stock_basic 返回 data:null → 视为空集合，仍可构建快照', nullDataDoc.asOfDate === '2025-01-06'
+    && nullDataDoc.symbols['600519'].bars.length === 3
+    && nullDataUpstream.calls.some((c) => c.sent.api_name === 'stock_basic' && c.sent.params.exchange === 'BSE'),
+  JSON.stringify({ asOfDate: nullDataDoc.asOfDate }));
+
+  // items:null 同样是合法空结果（例如某标的在区间内没有复权因子记录）。
+  const nullItemsUpstream = createFakeUpstream({
+    failAt: ({ sent }) => (sent.api_name === 'adj_factor' && sent.params.ts_code === '600519.SH'
+      ? { body: { code: 0, data: { fields: ['ts_code', 'trade_date', 'adj_factor'], items: null } } }
+      : null),
+  });
+  const nullItemsTransport = createTushareMarketTransport({
+    token: TOKEN, fetchImpl: nullItemsUpstream.fetchImpl, timeoutMs: 1000, retryDelayMs: 0, sleepImpl: async () => {},
+    now: () => new Date('2026-10-19T01:30:00.000Z'),
+  });
+  const nullItemsDoc = await nullItemsTransport.snapshot({ symbols: ['600519'], start: START, end: END });
+  check('Tushare：items:null → 视为空集合，不复权价仍可用、前复权序列为空', nullItemsDoc.symbols['600519'].bars.length === 3
+    && nullItemsDoc.symbols['600519'].bars_fwdadj.length === 0
+    && nullItemsDoc.symbols['600519'].adj_factor_base === null, JSON.stringify(nullItemsDoc.symbols['600519']));
+
+  const malformedDataUpstream = createFakeUpstream({
+    failAt: ({ sent }) => (sent.api_name === 'stock_basic'
+      ? { body: { code: 0, data: { items: [['600519.SH', '600519', 'L']] } } }
+      : null),
+  });
+  const malformedDataTransport = createTushareMarketTransport({
+    token: TOKEN, fetchImpl: malformedDataUpstream.fetchImpl, timeoutMs: 1000, retryDelayMs: 0, sleepImpl: async () => {},
+  });
+  let malformedDataError = null;
+  try { await malformedDataTransport.snapshot({ symbols: ['600519'], start: START, end: END }); } catch (e) { malformedDataError = e; }
+  check('Tushare：非空结果缺少 fields → 仍判 E_MARKET_RESPONSE_INVALID（不把损坏响应当空结果）',
+    malformedDataError && malformedDataError.code === MARKET_TRANSPORT_CODES.RESPONSE, malformedDataError && malformedDataError.code);
+
   const timeoutTransport = createTushareMarketTransport({
     token: TOKEN,
     timeoutMs: 10,
