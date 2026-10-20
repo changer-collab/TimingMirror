@@ -245,6 +245,8 @@ check('导入·准备账单：仅 CSV / 本机读取不上传 / 确认不下单 
   txt.includes('准备账单') && txt.includes('仅支持 CSV 文件') && txt.includes('原始 CSV 仅在本机读取和校验，不上传') && txt.includes('不会下单、不会执行交易')
   && txt.includes('日期（YYYY-MM-DD）') && txt.includes('标的（6 位数字代码）') && txt.includes('方向（买入 / 卖出）') && txt.includes('数量（正整数）')
   && txt.includes('可选列：费用、税费') && txt.includes('日期,标的,方向,价格,数量,费用,税费') && txt.includes('累计卖出不能超过累计买入'), txt.slice(0, 400));
+check('导入·公司行为限制：显式披露 v1 不自动识别股数事件', txt.includes('公司行为限制：')
+  && txt.includes('v1 不自动识别送转、拆合股、配股等股数事件') && txt.includes('可能估值不准确'), txt.slice(0, 400));
 {
   const feeBox = findByClass(current, 'im-feetax')[0];
   const feeTxt = feeBox ? texts(feeBox).join('|') : '';
@@ -1072,6 +1074,8 @@ check('用户报告：确认后 status=confirmed 且进入报告页（用户字�
 await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('用户报告：文件名 + 用户本地账单 + Tushare 动态行情标注（拉取/最新交易日/快照）', txt.includes('用户本地账单') && txt.includes('文件名：user-bill.csv') && txt.includes('用户本地账单 + Tushare 动态行情') && txt.includes('Tushare 动态行情（服务端获取，非实时') && txt.includes('最新交易日 2025-12-31') && txt.includes('快照 tushare-20251231-01234567'), txt.slice(0, 320));
+check('用户报告·公司行为限制：显式披露 v1 不自动识别股数事件', txt.includes('公司行为限制：')
+  && txt.includes('v1 不自动识别送转、拆合股、配股等股数事件') && txt.includes('可能估值不准确'), txt.slice(0, 320));
 check('报告·用户账单：底部同样不出现“契约匹配未接线”，契约状态与未接入项照实说明', wiringOk(txt), txt.slice(-300));
 check('报告·用户摘要：数据来源=已确认本地账单（文件名）/ Tushare 动态日线 / 估值日 / 组合结果已发布（已通过复核）',
   summaryTxt().includes('已确认本地账单 · user-bill.csv') && summaryTxt().includes('Tushare 动态日线（服务端获取，非实时）') && summaryTxt().includes('估值日')

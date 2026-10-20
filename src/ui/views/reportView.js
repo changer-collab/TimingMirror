@@ -11,6 +11,14 @@ import { renderGhostChart } from '../components/ghostChart.js';
 
 const WIRING_NOTE = '契约页已接入候选模板与历史情境模拟（候选口径，哈希待 M0-C1 冻结），契约不会自动改变本报告结论。未接入：实时/分钟级行情（当前为最新已收盘日线，非实时）、对话页事实回跳；在线问答仅接站点同源复述边界，尚未完成真实服务验证。';
 const NO_TRADE_ADVICE = '不要据此作交易判断。';
+const CORPORATE_ACTION_NOTICE = '公司行为限制：v1 不自动识别送转、拆合股、配股等股数事件；涉及相关区间的账单可能估值不准确，请核对后再使用。';
+
+function corporateActionNotice() {
+  return el('div', { class: 'banner warn-banner' }, [
+    el('strong', {}, ['公司行为限制：']),
+    'v1 不自动识别送转、拆合股、配股等股数事件；涉及相关区间的账单可能估值不准确，请核对后再使用。',
+  ]);
+}
 
 /* —— 本次分析摘要：只取 bundle / review 已有字段，不计算数字 —— */
 function sumItem(label, value, kind = '') {
@@ -363,6 +371,7 @@ function buildPage(page, b, baseBundle, ctx) {
   top.append(controls);
   page.append(top);
   page.append(demoSummary(b));
+  page.append(corporateActionNotice());
 
   /* —— 状态条：数据模式 / 行情 / 估值日 / 口径（常显，不折叠）—— */
   const status = el('div', { class: 'rp-status' });
@@ -510,6 +519,7 @@ function buildUserBillPage(page, b, ctx) {
   top.append(titleBox);
   page.append(top);
   page.append(userSummary(b, review));
+  page.append(corporateActionNotice());
 
   const status = el('div', { class: 'rp-status' });
   status.append(el('span', { class: 'rp-chip demo' }, [`本地账单 · 文件名：${b.fileName || '（未知）'}（本机，未上传）`]));
