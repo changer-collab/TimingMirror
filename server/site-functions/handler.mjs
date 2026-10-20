@@ -90,6 +90,44 @@ function errorResponse(status, code, extraHeaders = {}) {
   return jsonResponse(status, { ok: false, code, message: MESSAGES[code] ?? MESSAGES[SITE_FUNCTION_CODES.REQUEST_INVALID] }, extraHeaders);
 }
 
+function marketErrorResponse(status, code, diagnostics = null) {
+  const payload = { ok: false, code, message: MESSAGES[code] ?? MESSAGES[SITE_FUNCTION_CODES.REQUEST_INVALID] };
+  if (diagnostics && typeof diagnostics === 'object' && !Array.isArray(diagnostics)) payload.diagnostics = diagnostics;
+  return jsonResponse(status, payload);
+}
+
+function newDiagnosticId() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') return globalThis.crypto.randomUUID();
+  return `diag-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function shapeType(value) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
+}
+
+const DIAGNOSTIC_KEYS = new Set([
+  'stage', 'api_name', 'upstream_http_status', 'upstream_business_code',
+  'data_present', 'fields_type', 'items_type', 'items_count', 'payload_type',
+  'exchange', 'list_status', 'symbol_length', 'ts_code_suffix', 'starts_with_symbol',
+  'artifact_type', 'artifact_present', 'artifact_matches',
+]);
+
+function sanitizeMarketDiagnostics(raw) {
+  if (!isPlainObject(raw)) return { stage: 'unexpected' };
+  const out = {};
+  for (const key of DIAGNOSTIC_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(raw, key)) continue;
+    const value = raw[key];
+    if (value === null || typeof value === 'string' || typeof value === 'boolean'
+      || (typeof value === 'number' && Number.isFinite(value))) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -187,19 +225,44 @@ function validateMarketBody(body) {
   return { ok: true, request: { symbols: [...symbols], start, end } };
 }
 
-async function callMarketTransport(marketTransport, request) {
+async function callMarketTransport(marketTransport, request, diagnosticId) {
   if (marketTransport === null) {
-    return { ok: false, status: 503, code: SITE_FUNCTION_CODES.MARKET_NOT_CONFIGURED };
+    return {
+      ok: false,
+      status: 503,
+      code: SITE_FUNCTION_CODES.MARKET_NOT_CONFIGURED,
+      diagnostics: { diagnostic_id: diagnosticId, stage: 'not_configured' },
+    };
   }
   try {
     const doc = await marketTransport.snapshot(request);
     if (!isPlainObject(doc) || doc.artifact !== DYNAMIC_CACHE_ARTIFACT) {
-      return { ok: false, status: 502, code: SITE_FUNCTION_CODES.MARKET_RESPONSE };
+      return {
+        ok: false,
+        status: 502,
+        code: SITE_FUNCTION_CODES.MARKET_RESPONSE,
+        diagnostics: {
+          diagnostic_id: diagnosticId,
+          stage: 'doc_artifact',
+          artifact_type: shapeType(doc && doc.artifact),
+          artifact_present: typeof (doc && doc.artifact) === 'string',
+          artifact_matches: false,
+        },
+      };
     }
     return { ok: true, doc };
   } catch (error) {
     const code = error && MARKET_STATUS[error.code] ? error.code : SITE_FUNCTION_CODES.MARKET_UNAVAILABLE;
-    return { ok: false, status: MARKET_STATUS[code], code };
+    return {
+      ok: false,
+      status: MARKET_STATUS[code],
+      code,
+      diagnostics: {
+        diagnostic_id: diagnosticId,
+        ...sanitizeMarketDiagnostics(error && error.diagnostics),
+        market_error_code: typeof (error && error.code) === 'string' ? error.code : null,
+      },
+    };
   }
 }
 
@@ -255,8 +318,9 @@ export function createHandler({ transport = null, marketTransport = null, maxBod
     if (stage === 'market') {
       const validated = validateMarketBody(body);
       if (!validated.ok) return errorResponse(400, validated.code);
-      const result = await callMarketTransport(marketTransport, validated.request);
-      if (!result.ok) return errorResponse(result.status, result.code);
+      const diagnosticId = newDiagnosticId();
+      const result = await callMarketTransport(marketTransport, validated.request, diagnosticId);
+      if (!result.ok) return marketErrorResponse(result.status, result.code, result.diagnostics);
       return jsonResponse(200, { ok: true, market: result.doc });
     }
 

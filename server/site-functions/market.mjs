@@ -31,15 +31,16 @@ export const MARKET_TRANSPORT_CODES = Object.freeze({
 });
 
 export class MarketTransportError extends Error {
-  constructor(code, retryable = false) {
+  constructor(code, retryable = false, diagnostics = null) {
     super(code);
     this.name = 'MarketTransportError';
     this.code = code;
     this.retryable = retryable;
+    this.diagnostics = diagnostics;
   }
 }
 
-const fail = (code, retryable = false) => new MarketTransportError(code, retryable);
+const fail = (code, retryable = false, diagnostics = null) => new MarketTransportError(code, retryable, diagnostics);
 
 export function isMarketDate(value) {
   if (typeof value !== 'string' || !DATE_RE.test(value)) return false;
@@ -66,6 +67,12 @@ function positiveNumber(value) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+function shapeType(value) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
+}
+
 function round4(n) {
   return Math.round(n * 10000) / 10000;
 }
@@ -77,6 +84,7 @@ async function sha256Hex(text) {
 
 function createTushareCaller({ token, fetchImpl, timeoutMs, maxAttempts, retryDelayMs, sleepImpl }) {
   async function callOnce({ apiName, params, fields }) {
+    const base = { api_name: apiName };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const timedOut = () => controller.signal.aborted;
@@ -91,32 +99,51 @@ function createTushareCaller({ token, fetchImpl, timeoutMs, maxAttempts, retryDe
         });
       } catch (error) {
         throw timedOut() || (error && error.name === 'AbortError')
-          ? fail(MARKET_TRANSPORT_CODES.TIMEOUT, true)
-          : fail(MARKET_TRANSPORT_CODES.UPSTREAM, true);
+          ? fail(MARKET_TRANSPORT_CODES.TIMEOUT, true, { ...base, stage: 'timeout', upstream_http_status: null })
+          : fail(MARKET_TRANSPORT_CODES.UPSTREAM, true, { ...base, stage: 'network', upstream_http_status: null });
       }
+      const status = Number.isFinite(Number(response?.status)) ? Number(response.status) : null;
       if (response === null || typeof response !== 'object' || typeof response.ok !== 'boolean') {
-        throw fail(MARKET_TRANSPORT_CODES.RESPONSE);
+        throw fail(MARKET_TRANSPORT_CODES.RESPONSE, false, { ...base, stage: 'fetch_shape', upstream_http_status: status });
       }
       if (!response.ok) {
-        const status = Number(response.status);
-        throw fail(MARKET_TRANSPORT_CODES.UPSTREAM, status === 429 || status >= 500);
+        throw fail(MARKET_TRANSPORT_CODES.UPSTREAM, status === 429 || status >= 500, {
+          ...base, stage: 'upstream_http', upstream_http_status: status,
+        });
       }
       let payload;
       try {
         payload = await response.json();
       } catch (error) {
         throw timedOut() || (error && error.name === 'AbortError')
-          ? fail(MARKET_TRANSPORT_CODES.TIMEOUT, true)
-          : fail(MARKET_TRANSPORT_CODES.RESPONSE);
+          ? fail(MARKET_TRANSPORT_CODES.TIMEOUT, true, { ...base, stage: 'timeout', upstream_http_status: status })
+          : fail(MARKET_TRANSPORT_CODES.RESPONSE, false, { ...base, stage: 'json_parse', upstream_http_status: status });
       }
-      if (timedOut()) throw fail(MARKET_TRANSPORT_CODES.TIMEOUT, true);
-      if (!payload || typeof payload !== 'object') throw fail(MARKET_TRANSPORT_CODES.RESPONSE);
+      if (timedOut()) throw fail(MARKET_TRANSPORT_CODES.TIMEOUT, true, { ...base, stage: 'timeout', upstream_http_status: status });
+      if (!payload || typeof payload !== 'object') {
+        throw fail(MARKET_TRANSPORT_CODES.RESPONSE, false, {
+          ...base, stage: 'payload_shape', upstream_http_status: status, payload_type: shapeType(payload),
+        });
+      }
       if (payload.code !== 0) {
-        throw fail(MARKET_TRANSPORT_CODES.UPSTREAM, RETRYABLE_TUSHARE_CODES.has(Number(payload.code)));
+        const businessCode = Number.isFinite(Number(payload.code)) ? Number(payload.code) : null;
+        throw fail(MARKET_TRANSPORT_CODES.UPSTREAM, RETRYABLE_TUSHARE_CODES.has(businessCode), {
+          ...base, stage: 'upstream_business', upstream_http_status: status, upstream_business_code: businessCode,
+        });
       }
       const names = payload.data?.fields;
       const rows = payload.data?.items;
-      if (!Array.isArray(names) || !Array.isArray(rows)) throw fail(MARKET_TRANSPORT_CODES.RESPONSE);
+      if (!Array.isArray(names) || !Array.isArray(rows)) {
+        throw fail(MARKET_TRANSPORT_CODES.RESPONSE, false, {
+          ...base,
+          stage: 'data_shape',
+          upstream_http_status: status,
+          data_present: payload.data !== null && payload.data !== undefined,
+          fields_type: names === undefined ? 'missing' : shapeType(names),
+          items_type: rows === undefined ? 'missing' : shapeType(rows),
+          items_count: Array.isArray(rows) ? rows.length : null,
+        });
+      }
       return rows.map((row) => {
         const out = {};
         names.forEach((name, i) => { out[name] = Array.isArray(row) ? row[i] : undefined; });
@@ -133,7 +160,9 @@ function createTushareCaller({ token, fetchImpl, timeoutMs, maxAttempts, retryDe
       try {
         return await callOnce(request);
       } catch (error) {
-        lastError = error instanceof MarketTransportError ? error : fail(MARKET_TRANSPORT_CODES.UPSTREAM);
+        lastError = error instanceof MarketTransportError
+          ? error
+          : fail(MARKET_TRANSPORT_CODES.UPSTREAM, false, { api_name: request.apiName, stage: 'unexpected' });
         if (!lastError.retryable || attempt === maxAttempts) throw lastError;
         if (retryDelayMs > 0) await sleepImpl(retryDelayMs * 2 ** (attempt - 1));
       }
@@ -157,7 +186,11 @@ async function callTushareByRange(callTushare, { apiName, tsCode, fields, tradin
     const params = { start_date: compactDate(chunk.start), end_date: compactDate(chunk.end) };
     if (tsCode) params.ts_code = tsCode;
     const batch = await callTushare({ apiName, params, fields });
-    if (batch.length >= rowLimit) throw fail(MARKET_TRANSPORT_CODES.RESPONSE);
+    if (batch.length >= rowLimit) {
+      throw fail(MARKET_TRANSPORT_CODES.RESPONSE, false, {
+        api_name: apiName, stage: 'row_limit', items_count: batch.length,
+      });
+    }
     rows.push(...batch);
   }
   return rows;
@@ -172,18 +205,32 @@ async function loadStockBasicMappings({ callTushare, rowLimit }) {
         params: { list_status: listStatus, exchange },
         fields: 'ts_code,symbol,list_status',
       });
-      if (rows.length >= rowLimit) throw fail(MARKET_TRANSPORT_CODES.RESPONSE);
+      if (rows.length >= rowLimit) {
+        throw fail(MARKET_TRANSPORT_CODES.RESPONSE, false, {
+          api_name: 'stock_basic', stage: 'row_limit', exchange, list_status: listStatus, items_count: rows.length,
+        });
+      }
       for (const row of rows) {
         const symbol = String(row.symbol ?? '').trim();
         const tsCode = String(row.ts_code ?? '').trim();
         if (!SYMBOL_RE.test(symbol) || !TS_CODE_RE.test(tsCode) || !tsCode.startsWith(symbol)) {
-          throw fail(MARKET_TRANSPORT_CODES.RESPONSE);
+          throw fail(MARKET_TRANSPORT_CODES.RESPONSE, false, {
+            api_name: 'stock_basic',
+            stage: 'stock_basic_row',
+            exchange,
+            list_status: listStatus,
+            symbol_length: symbol.length,
+            ts_code_suffix: tsCode.includes('.') ? tsCode.slice(tsCode.lastIndexOf('.')) : null,
+            starts_with_symbol: tsCode.startsWith(symbol),
+          });
         }
         if (!mapping.has(symbol)) mapping.set(symbol, tsCode);
       }
     }
   }
-  if (mapping.size === 0) throw fail(MARKET_TRANSPORT_CODES.RESPONSE);
+  if (mapping.size === 0) {
+    throw fail(MARKET_TRANSPORT_CODES.RESPONSE, false, { api_name: 'stock_basic', stage: 'mapping_empty' });
+  }
   return mapping;
 }
 
@@ -257,7 +304,11 @@ async function buildSnapshot({
     params: { exchange: 'SSE', start_date: compactDate(start), end_date: compactDate(end), is_open: '1' },
     fields: 'cal_date',
   });
-  if (calendarRows.length >= rowLimit) throw fail(MARKET_TRANSPORT_CODES.RESPONSE);
+  if (calendarRows.length >= rowLimit) {
+    throw fail(MARKET_TRANSPORT_CODES.RESPONSE, false, {
+      api_name: 'trade_cal', stage: 'row_limit', items_count: calendarRows.length,
+    });
+  }
   const allDays = [...new Set(calendarRows.map((r) => normalizeTradeDate(r.cal_date)).filter(Boolean))].sort();
   if (allDays.length === 0) throw fail(MARKET_TRANSPORT_CODES.NO_DATA);
   const calendarSet = new Set(allDays);

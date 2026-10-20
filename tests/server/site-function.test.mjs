@@ -277,8 +277,9 @@ function streamOfChunks(chunks) {
   });
 
   const ok = await invoke(handler, '/api/market/snapshot', { body: { symbols: ['600519', '000001'], start: '2024-12-20', end: '2025-01-06' } });
-  check('行情路由：200 且返回 dynamic 文档', ok.status === 200 && ok.json?.ok === true
-    && JSON.stringify(ok.json.market) === JSON.stringify(doc) && ok.headers.get('cache-control') === 'no-store', ok.text);
+  check('行情路由：200 且返回 dynamic 文档（成功响应不含 diagnostics）', ok.status === 200 && ok.json?.ok === true
+    && JSON.stringify(ok.json.market) === JSON.stringify(doc) && ok.json.diagnostics === undefined
+    && ok.headers.get('cache-control') === 'no-store', ok.text);
   check('行情路由：transport 只收到 symbols/start/end（无成交/文件信息）', calls.length === 1
     && Object.keys(calls[0]).sort().join(',') === 'end,start,symbols'
     && JSON.stringify(calls[0].symbols) === JSON.stringify(['600519', '000001']), JSON.stringify(calls[0]));
@@ -330,8 +331,47 @@ function streamOfChunks(chunks) {
     transport: null,
     marketTransport: { async snapshot() { return { artifact: 'not-dynamic' }; } },
   }), '/api/market/snapshot', { body: { symbols: ['600519'], start: '2024-12-20', end: '2025-01-06' } });
-  check('行情路由：transport 返回非 dynamic 文档 → 502 E_MARKET_RESPONSE', malformed.status === 502
-    && malformed.json.code === SITE_FUNCTION_CODES.MARKET_RESPONSE, malformed.text);
+  check('行情路由：transport 返回非 dynamic 文档 → 502 E_MARKET_RESPONSE，并标记 doc_artifact', malformed.status === 502
+    && malformed.json.code === SITE_FUNCTION_CODES.MARKET_RESPONSE
+    && malformed.json.diagnostics?.stage === 'doc_artifact'
+    && malformed.json.diagnostics?.artifact_matches === false
+    && typeof malformed.json.diagnostics?.diagnostic_id === 'string', malformed.text);
+
+  const diagnosticHandler = createHandler({
+    transport: null,
+    marketTransport: {
+      async snapshot() {
+        throw new MarketTransportError(MARKET_TRANSPORT_CODES.RESPONSE, false, {
+          stage: 'data_shape',
+          api_name: 'stock_basic',
+          upstream_http_status: 200,
+          data_present: false,
+          fields_type: 'null',
+          items_type: 'null',
+          items_count: null,
+          token: 'synthetic-token-marker',
+          raw_response: 'upstream-raw-marker',
+          stack: 'stack-marker',
+        });
+      },
+    },
+  });
+  const diagnostic = await invoke(diagnosticHandler, '/api/market/snapshot', {
+    body: { symbols: ['600519'], start: '2024-12-20', end: '2025-01-06' },
+  });
+  check('行情路由：502 diagnostics 保留原 code/message，只暴露白名单诊断字段',
+    diagnostic.status === 502 && diagnostic.json.ok === false
+    && diagnostic.json.code === SITE_FUNCTION_CODES.MARKET_RESPONSE
+    && diagnostic.json.message === '行情服务响应格式非法'
+    && diagnostic.json.diagnostics?.stage === 'data_shape'
+    && diagnostic.json.diagnostics?.api_name === 'stock_basic'
+    && diagnostic.json.diagnostics?.data_present === false
+    && diagnostic.json.diagnostics?.fields_type === 'null'
+    && diagnostic.json.diagnostics?.items_type === 'null'
+    && typeof diagnostic.json.diagnostics?.diagnostic_id === 'string'
+    && !diagnostic.text.includes('synthetic-token-marker')
+    && !diagnostic.text.includes('upstream-raw-marker')
+    && !diagnostic.text.includes('stack-marker'), diagnostic.text);
 }
 
 /* ==== Tushare transport 契约（fake fetch，不联网） ==== */
@@ -525,9 +565,14 @@ function streamOfChunks(chunks) {
   });
   let upstreamError = null;
   try { await businessTransport.snapshot({ symbols: ['600519'], start: START, end: END }); } catch (e) { upstreamError = e; }
-  check('Tushare：业务错误 code≠0 不重试 → E_MARKET_UNAVAILABLE 且不转发上游文本', upstreamError
-    && upstreamError.code === MARKET_TRANSPORT_CODES.UPSTREAM && !upstreamError.message.includes('provider-secret-marker')
-    && businessFail.calls.length === 1, `calls=${businessFail.calls.length}`);
+  check('Tushare：业务错误 code≠0 不重试 → E_MARKET_UNAVAILABLE，诊断只记阶段与业务码',
+    upstreamError && upstreamError.code === MARKET_TRANSPORT_CODES.UPSTREAM
+    && !upstreamError.message.includes('provider-secret-marker')
+    && upstreamError.diagnostics?.stage === 'upstream_business'
+    && upstreamError.diagnostics?.api_name === 'stock_basic'
+    && upstreamError.diagnostics?.upstream_business_code === 500
+    && !JSON.stringify(upstreamError.diagnostics ?? {}).includes('provider-secret-marker')
+    && businessFail.calls.length === 1, JSON.stringify({ calls: businessFail.calls.length, diagnostics: upstreamError?.diagnostics }));
 
   const pageFailUpstream = createFakeUpstream();
   const pageFailTransport = createTushareMarketTransport({
@@ -536,8 +581,90 @@ function streamOfChunks(chunks) {
   });
   let pageError = null;
   try { await pageFailTransport.snapshot({ symbols: ['600519'], start: START, end: END }); } catch (e) { pageError = e; }
-  check('Tushare：单次响应达到行数上限 → E_MARKET_RESPONSE_INVALID，不返回截断快照', pageError
-    && pageError.code === MARKET_TRANSPORT_CODES.RESPONSE && pageFailUpstream.calls.length === 1);
+  check('Tushare：单次响应达到行数上限 → E_MARKET_RESPONSE_INVALID，并标记 row_limit/api',
+    pageError && pageError.code === MARKET_TRANSPORT_CODES.RESPONSE
+    && pageError.diagnostics?.stage === 'row_limit'
+    && pageError.diagnostics?.api_name === 'stock_basic'
+    && pageError.diagnostics?.items_count === 1
+    && pageFailUpstream.calls.length === 1, JSON.stringify(pageError?.diagnostics));
+
+  const stockBasicNullUpstream = createFakeUpstream({
+    failAt: ({ sent }) => (sent.api_name === 'stock_basic' && sent.params.exchange === 'BSE' && sent.params.list_status === 'P'
+      ? { body: { code: 0, data: null } }
+      : null),
+  });
+  const stockBasicNullTransport = createTushareMarketTransport({
+    token: TOKEN, fetchImpl: stockBasicNullUpstream.fetchImpl, timeoutMs: 1000,
+    retryDelayMs: 0, sleepImpl: async () => {},
+  });
+  let stockBasicNullError = null;
+  try { await stockBasicNullTransport.snapshot({ symbols: ['600519'], start: START, end: END }); } catch (e) { stockBasicNullError = e; }
+  check('Tushare 诊断：stock_basic 的 data:null → data_shape + stock_basic + exchange/list_status',
+    stockBasicNullError?.code === MARKET_TRANSPORT_CODES.RESPONSE
+    && stockBasicNullError.diagnostics?.stage === 'data_shape'
+    && stockBasicNullError.diagnostics?.api_name === 'stock_basic'
+    && stockBasicNullError.diagnostics?.data_present === false
+    && stockBasicNullError.diagnostics?.fields_type === 'missing'
+    && stockBasicNullError.diagnostics?.items_type === 'missing'
+    && stockBasicNullError.diagnostics?.items_count === null
+    && !JSON.stringify(stockBasicNullError.diagnostics).includes('synthetic-tushare-token'),
+    JSON.stringify(stockBasicNullError?.diagnostics));
+
+  const dailyNullUpstream = createFakeUpstream({
+    failAt: ({ sent }) => (sent.api_name === 'daily' ? { body: { code: 0, data: null } } : null),
+  });
+  const dailyNullTransport = createTushareMarketTransport({
+    token: TOKEN, fetchImpl: dailyNullUpstream.fetchImpl, timeoutMs: 1000,
+    retryDelayMs: 0, sleepImpl: async () => {},
+  });
+  let dailyNullError = null;
+  try { await dailyNullTransport.snapshot({ symbols: ['600519'], start: START, end: END }); } catch (e) { dailyNullError = e; }
+  check('Tushare 诊断：daily 的 data:null → data_shape + daily',
+    dailyNullError?.code === MARKET_TRANSPORT_CODES.RESPONSE
+    && dailyNullError.diagnostics?.stage === 'data_shape'
+    && dailyNullError.diagnostics?.api_name === 'daily'
+    && dailyNullError.diagnostics?.upstream_http_status === 200,
+    JSON.stringify(dailyNullError?.diagnostics));
+
+  const badStockBasicUpstream = createFakeUpstream({
+    stockBasicData: {
+      L: [['600519.SH', '600519'], ['BAD.SH', '000001']],
+      P: [],
+      D: [],
+    },
+  });
+  const badStockBasicTransport = createTushareMarketTransport({
+    token: TOKEN, fetchImpl: badStockBasicUpstream.fetchImpl, timeoutMs: 1000,
+    retryDelayMs: 0, sleepImpl: async () => {},
+  });
+  let badStockBasicError = null;
+  try { await badStockBasicTransport.snapshot({ symbols: ['600519'], start: START, end: END }); } catch (e) { badStockBasicError = e; }
+  check('Tushare 诊断：stock_basic 行校验失败 → stock_basic_row + exchange/list_status，不记录完整代码',
+    badStockBasicError?.code === MARKET_TRANSPORT_CODES.RESPONSE
+    && badStockBasicError.diagnostics?.stage === 'stock_basic_row'
+    && badStockBasicError.diagnostics?.api_name === 'stock_basic'
+    && badStockBasicError.diagnostics?.exchange === 'SSE'
+    && badStockBasicError.diagnostics?.list_status === 'L'
+    && badStockBasicError.diagnostics?.ts_code_suffix === '.SH'
+    && badStockBasicError.diagnostics?.starts_with_symbol === false
+    && !JSON.stringify(badStockBasicError.diagnostics).includes('BAD.SH'),
+    JSON.stringify(badStockBasicError?.diagnostics));
+
+  const htmlUpstream = createFakeUpstream({
+    failAt: ({ sent }) => (sent.api_name === 'trade_cal' ? { body: undefined } : null),
+  });
+  const htmlTransport = createTushareMarketTransport({
+    token: TOKEN, fetchImpl: htmlUpstream.fetchImpl, timeoutMs: 1000,
+    retryDelayMs: 0, sleepImpl: async () => {},
+  });
+  let htmlError = null;
+  try { await htmlTransport.snapshot({ symbols: ['600519'], start: START, end: END }); } catch (e) { htmlError = e; }
+  check('Tushare 诊断：上游 200 非 JSON → json_parse + 上游 HTTP 状态',
+    htmlError?.code === MARKET_TRANSPORT_CODES.RESPONSE
+    && htmlError.diagnostics?.stage === 'json_parse'
+    && htmlError.diagnostics?.api_name === 'trade_cal'
+    && htmlError.diagnostics?.upstream_http_status === 200,
+    JSON.stringify(htmlError?.diagnostics));
 
   const emptyCalUpstream = createFakeUpstream({ calendarData: [] });
   const emptyCalTransport = createTushareMarketTransport({
