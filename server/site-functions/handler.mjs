@@ -3,6 +3,11 @@
 // 不记录 question/facts/rawText/行情请求，不返回上游原始错误或 token。
 import { projectFacts } from './validation.mjs';
 import { DYNAMIC_CACHE_ARTIFACT, MARKET_MAX_RANGE_DAYS, MARKET_MAX_SYMBOLS, isMarketDate } from './market.mjs';
+import {
+  RULE_INTENT_CODES,
+  normalizeRuleIntentRequest,
+  validateRuleIntentResponse,
+} from './ruleIntent.mjs';
 
 export const SITE_FUNCTION_CODES = Object.freeze({
   NOT_FOUND: 'E_FUNCTION_NOT_FOUND',
@@ -17,6 +22,9 @@ export const SITE_FUNCTION_CODES = Object.freeze({
   MODEL_UNAVAILABLE: 'E_MODEL_UNAVAILABLE',
   MODEL_TIMEOUT: 'E_MODEL_TIMEOUT',
   MODEL_RESPONSE: 'E_MODEL_RESPONSE_INVALID',
+  RULE_INTENT_REQUEST_INVALID: RULE_INTENT_CODES.REQUEST_INVALID,
+  RULE_INTENT_SCOPE: RULE_INTENT_CODES.SCOPE,
+  RULE_INTENT_RESPONSE: RULE_INTENT_CODES.RESPONSE,
   MARKET_NOT_CONFIGURED: 'E_MARKET_NOT_CONFIGURED',
   MARKET_REQUEST_INVALID: 'E_MARKET_REQUEST_INVALID',
   MARKET_SYMBOL_UNKNOWN: 'E_MARKET_SYMBOL_UNKNOWN',
@@ -39,6 +47,9 @@ const MESSAGES = Object.freeze({
   [SITE_FUNCTION_CODES.MODEL_UNAVAILABLE]: '模型服务不可用',
   [SITE_FUNCTION_CODES.MODEL_TIMEOUT]: '模型服务超时',
   [SITE_FUNCTION_CODES.MODEL_RESPONSE]: '模型服务响应格式非法',
+  [SITE_FUNCTION_CODES.RULE_INTENT_REQUEST_INVALID]: '规则理解请求未通过服务端校验',
+  [SITE_FUNCTION_CODES.RULE_INTENT_SCOPE]: '规则理解请求超出服务端允许范围',
+  [SITE_FUNCTION_CODES.RULE_INTENT_RESPONSE]: '规则理解响应未通过服务端校验',
   [SITE_FUNCTION_CODES.MARKET_NOT_CONFIGURED]: '行情未启用：服务端尚未配置 TUSHARE_TOKEN',
   [SITE_FUNCTION_CODES.MARKET_REQUEST_INVALID]: '行情请求未通过服务端校验',
   [SITE_FUNCTION_CODES.MARKET_SYMBOL_UNKNOWN]: '行情标的未在股票列表中找到（请核对 6 位 A 股代码）',
@@ -136,6 +147,9 @@ async function callTransport(transport, stage, request) {
   if (transport === null) {
     return { ok: false, status: 503, code: SITE_FUNCTION_CODES.MODEL_NOT_CONFIGURED };
   }
+  if (typeof transport[stage] !== 'function') {
+    return { ok: false, status: 503, code: SITE_FUNCTION_CODES.MODEL_NOT_CONFIGURED };
+  }
   try {
     const result = await transport[stage](request);
     if (!isPlainObject(result) || typeof result.rawText !== 'string') {
@@ -201,13 +215,15 @@ export function createHandler({ transport = null, marketTransport = null, maxBod
       return errorResponse(400, SITE_FUNCTION_CODES.REQUEST_INVALID);
     }
     const path = url.pathname;
-    const stage = path.endsWith('/api/llm/intent')
-      ? 'intent'
-      : path.endsWith('/api/llm/restate')
-        ? 'restate'
-        : path.endsWith('/api/market/snapshot')
-          ? 'market'
-          : null;
+    const stage = path.endsWith('/api/llm/rule-intent')
+      ? 'ruleIntent'
+      : path.endsWith('/api/llm/intent')
+        ? 'intent'
+        : path.endsWith('/api/llm/restate')
+          ? 'restate'
+          : path.endsWith('/api/market/snapshot')
+            ? 'market'
+            : null;
     if (stage === null) return errorResponse(404, SITE_FUNCTION_CODES.NOT_FOUND);
     if (request.method !== 'POST') {
       return errorResponse(405, SITE_FUNCTION_CODES.METHOD, { Allow: 'POST' });
@@ -245,6 +261,22 @@ export function createHandler({ transport = null, marketTransport = null, maxBod
     }
 
     let requestBody;
+    if (stage === 'ruleIntent') {
+      const validated = normalizeRuleIntentRequest(body);
+      if (!validated.ok) {
+        return errorResponse(400, validated.code);
+      }
+      const result = await callTransport(transport, 'ruleIntent', validated.request);
+      if (!result.ok) return errorResponse(result.status, result.code);
+      const checked = validateRuleIntentResponse(
+        result.rawText,
+        validated.request.allowed_templates.map((t) => t.template_id),
+      );
+      if (!checked.ok) {
+        return errorResponse(502, SITE_FUNCTION_CODES.RULE_INTENT_RESPONSE);
+      }
+      return jsonResponse(200, { rawText: JSON.stringify(checked.value) });
+    }
     if (stage === 'intent') {
       if (!hasOnlyKeys(body, INTENT_KEYS)) {
         return errorResponse(400, SITE_FUNCTION_CODES.UNKNOWN_FIELD);

@@ -22,6 +22,16 @@ const RESTATE_SYSTEM = [
   'answer_text 使用简体中文，简洁；不要输出 Markdown、代码块或额外字段。',
 ].join('\n');
 
+const RULE_INTENT_SYSTEM = [
+  '你是 TimingMirror 的规则理解器。',
+  '只允许选择用户消息 allowed_templates 中的模板，不得创建新规则、预测收益或提供买卖建议。',
+  '只输出 JSON 对象：{"intent":"contract_setup","confidence":0.0,"template_id":null,"fields":{},"clarify":null,"unsupported":null}。',
+  'intent 必须为 contract_setup；confidence 必须在 0 到 1 之间。',
+  '如果信息不足或存在歧义，template_id 为 null、fields 为空，clarify 用一句中文说明需要补充什么。',
+  '如果用户要求的是未提供的规则或未定义能力，clarify 为 null、unsupported 用一句中文说明当前不支持。',
+  '不要输出解释、Markdown 或额外字段；不要自行补默认阈值。',
+].join('\n');
+
 export class ModelTransportError extends Error {
   constructor(code) {
     super(code);
@@ -117,6 +127,12 @@ export function createDashScopeTransport({
       return call([
         { role: 'system', content: RESTATE_SYSTEM },
         { role: 'user', content: JSON.stringify({ question, facts }) },
+      ]);
+    },
+    ruleIntent({ question, allowed_templates, context_summary }) {
+      return call([
+        { role: 'system', content: RULE_INTENT_SYSTEM },
+        { role: 'user', content: JSON.stringify({ question, allowed_templates, context_summary }) },
       ]);
     },
   });
