@@ -7,6 +7,7 @@ import * as demo from '../../demo/adapter.js';
 
 const LOCAL_NOTICE = '原始 CSV 仅在本机读取和校验，不上传。';
 const MARKET_NOTICE = '当前用户账单使用 Tushare 动态日线（服务端获取，非实时）；取数失败、标的超出单次上限或日期范围不足时，报告会明确阻断，不回退静态缓存或合成行情。';
+const CORPORATE_ACTION_NOTICE = '公司行为限制：v1 不自动识别送转、拆合股、配股等股数事件；涉及相关区间的账单可能估值不准确，请核对后再使用。';
 const CONFIRM_NOTE = '确认后进入分析报告；不会上传账单、不会执行交易。';
 const FEE_TAX_NOTE = '部分费用或税费缺失，当前结果按现有口径计算，可能与实际对账结果不同。';
 
@@ -35,6 +36,7 @@ function prepGuide() {
       el('li', {}, ['必填列：日期（YYYY-MM-DD）、标的（6 位数字代码）、方向（买入 / 卖出）、价格（大于 0，最多 2 位小数）、数量（正整数）。']),
       el('li', {}, ['可选列：费用、税费（不小于 0，最多 2 位小数；缺失按 0 计并标注）。其他列会被忽略。']),
       el('li', {}, ['账单需从首笔买入开始：任一时点的累计卖出不能超过累计买入（暂不支持期初持仓）。']),
+      el('li', {}, [CORPORATE_ACTION_NOTICE]),
     ]),
     el('div', { class: 'muted small' }, ['表头示例：', el('code', { class: 'im-code' }, ['日期,标的,方向,价格,数量,费用,税费'])]),
     el('div', { class: 'muted small' }, [MARKET_NOTICE]),
