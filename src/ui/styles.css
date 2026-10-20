@@ -210,6 +210,7 @@ body {
 
 .rp-loading { color: var(--ink-soft); font-size: 18px; padding: 40px 4px; }
 .rp-error { color: var(--red-drag); font-size: 17px; line-height: 1.7; }
+.rp-market-source { background: #fff; border: 1px solid var(--hairline); border-radius: 14px; padding: 16px 20px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.65; color: var(--ink-soft); overflow-wrap: anywhere; }
 
 /* —— 页头 —— */
 .rp-top { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; flex-wrap: wrap; }
