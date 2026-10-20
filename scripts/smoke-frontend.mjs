@@ -1012,6 +1012,15 @@ state.route = 'import';
 state.bill = defaultBill();
 mountCycle();
 check('用户CSV：空状态提示 + accept 限定 csv', texts(current).join('|').includes('尚未选择账单') && findInputs(current)[0].attrs.accept === '.csv,text/csv');
+{
+  const sample = findByTag(current, 'a').find((a) => String(a.attrs.href ?? '') === '/m0/csv-input/fixtures/demo-bill-real.csv');
+  const emptyTxt = texts(current).join('|');
+  check('用户CSV：提供示例账单下载用于本地上传演示，并说明演示按钮不进入在线对话',
+    !!sample && sample.attrs.download === 'demo-bill-local.csv'
+    && texts(sample).join('').includes('下载示例账单')
+    && emptyTxt.includes('只有本地上传的账单会进入复核与在线对话')
+    && emptyTxt.includes('“加载演示账单”不会上传 CSV，也不会进入在线对话'), sample ? JSON.stringify(sample.attrs) : emptyTxt.slice(0, 300));
+}
 
 const happyCsv = '日期,标的,方向,价格,数量,费用,税费\n2025-01-02,600519,买入,1488.00,100,5,0\n2025-12-30,600519,卖出,1389.72,100,5,1\n';
 await pickFile({ name: 'my-bill.csv', size: 2048, __content: happyCsv });
