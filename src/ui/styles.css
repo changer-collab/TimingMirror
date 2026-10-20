@@ -169,6 +169,13 @@ body {
 .im-status.loaded { color: var(--amber-ink); border-color: #E8C88A; }
 .im-status.confirmed { color: var(--green-ink); border-color: #BFD9BF; }
 .im-fix { color: var(--cream); line-height: 1.75; }
+.im-drop-overlay { display: none; position: fixed; inset: 0; z-index: 1000; align-items: center; justify-content: center; padding: 24px; background: rgba(20, 33, 61, .18); }
+.im-drop-overlay.active { display: flex; }
+.im-drop-box { width: min(480px, 100%); height: 300px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; border: 2px dashed #8A93A3; border-radius: 16px; background: rgba(245, 246, 248, .97); box-shadow: 0 8px 24px rgba(20, 33, 61, .12); pointer-events: none; }
+.im-drop-icon { color: #8A93A3; line-height: 0; margin-bottom: 6px; }
+.im-drop-icon svg { width: 52px; height: 52px; }
+.im-drop-title { font-size: 22px; font-weight: 700; color: #2B2F36; }
+.im-drop-sub { font-size: 15px; color: #5F6B7E; }
 .im-tech > summary, .cv-tech-note > summary, .rp-tech > summary, .rp-cf-tech > summary { cursor: pointer; font-size: 13px; color: var(--faint); }
 
 /* —— 契约 / 问答 —— */

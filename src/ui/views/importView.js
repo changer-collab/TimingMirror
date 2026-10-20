@@ -1,5 +1,5 @@
 // 导入 · 确认：本地 CSV（FileReader 本机读取 → adapter 校验）与演示账单加载、校验结果展示、确认动作。
-// 用户账单链路：选择文件 → readAsText → adapter.loadUserBillFromText（引擎 csvNormalize，页面不自行实现校验）→ invalid/loaded → 确认。
+// 用户账单链路：选择文件或拖拽文件 → readAsText → adapter.loadUserBillFromText（引擎 csvNormalize，页面不自行实现校验）→ invalid/loaded → 确认。
 // 确认后：state.bill 标记 confirmed 并进入报告页；报告页按 sourceType 选择用户账单链路（adapter.loadUserBillReport）。
 import { el } from '../components.js';
 import { defaultBill, defaultChat, createBillContextId } from '../../state.js';
@@ -180,8 +180,57 @@ function tradesTable(trades) {
 }
 
 async function onFilePicked(ev, ctx) {
+  await handleFile(ev && ev.target && ev.target.files && ev.target.files[0], ctx);
+}
+
+const PAPERCLIP_SVG = '<svg viewBox="0 0 24 24" width="72" height="72" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
+
+function hasFiles(ev) {
+  const types = ev.dataTransfer && ev.dataTransfer.types;
+  return !!types && Array.from(types).includes('Files');
+}
+
+// 拖拽仅切换遮罩样式，不写 state，避免拖动过程中整页重渲染
+function attachDropZone(wrap, ctx) {
+  const icon = el('div', { class: 'im-drop-icon' });
+  icon.innerHTML = PAPERCLIP_SVG;
+  const overlay = el('div', { class: 'im-drop-overlay' }, [
+    el('div', { class: 'im-drop-box' }, [
+      icon,
+      el('div', { class: 'im-drop-title' }, ['拖拽文件至此处']),
+      el('div', { class: 'im-drop-sub' }, ['支持 CSV 文件']),
+    ]),
+  ]);
+  let depth = 0;
+  const show = (on) => overlay.classList.toggle('active', on);
+  wrap.addEventListener('dragenter', (ev) => {
+    if (!hasFiles(ev)) return;
+    ev.preventDefault();
+    depth += 1;
+    if (ctx.state.bill.status !== 'loading') show(true);
+  });
+  wrap.addEventListener('dragover', (ev) => {
+    if (!hasFiles(ev)) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = ctx.state.bill.status === 'loading' ? 'none' : 'copy';
+  });
+  wrap.addEventListener('dragleave', (ev) => {
+    if (!hasFiles(ev)) return;
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) show(false);
+  });
+  wrap.addEventListener('drop', (ev) => {
+    if (!hasFiles(ev)) return;
+    ev.preventDefault();
+    depth = 0;
+    show(false);
+    handleFile(ev.dataTransfer.files && ev.dataTransfer.files[0], ctx);
+  });
+  wrap.append(overlay);
+}
+
+async function handleFile(file, ctx) {
   const { state, set } = ctx;
-  const file = ev && ev.target && ev.target.files && ev.target.files[0];
   if (!file || state.bill.status === 'loading') return;
   const scenario = state.bill.scenario;
   const contextId = createBillContextId();
@@ -360,5 +409,6 @@ export function renderImport(root, ctx) {
     }
   }
 
+  attachDropZone(wrap, ctx);
   root.append(wrap);
 }
