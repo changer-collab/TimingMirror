@@ -1,7 +1,8 @@
 // 站点 Edge Function 的 HTTP handler（Web Request/Response；可注入 fake transport）。
-// 路由由平台挂在 /functions/v1/app 下；这里按 /api/llm/intent 与 /api/llm/restate 后缀分派。
-// 不记录 question/facts/rawText，不返回上游原始错误。
+// 路由由平台挂在 /functions/v1/app 下；这里按 /api/llm/intent、/api/llm/restate 与 /api/market/snapshot 后缀分派。
+// 不记录 question/facts/rawText/行情请求，不返回上游原始错误或 token。
 import { projectFacts } from './validation.mjs';
+import { DYNAMIC_CACHE_ARTIFACT, MARKET_MAX_RANGE_DAYS, MARKET_MAX_SYMBOLS, isMarketDate } from './market.mjs';
 
 export const SITE_FUNCTION_CODES = Object.freeze({
   NOT_FOUND: 'E_FUNCTION_NOT_FOUND',
@@ -16,6 +17,12 @@ export const SITE_FUNCTION_CODES = Object.freeze({
   MODEL_UNAVAILABLE: 'E_MODEL_UNAVAILABLE',
   MODEL_TIMEOUT: 'E_MODEL_TIMEOUT',
   MODEL_RESPONSE: 'E_MODEL_RESPONSE_INVALID',
+  MARKET_NOT_CONFIGURED: 'E_MARKET_NOT_CONFIGURED',
+  MARKET_REQUEST_INVALID: 'E_MARKET_REQUEST_INVALID',
+  MARKET_NO_DATA: 'E_MARKET_NO_DATA',
+  MARKET_UNAVAILABLE: 'E_MARKET_UNAVAILABLE',
+  MARKET_TIMEOUT: 'E_MARKET_TIMEOUT',
+  MARKET_RESPONSE: 'E_MARKET_RESPONSE_INVALID',
 });
 
 const MESSAGES = Object.freeze({
@@ -31,11 +38,26 @@ const MESSAGES = Object.freeze({
   [SITE_FUNCTION_CODES.MODEL_UNAVAILABLE]: '模型服务不可用',
   [SITE_FUNCTION_CODES.MODEL_TIMEOUT]: '模型服务超时',
   [SITE_FUNCTION_CODES.MODEL_RESPONSE]: '模型服务响应格式非法',
+  [SITE_FUNCTION_CODES.MARKET_NOT_CONFIGURED]: '行情未启用：服务端尚未配置 TUSHARE_TOKEN',
+  [SITE_FUNCTION_CODES.MARKET_REQUEST_INVALID]: '行情请求未通过服务端校验',
+  [SITE_FUNCTION_CODES.MARKET_NO_DATA]: '行情源在请求范围内没有可用数据',
+  [SITE_FUNCTION_CODES.MARKET_UNAVAILABLE]: '行情服务不可用',
+  [SITE_FUNCTION_CODES.MARKET_TIMEOUT]: '行情服务超时',
+  [SITE_FUNCTION_CODES.MARKET_RESPONSE]: '行情服务响应格式非法',
 });
 
 const F6 = new Set(['value', 'unit', 'display', 'formula_ref', 'source_ref']);
 const INTENT_KEYS = new Set(['question']);
 const RESTATE_KEYS = new Set(['question', 'facts']);
+const MARKET_KEYS = new Set(['symbols', 'start', 'end']);
+const MARKET_STATUS = Object.freeze({
+  [SITE_FUNCTION_CODES.MARKET_NOT_CONFIGURED]: 503,
+  [SITE_FUNCTION_CODES.MARKET_REQUEST_INVALID]: 400,
+  [SITE_FUNCTION_CODES.MARKET_NO_DATA]: 422,
+  [SITE_FUNCTION_CODES.MARKET_UNAVAILABLE]: 502,
+  [SITE_FUNCTION_CODES.MARKET_TIMEOUT]: 504,
+  [SITE_FUNCTION_CODES.MARKET_RESPONSE]: 502,
+});
 
 function jsonResponse(status, payload, extraHeaders = {}) {
   const body = JSON.stringify(payload);
@@ -125,7 +147,46 @@ async function callTransport(transport, stage, request) {
   }
 }
 
-export function createHandler({ transport = null, maxBodyBytes = 64 * 1024 } = {}) {
+function daysBetween(start, end) {
+  return Math.floor((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86400000) + 1;
+}
+
+function validateMarketBody(body) {
+  if (!hasOnlyKeys(body, MARKET_KEYS)) return { ok: false, code: SITE_FUNCTION_CODES.UNKNOWN_FIELD };
+  const { symbols, start, end } = body;
+  if (!Array.isArray(symbols) || symbols.length === 0 || symbols.length > MARKET_MAX_SYMBOLS) {
+    return { ok: false, code: SITE_FUNCTION_CODES.MARKET_REQUEST_INVALID };
+  }
+  const unique = new Set();
+  for (const symbol of symbols) {
+    if (typeof symbol !== 'string' || !/^\d{6}$/.test(symbol) || unique.has(symbol)) {
+      return { ok: false, code: SITE_FUNCTION_CODES.MARKET_REQUEST_INVALID };
+    }
+    unique.add(symbol);
+  }
+  if (!isMarketDate(start) || !isMarketDate(end) || start > end || daysBetween(start, end) > MARKET_MAX_RANGE_DAYS) {
+    return { ok: false, code: SITE_FUNCTION_CODES.MARKET_REQUEST_INVALID };
+  }
+  return { ok: true, request: { symbols: [...symbols], start, end } };
+}
+
+async function callMarketTransport(marketTransport, request) {
+  if (marketTransport === null) {
+    return { ok: false, status: 503, code: SITE_FUNCTION_CODES.MARKET_NOT_CONFIGURED };
+  }
+  try {
+    const doc = await marketTransport.snapshot(request);
+    if (!isPlainObject(doc) || doc.artifact !== DYNAMIC_CACHE_ARTIFACT) {
+      return { ok: false, status: 502, code: SITE_FUNCTION_CODES.MARKET_RESPONSE };
+    }
+    return { ok: true, doc };
+  } catch (error) {
+    const code = error && MARKET_STATUS[error.code] ? error.code : SITE_FUNCTION_CODES.MARKET_UNAVAILABLE;
+    return { ok: false, status: MARKET_STATUS[code], code };
+  }
+}
+
+export function createHandler({ transport = null, marketTransport = null, maxBodyBytes = 64 * 1024 } = {}) {
   if (!Number.isInteger(maxBodyBytes) || maxBodyBytes <= 0) {
     throw new TypeError('maxBodyBytes 必须为正整数');
   }
@@ -141,7 +202,9 @@ export function createHandler({ transport = null, maxBodyBytes = 64 * 1024 } = {
       ? 'intent'
       : path.endsWith('/api/llm/restate')
         ? 'restate'
-        : null;
+        : path.endsWith('/api/market/snapshot')
+          ? 'market'
+          : null;
     if (stage === null) return errorResponse(404, SITE_FUNCTION_CODES.NOT_FOUND);
     if (request.method !== 'POST') {
       return errorResponse(405, SITE_FUNCTION_CODES.METHOD, { Allow: 'POST' });
@@ -168,6 +231,14 @@ export function createHandler({ transport = null, maxBodyBytes = 64 * 1024 } = {
     }
     if (!isPlainObject(body)) {
       return errorResponse(400, SITE_FUNCTION_CODES.REQUEST_INVALID);
+    }
+
+    if (stage === 'market') {
+      const validated = validateMarketBody(body);
+      if (!validated.ok) return errorResponse(400, validated.code);
+      const result = await callMarketTransport(marketTransport, validated.request);
+      if (!result.ok) return errorResponse(result.status, result.code);
+      return jsonResponse(200, { ok: true, market: result.doc });
     }
 
     let requestBody;

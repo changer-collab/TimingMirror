@@ -11,7 +11,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { assessCacheDoc, createMarketCache, fromFixtures, fromPullDraft, MARKET_CACHE_GATE_CODES } from '../src/engine/marketCache.js';
+import { assessCacheDoc, assessDynamicCacheDoc, createMarketCache, fromFixtures, fromPullDraft, MARKET_CACHE_GATE_CODES, MARKET_DYNAMIC_GATE_CODES } from '../src/engine/marketCache.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..');
@@ -131,6 +131,70 @@ const mc = createMarketCache(fromFixtures(
 
   const vOut = signed.resolveValuation('2026-01-05');
   check('已签收缓存：超出 2025-12-31 → E_VALUATION_OUT_OF_RANGE', vOut.blocked === true && vOut.code === 'E_VALUATION_OUT_OF_RANGE');
+}
+
+/* ---- 动态行情门：Tushare 响应形状/范围/序列（无人工签收，凭 fetched_at/snapshot_id/checksum 留痕） ---- */
+{
+  const mk = () => ({
+    artifact: 'market-cache-dynamic',
+    manifest_version: 'dynamic-v1',
+    fetched_at: '2026-10-19T01:30:00.000Z',
+    checksum: 'a'.repeat(64),
+    manifest: { asOfDate: '2024-10-10', date_range: { start: '2024-10-01', end: '2024-10-10' }, symbols: ['000000'] },
+    calendar: { trading_days: ['2024-10-08', '2024-10-09', '2024-10-10'] },
+    symbols: {
+      '000000': {
+        bars: [{ date: '2024-10-09', close: 106 }, { date: '2024-10-10', close: 107 }],
+        bars_fwdadj: [{ date: '2024-10-09', close: 104.5 }, { date: '2024-10-10', close: 105.5 }],
+      },
+    },
+    snapshot: { snapshot_id: 'tushare-20241010-aaaaaaaa', latest_trade_date: '2024-10-10' },
+    source: { provider: 'tushare' },
+  });
+  const g = assessDynamicCacheDoc(mk());
+  check('动态门：合法 Tushare 响应 usable 且带拉取元数据', g.usable === true && g.dynamic === true && g.signed === false
+    && g.provider === 'tushare' && g.fetched_at === '2026-10-19T01:30:00.000Z'
+    && g.snapshot_id === 'tushare-20241010-aaaaaaaa' && g.checksum === 'a'.repeat(64)
+    && g.latest_trade_date === '2024-10-10' && g.asOfDate === '2024-10-10', JSON.stringify(g));
+
+  const badArtifact = mk(); badArtifact.artifact = 'market-cache-signed';
+  check('动态门：静态签收件不能冒充动态响应', assessDynamicCacheDoc(badArtifact).usable === false
+    && assessDynamicCacheDoc(badArtifact).reason === MARKET_DYNAMIC_GATE_CODES.NOT_DYNAMIC);
+  check('静态门：动态响应不能冒充签收件', assessCacheDoc(mk()).usable === false
+    && assessCacheDoc(mk()).reason === MARKET_CACHE_GATE_CODES.MALFORMED);
+
+  const badProvider = mk(); badProvider.source.provider = 'akshare';
+  check('动态门：provider 非 tushare → NOT_DYNAMIC', assessDynamicCacheDoc(badProvider).reason === MARKET_DYNAMIC_GATE_CODES.NOT_DYNAMIC);
+
+  const badChecksum = mk(); badChecksum.checksum = 'abc';
+  check('动态门：checksum 非 64 位十六进制 → MALFORMED', assessDynamicCacheDoc(badChecksum).reason === MARKET_DYNAMIC_GATE_CODES.MALFORMED);
+
+  const badTime = mk(); badTime.fetched_at = '2026-10-19 01:30';
+  check('动态门：fetched_at 非 ISO → MALFORMED', assessDynamicCacheDoc(badTime).reason === MARKET_DYNAMIC_GATE_CODES.MALFORMED);
+
+  const badLatest = mk(); badLatest.snapshot.latest_trade_date = '2024-10-09';
+  check('动态门：latest_trade_date 与 asOfDate 不一致 → MALFORMED', assessDynamicCacheDoc(badLatest).reason === MARKET_DYNAMIC_GATE_CODES.MALFORMED);
+
+  const offCalendar = mk(); offCalendar.symbols['000000'].bars[1].date = '2024-10-11';
+  check('动态门：bar 不在交易日历 → MALFORMED', assessDynamicCacheDoc(offCalendar).reason === MARKET_DYNAMIC_GATE_CODES.MALFORMED);
+
+  const badClose = mk(); badClose.symbols['000000'].bars[0].close = 0;
+  check('动态门：close 非正数 → MALFORMED', assessDynamicCacheDoc(badClose).reason === MARKET_DYNAMIC_GATE_CODES.MALFORMED);
+
+  const unordered = mk(); unordered.symbols['000000'].bars.reverse();
+  check('动态门：bar 日期乱序 → MALFORMED', assessDynamicCacheDoc(unordered).reason === MARKET_DYNAMIC_GATE_CODES.MALFORMED);
+
+  const emptyBars = mk();
+  emptyBars.manifest.symbols.push('888888');
+  emptyBars.symbols['888888'] = { bars: [], bars_fwdadj: [] };
+  check('动态门：某标的无 bar 可接受（缺价由市场段单独阻断）', assessDynamicCacheDoc(emptyBars).usable === true);
+
+  const coverage = mk(); coverage.symbols['999999'] = coverage.symbols['000000']; delete coverage.symbols['000000'];
+  check('动态门：标的覆盖与 manifest 不一致 → MALFORMED', assessDynamicCacheDoc(coverage).reason === MARKET_DYNAMIC_GATE_CODES.MALFORMED);
+
+  const dynamicMarket = createMarketCache(fromPullDraft(mk()));
+  check('动态门：通过后可按统一形状取价', dynamicMarket.getClose('000000', '2024-10-10') === 107
+    && dynamicMarket.getClose('000000', '2024-10-10', 'fwdadj') === 105.5);
 }
 
 /* ---- 输出 ---- */

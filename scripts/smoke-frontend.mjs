@@ -64,12 +64,66 @@ function siteHttpResponse({ status = 200, body = {} } = {}) {
     text: async () => JSON.stringify(body),
   };
 }
+
+// 动态行情 fake：用签收缓存历史段裁剪出与服务端一致形状（artifact=market-cache-dynamic），
+// 只按请求 symbols/start 裁剪；未知标的返回空序列。记录请求体供隐私与范围断言。
+const staticMarketDoc = JSON.parse(readFileSync(join(ROOT, 'data/market-cache.json'), 'utf8'));
+const MARKET_SNAPSHOT_PATH = '/functions/v1/app/api/market/snapshot';
+const MARKET_FIXTURE_ASOF = '2025-12-31';
+const MARKET_FIXTURE_FETCHED_AT = '2026-10-19T01:30:00.000Z';
+const MARKET_FIXTURE_CHECKSUM = '0123456789abcdef'.repeat(4);
+const MARKET_FIXTURE_SNAPSHOT = 'tushare-20251231-01234567';
+const marketCalls = [];
+const isMarketSnapshot = (url) => String(url) === MARKET_SNAPSHOT_PATH;
+function buildMarketFixture(req) {
+  const start = String(req.start);
+  const end = MARKET_FIXTURE_ASOF;
+  const pick = (bars) => (bars ?? [])
+    .filter((b) => b.date >= start && b.date <= end)
+    .map((b) => ({ date: b.date, close: b.close }));
+  const days = staticMarketDoc.calendar.trading_days.filter((d) => d >= start && d <= end);
+  const symbols = {};
+  for (const sym of req.symbols) {
+    const src = staticMarketDoc.symbols[sym];
+    symbols[sym] = { bars: pick(src?.bars), bars_fwdadj: pick(src?.bars_fwdadj) };
+  }
+  return {
+    artifact: 'market-cache-dynamic',
+    manifest_version: 'dynamic-v1',
+    fetched_at: MARKET_FIXTURE_FETCHED_AT,
+    checksum: MARKET_FIXTURE_CHECKSUM,
+    asOfDate: end,
+    source: { provider: 'tushare', freshness: 'latest_closed_daily' },
+    manifest: { asOfDate: end, date_range: { start, end }, symbols: [...req.symbols] },
+    calendar: { trading_days: days },
+    symbols,
+    snapshot: {
+      snapshot_id: MARKET_FIXTURE_SNAPSHOT,
+      fetch_time: MARKET_FIXTURE_FETCHED_AT,
+      latest_trade_date: end,
+      range: { start, end },
+      symbols: [...req.symbols],
+      provider: 'tushare',
+    },
+  };
+}
+function localTodayIso(now = new Date()) {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
 function deferredSiteResponse(body) {
   let resolve;
   const promise = new Promise((r) => { resolve = r; });
   return { promise, resolve: () => resolve(siteHttpResponse({ body })) };
 }
 globalThis.fetch = async (url, options = {}) => {
+  if (isMarketSnapshot(url)) {
+    const body = JSON.parse(String(options.body ?? '{}'));
+    marketCalls.push(body);
+    return siteHttpResponse({ body: { ok: true, market: buildMarketFixture(body) } });
+  }
   if (isSiteFunction(url)) {
     siteCalls.push({ url: String(url), options });
     const queued = siteQueue.shift();
@@ -178,9 +232,9 @@ async function pickFile(fakeFile) {
   for (const fn of inp.listeners.change ?? []) await fn({ target: { files: [fakeFile] } });
 }
 
-/* ==== 导入页：加载 → 待确认 → 确认 ==== */
+/* ==== 导入页：加载 → 待确认 → 确认（合成回归场景 A） ==== */
 state.route = 'import';
-state.bill = defaultBill();
+state.bill = { ...defaultBill(), scenario: 'A' };
 mountCycle();
 await clickLabel('加载演示账单');
 let txt = texts(current).join('|');
@@ -199,6 +253,7 @@ check('导入·准备账单：仅 CSV / 本机读取不上传 / 确认不下单 
     && /(费用|税费)缺失：第 \d+(、\d+)* 行（按 0 计）/.test(feeTxt) && txt.includes('缺失（按 0）'), feeTxt || txt.slice(0, 300));
 }
 check('导入·确认说明：确认按钮旁写明“确认后进入分析报告；不会上传账单、不会执行交易。”', txt.includes('确认后进入分析报告；不会上传账单、不会执行交易。'), txt.slice(-300));
+check('导入·合成 A：加载与预览不发起动态行情请求（合成来源仍可离线回归）', marketCalls.length === 0, JSON.stringify(marketCalls));
 await clickLabel('确认交易列表');
 check('导入：确认后状态=confirmed 且路由=report', state.bill.status === 'confirmed' && state.route === 'report', JSON.stringify({ s: state.bill.status, r: state.route }));
 state.route = 'import'; mountCycle();
@@ -207,7 +262,38 @@ check('导入：确认态状态行为“已确认”（confirmed 样式）', Str
 check('导入·已确认：状态说明“已确认：已用于本地分析（演示账单）”', texts(current).join('|').includes('已确认：已用于本地分析（演示账单）'), texts(current).join('|').slice(0, 300));
 await flush(); await flush();
 
+/* ==== 导入页：默认 Tushare 动态行情（R） ==== */
+state.route = 'import';
+state.bill = defaultBill();
+mountCycle();
+await clickLabel('加载演示账单');
+txt = texts(current).join('|');
+const rImportCall = marketCalls.at(-1);
+check('导入·动态行情默认：R 场景 8 笔交易 + Tushare 动态日线（服务端拉取、非实时）+ 请求范围/最新交易日/快照',
+  state.bill.status === 'loaded' && state.bill.trades.length === 8
+  && state.bill.dataMode && state.bill.dataMode.id === 'demo_bill_dynamic_market'
+  && state.bill.marketSource && state.bill.marketSource.dynamic === true && state.bill.marketSource.provider === 'tushare'
+  && state.bill.marketSource.fetchedAt === MARKET_FIXTURE_FETCHED_AT && state.bill.marketSource.latestTradeDate === MARKET_FIXTURE_ASOF
+  && state.bill.marketSource.snapshotId === MARKET_FIXTURE_SNAPSHOT
+  && txt.includes('示例交易 + Tushare 动态行情') && txt.includes('Tushare 动态日线（服务端获取，非实时）')
+  && txt.includes('请求范围 2024-12-19 → 2025-12-31') && txt.includes('最新交易日 2025-12-31')
+  && txt.includes('300750 / 600519 / 601318') && txt.includes('拉取时间 ') && txt.includes('快照 tushare-20251231-01234567')
+  && txt.includes('demo-bill-real.csv') && !txt.includes('行情：合成演示行情') && !txt.includes('已签收'),
+  JSON.stringify({ s: state.bill.status, n: state.bill.trades.length, meta: state.bill.marketSource }) + ' || ' + txt.slice(0, 400));
+check('导入·动态行情请求：仅 symbols/start/end，标的为账单 3 只，日期范围符合本地推导',
+  marketCalls.length === 1 && !!rImportCall
+  && Object.keys(rImportCall).sort().join(',') === 'end,start,symbols'
+  && JSON.stringify(rImportCall.symbols) === JSON.stringify(['300750', '600519', '601318'])
+  && rImportCall.start === '2024-12-19' && rImportCall.end === localTodayIso(),
+  JSON.stringify({ calls: marketCalls.length, body: rImportCall }));
+await clickLabel('确认交易列表');
+check('导入·动态行情确认：状态=confirmed 且路由=report', state.bill.status === 'confirmed' && state.route === 'report', JSON.stringify({ s: state.bill.status, r: state.route }));
+state.route = 'import'; mountCycle();
+check('导入·动态行情确认态：说明“已用于本地分析（示例交易）”', texts(current).join('|').includes('已确认：已用于本地分析（示例交易）'), texts(current).join('|').slice(0, 300));
+await flush(); await flush();
+
 /* ==== 报告页（引擎接线：演示账单 CSV → csvNormalize → marketCache(合成夹具) → indicators → provenance）==== */
+const marketCallsBeforeReportA = marketCalls.length;
 state.route = 'report';
 state.report = { scenario: 'A', symbol: 'pool' };
 mountCycle(); await flush(); await flush(); await flush();
@@ -235,15 +321,14 @@ const orderOf = (...classes) => classes.map((cls) => pageOf().children.findIndex
     && texts(techNode).join('|').includes('S1 口径') && texts(techNode).join('|').includes('公式编号') && /第 \d+ 行/.test(texts(techNode).join('|')), plainVis.slice(0, 300));
 }
 const wiringOk = (t) => !t.includes('契约匹配') && !t.includes('未接线') && t.includes('契约页已接入候选模板与历史情境模拟') && t.includes('契约不会自动改变本报告结论')
-  && t.includes('尚未接入：真实行情') && t.includes('对话页事实回跳') && t.includes('尚未完成真实服务验证');
-check('报告·演示：底部如实说明契约页已接入且不改报告结论，真实行情/事实回跳/在线真实验证仍未接入（技术说明折叠）',
-  wiringOk(txt) && !visibleTexts(pageOf()).join('|').includes('尚未接入：真实行情'), txt.slice(-300));
+  && t.includes('未接入：实时/分钟级行情') && t.includes('最新已收盘日线') && t.includes('对话页事实回跳') && t.includes('尚未完成真实服务验证');
+check('报告·演示：底部不再写“契约匹配未接线”，如实说明契约页已接入且不改报告结论，实时/分钟级行情、事实回跳与真实服务验证仍未接入', wiringOk(txt), txt.slice(-300));
 const demoFacts = () => findByClass(current, 'rp-fact');
 const provA = txt.match(/演示计算路径（当前范围「组合」· (\d+) 项）/);
 check('报告：A 演示计算路径完整（组合 8 项可展开条目、无阻断项、无 E_PROVENANCE）', !!provA && Number(provA[1]) === 8 && demoFacts().length === 8
   && demoFacts().every((n) => n.tagName === 'DETAILS' && String(n.attrs.class).includes('demo')) && !txt.includes('存在阻断项') && !txt.includes('E_PROVENANCE'), txt.slice(0, 320));
 check('报告：演示模式常驻“未经过复核发布流程”提示，不出现复核链路专属词（已发布/复核通过/阻断事实/verify_id/复核概览）',
-  txt.includes('以下为演示计算路径，未经过复核发布流程，不代表复核结果。')
+  txt.includes('以下为演示计算路径，未经过复核发布流程（runReview），不代表复核结果。')
   && !txt.includes('已发布') && !txt.includes('复核通过') && !txt.includes('阻断事实') && !txt.includes('verify_id') && !txt.includes('复核概览'), txt.slice(0, 320));
 {
   const first = demoFacts()[0];
@@ -274,6 +359,7 @@ txt = texts(current).join('|');
 check('报告：切回 A 恢复（实际收益卡与证据入口正常）', state.report.scenario === 'A' && txt.includes('实际收益') && txt.includes('查看证据与计算路径'));
 const provM = txt.match(/演示计算路径（当前范围「[^」]+」· (\d+) 项）/);
 check('报告：切回 A 后演示计算路径仍完整（9 项、无阻断、无 E_PROVENANCE）', !!provM && Number(provM[1]) === 9 && demoFacts().length === 9 && !txt.includes('存在阻断项') && !txt.includes('E_PROVENANCE'), txt.slice(0, 320));
+check('报告·合成 A/A′：整个过程中不发起动态行情请求', marketCalls.length === marketCallsBeforeReportA, JSON.stringify(marketCalls));
 
 /* ==== 单笔反事实（S1 幽灵线双面板）：演示账单 000000 → T004 ==== */
 await flush(); await flush(); await flush();
@@ -325,15 +411,55 @@ await clickLabel('888888'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 check('反事实：切标的后残留 tradeId 不报错（无 E_CF_TRADE_NOT_FOUND），落 B 默认第一笔 T005', !txt.includes('E_CF_TRADE_NOT_FOUND') && !txt.includes('该反事实结论不发布') && txt.includes('T005 · 2024-10-10') && txt.includes('假设结果价值 ¥15,800.00'), txt.slice(0, 300));
 
+/* ==== 报告页：默认 Tushare 动态行情 R / R′（服务端拉取、非实时；最新交易日 2025-12-31）==== */
+state.route = 'report';
+state.report = { scenario: 'R', symbol: 'pool' };
+state.bill = defaultBill();
+mountCycle(); await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+check('真实报告 R·组合：引擎输出 +5.4% / +4.8% / -0.7pp / ¥-2,805.00', txt.includes('+5.4%') && txt.includes('+4.8%') && txt.includes('-0.7pp') && txt.includes('¥-2,805.00'), txt.slice(0, 260));
+check('真实报告 R·标注：Tushare 动态日线（服务端获取、非实时）/ 拉取时间 / 最新交易日 2025-12-31 / 快照与校验 / 不出现合成演示行情或已签收措辞',
+  txt.includes('示例交易 + Tushare 动态日线（服务端获取，非实时）') && txt.includes('Tushare 动态日线（服务端获取，非实时）') && txt.includes('非实时')
+  && txt.includes('拉取 ') && txt.includes('最新交易日 2025-12-31') && txt.includes('快照 tushare-20251231-01234567') && txt.includes('校验 0123456789ab…')
+  && txt.includes('估值日：2025-12-31') && !txt.includes('合成演示数据（非真实账户') && !txt.includes('已签收'), txt.slice(0, 500));
+{
+  const sm = summaryTxt();
+  check('真实报告 R·摘要：数据来源=示例账单 R（示例交易）/ 行情=Tushare 动态日线 / 结论状态不使用“发布”措辞',
+    sm.includes('示例账单 · 示例 R · Tushare 动态行情（示例交易）')
+    && sm.includes('Tushare 动态日线（服务端获取，非实时） · 2024-12-19 → 2025-12-31')
+    && sm.includes('示例结论：以下数字来自示例交易与 Tushare 最新已收盘日线（服务端获取，非实时）')
+    && sm.includes('组合结果：已由本地引擎算出（示例交易 + Tushare 动态日线，未经复核发布流程）') && !sm.includes('已发布'), sm);
+}
+const provR = txt.match(/示例计算路径（当前范围「组合」· (\d+) 项）/);
+check('真实报告 R·证据：示例计算路径 8 项、无阻断、无复核专属词', !!provR && Number(provR[1]) === 8 && demoFacts().length === 8
+  && !txt.includes('存在阻断项') && !txt.includes('E_PROVENANCE') && !txt.includes('已发布') && !txt.includes('verify_id'), txt.slice(0, 320));
+await clickLabel('600519'); await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+check('真实报告 R·600519：-7.3% / -8.1% / -0.8pp / ¥-2,508.00', txt.includes('-7.3%') && txt.includes('-8.1%') && txt.includes('-0.8pp') && txt.includes('¥-2,508.00'), txt.slice(0, 260));
+check('真实报告 R·反事实：T006 + Tushare 动态行情标注 + 假设结果价值 ¥275,436.00',
+  txt.includes('T006') && txt.includes('假设结果价值 ¥275,436.00') && txt.includes('Tushare 动态日线（最新已收盘，服务端获取，非实时，草案口径）') && !txt.includes('该反事实结论不发布'), txt.slice(0, 320));
+await clickLabel('组合'); await flush(); await flush(); await flush();
+await clickLabel('示例 R′ · 仅改一笔卖出'); await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+check('真实报告 R′·组合切换与差异面板：+5.9% / -1.1pp / ¥-4,861.00，与基准 R 差异、仅改第 7 行',
+  state.report.scenario === 'Rprime' && txt.includes('+5.9%') && txt.includes('-1.1pp') && txt.includes('¥-4,861.00')
+  && txt.includes('与基准 R 的差异') && txt.includes('仅改第 7 行 600519 卖出价')
+  && (() => { const d = texts(findByClass(current, 'rp-delta')[0] ?? { children: [] }).join('|'); return d.includes('实际收益|+5.4%|→|+5.9%') && d.includes('择时损耗|-0.7pp|→|-1.1pp') && d.includes('择时损耗金额|¥-2,805.00|→|¥-4,861.00'); })(),
+  JSON.stringify({ sc: state.report.scenario, a: txt.includes('+5.9%'), b: txt.includes('-1.1pp'), c: txt.includes('¥-4,861.00'), d: txt.includes('与基准 R 的差异'), e: txt.includes('仅改第 7 行 600519 卖出价'), delta: (findByClass(current, 'rp-delta')[0] ? texts(findByClass(current, 'rp-delta')[0]).join('|') : '') }));
+await clickLabel('600519'); await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+check('真实报告 R′·600519：-6.6% / -1.5pp / ¥-4,564.00', txt.includes('-6.6%') && txt.includes('-1.5pp') && txt.includes('¥-4,564.00'), txt.slice(0, 260));
+state.report = { scenario: 'A', symbol: 'pool' };
+
 /* ==== 对话页：组合四事实在线复述（站点同源 fake；不调用百炼） ==== */
 {
   const chatOnlineMod = await imp('src/agent/chatOnline.js');
-  const chatCsv = '日期,标的,方向,价格,数量,费用,税费\n2024-09-25,000000,买入,100,100,5,0\n2024-10-09,000000,卖出,104,100,5,1\n';
-  const chatCsv2 = '日期,标的,方向,价格,数量,费用,税费\n2024-09-25,000000,买入,100,100,5,0\n2024-10-09,000000,卖出,110,100,5,1\n';
-  const chatCsv3 = '日期,标的,方向,价格,数量,费用,税费\n2024-09-25,000000,买入,100,100,5,0\n2024-10-09,000000,卖出,106,100,5,1\n';
-  const answerCsv1 = '组合实际收益 +4.0%，对照收益 +8.0%，择时损耗 +4.0pp，损耗金额 ¥400.00。';
-  const answerCsv2 = '组合实际收益 +10.0%，对照收益 +8.0%，择时损耗 -2.0pp，损耗金额 ¥-200.00。';
-  const answerCsv3 = '组合实际收益 +6.0%，对照收益 +8.0%，择时损耗 +2.0pp，损耗金额 ¥200.00。';
+  const chatCsv = '日期,标的,方向,价格,数量,费用,税费\n2025-01-02,600519,买入,1488.00,100,5,0\n2025-12-30,600519,卖出,1389.72,100,5,1\n';
+  const chatCsv2 = chatCsv;
+  const chatCsv3 = chatCsv;
+  const answerCsv1 = '组合实际收益 -6.6%，对照收益 -7.4%，择时损耗 -0.8pp，损耗金额 ¥-1,254.00。';
+  const answerCsv2 = answerCsv1;
+  const answerCsv3 = answerCsv1;
   const settleChat = async () => { for (let i = 0; i < 8; i++) await flush(); };
   const lastAssistant = () => state.chat.messages.filter((m) => m.role === 'assistant').at(-1) ?? null;
   const pageTxt = () => texts(current).join('|');
@@ -545,7 +671,7 @@ const simulate = async (symbol, date) => {
 const sourceLine = () => texts(findByClass(current, 'cv-source')[0] ?? { children: [] }).join('');
 const stored = () => JSON.parse(store.get('tm.contracts.demo') ?? '{}').versions ?? [];
 const maxV = () => Math.max(...state.contracts.versions.map((r) => (Number.isFinite(r.v) ? r.v : 0)));
-const reload = async () => { state.contracts = { ...defaultContracts(), versions: loadContractsDemo() }; mountCycle(); await settle(); };
+const reload = async () => { state.contracts = { ...defaultContracts(), marketSource: state.contracts.marketSource ?? 'synthetic-fixture', versions: loadContractsDemo() }; mountCycle(); await settle(); };
 const saveModal = async () => { await clickRole('modal-save'); await settle(); };
 {
   const adapterMod = await imp('src/demo/adapter.js');
@@ -559,8 +685,27 @@ const saveModal = async () => { await clickRole('modal-save'); await settle(); }
   const hB3 = H('no_buy_back_within', { days: '3' }), hB5 = H('no_buy_back_within', { days: '5' });
 
   /* —— 1. 默认布局 —— */
+  const marketCallsBeforeContract = marketCalls.length;
+  state.route = 'contract'; state.contracts = defaultContracts(); mountCycle(); await settle(); await settle();
+  txt = texts(current).join('|');
+  {
+    const symOpts = findByTag(byRole('sim-symbol'), 'option').map((o) => o.attrs.value);
+    check('契约·默认动态行情：标题“历史情境测试（Tushare 动态行情）”，交易来源=示例账单 R，行情=Tushare 动态日线，拉取/快照可见',
+      txt.includes('历史情境测试（Tushare 动态行情）') && sourceLine().startsWith('交易来源：示例账单 R')
+      && sourceLine().includes('行情：Tushare 动态日线（服务端获取，非实时）')
+      && txt.includes('Tushare 动态日线（服务端获取，非实时）· 不构成投资建议')
+      && txt.includes('最新已收盘日线（非实时）· 候选规则口径（待 M0-C1 冻结）· 不构成投资建议')
+      && txt.includes('行情拉取：') && txt.includes('最新交易日 2025-12-31') && txt.includes('快照 tushare-20251231-01234567') && txt.includes('校验 0123456789ab…')
+      && txt.includes('2024-12-19 ~ 2025-12-31') && !txt.includes('已签收'), sourceLine() + ' || ' + txt.slice(0, 420));
+    check('契约·动态行情范围：示例 3 只标的均在本次行情；只请求标的与日期范围（TTL 内复用同一范围，不重复请求）',
+      JSON.stringify(symOpts) === JSON.stringify(['300750', '600519', '601318'])
+      && marketCalls.slice(marketCallsBeforeContract).every((c) => Object.keys(c).sort().join(',') === 'end,start,symbols'
+        && JSON.stringify(c.symbols) === JSON.stringify(['300750', '600519', '601318']) && c.start === '2024-12-19')
+      && marketCalls.length - marketCallsBeforeContract <= 1,
+      JSON.stringify({ symOpts, calls: marketCalls.slice(marketCallsBeforeContract) }));
+  }
   store.delete('tm.contracts.demo');
-  state.route = 'contract'; state.contracts = defaultContracts(); mountCycle(); await settle();
+  state.route = 'contract'; state.contracts = { ...defaultContracts(), marketSource: 'synthetic-fixture' }; mountCycle(); await settle();
   txt = texts(current).join('|');
   {
     const headVis = visibleTexts(findByClass(current, 'cv-head')[0]).join('|');
@@ -644,8 +789,7 @@ const saveModal = async () => { await clickRole('modal-save'); await settle(); }
     && txt.includes('当前生效规则（2）') && histHashes().length === 0 && txt.includes('历史规则（0）'), JSON.stringify(stored().map((r) => [r.v, r.status])));
   check('情境来源·演示模式：交易来源=演示账单 A · 行情=合成演示行情 + 非真实行情 / 候选口径 / 不构成投资建议；不追回规则生效时列出卖出记录',
     state.bill.status === 'confirmed' && state.bill.sourceType !== 'local' && sourceLine().startsWith('交易来源：演示账单 A') && sourceLine().includes('行情：合成演示行情')
-    && txt.includes('合成行情（非真实行情）') && txt.includes('候选口径（待冻结）') && txt.includes('不构成投资建议')
-    && sellsLine().includes('T004 000000 2024-10-08'), sourceLine());
+    && txt.includes('合成夹具（非真实行情）· 候选口径（待 M0-C1 冻结）· 不构成投资建议') && sellsLine().includes('T004 000000 2024-10-08'), sourceLine());
   let s = await simulate('000000', '2024-10-10');
   {
     const head = findByClass(current, 'cv-sim-headline')[0];
@@ -656,7 +800,7 @@ const saveModal = async () => { await clickRole('modal-save'); await settle(); }
   }
   check('测试·不追回：000000 2024-10-10（距卖出 2 日 ≤ 5）→ 命中 + 规则 / 阈值 / 情境事实 / 警告 / 候选哈希 / 演示来源；涨幅 3% 未命中且不使用账单交易',
     verdictOf(hB5) === '命中' && ruleTxt(hB5).includes('规则提醒：此情境命中你确认的规则') && ruleTxt(hB5).includes('规则：卖出后 5 个交易日内不追回同一只票。') && ruleTxt(hB5).includes('阈值：5 个交易日')
-    && ruleTxt(hB5).includes('最近卖出：T004 · 2024-10-08') && ruleTxt(hB5).includes('距最近卖出：2 个交易日') && ruleTxt(hB5).includes('合成行情 · 演示口径，不构成投资建议')
+    && ruleTxt(hB5).includes('最近卖出：T004 · 2024-10-08') && ruleTxt(hB5).includes('距最近卖出：2 个交易日') && txt.includes('合成回归行情 · 不构成投资建议')
     && ruleTxt(hB5).includes(`候选哈希，待 M0-C1 冻结：${hB5}`) && ruleTxt(hB5).includes('交易来源：演示账单 A')
     && verdictOf(hS3) === '未命中' && ruleTxt(hS3).includes('未超过阈值 3.0%') && !ruleTxt(hS3).includes('规则提醒') && ruleTxt(hS3).includes('涨幅模板不使用账单交易'), ruleTxt(hB5).slice(0, 400));
 
@@ -735,7 +879,7 @@ const saveModal = async () => { await clickRole('modal-save'); await settle(); }
   s = await simulate('000000', '2024-09-30');
   check('测试·涨幅：000000 2024-09-30 → 3% 命中 + 规则 / 阈值 3.0% / 当日涨跌幅（引擎 display）/ 前收日 / 不复权 / 合成行情',
     verdictOf(hS3) === '命中' && ruleTxt(hS3).includes('规则提醒') && ruleTxt(hS3).includes('规则：当天涨幅超过 3% 的票，我绝不买入。') && ruleTxt(hS3).includes('阈值：3.0%')
-    && /当日涨跌幅：\+4\.\d+%/.test(ruleTxt(hS3)) && ruleTxt(hS3).includes('前收日 2024-09-27') && ruleTxt(hS3).includes('不复权') && ruleTxt(hS3).includes('合成行情 · 演示口径，不构成投资建议'), ruleTxt(hS3).slice(0, 400));
+    && /当日涨跌幅：\+4\.\d+%/.test(ruleTxt(hS3)) && ruleTxt(hS3).includes('前收日 2024-09-27') && ruleTxt(hS3).includes('不复权') && txt.includes('合成回归行情 · 不构成投资建议'), ruleTxt(hS3).slice(0, 400));
   s = await simulate('000000', '2024-10-08');
   check('测试·涨幅：000000 2024-10-08 → 未命中', verdictOf(hS3) === '未命中' && ruleTxt(hS3).includes('未超过阈值 3.0%') && !ruleTxt(hS3).includes('规则提醒'), ruleTxt(hS3).slice(0, 300));
   s = await simulate('888888', '2024-10-10');
@@ -844,7 +988,7 @@ const saveModal = async () => { await clickRole('modal-save'); await settle(); }
   check('早期重复记录后修改：新版本 v7（已改写）成为当前，v4 进入历史，旧记录全部保留', enabledHashes().join() === h6 && cardVisible(h6).includes('版本 v7') && histState(dup.hash) === 'replaced' && stored().length === 5, JSON.stringify(stored().map((r) => r.v)));
   {
     const badHash = '0123456789abcdef';
-    state.contracts = { ...defaultContracts(), versions: [...state.contracts.versions, { ...dupRec(8, '2026-10-02T00:00:00Z'), hash: badHash }] }; mountCycle(); await settle();
+    state.contracts = { ...defaultContracts(), marketSource: 'synthetic-fixture', versions: [...state.contracts.versions, { ...dupRec(8, '2026-10-02T00:00:00Z'), hash: badHash }] }; mountCycle(); await settle();
     txt = texts(current).join('|');
     check('完整性：哈希不一致的启用规则不计入当前规则（仍为 6%），单列“待重新确认的规则（1）”，非恐慌式说明；技术原因码只在详情中',
       txt.includes('当前生效规则（1）') && enabledHashes().join() === h6 && txt.includes('待重新确认的规则（1）') && reconfirmHashes().join() === badHash
@@ -867,13 +1011,13 @@ state.bill = defaultBill();
 mountCycle();
 check('用户CSV：空状态提示 + accept 限定 csv', texts(current).join('|').includes('尚未选择账单') && findInputs(current)[0].attrs.accept === '.csv,text/csv');
 
-const happyCsv = '日期,标的,方向,价格,数量,费用,税费\n2024-09-25,000000,买入,100,100,5,0\n2024-10-09,000000,卖出,104,100,5,1\n';
+const happyCsv = '日期,标的,方向,价格,数量,费用,税费\n2025-01-02,600519,买入,1488.00,100,5,0\n2025-12-30,600519,卖出,1389.72,100,5,1\n';
 await pickFile({ name: 'my-bill.csv', size: 2048, __content: happyCsv });
 await flush();
 txt = texts(current).join('|');
 check('用户CSV：校验通过 → loaded + 待确认 + 文件名/大小', state.bill.status === 'loaded' && state.bill.sourceType === 'local' && state.bill.trades.length === 2 && txt.includes('my-bill.csv') && txt.includes('2 KB')
   && texts(findByClass(current, 'im-status')[0] ?? { children: [] }).join('').includes('待确认：'), txt.slice(0, 200));
-check('用户CSV：本机处理与数据模式标注', txt.includes('仅在本机读取和校验，不上传') && txt.includes('用户本地账单 + 合成演示行情'), txt.slice(0, 200));
+check('用户CSV：本机处理与数据模式标注', txt.includes('仅在本机读取和校验，不上传') && txt.includes('用户本地账单 + Tushare 动态行情') && txt.includes('服务端只接收标的代码与日期范围'), txt.slice(0, 260));
 let confirmBtn = findButtons(current).find((b) => labelOf(b).includes('确认交易列表'));
 check('用户CSV：正常校验通过后确认按钮可用', !!confirmBtn && !confirmBtn.disabled);
 
@@ -910,12 +1054,12 @@ const loadPromise = clickLabel('加载演示账单');
 const loadingBtn = findButtons(current).find((b) => labelOf(b).includes('加载'));
 check('演示加载：期间 status=loading 且文件选择/按钮均禁用', state.bill.status === 'loading' && !!loadingBtn && loadingBtn.disabled === true && findInputs(current)[0].disabled === true, JSON.stringify({ s: state.bill.status }));
 await loadPromise;
-check('演示加载：结束后恢复 loaded + 待确认（5 笔）', state.bill.status === 'loaded' && state.bill.trades.length === 5
+check('演示加载：结束后恢复 loaded + 待确认（默认 R 场景 8 笔）', state.bill.status === 'loaded' && state.bill.trades.length === 8
   && texts(findByClass(current, 'im-status')[0] ?? { children: [] }).join('').includes('待确认：'), JSON.stringify({ s: state.bill.status, n: state.bill.trades.length }));
 
 /* ==== 用户账单 → 报告页（确认 → 合成行情 → runReview 发布门槛）==== */
-const oosCsv = '日期,标的,方向,价格,数量,费用,税费\n2024-09-25,000000,买入,100,100,5,0\n2024-09-26,600519,买入,30,100,5,0\n2024-10-09,000000,卖出,104,100,5,1\n';
-const lateCsv = '日期,标的,方向,价格,数量,费用,税费\n2024-11-05,000000,买入,100,100,5,0\n';
+const oosCsv = '日期,标的,方向,价格,数量,费用,税费\n2025-01-02,600519,买入,1488.00,100,5,0\n2025-01-02,000001,买入,10.00,100,5,0\n2025-12-30,600519,卖出,1389.72,100,5,1\n';
+const lateCsv = '日期,标的,方向,价格,数量,费用,税费\n2026-01-05,600519,买入,1377.18,100,5,0\n';
 
 state.route = 'import';
 state.bill = defaultBill();
@@ -924,16 +1068,15 @@ mountCycle();
 await pickFile({ name: 'user-bill.csv', size: happyCsv.length, __content: happyCsv });
 await flush();
 await clickLabel('确认交易列表');
-check('用户报告：确认后 status=confirmed 且进入报告页（用户字段不被覆盖）', state.bill.status === 'confirmed' && state.route === 'report' && state.bill.fileName === 'user-bill.csv' && state.bill.trades.length === 2 && state.bill.dataMode && state.bill.dataMode.id === 'user_bill_synthetic_market', JSON.stringify({ s: state.bill.status, r: state.route }));
+check('用户报告：确认后 status=confirmed 且进入报告页（用户字段不被覆盖）', state.bill.status === 'confirmed' && state.route === 'report' && state.bill.fileName === 'user-bill.csv' && state.bill.trades.length === 2 && state.bill.dataMode && state.bill.dataMode.id === 'user_bill_dynamic_market', JSON.stringify({ s: state.bill.status, r: state.route }));
 await flush(); await flush(); await flush();
 txt = texts(current).join('|');
-check('用户报告：文件名 + 用户本地账单 + 合成行情标注；不把用户账单称作非真实账户', txt.includes('用户本地账单') && txt.includes('文件名：user-bill.csv') && txt.includes('用户本地账单 + 合成演示行情')
-  && txt.includes('合成演示行情（非真实行情）') && !txt.includes('非真实账户'), txt.slice(0, 240));
+check('用户报告：文件名 + 用户本地账单 + Tushare 动态行情标注（拉取/最新交易日/快照）', txt.includes('用户本地账单') && txt.includes('文件名：user-bill.csv') && txt.includes('用户本地账单 + Tushare 动态行情') && txt.includes('Tushare 动态行情（服务端获取，非实时') && txt.includes('最新交易日 2025-12-31') && txt.includes('快照 tushare-20251231-01234567'), txt.slice(0, 320));
 check('报告·用户账单：底部同样不出现“契约匹配未接线”，契约状态与未接入项照实说明', wiringOk(txt), txt.slice(-300));
-check('报告·用户摘要：数据来源=已确认本地账单（文件名）/ 合成演示行情（非真实行情）/ 估值日 / 组合结果已发布（已通过复核）',
-  summaryTxt().includes('已确认本地账单 · user-bill.csv') && summaryTxt().includes('合成演示行情（非真实行情）') && summaryTxt().includes('估值日')
-  && summaryTxt().includes('组合结果已发布（已通过复核）') && summaryTxt().includes('本次结论：组合结果已通过复核并发布') && !summaryTxt().includes('不要据此作交易判断'), summaryTxt());
-check('用户报告：指标来自用户交易（+4.0%/+8.0%/¥400.00），非演示 A', txt.includes('+4.0%') && txt.includes('+8.0%') && txt.includes('¥400.00') && !txt.includes('+4.9%') && !txt.includes('¥700.00') && !txt.includes('undefined'), txt.slice(0, 240));
+check('报告·用户摘要：数据来源=已确认本地账单（文件名）/ Tushare 动态日线 / 估值日 / 组合结果已发布（已通过复核）',
+  summaryTxt().includes('已确认本地账单 · user-bill.csv') && summaryTxt().includes('Tushare 动态日线（服务端获取，非实时）') && summaryTxt().includes('估值日')
+  && summaryTxt().includes('组合结果已发布（已通过复核）') && summaryTxt().includes('数字基于 Tushare 最新已收盘日线（服务端获取，非实时）') && !summaryTxt().includes('不要据此作交易判断'), summaryTxt());
+check('用户报告：指标来自用户交易（-6.6%/-7.4%/¥-1,254.00），非示例 R', txt.includes('-6.6%') && txt.includes('-7.4%') && txt.includes('¥-1,254.00') && !txt.includes('+5.4%') && !txt.includes('¥-2,805.00') && !txt.includes('undefined'), txt.slice(0, 240));
 check('用户报告：无 A/A′ 场景切换与差异面板', !txt.includes('演示场景') && !txt.includes('A′') && !txt.includes('与基准 A 的差异'), txt.slice(0, 160));
 check('用户报告：复核状态中文“全部事实已发布” + 已发布 17 项 + 组合已发布（内部状态在详情）',
   txt.includes('复核：全部事实已发布') && txt.includes('内部状态标识：published') && txt.includes('已发布事实 17 项') && txt.includes('组合已发布'), txt.slice(0, 200));
@@ -953,7 +1096,7 @@ check('证据视图：无备用重算来源时如实说明（重算尝试 0 次 
   const retTxt = ret ? texts(ret).join('|') : '';
   check('证据视图：组合 8 项事实均已发布，条目标题含事实名 + 引擎 display + 已发布',
     nodes.length === 8 && nodes.every((n) => String(n.attrs.class).includes('ok') && factSummary(n).includes('已发布'))
-    && !!ret && factSummary(ret).includes('+4.0%'), JSON.stringify(nodes.map(factSummary)).slice(0, 300));
+    && !!ret && factSummary(ret).includes('-6.6%'), JSON.stringify(nodes.map(factSummary)).slice(0, 300));
   check('证据视图：展开后含公式编号/公式文本/输入/来源行/计算步骤',
     retTxt.includes('CALC_RET_V1') && retTxt.includes('actualValue / buyCost − 1') && retTxt.includes('成交 T001、T002')
     && retTxt.includes('user-bill.csv 第 2 行') && retTxt.includes('计算步骤') && retTxt.includes('S1 口径') && retTxt.includes('S3 逐批')
@@ -962,9 +1105,9 @@ check('证据视图：无备用重算来源时如实说明（重算尝试 0 次 
     retTxt.includes('这项结果代表什么') && retTxt.includes('实际期末价值相对买入成本的收益率') && retTxt.includes('来源于哪些交易') && /已通过复核并发布（V-[0-9a-f]{8}）/.test(retTxt)
     && !!ret && findByClass(ret, 'rp-tech').length === 1 && findByClass(ret, 'rp-tech')[0].tagName === 'DETAILS', retTxt.slice(0, 300));
 }
-await clickLabel('000000'); await flush(); await flush(); await flush();
+await clickLabel('600519'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
-check('用户反事实：未阻断标可进入反事实图（入口 + 引擎 display ¥10,800.00 / +8.0% / +4.0pp）', txt.includes('单笔反事实') && txt.includes('S1') && txt.includes('假设结果价值 ¥10,800.00') && txt.includes('假设收益 +8.0%') && txt.includes('相对改善 +4.0pp'), txt.slice(0, 300));
+check('用户反事实：未阻断标可进入反事实图（入口 + 引擎 display ¥137,718.00 / -7.4% / -0.8pp）', txt.includes('单笔反事实') && txt.includes('S1') && txt.includes('假设结果价值 ¥137,718.00') && txt.includes('假设收益 -7.4%') && txt.includes('相对改善 -0.8pp'), txt.slice(0, 300));
 check('用户反事实：双 SVG 面板与图例渲染正常', findByTag(current, 'svg').length >= 2 && txt.includes('当前替换笔') && txt.includes('不构成投资建议'), txt.slice(0, 200));
 
 state.route = 'import';
@@ -975,19 +1118,19 @@ await flush();
 await clickLabel('确认交易列表');
 await flush(); await flush(); await flush();
 txt = texts(current).join('|');
-check('用户报告：范围外标的 600519 阻断展示（E_PRICE_MISSING · 不回落演示）', txt.includes('600519') && txt.includes('E_PRICE_MISSING') && !txt.includes('+4.9%') && !txt.includes('¥700.00'), txt.slice(0, 260));
+check('用户报告：范围外标的 000001 阻断展示（E_PRICE_MISSING · 不回落演示）', txt.includes('000001') && txt.includes('E_PRICE_MISSING') && !txt.includes('+5.4%') && !txt.includes('¥-2,805.00'), txt.slice(0, 260));
 check('用户报告：复核“部分事实已发布” + 组合结果不发布（不按剩余标的重算）',
   txt.includes('复核：部分事实已发布') && txt.includes('内部状态标识：degraded') && txt.includes('组合」结果不发布') && txt.includes('不按剩余标的'), txt.slice(0, 260));
 {
   const vis = visibleTexts(current).join('|');
   check('用户报告·阻断：中文阻断原因与行号可见，错误码只在技术详情', vis.includes('结果不发布') && !vis.includes('E_PRICE_MISSING') && txt.includes('E_PRICE_MISSING'), vis.slice(-300));
 }
-check('报告·用户摘要·阻断：优先显示阻断原因（600519 超出合成行情范围）+“不要据此作交易判断。”+ 组合结果未发布，摘要不含任何数值',
-  summaryTxt().startsWith('本次分析摘要|存在阻断：') && summaryTxt().includes('600519') && summaryTxt().includes('不要据此作交易判断。') && summaryTxt().includes('部分标的结果已通过复核')
+check('报告·用户摘要·阻断：优先显示阻断原因（000001 超出真实行情范围）+“不要据此作交易判断。”+ 组合结果未发布，摘要不含任何数值',
+  summaryTxt().startsWith('本次分析摘要|存在阻断：') && summaryTxt().includes('000001') && summaryTxt().includes('不要据此作交易判断。') && summaryTxt().includes('部分标的结果已通过复核')
   && summaryTxt().includes('组合结果未发布') && !summaryTxt().includes('已发布（') && !/[+-]\d+\.\d%|¥/.test(summaryTxt()), summaryTxt());
-check('证据视图·缺价：未发布事实表列出组合扣发原因 + 600519 未进入计算 + 无组合指标卡',
+check('证据视图·缺价：未发布事实表列出组合扣发原因 + 000001 未进入计算 + 无组合指标卡',
   txt.includes('组合不发布') && txt.includes('未发布事实（8 项）') && txt.includes('portfolio.actualRet') && txt.includes('E_REVIEW_PORTFOLIO_WITHHELD')
-  && txt.includes('组合结论整体扣发') && txt.includes('「600519」未进入计算') && findByClass(current, 'rp-metric').length === 0, txt.slice(0, 400));
+  && txt.includes('组合结论整体扣发') && txt.includes('「000001」未进入计算') && findByClass(current, 'rp-metric').length === 0, txt.slice(0, 400));
 {
   const boxTxt = texts(blockedBoxOf()).join('|');
   check('阻断框·缺价：组合扣发显示真实原因（E_PRICE_MISSING / WITHHELD）+ B4 文案，不出现复核证据不足说明',
@@ -1002,15 +1145,15 @@ check('证据视图·缺价：未发布事实表列出组合扣发原因 + 60051
     && !allTxt.includes('+4.0%') && !allTxt.includes('¥400.00') && !allTxt.includes('¥10,400.00') && !allTxt.includes('复核通过并发布')
     && allTxt.includes('不展示该步骤的中间数值'), allTxt.slice(0, 400));
 }
-await clickLabel('000000'); await flush(); await flush(); await flush();
-txt = texts(current).join('|');
-check('用户报告：未阻断标的 000000 仍发布（+4.0%）', txt.includes('+4.0%') && txt.includes('¥400.00'), txt.slice(0, 200));
 await clickLabel('600519'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
-check('用户报告：600519 视图不发布（支持范围外说明，且不出反事实图）', txt.includes('600519」结果不发布') && txt.includes('合成行情缓存支持范围') && !txt.includes('单笔反事实'), txt.slice(0, 200));
-check('证据视图·缺价标的：600519 无计算路径且说明未进入计算', txt.includes('「600519」没有计算路径') && factNodes().length === 0, txt.slice(0, 300));
+check('用户报告：未阻断标的 600519 仍发布（-6.6% / ¥-1,254.00）', txt.includes('-6.6%') && txt.includes('¥-1,254.00'), txt.slice(0, 200));
+await clickLabel('000001'); await flush(); await flush(); await flush();
+txt = texts(current).join('|');
+check('用户报告：000001 视图不发布（缺价/支持范围外说明，且不出反事实图）', txt.includes('000001」结果不发布') && txt.includes('缺价或超出行情支持范围') && !txt.includes('单笔反事实'), txt.slice(0, 200));
+check('证据视图·缺价标的：000001 无计算路径且说明未进入计算', txt.includes('「000001」没有计算路径') && factNodes().length === 0, txt.slice(0, 300));
 
-const allOutCsv = '日期,标的,方向,价格,数量,费用,税费\n2024-09-26,600519,买入,30,100,5,0\n';
+const allOutCsv = '日期,标的,方向,价格,数量,费用,税费\n2025-01-02,000001,买入,10.00,100,5,0\n';
 state.route = 'import';
 state.report = { scenario: 'A', symbol: 'pool' };
 mountCycle();
@@ -1045,7 +1188,7 @@ check('证据视图·悬空引用：重算记录如实列出（无备用来源 /
   /R-[0-9a-f]{8}/.test(txt) && txt.includes('没有备用来源') && txt.includes('已停止') && txt.includes('E_REVIEW_RECOMPUTE_NO_ALTERNATIVE') && txt.includes('重算尝试 0 次'), txt.slice(0, 400));
 check('证据视图·悬空引用：全部事实未发布，页面不出现任何有效数字或“复核通过”',
   factNodes().length === 8 && factNodes().every((n) => factSummary(n).includes('未发布')) && txt.includes('没有通过复核的事实')
-  && !txt.includes('+4.0%') && !txt.includes('¥400.00') && !txt.includes('¥10,000.00') && !txt.includes('复核通过并发布'), txt.slice(0, 400));
+  && !txt.includes('-6.6%') && !txt.includes('¥-1,254.00') && !txt.includes('¥137,718.00') && !txt.includes('复核通过并发布'), txt.slice(0, 400));
 {
   const boxTxt = texts(blockedBoxOf()).join('|');
   check('阻断框·悬空来源：组合显示复核/证据问题（来源行不可定位 / 无备用重算），不归因缺价或超范围，无指标卡',
@@ -1053,14 +1196,14 @@ check('证据视图·悬空引用：全部事实未发布，页面不出现任�
     && boxTxt.includes('复核或证据不足') && !boxTxt.includes('缺价') && !boxTxt.includes('超范围') && !boxTxt.includes('不按剩余标的')
     && !boxTxt.includes('不回退其他日期') && findByClass(current, 'rp-metric').length === 0, boxTxt.slice(0, 400));
 }
-await clickLabel('000000'); await flush(); await flush(); await flush();
+await clickLabel('600519'); await flush(); await flush(); await flush();
 txt = texts(current).join('|');
 {
   const boxTxt = texts(blockedBoxOf()).join('|');
-  check('阻断框·悬空来源：标的 000000 同样显示真实原因，不归因缺价，不显示数字与反事实图',
-    boxTxt.includes('「000000」结果不发布') && boxTxt.includes('E_VERIFY_SOURCE_UNRESOLVED') && boxTxt.includes('复核或证据不足')
+  check('阻断框·悬空来源：标的 600519 同样显示真实原因，不归因缺价，不显示数字与反事实图',
+    boxTxt.includes('「600519」结果不发布') && boxTxt.includes('E_VERIFY_SOURCE_UNRESOLVED') && boxTxt.includes('复核或证据不足')
     && !boxTxt.includes('缺价') && !boxTxt.includes('超范围') && !boxTxt.includes('其他估值日')
-    && findByClass(current, 'rp-metric').length === 0 && !txt.includes('单笔反事实') && !txt.includes('+4.0%') && !txt.includes('¥400.00'), boxTxt.slice(0, 400));
+    && findByClass(current, 'rp-metric').length === 0 && !txt.includes('单笔反事实') && !txt.includes('-6.6%') && !txt.includes('¥-1,254.00'), boxTxt.slice(0, 400));
 }
 
 state.route = 'import';
@@ -1083,7 +1226,7 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
   const hB3 = adapterMod.previewContract({ template_id: 'no_buy_back_within', fields: { days: '3' } }).hash;
   const hS3 = adapterMod.previewContract({ template_id: 'no_buy_on_surge', fields: { threshold_pct: '3' } }).hash;
   store.delete('tm.contracts.demo');
-  state.contracts = defaultContracts();
+  state.contracts = { ...defaultContracts(), marketSource: 'synthetic-fixture' };
   state.route = 'import'; state.bill = defaultBill(); mountCycle();
   await pickFile({ name: 'cf-user.csv', size: cfCsv.length, __content: cfCsv });
   await flush();
@@ -1102,9 +1245,9 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
   check('情境来源·已确认本地账单：交易来源=已确认本地账单（cf-user.csv）· 行情=合成演示行情；卖出列表为用户交易（非演示 T004）',
     state.bill.status === 'confirmed' && sourceLine().startsWith('交易来源：已确认本地账单（cf-user.csv）') && sourceLine().includes('行情：合成演示行情')
     && txt.includes('T002 000000 2024-10-09') && txt.includes('T004 600519 2024-09-30') && !txt.includes('T004 000000 2024-10-08') && !txt.includes('演示账单 A')
-    && txt.includes('合成行情（非真实行情）') && txt.includes('候选口径（待冻结）') && txt.includes('不构成投资建议'), sourceLine() + ' || ' + txt.slice(-300));
-  check('情境来源·已确认本地账单：范围外标的 600519 列出且标注“不在合成行情缓存”（不隐藏、不替代）',
-    symOpts.some((o) => o.startsWith('600519') && o.includes('不在合成行情缓存')) && symOpts.some((o) => o.startsWith('000000')), JSON.stringify(symOpts));
+    && txt.includes('合成夹具（非真实行情）· 候选口径（待 M0-C1 冻结）· 不构成投资建议'), sourceLine() + ' || ' + txt.slice(-300));
+  check('情境来源·已确认本地账单：范围外标的 600519 列出且标注“不在本次行情”（不隐藏、不替代）',
+    symOpts.some((o) => o.startsWith('600519') && o.includes('不在本次行情')) && symOpts.some((o) => o.startsWith('000000')), JSON.stringify(symOpts));
 
   let s = await simulate('000000', '2024-10-10');
   check('情境模拟·用户账单不追回：000000 2024-10-10 用用户卖出 T002（2024-10-09，距 1 日）→ 命中，结果标注用户来源',
@@ -1112,7 +1255,7 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
     && ruleTxt(hB3).includes('交易来源：已确认本地账单（cf-user.csv）') && !s.includes('演示账单 A') && simHashes().length === 2, s.slice(0, 400));
   s = await simulate('600519', '2024-11-06');
   check('情境模拟·用户账单不追回：600519 申报日超出缓存日历 → 数据不足（E_DATE_NOT_IN_CALENDAR），不回退演示账单',
-    verdictOf(hB3) === '数据不足' && ruleTxt(hB3).includes('E_DATE_NOT_IN_CALENDAR') && ruleTxt(hB3).includes('不在合成行情缓存支持范围') && ruleTxt(hB3).includes('已确认本地账单（cf-user.csv）') && !s.includes('演示账单 A'), s.slice(0, 400));
+    verdictOf(hB3) === '数据不足' && ruleTxt(hB3).includes('E_DATE_NOT_IN_CALENDAR') && ruleTxt(hB3).includes('不在本次行情支持范围') && ruleTxt(hB3).includes('已确认本地账单（cf-user.csv）') && !s.includes('演示账单 A'), s.slice(0, 400));
   s = await simulate('600519', '2024-10-08');
   check('情境模拟·用户账单不追回：600519（缓存外）照用用户卖出 T004 判定，并如实说明只用交易日历、不读价格',
     ruleTxt(hB3).includes('最近卖出：T004 · 2024-09-30') && ruleTxt(hB3).includes('不追回判定只使用交易日历与账单交易') && !s.includes('演示账单 A'), s.slice(0, 400));
@@ -1122,8 +1265,8 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
   check('情境来源·优化二（不追回+涨幅同时启用）：标注“仅不追回规则读取这些交易，涨幅规则不读取账单交易”，且显示卖出记录列表',
     sourceLine().includes('仅不追回规则读取这些交易，涨幅规则不读取账单交易') && sellsLine().includes('卖出记录来源：已确认本地账单（cf-user.csv）') && sellsLine().includes('T002 000000 2024-10-09'), sourceLine() + ' || ' + sellsLine());
   await disableRule(hB3);
-  check('情境来源·优化二（仅涨幅启用）：只显示“涨幅规则只读取合成行情，不使用账单交易”，不显示卖出记录列表',
-    !enabledHashes().includes(hB3) && sourceLine().includes('涨幅规则只读取合成行情，不使用账单交易') && !sourceLine().includes('仅不追回') && sellsLine() === '', sourceLine() + ' || sells=' + sellsLine());
+  check('情境来源·优化二（仅涨幅启用）：只显示“涨幅规则只读取行情，不使用账单交易”，不显示卖出记录列表',
+    !enabledHashes().includes(hB3) && sourceLine().includes('涨幅规则只读取行情，不使用账单交易') && !sourceLine().includes('仅不追回') && sellsLine() === '', sourceLine() + ' || sells=' + sellsLine());
   await clickIn(histOf(hB3), '恢复为当前规则'); await settle();
   check('情境来源·优化二（从历史恢复不追回）：卖出记录列表恢复显示', enabledHashes().includes(hB3) && sellsLine().includes('T002 000000 2024-10-09'), sellsLine());
   s = await simulate('600519', '2024-10-08');
@@ -1147,6 +1290,7 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
   globalThis.document.getElementById = (id) => els[id] ?? null;
   globalThis.location = { hash: '#/import' };
   globalThis.window = { addEventListener: (t, fn) => { if (t === 'hashchange') hashListeners.push(fn); } };
+  state.report = { scenario: 'R', symbol: 'pool' };
   state.bill = defaultBill();
   await imp('src/main.js');
   const shell = () => texts(els.flow).join('|');
@@ -1155,33 +1299,57 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
   check('外壳·流程提示：1 导入账单 → 2 核对交易 → 3 查看报告 → 4 查看证据 / 设置规则；导入页未选账单时第 1 步为当前（文字标注“当前”）',
     shell().includes('1 导入账单') && shell().includes('2 核对交易') && shell().includes('3 查看报告') && shell().includes('4 查看证据 / 设置规则')
     && currentStep() === '1 导入账单当前', currentStep());
-  check('外壳·数据状态：默认“演示账单 + 合成行情”，导航为“交易规则 / 分析问答”，页脚不再写“非真实账户交易结果”',
-    shell().includes('数据状态：演示账单 + 合成行情') && shell().includes('非真实账户、非真实行情')
+  check('外壳·数据状态：默认“示例交易 + Tushare 动态行情”，导航为“交易规则 / 分析问答”，页脚说明动态行情且不再写“非真实账户交易结果”',
+    shell().includes('数据状态：示例交易 + Tushare 动态行情') && shell().includes('Tushare 最新已收盘日线（服务端获取，非实时）') && shell().includes('可在报告页切换到合成回归场景')
     && texts(els.nav).join('|').includes('交易规则') && texts(els.nav).join('|').includes('分析问答')
     && !texts(els.nav).join('|').includes('契约') && !texts(els.nav).join('|').includes('组合复述')
-    && !texts(els['footer-labels']).join('|').includes('非真实账户交易结果') && texts(els['footer-labels']).join('|').includes('不构成投资建议'), shell());
-  check('外壳·顶部：只常显“合成行情”，能力状态默认折叠且不出现 fake',
-    visibleTexts(els['capability-chips']).join('|').includes('合成行情')
+    && !texts(els['footer-labels']).join('|').includes('非真实账户交易结果') && texts(els['footer-labels']).join('|').includes('不构成投资建议')
+    && texts(els['footer-labels']).join('|').includes('行情由服务端从 Tushare 获取最新已收盘日线（非实时）'), shell());
+  check('外壳·顶部：常显动态行情状态，能力状态默认折叠且不出现 fake',
+    visibleTexts(els['capability-chips']).join('|').includes('示例交易 + Tushare 动态行情')
     && visibleTexts(els['capability-chips']).join('|').includes('查看能力状态')
     && !visibleTexts(els['capability-chips']).join('|').includes('百炼')
     && findByClass(els['capability-chips'], 'cap-details')[0]?.tagName === 'DETAILS'
-    && !texts(els['capability-chips']).join('|').includes('fake'), texts(els['capability-chips']).join('|').slice(0, 300));
+    && !texts(els['capability-chips']).join('|').includes('fake')
+    && texts(els['capability-chips']).join('|').includes('Tushare 动态日线'), texts(els['capability-chips']).join('|').slice(0, 300));
+  const adapterShell = await imp('src/demo/adapter.js');
+  check('外壳·能力状态：动态行情在真实网络 E2E 验收前保持“待验收”（不得提前置 ready）',
+    adapterShell.CAPABILITY.marketCache.ready === false
+    && texts(els['capability-chips']).join('|').includes('Tushare 动态日线·服务端获取（非实时）')
+    && texts(els['capability-chips']).join('|').includes('待验收'), texts(els['capability-chips']).join('|').slice(0, 300));
   check('外壳·了解口径：折叠区解释估值日 / 择时损耗 / 反事实 / 阻断 / 证据', findByClass(els.flow, 'glossary')[0]?.tagName === 'DETAILS'
     && ['估值日', '择时损耗', '反事实', '阻断', '证据'].every((k) => shell().includes(k)) && shell().includes('不会改用其他日期'), shell().slice(-300));
   state.bill = { ...defaultBill(), status: 'loaded', sourceType: 'local', fileName: 'pending.csv' };
   await goHash('#/import');
-  check('外壳·数据状态：待确认本地账单 → “待确认本地账单 + 合成行情”（含文件名、尚未确认）',
-    shell().includes('数据状态：待确认本地账单 + 合成行情') && shell().includes('pending.csv') && shell().includes('尚未确认'), shell());
+  check('外壳·数据状态：待确认本地账单 → “待确认本地账单”（含文件名、尚未确认，不冒称已有行情）',
+    shell().includes('数据状态：待确认本地账单') && !shell().includes('数据状态：待确认本地账单 +') && shell().includes('pending.csv') && shell().includes('尚未确认'), shell());
   state.bill = { ...defaultBill(), status: 'confirmed', sourceType: 'local', fileName: 'shell.csv' };
   await goHash('#/report');
-  check('外壳·数据状态：已确认本地账单 → “已确认本地账单 + 合成行情”（含文件名、未上传），报告页为第 3 步',
-    shell().includes('数据状态：已确认本地账单 + 合成行情') && shell().includes('shell.csv') && shell().includes('未上传') && currentStep() === '3 查看报告当前', shell());
+  check('外壳·数据状态：已确认本地账单 → “已确认本地账单 + Tushare 动态行情”（含文件名、未上传、服务端只收标的与范围），报告页为第 3 步',
+    shell().includes('数据状态：已确认本地账单 + Tushare 动态行情') && shell().includes('shell.csv') && shell().includes('未上传')
+    && shell().includes('服务端只收到标的代码与日期范围') && shell().includes('Tushare 最新已收盘日线（非实时）') && currentStep() === '3 查看报告当前', shell());
   state.bill = { ...defaultBill(), status: 'invalid', sourceType: 'local', fileName: 'bad.csv', blocked: true };
   await goHash('#/import');
   check('外壳·数据状态：校验失败 → “阻断 · 本地账单不能分析”，导入页处于第 2 步核对交易',
     shell().includes('数据状态：阻断 · 本地账单不能分析') && shell().includes('不能用于分析') && currentStep() === '2 核对交易当前', shell());
   await goHash('#/contract');
   check('外壳：交易规则页为第 4 步“查看证据 / 设置规则”', currentStep() === '4 查看证据 / 设置规则当前', currentStep());
+}
+
+/* ==== 动态行情：出站隐私与单次标的上限 ==== */
+{
+  const adapterMod = await imp('src/demo/adapter.js');
+  check('动态行情请求：全程只含 symbols/start/end，不含成交、价格、数量、文件名或 CSV 内容',
+    marketCalls.length > 0 && marketCalls.every((c) => Object.keys(c).sort().join(',') === 'end,start,symbols'
+      && /^\d{4}-\d{2}-\d{2}$/.test(c.start) && /^\d{4}-\d{2}-\d{2}$/.test(c.end)
+      && c.symbols.every((s) => /^\d{6}$/.test(s))
+      && !JSON.stringify(c).includes('csv') && !JSON.stringify(c).includes('T00') && !JSON.stringify(c).includes('quantity')),
+    JSON.stringify(marketCalls));
+  const many = Array.from({ length: 11 }, (_, i) => ({ symbol: String(600000 + i), trade_date: '2025-01-02' }));
+  let limitError = null;
+  try { adapterMod.marketScopeFromTrades(many); } catch (e) { limitError = e; }
+  check('动态行情：超过单次 10 只标的 → 明确阻断（不截断、不用部分标的冒充完整组合）',
+    !!limitError && limitError.message.includes('上限 10') && limitError.message.includes('不截断'), limitError && limitError.message);
 }
 
 /* ---- 输出 ---- */

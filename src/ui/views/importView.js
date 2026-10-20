@@ -6,7 +6,7 @@ import { defaultBill, defaultChat, createBillContextId } from '../../state.js';
 import * as demo from '../../demo/adapter.js';
 
 const LOCAL_NOTICE = '原始 CSV 仅在本机读取和校验，不上传。';
-const MARKET_NOTICE = '当前用户账单仅使用合成演示行情；不在支持范围内时，下一阶段报告将明确阻断。';
+const MARKET_NOTICE = '当前用户账单使用 Tushare 动态日线（服务端获取，非实时）；取数失败、标的超出单次上限或日期范围不足时，报告会明确阻断，不回退静态缓存或合成行情。';
 const CONFIRM_NOTE = '确认后进入分析报告；不会上传账单、不会执行交易。';
 const FEE_TAX_NOTE = '部分费用或税费缺失，当前结果按现有口径计算，可能与实际对账结果不同。';
 
@@ -83,6 +83,11 @@ function fmtSize(bytes) {
   return `${v >= 100 || Number.isInteger(v) ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
 }
 
+function fmtAt(iso) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString('zh-CN');
+}
+
 function readAsText(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -98,7 +103,7 @@ function isCsvFile(file) {
 
 // 每次状态迁移都基于 defaultBill() 全量重建，避免上一份账单的 trades/warnings/dataMode 等残留到下一状态
 function freshBill(scenario, fields = {}) {
-  return { ...defaultBill(), scenario: scenario || 'A', ...fields };
+  return { ...defaultBill(), scenario: scenario || 'R', ...fields };
 }
 
 function errText(e) {
@@ -140,6 +145,14 @@ function sourceNoteText(note) {
 
 function dataModeLine(dataMode) {
   return el('div', { class: 'muted small' }, [`数据模式：${dataMode.label} —— ${dataMode.note}`]);
+}
+
+function marketLine(marketSource, supportScope) {
+  if (!marketSource) return null;
+  const scope = supportScope
+    ? ` · 请求范围 ${supportScope.range.start} → ${supportScope.range.end}（${supportScope.symbols.join(' / ')}，最新交易日 ${supportScope.asOfDate}）${supportScope.fetchedAt ? ` · 拉取时间 ${fmtAt(supportScope.fetchedAt)} · 快照 ${supportScope.snapshotId ?? '—'}` : ''}`
+    : '';
+  return el('div', { class: 'muted small' }, [`行情：${marketSource.label}${scope}`]);
 }
 
 function tradesTable(trades) {
@@ -242,7 +255,19 @@ export function renderImport(root, ctx) {
       });
       try {
         const b = await demo.loadDemoBill(scenario);
-        set({ bill: freshBill(scenario, { contextId, status: 'loaded', trades: b.trades, warnings: b.warnings, sourceNote: b.sourceNote, resultLabelling: b.resultLabelling }) });
+        set({
+          bill: freshBill(scenario, {
+            contextId,
+            status: 'loaded',
+            trades: b.trades,
+            warnings: b.warnings,
+            dataMode: b.dataMode,
+            marketSource: b.marketSource,
+            supportScope: b.supportScope,
+            sourceNote: b.sourceNote,
+            resultLabelling: b.resultLabelling,
+          }),
+        });
       } catch (e) {
         set({ bill: freshBill(scenario, { contextId, status: 'error', error: e.message }) });
       }
@@ -281,10 +306,11 @@ export function renderImport(root, ctx) {
 
   if (bill.status === 'loaded' || bill.status === 'confirmed') {
     const t = bill.trades;
+    const dynamic = !!(bill.marketSource && bill.marketSource.dynamic);
     wrap.append(el('div', { class: `im-status ${bill.status}` }, [
       bill.status === 'loaded'
         ? '待确认：请核对交易数、日期、标的和费用税费'
-        : `已确认：已用于本地分析${bill.sourceType === 'local' ? '' : '（演示账单）'}`,
+        : `已确认：已用于本地分析${bill.sourceType === 'local' ? '' : dynamic ? '（示例交易）' : '（演示账单）'}`,
     ]));
     wrap.append(el('div', { class: 'section-title' }, [`交易列表（${t.length} 条）`]));
     wrap.append(el('div', { class: 'muted small' }, [sourceNoteText(bill.sourceNote)]));
@@ -295,6 +321,8 @@ export function renderImport(root, ctx) {
 
     if (bill.warnings && bill.warnings.length) wrap.append(warningsBlock(bill.warnings));
     if (bill.dataMode) wrap.append(dataModeLine(bill.dataMode));
+    const mktLine = marketLine(bill.marketSource, bill.supportScope);
+    if (mktLine) wrap.append(mktLine);
 
     const lab = bill.resultLabelling;
     if (lab) {
@@ -315,10 +343,12 @@ export function renderImport(root, ctx) {
       wrap.append(el('div', { class: 'muted small im-confirm-note' }, [CONFIRM_NOTE]));
       if (!canConfirm) wrap.append(el('div', { class: 'muted small' }, ['当前状态不可确认（有错误或无交易）。']));
     } else if (bill.sourceType === 'local') {
-      wrap.append(el('div', { class: 'ok-line' }, ['已确认 ✓（报告页展示你的账单结果；行情为合成演示口径，非真实行情）']));
+      wrap.append(el('div', { class: 'ok-line' }, ['已确认 ✓（报告页展示你的账单结果；行情为 Tushare 最新已收盘日线，服务端获取、非实时）']));
       wrap.append(el('button', { class: 'btn', onclick: () => go('report') }, ['前往报告 · 证据']));
     } else {
-      wrap.append(el('div', { class: 'ok-line' }, ['已确认 ✓（演示账单：确认动作仅切换应用状态）']));
+      wrap.append(el('div', { class: 'ok-line' }, [dynamic
+        ? '已确认 ✓（示例交易 + Tushare 动态行情：确认动作仅切换应用状态）'
+        : '已确认 ✓（演示账单：确认动作仅切换应用状态）']));
       wrap.append(el('button', { class: 'btn', onclick: () => go('report') }, ['前往报告 · 证据']));
     }
   }

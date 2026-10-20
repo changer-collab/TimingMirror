@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "version": "0.1.0",
-  "description": "TimingMirror 开发骨架（浏览器纯 JS 运行时；演示数据模式）",
+  "description": "TimingMirror（浏览器纯 JS 运行时；示例交易 + Tushare 动态日线，服务端获取、非实时）",
   "scripts": {
     "dev": "node scripts/serve.mjs",
     "proxy": "node server/fc-proxy/index.mjs",

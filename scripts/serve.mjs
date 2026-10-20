@@ -7,9 +7,36 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, normalize, extname, sep } from 'node:path';
+import { createHandler } from '../server/site-functions/handler.mjs';
+import { createTushareMarketTransport } from '../server/site-functions/market.mjs';
 
 const ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), '..'));
 const PORT = Number(process.argv.find((a) => a.startsWith('--port='))?.split('=')[1] ?? process.env.PORT ?? 5180);
+const MARKET_PATH = '/functions/v1/app/api/market/snapshot';
+
+// Token 只从开发机环境变量读取，不写入文件或日志；未配置时接口明确返回 E_MARKET_NOT_CONFIGURED。
+const tushareToken = (process.env.TUSHARE_TOKEN ?? '').trim();
+const appHandler = createHandler({
+  marketTransport: tushareToken === '' ? null : createTushareMarketTransport({ token: tushareToken }),
+});
+
+function readRequestBody(req, limit = 256 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    req.on('data', (chunk) => {
+      total += chunk.length;
+      if (total > limit) {
+        reject(new Error('too-large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -26,6 +53,25 @@ const MIME = {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://localhost:${PORT}`);
+    if (url.pathname === MARKET_PATH) {
+      let body;
+      try {
+        body = await readRequestBody(req);
+      } catch {
+        res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, code: 'E_FUNCTION_BODY_TOO_LARGE', message: '请求体超过大小限制' }));
+        return;
+      }
+      const request = new Request(`http://localhost:${PORT}${MARKET_PATH}`, {
+        method: req.method,
+        headers: { 'content-type': req.headers['content-type'] ?? '' },
+        body: req.method === 'POST' ? body : undefined,
+      });
+      const response = await appHandler(request);
+      res.writeHead(response.status, Object.fromEntries(response.headers));
+      res.end(Buffer.from(await response.arrayBuffer()));
+      return;
+    }
     let p = decodeURIComponent(url.pathname);
     if (p === '/') p = '/index.html';
     // 不公开服务端目录与点文件（含 .env）；静态服务仅面向浏览器资源。
