@@ -277,6 +277,11 @@ export function renderImport(root, ctx) {
   }, [bill.status === 'loading' ? '加载中…' : '加载演示账单']);
   bar.append(loadBtn);
   wrap.append(bar);
+  wrap.append(el('div', { class: 'muted small im-sample' }, [
+    '演示真实后台：',
+    el('a', { href: '/m0/csv-input/fixtures/demo-bill-real.csv', download: 'demo-bill-local.csv' }, ['下载示例账单 CSV']),
+    '，再点击上方“选择文件”上传并确认。只有本地上传的账单会进入复核与在线对话；“加载演示账单”不会上传 CSV，也不会进入在线对话。',
+  ]));
 
   if (bill.status === 'loading') {
     wrap.append(el('div', { class: 'banner' }, [
@@ -289,7 +294,7 @@ export function renderImport(root, ctx) {
   } else if (bill.status === 'none' && bill.error) {
     wrap.append(el('div', { class: 'error' }, [bill.error]));
   } else if (bill.status === 'none') {
-    wrap.append(el('div', { class: 'muted' }, ['尚未选择账单：选择 .csv 文件后在本机完成校验，或加载演示账单走查流程。']));
+    wrap.append(el('div', { class: 'muted' }, ['尚未选择账单：选择 .csv 文件后在本机完成校验；也可先下载示例账单再上传，或加载演示账单走查页面流程（不进入在线对话）。']));
   }
 
   if (bill.fileName && (bill.status === 'invalid' || bill.status === 'loaded' || bill.status === 'confirmed')) {
