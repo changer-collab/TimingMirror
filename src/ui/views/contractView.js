@@ -1,4 +1,4 @@
-// 交易规则（契约）：当前生效规则（每种类型最多一条）→ 历史规则（折叠）→ 新增 / 修改弹窗 → 当前规则的历史情境测试（合成行情）
+// 交易规则（契约）：当前生效规则（每种类型最多一条）→ 历史规则（折叠）→ 新增 / 修改弹窗 → 当前规则的历史情境测试（本地账单：已签收真实缓存；示例：Tushare 动态 / 合成回归）
 // 边界：当前 / 历史划分、版本状态机、解析与判定全部由 adapter 提供（adapter 内部调用引擎）；本页只渲染返回的文本与 display。
 import { el, chip } from '../components.js';
 import * as adapter from '../../demo/adapter.js';
@@ -10,7 +10,6 @@ const VERDICT = {
   missing_data: { text: '数据不足', kind: 'mode' },
 };
 const SUMMARY = [['triggered', '命中', 'warn'], ['not_triggered', '未命中', 'ok'], ['missing_data', '数据不足', 'mode'], ['error', '无法判定', 'warn']];
-const SIM_MARKET_LINE = '合成行情（非真实行情）· 不构成投资建议';
 const SIM_CANDIDATE_LINE = '候选口径（待冻结）：规则只用于提醒，不自动交易，也不改变报告结论。';
 const KIND_LABEL = Object.freeze({ change_pct_threshold: '买入限制', sell_buyback_window: '卖出后限制' });
 const INTRO = '设置在历史情境测试中用于提醒自己的交易规则。';
@@ -136,7 +135,7 @@ export function renderContract(root, ctx) {
       el('div', { class: 'cv-privacy' }, [PRIVACY]),
       el('details', { class: 'cv-tech-note' }, [
         el('summary', {}, ['技术说明（候选口径）']),
-        el('div', { class: 'muted small' }, [`规则只能由引擎模板（${templates.length} 个）＋可编辑数值字段生成，自由文本不作为可执行规则；哈希为候选占位算法，待 M0-C1 冻结；演示账单使用合成行情；已确认本地账单仅使用签收门通过的真实缓存。`]),
+        el('div', { class: 'muted small' }, [`规则只能由引擎模板（${templates.length} 个）＋可编辑数值字段生成，自由文本不作为可执行规则；哈希为候选占位算法，待 M0-C1 冻结；示例账单可切换 Tushare 动态日线（服务端获取，非实时）或合成回归行情；已确认本地账单仅使用签收门通过的真实缓存。`]),
       ]),
     ]),
     el('button', { class: 'btn primary cv-add', 'data-role': 'add-rule', onclick: () => openEditor('add') }, ['新增规则']),
@@ -253,8 +252,36 @@ export function renderContract(root, ctx) {
   const current = ruleSet.current;
   const hasBuyback = current.some((r) => r.uses_trades);
   const hasSurge = current.some((r) => r.kind === 'change_pct_threshold');
+  const localBill = !!(state.bill && state.bill.status === 'confirmed' && state.bill.sourceType === 'local');
+  const marketSource = localBill ? 'signed-cache' : (c.marketSource === 'synthetic-fixture' ? 'synthetic-fixture' : adapter.DEFAULT_MARKET_SOURCE);
   const sim = el('div', { class: 'card' });
-  const src = adapter.contractTradeSource(state.bill);
+  sim.append(el('div', { class: 'section-title' }, [localBill
+    ? '历史情境测试（已签收真实行情缓存）'
+    : marketSource === 'synthetic-fixture'
+      ? '历史情境测试（合成行情）'
+      : '历史情境测试（Tushare 动态行情）']));
+  // 本地已确认账单固定使用签收真实缓存（无行情来源切换）；示例账单可切换 Tushare 动态 / 合成回归。
+  if (!localBill) {
+    const srcGroup = el('div', { class: 'rp-control-group' });
+    srcGroup.append(el('span', { class: 'rp-control-label' }, ['行情来源']));
+    const srcSeg = el('div', { class: 'rp-seg' });
+    for (const o of adapter.CONTRACT_MARKET_OPTIONS) {
+      srcSeg.append(el('button', {
+        class: marketSource === o.id ? 'active' : '',
+        onclick: () => {
+          if (marketSource === o.id) return;
+          simToken = null;
+          simContextLoadingKey = null;
+          set({ contracts: { marketSource: o.id, simContext: null, sim: { ...state.contracts.sim, result: null, running: false } } });
+        },
+      }, [o.label]));
+    }
+    srcGroup.append(srcSeg);
+    sim.append(srcGroup);
+    const labels = adapter.contractSimLabels(marketSource);
+    sim.append(el('div', { class: 'row' }, [chip(labels.label, 'mode'), chip(labels.scopeNote, 'mode')]));
+  }
+  const src = adapter.contractTradeSource(state.bill, marketSource);
   if (c.simContext && c.simContext.sourceKey !== src.key) {
     simToken = null;
     c.simContext = null;
@@ -262,30 +289,42 @@ export function renderContract(root, ctx) {
   }
   const sc = c.simContext;
   const marketLabel = sc?.marketSource?.label ?? src.market_label;
-  sim.append(el('div', { class: 'section-title' }, ['历史情境测试']));
-  sim.append(el('div', { class: 'row' }, [chip(src.kind === 'user_bill' ? `${marketLabel} · 非实时行情 · 不构成投资建议` : SIM_MARKET_LINE, 'mode')]));
-  sim.append(el('div', { class: 'muted small' }, [SIM_CANDIDATE_LINE]));
-  const srcNote = hasBuyback && hasSurge
-    ? '（仅不追回规则读取这些交易，涨幅规则不读取账单交易；不追回仅用交易日历和账单交易，不读取价格）'
-    : hasBuyback
-      ? '（不追回仅用交易日历和账单交易，不读取价格）'
-      : hasSurge
-        ? `（涨幅规则只读取${src.kind === 'user_bill' ? marketLabel : '合成行情'}，不使用账单交易）`
-        : '';
+  if (localBill) {
+    sim.append(el('div', { class: 'row' }, [chip(`${marketLabel} · 非实时行情 · 不构成投资建议`, 'mode')]));
+    sim.append(el('div', { class: 'muted small' }, [SIM_CANDIDATE_LINE]));
+  }
+  // 交易来源明细按当前规则的模板类型显示：不追回读取卖出记录，涨幅只读行情。
+  const srcNote = localBill
+    ? (hasBuyback && hasSurge
+      ? '（仅不追回规则读取这些交易，涨幅规则不读取账单交易；不追回仅用交易日历和账单交易，不读取价格）'
+      : hasBuyback
+        ? '（不追回仅用交易日历和账单交易，不读取价格）'
+        : hasSurge
+          ? `（涨幅规则只读取${marketLabel}，不使用账单交易）`
+          : '')
+    : (hasBuyback && hasSurge
+      ? '（仅不追回规则读取这些交易，涨幅规则不读取账单交易）'
+      : hasBuyback
+        ? '（不追回规则使用该来源的卖出记录）'
+        : hasSurge
+          ? '（涨幅规则只读取行情，不使用账单交易）'
+          : '');
   sim.append(el('div', { class: `calc-line cv-source ${src.kind}` }, [
-    `交易来源：${displayTradeSource(src)} · ${hasBuyback && !hasSurge ? '交易日历来源' : '行情'}：${displayMarket(marketLabel)}`,
+    `交易来源：${displayTradeSource(src)} · ${localBill && hasBuyback && !hasSurge ? '交易日历来源' : '行情'}：${displayMarket(marketLabel)}`,
     srcNote,
   ]));
-  if (sc?.supportScope) sim.append(el('div', { class: 'muted small cv-market-scope' }, [
+  if (localBill && sc?.supportScope) sim.append(el('div', { class: 'muted small cv-market-scope' }, [
     `支持标的：${sc.supportScope.symbols.join('、')}；支持日期范围：${sc.supportScope.range.start} 至 ${sc.supportScope.range.end}；asOfDate：${sc.asOfDate}；快照：${sc.marketSource.snapshotId ?? '无'}；抓取时间：${sc.marketSource.fetchTime ?? '无'}。`,
   ]));
   const simResultBox = el('div', { class: 'cv-sim-out' });
   let simBtn = null;
   if (!sc) {
-    sim.append(el('div', { class: 'muted' }, ['正在加载行情缓存与交易来源…']));
+    sim.append(el('div', { class: 'muted' }, [localBill
+      ? '正在加载行情缓存与交易来源…'
+      : `正在加载${marketSource === 'synthetic-fixture' ? '合成回归' : 'Tushare 动态'}行情与交易来源…`]));
     if (simContextLoadingKey !== src.key) {
       simContextLoadingKey = src.key;
-      adapter.contractSimContext({ bill: state.bill })
+      adapter.contractSimContext({ bill: state.bill, marketSource })
         .then((d) => {
           if (d.error) return { simContext: d, sim: { ...state.contracts.sim, result: null, running: false } };
           const cur = state.contracts.sim;
@@ -294,39 +333,44 @@ export function renderContract(root, ctx) {
         })
         .catch((e) => ({ simContext: { error: String(e && e.message ? e.message : e), sourceKey: src.key } }))
         .then((patch) => {
-          if (simContextLoadingKey !== src.key || adapter.contractTradeSource(state.bill).key !== src.key) return;
+          if (simContextLoadingKey !== src.key || adapter.contractTradeSource(state.bill, marketSource).key !== src.key) return;
           simContextLoadingKey = null;
           set({ contracts: patch });
         });
     }
   } else if (sc.error) {
-    sim.append(el('div', { class: 'error' }, [`历史情境测试阻断：${sc.error}`]));
+    sim.append(el('div', { class: 'error' }, [`${localBill ? '历史情境测试阻断' : '行情加载失败'}：${sc.error}`]));
   } else {
     sim.append(el('div', { class: 'muted small' }, [
-      `用当前生效的规则（${current.length} 条，每种类型一条）分别判定“假如在该日申报买入该标的”；历史规则不参与。缓存范围 ${sc.range.start} ~ ${sc.range.end}，共 ${sc.tradingDays.length} 个交易日；缺价、超范围不补造、不回退。`,
+      `用当前生效的规则（${current.length} 条，每种类型一条）分别判定“假如在该日申报买入该标的”；历史规则不参与。行情范围 ${sc.range.start} ~ ${sc.range.end}，共 ${sc.tradingDays.length} 个交易日；缺价、超范围不补造、不回退。`,
     ]));
+    if (sc.marketSource && sc.marketSource.dynamic) {
+      sim.append(el('div', { class: 'muted small' }, [
+        `行情拉取：${fmtAt(sc.marketSource.fetchedAt)} · 最新交易日 ${sc.marketSource.latestTradeDate ?? sc.marketSource.asOfDate}${sc.marketSource.snapshotId ? ` · 快照 ${sc.marketSource.snapshotId}` : ''}${sc.marketSource.checksum ? ` · 校验 ${sc.marketSource.checksum.slice(0, 12)}…` : ''}（服务端获取，非实时）`,
+      ]));
+    }
     const symSelect = el('select', {
       class: 'input', 'data-role': 'sim-symbol',
       onchange: (e) => { simToken = null; c.sim = { ...c.sim, symbol: e.target.value, result: null, running: false }; paintSim(); },
     }, sc.symbols.map((s) => el('option', { value: s.symbol, selected: s.symbol === c.sim.symbol ? 'selected' : null }, [
-      `${s.symbol}${s.in_bill && src.kind === 'user_bill' ? '（账单标的）' : ''}${s.in_market_cache ? '' : '（不在当前行情缓存）'}`,
+      `${s.symbol}${s.in_bill && src.kind === 'user_bill' ? '（账单标的）' : ''}${s.in_market_cache ? '' : localBill ? '（不在当前行情缓存）' : '（不在本次行情）'}`,
     ])));
     const dateInput = el('input', { class: 'input cv-input', type: 'date', 'data-role': 'sim-date', value: c.sim.date });
     dateInput.addEventListener('input', (e) => { simToken = null; c.sim = { ...c.sim, date: e.target.value, result: null, running: false }; paintSim(); });
     simBtn = el('button', {
       class: 'btn primary',
       onclick: async () => {
-        const req = { versions: c.versions, symbol: c.sim.symbol, date: c.sim.date, bill: state.bill };
+        const req = { versions: c.versions, symbol: c.sim.symbol, date: c.sim.date, bill: state.bill, marketSource };
         const token = {};
         simToken = token;
         set({ contracts: { sim: { ...state.contracts.sim, running: true, result: null } } });
         const result = await adapter.simulateContracts(req);
-        const applied = simToken === token && adapter.contractTradeSource(state.bill).key === src.key;
+        const applied = simToken === token && adapter.contractTradeSource(state.bill, marketSource).key === src.key;
         if (applied) set({ contracts: { sim: { ...state.contracts.sim, running: false, result } } });
       },
     }, [c.sim.running ? '测试中…' : '测试该日买入是否触发规则']);
     sim.append(el('div', { class: 'row' }, [
-      el('label', { class: 'cv-field' }, [el('span', { class: 'muted small' }, ['标的（账单标的 + 当前行情缓存标的）']), symSelect]),
+      el('label', { class: 'cv-field' }, [el('span', { class: 'muted small' }, [localBill ? '标的（账单标的 + 当前行情缓存标的）' : '标的（账单标的 + 示例标的）']), symSelect]),
       el('label', { class: 'cv-field' }, [el('span', { class: 'muted small' }, ['申报日期']), dateInput]),
       simBtn,
     ]));
@@ -550,7 +594,9 @@ function simResult(r) {
       : `行情：${displayMarket(r.tradesSource.market_label)}（涨幅模板不使用账单交易）`,
   ]));
   if (r.in_market_cache === false) {
-    box.append(el('div', { class: 'muted small' }, [`标的 ${safe(r.symbol)} 不在当前行情缓存支持范围：${r.uses_trades ? '不追回判定只使用交易日历与账单交易，不读取价格' : '无法读取涨跌幅'}；不替换标的、不回退演示账单。`]));
+    box.append(el('div', { class: 'muted small' }, [r.tradesSource && r.tradesSource.kind === 'user_bill'
+      ? `标的 ${safe(r.symbol)} 不在当前行情缓存支持范围：${r.uses_trades ? '不追回判定只使用交易日历与账单交易，不读取价格' : '无法读取涨跌幅'}；不替换标的、不回退演示账单。`
+      : `标的 ${safe(r.symbol)} 不在本次行情支持范围：${r.uses_trades ? '不追回判定只使用交易日历与账单交易，不读取价格' : '无法读取涨跌幅'}；不替换标的、不回退其他行情来源。`]));
   }
   box.append(el('details', { class: 'cv-tech-note' }, [
     el('summary', {}, ['技术信息（规则哈希）']),

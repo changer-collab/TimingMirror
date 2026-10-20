@@ -53,9 +53,9 @@ const REPORT = computeIndicators({ trades: TRADES, closes: CLOSES });
     ['indicators.compute', 'decompose.drag', 'verify.report', 'provenance.report', 'counterfactual.replaceSell'].every((id) => getTool(id) !== null));
   check('注册表：每项都有 required 参数清单', tools.every((t) => Array.isArray(t.params.required) && t.params.required.length > 0));
   check('注册表：未接入能力不注册（bailian.classify 不可调用）', getTool('bailian.classify') === null);
-  check('未接入能力：如实登记说明（≥3 项，含百炼与真实行情）', UNAVAILABLE_CAPABILITIES.length >= 3
+  check('未接入能力：如实登记说明（≥3 项，含百炼与实时/分钟级行情）', UNAVAILABLE_CAPABILITIES.length >= 3
     && UNAVAILABLE_CAPABILITIES.some((c) => c.id === 'bailian.online_intent')
-    && UNAVAILABLE_CAPABILITIES.some((c) => c.id === 'market.real_cache'), JSON.stringify(UNAVAILABLE_CAPABILITIES));
+    && UNAVAILABLE_CAPABILITIES.some((c) => c.id === 'market.realtime'), JSON.stringify(UNAVAILABLE_CAPABILITIES));
   const vt = validateToolParams(getTool('indicators.compute'), { trades: TRADES });
   check('参数校验：缺 closes → ok=false 且 missing 列出', vt.ok === false && vt.missing.includes('closes'), JSON.stringify(vt));
   const vt2 = validateToolParams(getTool('indicators.compute'), { trades: TRADES, closes: CLOSES });
