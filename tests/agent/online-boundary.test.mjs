@@ -3,7 +3,7 @@
  * M1-C10 在线接入准备 · 代理边界与 fake transport 定向测试（本地离线；零依赖）
  *
  * 覆盖：意图成功/非法 JSON/schema 错误/超时/网络失败；
- *       复述成功/空文本/格式错误/schema 错误/超时/网络失败/本地数字检查失败；
+ *       复述成功/空文本/格式错误/schema 错误/超时/网络失败/本地数字检查失败/数字失败后重试一次；
  *       出站请求白名单（intent 仅 question；restate 仅 question + F-6 facts 字段）；
  *       不含 review/prepared/plan/provenance/成交行/文件名/账户信息/API Key；
  *       fake transport 调用计数、网络 fetch 调用数为 0；可替换 question policy。
@@ -328,7 +328,9 @@ try {
     check('transport 改写事实后：本地快照不变，数字检查失败且无 draft', r.ok === false && r.code === ONLINE_BOUNDARY_CODES.NUMBERS_FAILED && r.data && !('draft' in r.data) && r.data.number_check.failed_count === 1, JSON.stringify(r));
     check('transport 改写事实后：不回显 +99.9% 草稿', !JSON.stringify(r).includes('99.9'));
     check('transport 改写事实后：原始入参 facts 未被修改', facts[0].display === '+7.5%' && facts[0].value === 0.075);
-    check('transport 改写事实后：transport 自身收到的是独立出站副本', transport.calls.length === 1 && transport.calls[0].request.facts[0].display === '+99.9%');
+    check('transport 改写事实后：transport 自身收到的是独立出站副本', transport.calls.length === 2
+      && transport.calls[0].request.facts[0].display === '+99.9%'
+      && transport.calls[1].request.facts[0].display === '+99.9%');
   }
 
   /* ==== 复述：空文本 ==== */
@@ -387,6 +389,32 @@ try {
     const r = await boundary.restate({ question: QUESTION, facts: FACTS });
     check('数字检查失败：W_ANSWER_NUMBERS_FAILED 且不返回 draft', r.ok === false && r.code === ONLINE_BOUNDARY_CODES.NUMBERS_FAILED && r.data && !('draft' in r.data) && r.data.number_check.failed_count === 1, JSON.stringify(r));
     check('数字检查失败：不泄出失败数字原文', !JSON.stringify(r).includes('99.9'));
+    check('数字检查失败：本地重试一次仍失败（共 2 次 restate）', transport.calls.length === 2, String(transport.calls.length));
+  }
+
+  /* ==== 复述：首次把 pp 写成 %，本地重试一次后通过 ==== */
+  {
+    const facts = cloneFacts();
+    facts[2] = { ...facts[2], value: 0.012, display: '+1.2pp' };
+    let attempt = 0;
+    const transport = createFakeTransport({
+      restate: () => {
+        attempt += 1;
+        return jsonResponse({
+          answer_text: attempt === 1
+            ? '组合实际收益 +7.5%，对照收益 +15.0%，择时损耗 +1.2%，损耗金额 ¥150.00。'
+            : '组合实际收益 +7.5%，对照收益 +15.0%，择时损耗 +1.2pp，损耗金额 ¥150.00。',
+        });
+      },
+    });
+    const boundary = createOnlineBoundary({ transport, timeoutMs: 50 });
+    const r = await boundary.restate({ question: QUESTION, facts });
+    check('首次 pp 写成 %：第一次数字校验失败后重试', transport.calls.length === 2, String(transport.calls.length));
+    check('首次 pp 写成 %：重试通过并返回修正后的复述', r.ok === true
+      && r.stage === 'restate' && r.data.draft.includes('+1.2pp')
+      && r.data.number_check.ok === true && r.data.number_check.checked === 4
+      && r.data.number_check.matched_count === 4 && r.data.number_check.failed_count === 0, JSON.stringify(r));
+    check('首次 pp 写成 %：结果不携带失败尝试的数字原文', !JSON.stringify(r).includes('+1.2%'));
   }
 
   /* ==== 可替换 question policy：阻断 / 改写 ==== */

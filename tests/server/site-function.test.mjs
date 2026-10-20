@@ -266,6 +266,34 @@ function streamOfChunks(chunks) {
     delayedError && delayedError.code === 'E_MODEL_TIMEOUT', delayedError && delayedError.code);
 }
 
+/* ==== DashScope restate：提示词强制逐字复制 display（回归：pp 被改写为 %） ==== */
+{
+  const calls = [];
+  const transport = createDashScopeTransport({
+    apiKey: 'synthetic-key-marker',
+    timeoutMs: 1000,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(JSON.stringify({
+        output: { choices: [{ message: { content: JSON.stringify({ answer_text: ANSWER }) } }] },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  const result = await transport.restate({ question: QUESTION, facts: FACTS });
+  const sent = JSON.parse(calls[0].options.body);
+  const system = sent.input.messages[0];
+  const user = sent.input.messages[1];
+  check('DashScope restate：提示词要求逐字复制 display 并保留符号/千分位', system.role === 'system'
+    && system.content.includes('逐字符原样复制')
+    && system.content.includes('pp 不得写成')
+    && system.content.includes('不能写 "+2.0%"')
+    && system.content.includes('不能写 "-2805 元"'), system.content);
+  check('DashScope restate：使用低温度参数', sent.parameters.temperature === 0.1, JSON.stringify(sent.parameters));
+  check('DashScope restate：用户消息仅 question + facts', user.role === 'user'
+    && Object.keys(JSON.parse(user.content)).join(',') === 'question,facts');
+  check('DashScope restate：返回 rawText', result.rawText === JSON.stringify({ answer_text: ANSWER }), result.rawText);
+}
+
 /* ==== 行情路由：成功、校验、限额、错误映射（fake market transport，不联网） ==== */
 {
   const doc = { artifact: DYNAMIC_CACHE_ARTIFACT, manifest_version: 'dynamic-v1', marker: 'synthetic-market-doc' };
