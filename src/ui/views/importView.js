@@ -6,7 +6,7 @@ import { defaultBill, defaultChat, createBillContextId } from '../../state.js';
 import * as demo from '../../demo/adapter.js';
 
 const LOCAL_NOTICE = '原始 CSV 仅在本机读取和校验，不上传。';
-const MARKET_NOTICE = '当前用户账单仅使用须通过签收门校验的真实行情缓存（冻结快照，非实时）；缓存未通过签收门、标的不在支持清单或日期超范围时，报告会明确阻断，不回退动态行情或合成行情。';
+const MARKET_NOTICE = '当前用户账单与示例一样使用 Tushare 动态行情：浏览器只向站点服务端发送标的代码与日期范围，服务端取最新已收盘日线（非实时）；取数失败、标的未知或日期超出支持范围时，报告会明确阻断，不回退静态缓存或合成行情。';
 const CORPORATE_ACTION_NOTICE = '公司行为限制：v1 不自动识别送转、拆合股、配股等股数事件；涉及相关区间的账单可能估值不准确，请核对后再使用。';
 const CONFIRM_NOTE = '确认后进入分析报告；不会上传账单、不会执行交易。';
 const FEE_TAX_NOTE = '部分费用或税费缺失，当前结果按现有口径计算，可能与实际对账结果不同。';
@@ -399,7 +399,7 @@ export function renderImport(root, ctx) {
       wrap.append(el('div', { class: 'muted small im-confirm-note' }, [CONFIRM_NOTE]));
       if (!canConfirm) wrap.append(el('div', { class: 'muted small' }, ['当前状态不可确认（有错误或无交易）。']));
     } else if (bill.sourceType === 'local') {
-      wrap.append(el('div', { class: 'ok-line' }, ['已确认 ✓（报告页展示你的账单结果；行情为签收门通过的真实行情缓存，非实时）']));
+      wrap.append(el('div', { class: 'ok-line' }, ['已确认 ✓（报告页展示你的账单结果；行情为 Tushare 最新已收盘日线，服务端获取、非实时）']));
       wrap.append(el('button', { class: 'btn', onclick: () => go('report') }, ['前往报告 · 证据']));
     } else {
       wrap.append(el('div', { class: 'ok-line' }, [dynamic

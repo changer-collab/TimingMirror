@@ -8,6 +8,7 @@
 // transport 只能看到已投影的请求；不得读取 review / prepared / plan / provenance。
 // timeoutMs 是可配置的单次 transport 调用超时；默认 8000 ms 只是配置默认值，
 // 不表示“端到端 8 秒”产品口径已冻结。
+// 复述仅在本地数字校验失败时自动重试一次；两次都失败才返回 W_ANSWER_NUMBERS_FAILED。
 import { validateIntentJson } from './planner.js';
 import { checkNumbers, isSupportedDisplay } from './numberCheck.js';
 
@@ -35,6 +36,7 @@ const MAX_FORMULA_REF_LENGTH = 64;
 // 现有 factExport 的匿名句柄格式：src- + 8 位小写十六进制。
 const ANONYMOUS_SOURCE_REF_RE = /^src-[0-9a-f]{8}$/;
 const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+const MAX_RESTATE_ATTEMPTS = 2;
 
 export const ONLINE_BOUNDARY_CODES = Object.freeze({
   QUESTION_INVALID: 'E_QUESTION_INVALID',
@@ -354,45 +356,50 @@ export function createOnlineBoundary({
       return failure('request', built.code, { errors: built.errors, timeoutMs: timeout });
     }
     // transport 只拿到独立出站副本；数字检查始终使用调用前冻结的本地快照。
+    // 数字校验失败视为可重试的格式漂移（如 pp 被改写为 %）；每次重试仍用同一本地快照。
     const localFacts = createLocalFactSnapshot(built.request.facts);
-    const outboundRequest = {
-      question: built.request.question,
-      facts: built.request.facts.map((fact) => ({ ...fact })),
-    };
-    const call = await invokeTransport(transport.restate, outboundRequest, { timeoutMs: timeout, now });
-    if (!call.ok) return failure('restate', call.code, { latencyMs: call.latencyMs, timeoutMs: timeout });
-    const raw = extractRawText(call.response);
-    if (!raw.ok) return failure('restate', raw.code, { latencyMs: call.latencyMs, timeoutMs: timeout });
-    let parsed;
-    try {
-      parsed = JSON.parse(raw.rawText);
-    } catch {
-      return failure('restate', ONLINE_BOUNDARY_CODES.RESTATE_JSON, { latencyMs: call.latencyMs, timeoutMs: timeout });
-    }
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)
-      || typeof parsed.answer_text !== 'string') {
-      return failure('restate', ONLINE_BOUNDARY_CODES.RESTATE_SCHEMA, { latencyMs: call.latencyMs, timeoutMs: timeout });
-    }
-    const answerText = parsed.answer_text.trim();
-    if (answerText === '') {
-      return failure('restate', ONLINE_BOUNDARY_CODES.RESTATE_EMPTY, { latencyMs: call.latencyMs, timeoutMs: timeout });
-    }
-    const num = checkNumbers(answerText, { status: 'ok', facts: localFacts });
-    const numberCheck = {
-      ok: num.ok,
-      checked: num.checked,
-      matched_count: num.matched.length,
-      failed_count: num.failed.length,
-      failed_codes: [...new Set(num.failed.map((f) => f.code))],
-    };
-    if (!num.ok) {
-      return failure('restate', ONLINE_BOUNDARY_CODES.NUMBERS_FAILED, {
+    let lastFailure = null;
+    for (let attempt = 1; attempt <= MAX_RESTATE_ATTEMPTS; attempt++) {
+      const outboundRequest = {
+        question: built.request.question,
+        facts: built.request.facts.map((fact) => ({ ...fact })),
+      };
+      const call = await invokeTransport(transport.restate, outboundRequest, { timeoutMs: timeout, now });
+      if (!call.ok) return failure('restate', call.code, { latencyMs: call.latencyMs, timeoutMs: timeout });
+      const raw = extractRawText(call.response);
+      if (!raw.ok) return failure('restate', raw.code, { latencyMs: call.latencyMs, timeoutMs: timeout });
+      let parsed;
+      try {
+        parsed = JSON.parse(raw.rawText);
+      } catch {
+        return failure('restate', ONLINE_BOUNDARY_CODES.RESTATE_JSON, { latencyMs: call.latencyMs, timeoutMs: timeout });
+      }
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)
+        || typeof parsed.answer_text !== 'string') {
+        return failure('restate', ONLINE_BOUNDARY_CODES.RESTATE_SCHEMA, { latencyMs: call.latencyMs, timeoutMs: timeout });
+      }
+      const answerText = parsed.answer_text.trim();
+      if (answerText === '') {
+        return failure('restate', ONLINE_BOUNDARY_CODES.RESTATE_EMPTY, { latencyMs: call.latencyMs, timeoutMs: timeout });
+      }
+      const num = checkNumbers(answerText, { status: 'ok', facts: localFacts });
+      const numberCheck = {
+        ok: num.ok,
+        checked: num.checked,
+        matched_count: num.matched.length,
+        failed_count: num.failed.length,
+        failed_codes: [...new Set(num.failed.map((f) => f.code))],
+      };
+      if (num.ok) {
+        return success('restate', { draft: answerText, number_check: numberCheck }, call.latencyMs, timeout);
+      }
+      lastFailure = failure('restate', ONLINE_BOUNDARY_CODES.NUMBERS_FAILED, {
         data: { number_check: numberCheck },
         latencyMs: call.latencyMs,
         timeoutMs: timeout,
       });
     }
-    return success('restate', { draft: answerText, number_check: numberCheck }, call.latencyMs, timeout);
+    return lastFailure;
   }
 
   return Object.freeze({ classifyIntent, restate });

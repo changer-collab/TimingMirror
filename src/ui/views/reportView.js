@@ -1,7 +1,7 @@
 // 报告 · 证据（引擎接线版，浅色样板）
 // 数据链路：页面只调 src/demo/adapter.js；adapter 内部走引擎。
 //   场景模式：夹具 CSV → csvNormalize → marketCache（R/R′ Tushare 动态日线；A/A′ 合成回归）→ indicators → provenance。
-//   用户账单模式（bill.confirmed 且 sourceType=local）：确认后的标准化账单 → 真实行情缓存签收门 → runReview 发布门槛 → published_facts。
+//   用户账单模式（bill.confirmed 且 sourceType=local）：确认后的标准化账单 → Tushare 动态日线 → runReview 发布门槛 → published_facts。
 // 标注：行情来源、范围与拉取信息一律来自 adapter 输出；示例交易为合成构造（动态行情为最新已收盘日线，非实时），用户模式额外标注文件名与数据模式。
 // 展示规则：数字一律使用引擎 display 字段（F-2），页面不重新格式化；用户模式只发布 runReview.published_facts 中的事实，
 //   组合结论只在 review.portfolio_published 时展示（B4）；阻断时不发布对应结论，不回退演示数据或另一行情来源。
@@ -9,7 +9,7 @@ import { el } from '../components.js';
 import * as demo from '../../demo/adapter.js';
 import { renderGhostChart } from '../components/ghostChart.js';
 
-const WIRING_NOTE = '契约页已接入候选模板与历史情境模拟（候选口径，哈希待 M0-C1 冻结），契约不会自动改变本报告结论。未接入：实时/分钟级行情（示例账单走最新已收盘日线、本地账单走已签收静态缓存，均非实时）、对话页事实回跳；在线问答仅接站点同源复述边界，尚未完成真实服务验证。';
+const WIRING_NOTE = '契约页已接入候选模板与历史情境模拟（候选口径，哈希待 M0-C1 冻结），契约不会自动改变本报告结论。未接入：实时/分钟级行情（示例账单与本地账单均走最新已收盘日线，非实时）、对话页事实回跳；在线问答仅接站点同源复述边界，尚未完成真实服务验证。';
 const NO_TRADE_ADVICE = '不要据此作交易判断。';
 const CORPORATE_ACTION_NOTICE = '公司行为限制：v1 不自动识别送转、拆合股、配股等股数事件；涉及相关区间的账单可能估值不准确，请核对后再使用。';
 
@@ -33,9 +33,6 @@ function valuationText(v) {
 
 function marketSourceLabel(b) {
   const source = b.marketSource;
-  if (source?.id === 'real-cache' && (source.signed !== true || source.gate?.signed !== true || source.gate?.usable !== true)) {
-    return '真实行情缓存（不可用）';
-  }
   return source?.label || (b.sourceType === 'local' ? '行情来源不可用' : '行情来源未标注');
 }
 
@@ -75,17 +72,17 @@ function marketSourceSection(b) {
   const source = b.marketSource ?? {};
   const support = b.supportScope ?? {};
   const snapshot = support.snapshot ?? b.snapshot ?? {};
-  const gate = source.gate;
-  const signedText = (value) => value === true ? 'true' : value === false ? 'false' : '未知';
+  const dynamic = source.dynamic === true;
   return el('div', { class: 'rp-market-source' }, [
     sectionHead('行情来源与支持范围', marketText(b)),
     el('div', {}, [`支持日期范围：${support.range ? `${support.range.start} 至 ${support.range.end}` : '不可用'}`]),
-    el('div', {}, [`支持标的：${support.symbols?.join('、') || '不可用'}；固定行情截止日（asOfDate）：${metadataText(b.asOfDate)}`]),
-    el('div', {}, [`签收状态 signed：${signedText(source.signed)}；支持范围 signed：${signedText(support.signed)}；签收门 gate：usable=${signedText(gate?.usable)}，signed=${signedText(gate?.signed)}`]),
-    el('div', {}, [`签收门原因：${gate ? metadataText(gate.reason ?? '无') : '不可用'}；详情：${gate ? metadataText(gate.detail ?? '无') : '不可用'}`]),
+    el('div', {}, [`支持标的：${support.symbols?.join('、') || '不可用'}；行情截止日（asOfDate）：${metadataText(b.asOfDate)}`]),
+    dynamic
+      ? el('div', {}, [`行情服务：${metadataText(source.provider)}；最新交易日：${metadataText(source.latestTradeDate)}；拉取时间：${metadataText(source.fetchedAt ? fmtWhen(source.fetchedAt) : null)}`])
+      : el('div', {}, ['行情服务：非动态行情（合成回归夹具）']),
     el('div', {}, [`来源标识：${metadataText(source.id)}；artifact：${metadataText(source.artifact)}；manifestVersion：${metadataText(source.manifestVersion)}`]),
-    el('div', {}, [`快照 snapshot：${metadataText(source.snapshotId ?? snapshot.snapshot_id)}；抓取时间 fetchTime：${metadataText(source.fetchTime ?? snapshot.fetch_time)}`]),
-    el('div', {}, [`行情数据来源 dataSource：${metadataText(source.dataSource)}；交易日历来源 calendarSource：${metadataText(source.calendarSource)}`]),
+    el('div', {}, [`快照 snapshot：${metadataText(source.snapshotId ?? snapshot.snapshot_id)}；校验 checksum：${metadataText(source.checksum)}`]),
+    el('div', {}, ['行情口径：服务端取 Tushare 最新已收盘日线（非实时）；只发送标的代码与日期范围，不发送成交、数量、价格、文件名或 CSV 内容。取数失败时阻断，不回落静态缓存或合成行情。']),
     el('div', {}, ['计算口径：金额估值使用不复权价格；前复权仅用于走势展示；费用、税费仅记录，不计入收益公式。']),
     el('div', {}, ['公司行为边界：v1 不检测、不校正送转/拆合股；300750 任一 2023-04-26 事件前交易都会保守阻断（即使实际持仓在事件前已清仓，买入后持有的对照路径仍可能跨越该事件，无法断言放行是安全的），不用不复权价格跳变推断交易损耗；这是针对已知事件的额外限制，不是通用公司行为检测。']),
   ]);
@@ -328,7 +325,7 @@ export function renderReport(root, ctx) {
   const page = el('div', { class: 'report-page' });
   root.replaceChildren(page);
   if (bill.status === 'confirmed' && bill.sourceType === 'local') {
-    page.append(el('div', { class: 'rp-loading' }, ['加载用户账单报告…（校验真实行情缓存签收门）']));
+    page.append(el('div', { class: 'rp-loading' }, ['加载用户账单报告…（获取 Tushare 最新已收盘日线）']));
     demo.loadUserBillReport(bill)
       .then((bundle) => {
         page.replaceChildren();
@@ -561,8 +558,8 @@ function buildUserBillPage(page, b, ctx) {
   const status = el('div', { class: 'rp-status' });
   status.append(el('span', { class: 'rp-chip' }, [`已确认本地账单（${b.fileName || '未知文件'}）· 文件名：${b.fileName || '未知文件'}（本机，未上传）`]));
   status.append(el('span', { class: 'rp-chip' }, [b.dataMode ? b.dataMode.label : '数据模式未知']));
-  status.append(el('span', { class: `rp-chip ${b.marketSource?.signed === true && b.marketSource?.gate?.usable === true && b.marketSource?.gate?.signed === true ? 'ok' : 'cap'}` }, [marketSourceLabel(b)]));
-  status.append(el('span', { class: 'rp-chip' }, [`固定 asOfDate：${metadataText(b.asOfDate)}`]));
+  status.append(el('span', { class: `rp-chip ${b.marketSource?.dynamic === true ? 'ok' : 'cap'}` }, [marketSourceLabel(b)]));
+  status.append(el('span', { class: 'rp-chip' }, [`行情截止日（asOfDate）：${metadataText(b.asOfDate)}`]));
   status.append(el('span', { class: 'rp-chip' }, [
     b.valuation
       ? (b.valuation.blocked ? `估值日：${b.valuation.requested_date} 无法解析` : `估值日：${b.valuation.requested_date} → ${b.valuation.effective_date}`)
@@ -666,12 +663,13 @@ function reviewStatusText(status) {
 const FINAL_STATUS_TEXT = Object.freeze({ blocked: '阻断', insufficient_evidence: '证据不足' });
 
 const REASON_TEXT = Object.freeze({
-  E_MARKET_CACHE_LOAD: '真实行情缓存加载失败，不回退演示行情',
-  E_MARKET_CACHE_GATE: '真实行情缓存未通过签收门，不运行复核',
-  E_MARKET_OUT_OF_SUPPORT: '标的不在已签收行情缓存支持清单（范围外，非当日缺价）',
-  E_MARKET_TRADE_OUT_OF_RANGE: '成交日期超出行情缓存支持日期范围',
+  E_MARKET_SOURCE: '动态行情获取失败，不回退静态缓存或合成行情',
+  E_MARKET_CACHE_LOAD: '行情加载失败，不回退静态缓存或合成行情',
+  E_MARKET_CACHE_GATE: '行情未通过校验，不运行复核',
+  E_MARKET_OUT_OF_SUPPORT: '标的不在出行情支持范围（范围外，非当日缺价）',
+  E_MARKET_TRADE_OUT_OF_RANGE: '成交日期超出行情支持日期范围',
   E_MARKET_CORPORATE_ACTION_BOUNDARY: '账单跨越公司行为边界，当前口径无法处理',
-  E_MARKET_ASOF_NOT_TRADING_DAY: '固定 asOfDate 不在缓存交易日历中，不改用其他日期',
+  E_MARKET_ASOF_NOT_TRADING_DAY: '行情截止日 asOfDate 不在交易日历中，不改用其他日期',
   E_VALUATION_OUT_OF_RANGE: '估值日超出行情缓存支持日期范围',
   E_NO_EFFECTIVE_TRADING_DAY: '支持范围内没有不晚于请求估值日的交易日',
   E_VALUATION_BEFORE_LAST_TRADE: '有效估值日早于账单末笔成交日期',
@@ -695,7 +693,7 @@ const REASON_TEXT = Object.freeze({
 });
 
 const MARKET_BLOCK_CODES = new Set([
-  'E_MARKET_CACHE_LOAD', 'E_MARKET_CACHE_GATE', 'E_MARKET_OUT_OF_SUPPORT',
+  'E_MARKET_SOURCE', 'E_MARKET_CACHE_LOAD', 'E_MARKET_CACHE_GATE', 'E_MARKET_OUT_OF_SUPPORT',
   'E_MARKET_TRADE_OUT_OF_RANGE', 'E_MARKET_CORPORATE_ACTION_BOUNDARY', 'E_MARKET_ASOF_NOT_TRADING_DAY',
   'E_VALUATION_OUT_OF_RANGE', 'E_NO_EFFECTIVE_TRADING_DAY', 'E_VALUATION_BEFORE_LAST_TRADE',
   'E_PRICE_MISSING', 'E_REVIEW_PORTFOLIO_WITHHELD',
@@ -974,7 +972,7 @@ function evidenceSection(b, review, scope) {
   }
 
   body.append(el('div', { class: 'rp-dev' }, [
-    `口径与来源：数字由本地确定性引擎计算，并经本地复核流程筛选后才发布；行情来源：${marketText(b)}；固定 asOfDate：${metadataText(b.asOfDate)}。金额估值使用不复权价格，前复权仅用于走势；费用、税费仅记录，不计入收益公式。原始 CSV 仅在本机读取与校验，未上传。${WIRING_NOTE}`,
+    `口径与来源：数字由本地确定性引擎计算，并经本地复核流程筛选后才发布；行情来源：${marketText(b)}；行情截止日（asOfDate）：${metadataText(b.asOfDate)}。金额估值使用不复权价格，前复权仅用于走势；费用、税费仅记录，不计入收益公式。原始 CSV 仅在本机读取与校验，未上传。${WIRING_NOTE}`,
   ]));
   evd.append(body);
   return evd;

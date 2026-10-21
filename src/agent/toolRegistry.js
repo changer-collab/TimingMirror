@@ -31,7 +31,7 @@ const TOOL_DEFS = [
   {
     id: 'market.fromPullDraft',
     status: 'offline_available',
-    description: '由行情缓存结构（已签收静态件或 Tushare 动态响应）构建行情实例；可用性门槛由调用方校验',
+    description: '由行情缓存结构（合成夹具或 Tushare 动态响应）构建行情实例；可用性门槛由调用方校验',
     params: { required: ['doc'], optional: [] },
     invoke: ({ doc }) => createMarketCache(fromPullDraft(doc)),
   },
