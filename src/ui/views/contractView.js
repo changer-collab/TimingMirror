@@ -254,7 +254,7 @@ export function renderContract(root, ctx) {
   const hasSurge = current.some((r) => r.kind === 'change_pct_threshold');
   const localBill = !!(state.bill && state.bill.status === 'confirmed' && state.bill.sourceType === 'local');
   const marketSource = localBill ? adapter.DEFAULT_MARKET_SOURCE : (c.marketSource === 'synthetic-fixture' ? 'synthetic-fixture' : adapter.DEFAULT_MARKET_SOURCE);
-  const sim = el('div', { class: 'card' });
+  const sim = el('div', { class: 'card', 'data-role': 'sim-section' });
   sim.append(el('div', { class: 'section-title' }, [localBill
     ? '历史情境测试（Tushare 动态行情）'
     : marketSource === 'synthetic-fixture'

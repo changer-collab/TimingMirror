@@ -394,6 +394,18 @@ export const USER_BILL_DATA_MODE = Object.freeze({
   note: '交易文件仅在本机处理；服务端只接收标的代码与日期范围，取最新已收盘日线（非实时）；取数失败或超出单次标的上限时报告明确阻断，不回退静态缓存或合成行情',
 });
 
+export const USER_BILL_AI_DATA_MODE = Object.freeze({
+  id: 'user_bill_ai_assisted_dynamic_market',
+  label: '用户本地账单（AI 识别后校对） + Tushare 动态行情',
+  note: '原始文件未上传；只有你点击 AI 识别时，提取出的文字会发送给模型整理交易明细；行情服务端只接收标的代码与日期范围，取数失败时阻断、不回退静态或合成行情',
+});
+
+export const USER_BILL_VISION_DATA_MODE = Object.freeze({
+  id: 'user_bill_vision_assisted_dynamic_market',
+  label: '用户本地账单（截图/页面识别后校对） + Tushare 动态行情',
+  note: '原始文件未上传；只有你点击识别时，所选压缩截图或本地渲染页面图片才会发送给视觉模型整理交易明细；行情服务端只接收标的代码与日期范围，取数失败时阻断、不回退静态或合成行情',
+});
+
 export async function loadUserBillFromText(csvText, fileName) {
   const name = String(fileName || 'user-bill.csv');
   const normalized = normalizeRows(parseCsvText(String(csvText)), name);
@@ -406,6 +418,29 @@ export async function loadUserBillFromText(csvText, fileName) {
     warnings: normalized.warnings,
     errors: normalized.errors,
     sourceNote: `来源：${name}（本机文件，未上传；schema ${normalized.schema_version}）`,
+    resultLabelling: RESULT_LABELS,
+  };
+}
+
+/** 表格（CSV/TSV/Excel/PDF 提取或 AI 草稿）→ 用户账单；正式入账仍走默认整表校验。 */
+export async function loadUserBillFromTable(table, fileName, { method = 'manual', modality = 'text', note = '' } = {}) {
+  const name = String(fileName || 'user-bill.csv');
+  const normalized = normalizeRows(table, name);
+  const methodText = method === 'ai'
+    ? (modality === 'vision' ? '视觉识别后由你校对' : 'AI 识别后由你校对')
+    : '本机解析';
+  const dataMode = method !== 'ai'
+    ? USER_BILL_DATA_MODE
+    : (modality === 'vision' ? USER_BILL_VISION_DATA_MODE : USER_BILL_AI_DATA_MODE);
+  return {
+    sourceType: 'local',
+    dataMode,
+    fileName: name,
+    blocked: normalized.blocked,
+    trades: normalized.trades,
+    warnings: normalized.warnings,
+    errors: normalized.errors,
+    sourceNote: `来源：${name}（${methodText}，未上传原始文件；schema ${normalized.schema_version}）${note ? `；${note}` : ''}`,
     resultLabelling: RESULT_LABELS,
   };
 }
@@ -534,7 +569,7 @@ export async function loadUserBillReport(bill) {
   const out = {
     sourceType: 'local',
     fileName: bill && bill.fileName ? bill.fileName : '',
-    dataMode: USER_BILL_DATA_MODE,
+    dataMode: (bill && bill.dataMode) || USER_BILL_DATA_MODE,
     marketSource: null,
     supportScope: null,
     asOfDate: null,

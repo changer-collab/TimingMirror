@@ -149,10 +149,17 @@ class FakeFileReader {
       if (this.onload) this.onload({});
     }, 0);
   }
+  readAsArrayBuffer(file) {
+    setTimeout(() => {
+      if (file && file.__readError) { if (this.onerror) this.onerror({}); return; }
+      this.result = file && file.__buffer !== undefined ? file.__buffer : new ArrayBuffer(0);
+      if (this.onload) this.onload({});
+    }, 0);
+  }
 }
 globalThis.FileReader = FakeFileReader;
 
-const { state, subscribe, notify, defaultBill, defaultChat, defaultContracts, loadContractsDemo } = await imp('src/state.js');
+const { state, subscribe, notify, defaultBill, defaultChat, defaultContracts, defaultImportRecovery, loadContractsDemo } = await imp('src/state.js');
 const { renderImport } = await imp('src/ui/views/importView.js');
 const { renderReport } = await imp('src/ui/views/reportView.js');
 const { renderChat } = await imp('src/ui/views/chatView.js');
@@ -245,10 +252,11 @@ let txt = texts(current).join('|');
 check('导入：加载后出现“待确认”状态行（loaded 样式）', String(findByClass(current, 'im-status')[0]?.attrs.class ?? '').includes('loaded')
   && texts(findByClass(current, 'im-status')[0] ?? { children: [] }).join('').includes('待确认：'));
 check('导入：费用缺失与口径标注仍在', txt.includes('缺失（按 0）') && txt.includes('未计入费用、税费') && txt.includes('分红未计入'), txt.slice(0, 160));
-check('导入·准备账单：仅 CSV / 本机读取不上传 / 确认不下单 + 字段说明（与 csvNormalize 一致）',
-  txt.includes('准备账单') && txt.includes('仅支持 CSV 文件') && txt.includes('原始 CSV 仅在本机读取和校验，不上传') && txt.includes('不会下单、不会执行交易')
+check('导入·准备账单：多输入 / 常规解析优先 / 本机读取不上传 / 确认不下单 + 字段说明（与 csvNormalize 一致）',
+  txt.includes('准备账单') && txt.includes('支持 CSV/TSV、Excel（.xlsx）、含文本的 PDF') && txt.includes('截图和扫描版 PDF 使用视觉识别') && txt.includes('原始 CSV/表格仅在本机读取和校验，不上传')
+  && txt.includes('不会下单、不会执行交易')
   && txt.includes('日期（YYYY-MM-DD）') && txt.includes('标的（6 位数字代码）') && txt.includes('方向（买入 / 卖出）') && txt.includes('数量（正整数）')
-  && txt.includes('可选列：费用、税费') && txt.includes('日期,标的,方向,价格,数量,费用,税费') && txt.includes('累计卖出不能超过累计买入'), txt.slice(0, 400));
+  && txt.includes('可选列：费用、税费') && txt.includes('日期,标的,方向,价格,数量,费用,税费') && txt.includes('任一时点卖出不能超过此前买入'), txt.slice(0, 400));
 check('导入·公司行为限制：显式披露 v1 不自动识别股数事件', txt.includes('公司行为限制：')
   && txt.includes('v1 不自动识别送转、拆合股、配股等股数事件') && txt.includes('可能估值不准确'), txt.slice(0, 400));
 {
@@ -1090,8 +1098,11 @@ const saveModal = async () => { await clickRole('modal-save'); await settle(); }
 /* ==== 导入页：用户本地 CSV（FileReader 本机读取 → adapter 校验 → 确认门槛 → 旧账单清理）==== */
 state.route = 'import';
 state.bill = defaultBill();
+state.importRecovery = defaultImportRecovery();
 mountCycle();
-check('用户CSV：空状态提示 + accept 限定 csv', texts(current).join('|').includes('尚未选择账单') && findInputs(current)[0].attrs.accept === '.csv,text/csv');
+check('用户输入：空状态提示 + accept 覆盖 CSV/TSV/Excel/PDF/文字/图片', texts(current).join('|').includes('尚未选择账单')
+  && ['.csv', '.tsv', '.xlsx', '.pdf', '.txt', '.png'].every((ext) => findInputs(current)[0].attrs.accept.includes(ext)),
+  findInputs(current)[0].attrs.accept);
 {
   const sample = findByTag(current, 'a').find((a) => String(a.attrs.href ?? '') === '/m0/csv-input/fixtures/demo-bill-real.csv');
   const emptyTxt = texts(current).join('|');
@@ -1099,7 +1110,7 @@ check('用户CSV：空状态提示 + accept 限定 csv', texts(current).join('|'
     !!sample && sample.attrs.download === 'demo-bill-local.csv'
     && texts(sample).join('').includes('下载示例账单')
     && emptyTxt.includes('只有本地上传的账单会进入复核与在线对话')
-    && emptyTxt.includes('“加载演示账单”不会上传 CSV，也不会进入在线对话'), sample ? JSON.stringify(sample.attrs) : emptyTxt.slice(0, 300));
+    && emptyTxt.includes('加载演示账单'), sample ? JSON.stringify(sample.attrs) : emptyTxt.slice(0, 300));
 }
 
 const happyCsv = '日期,标的,方向,价格,数量,费用,税费\n2025-01-02,600519,买入,1488.00,100,5,0\n2025-12-30,600519,卖出,1389.72,100,5,1\n';
@@ -1108,14 +1119,17 @@ await flush();
 txt = texts(current).join('|');
 check('用户CSV：校验通过 → loaded + 待确认 + 文件名/大小', state.bill.status === 'loaded' && state.bill.sourceType === 'local' && state.bill.trades.length === 2 && txt.includes('my-bill.csv') && txt.includes('2 KB')
   && texts(findByClass(current, 'im-status')[0] ?? { children: [] }).join('').includes('待确认：'), txt.slice(0, 200));
-check('用户CSV：本机处理与数据模式标注（本地账单走 Tushare 动态行情）', txt.includes('仅在本机读取和校验，不上传') && txt.includes('用户本地账单 + Tushare 动态行情'), txt.slice(0, 200));
+check('用户CSV：本机处理与数据模式标注', txt.includes('仅在本机读取和校验，不上传') && txt.includes('用户本地账单 + Tushare 动态行情') && txt.includes('服务端只接收标的代码与日期范围'), txt.slice(0, 260));
 let confirmBtn = findButtons(current).find((b) => labelOf(b).includes('确认交易列表'));
 check('用户CSV：正常校验通过后确认按钮可用', !!confirmBtn && !confirmBtn.disabled);
 
-await pickFile({ name: 'notes.txt', size: 12, __content: 'hello' });
+await pickFile({ name: 'notes.zip', size: 12 });
 await flush();
 confirmBtn = findButtons(current).find((b) => labelOf(b).includes('确认交易列表'));
-check('用户CSV：有效账单后选 .txt → 旧账单完全重置且不可确认', state.bill.status === 'none' && state.bill.error.includes('文件类型不符合预期') && state.bill.trades.length === 0 && state.bill.warnings.length === 0 && state.bill.errors.length === 0 && state.bill.blocked === false && state.bill.dataMode === null && state.bill.resultLabelling === null && state.bill.sourceNote === '' && !confirmBtn, JSON.stringify(state.bill).slice(0, 220));
+check('用户输入：有效账单后选不支持类型 → 旧账单完全重置且不可确认', state.bill.status === 'none'
+  && state.importRecovery.status === 'unsupported'
+  && state.importRecovery.unsupported.message.includes('暂不支持这种文件类型')
+  && state.bill.trades.length === 0 && state.bill.warnings.length === 0 && state.bill.errors.length === 0 && state.bill.blocked === false && state.bill.dataMode === null && state.bill.resultLabelling === null && state.bill.sourceNote === '' && !confirmBtn, JSON.stringify(state.bill).slice(0, 220));
 
 await pickFile({ name: 'bad.csv', size: 64, __content: '日期,标的,方向,价格,数量\n2024-10-09,ABC,买入,100,100\n' });
 await flush();
@@ -1137,6 +1151,127 @@ await pickFile({ name: 'broken.csv', size: 8, __readError: true });
 await flush();
 confirmBtn = findButtons(current).find((b) => labelOf(b).includes('确认交易列表'));
 check('用户CSV：有效账单后读取失败 → 干净错误态且不可确认', state.bill.status === 'error' && state.bill.fileName === 'broken.csv' && state.bill.fileSize === 8 && state.bill.sourceType === 'local' && state.bill.error.includes('无法读取文件内容') && state.bill.trades.length === 0 && state.bill.warnings.length === 0 && state.bill.errors.length === 0 && state.bill.blocked === false && state.bill.dataMode === null && !confirmBtn, JSON.stringify(state.bill).slice(0, 220));
+
+/* ==== 导入页：文本型 PDF 本机提取；截图能力缺口 ==== */
+{
+  state.route = 'import';
+  state.bill = defaultBill();
+  state.importRecovery = defaultImportRecovery();
+  mountCycle();
+  const pdfText = 'date,symbol,side,price,quantity\n2024-09-24,600519,buy,100.00,100';
+  const pdfContent = `BT /F1 12 Tf 72 720 Td (${pdfText.replace(/\n/g, ') Tj T* (')}) Tj ET`;
+  const pdf = Buffer.from(`%PDF-1.4\n1 0 obj\n<< /Length ${Buffer.byteLength(pdfContent)} >>\nstream\n${pdfContent}endstream\nendobj\n%%EOF`, 'latin1');
+  const buffer = pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength);
+  const callsBeforePdf = siteCalls.filter((c) => String(c.url).includes('import-recover')).length;
+  await pickFile({ name: 'bill.pdf', size: pdf.length, type: 'application/pdf', __buffer: buffer });
+  await flush();
+  await flush();
+  check('用户PDF：文本层本机提取并走常规校验，零模型请求', state.bill.status === 'loaded'
+    && state.bill.sourceType === 'local' && state.bill.trades.length === 1
+    && state.bill.trades[0].symbol === '600519'
+    && state.importRecovery.status === 'local_ready'
+    && siteCalls.filter((c) => String(c.url).includes('import-recover')).length === callsBeforePdf,
+  JSON.stringify({ bill: state.bill.status, trades: state.bill.trades.length, rec: state.importRecovery.status }));
+
+  const visionCallsBefore = siteCalls.filter((call) => String(call.url).includes('import-vision')).length;
+  await pickFile({ name: 'shot.png', size: 10, type: 'image/png' });
+  await flush();
+  check('用户截图：进入视觉分支，不直接入账，未产生模型请求', state.bill.status === 'none'
+    && state.importRecovery.vision?.kind === 'image'
+    && state.bill.trades.length === 0
+    && siteCalls.filter((call) => String(call.url).includes('import-vision')).length === visionCallsBefore,
+  JSON.stringify({ bill: state.bill.status, rec: state.importRecovery.status, vision: state.importRecovery.vision?.status }));
+}
+
+/* ==== 导入页：粘贴文字 → 本地不完整 → 用户点击 AI → 可编辑草稿 → 校验 → 既有确认 ==== */
+{
+  const { createImportRecovery } = await imp('src/agent/importRecovery.js');
+  state.route = 'import';
+  state.bill = defaultBill();
+  state.importRecovery = defaultImportRecovery();
+  state.assistant = { ...state.assistant, messages: [] };
+  const versionsBefore = state.contracts.versions.length;
+  const calls = [];
+  const recoveryClient = createImportRecovery({
+    transport: {
+      async importRecover(request) {
+        calls.push(request);
+        return {
+          rawText: JSON.stringify({
+            trades: [
+              { date: '2024-09-24', symbol: '600519', side: '买入', price: '100.00', quantity: '100', fee: '5.00', tax: '0.00', confidence: 0.9, issues: [] },
+              { date: '2024-09-25', symbol: '600519', side: '卖出', price: '110.00', quantity: '100', fee: '5.00', tax: '1.00', confidence: 0.9, issues: [] },
+            ],
+            unresolved: [],
+          }),
+        };
+      },
+    },
+    timeoutMs: 1000,
+  });
+  ctx.importRecovery = recoveryClient;
+  mountCycle();
+  const partial = '日期,标的,方向,价格,数量,费用,税费\n2024-09-24,600519,买入,100.00,100,5.00,0.00\n2024-09-25,ABC,卖出,110.00,100,5.00,1.00\n';
+  const textarea = findByTag(current, 'textarea')[0];
+  textarea.value = partial;
+  for (const fn of textarea.listeners.input ?? []) await fn({ target: { value: partial } });
+  await clickLabel('解析这段文字');
+  await flush();
+  check('AI补救：本地不完整时保留输入并展示草稿，模型零请求', state.bill.status === 'invalid'
+    && state.importRecovery.draft?.rows.length === 2
+    && calls.length === 0
+    && texts(current).join('|').includes('让 AI 帮我识别'), JSON.stringify({ bill: state.bill.status, rec: state.importRecovery.status }));
+  await clickLabel('让 AI 帮我识别');
+  await flush();
+  await flush();
+  check('AI补救：只有用户点击才请求，草稿可编辑且重复行默认不导入', calls.length === 1
+    && state.importRecovery.draft?.rows.length === 4
+    && state.importRecovery.draft.rows.some((r) => r.source === 'ai' && r.include === false)
+    && state.importRecovery.modelCalls === 1
+    && state.assistant.messages.length === 0
+    && JSON.stringify(calls[0]).includes('2024-09-25,ABC')
+    && !JSON.stringify(calls[0]).includes('fileName'), JSON.stringify(calls[0]));
+  await clickLabel('校验并用于导入');
+  await flush();
+  check('AI补救：未修正的无效行不能直接入账，并列出最终校验原因', state.bill.status === 'invalid'
+    && !!state.importRecovery.error?.code
+    && state.importRecovery.validationErrors?.length > 0
+    && state.assistant.messages.length === 0
+    && texts(current).join('|').includes('最终校验未通过'), JSON.stringify(state.importRecovery.error));
+  const invalidRow = findByClass(current, 'im-draft-row').find((n) => String(n.attrs.class).includes('invalid'));
+  const invalidCheck = invalidRow ? findInputs(invalidRow)[0] : null;
+  for (const fn of invalidCheck?.listeners.change ?? []) await fn({ target: { checked: false } });
+  await clickLabel('校验并用于导入');
+  await flush();
+  await flush();
+  check('AI补救：取消无效行后走既有流程生成待确认账单，并如实标注 AI 数据模式', state.bill.status === 'loaded'
+    && state.bill.importMethod === 'ai' && state.importRecovery.status === 'accepted'
+    && state.bill.dataMode.label.includes('AI 识别后校对')
+    && state.bill.dataMode.note.includes('提取出的文字')
+    && state.assistant.messages.length === 0
+    && texts(current).join('|').includes('AI 识别后由你校对，未上传原始文件）'),
+  JSON.stringify({ bill: state.bill.status, method: state.bill.importMethod, dataMode: state.bill.dataMode }));
+  await clickLabel('返回修改草稿');
+  await flush();
+  check('AI补救：返回修改草稿不显示已导入，也不结束 flow', state.bill.status === 'none'
+    && state.assistant.messages.length === 0
+    && recoveryClient.getSession().flow_id !== null, JSON.stringify({ bill: state.bill.status, session: recoveryClient.getSession() }));
+  await clickLabel('校验并用于导入');
+  await flush();
+  await flush();
+  await clickLabel('确认交易列表');
+  await flush();
+  check('AI补救：正式确认后才同步已导入并收口 flow', state.bill.status === 'confirmed'
+    && state.assistant.messages.some((m) => String(m.text).includes('账单已确认导入'))
+    && state.contracts.versions.length === versionsBefore
+    && recoveryClient.getSession().flow_id === null
+    && recoveryClient.getSession().model_calls === 0
+    && recoveryClient.getTrace()?.messages.some((m) => m.type === 'flow_end' && m.reason === 'bill_confirmed')
+    && state.importRecovery.trace?.messages.some((m) => m.type === 'flow_end'),
+  JSON.stringify({ messages: state.assistant.messages.slice(-1), session: recoveryClient.getSession() }));
+  delete ctx.importRecovery;
+  state.importRecovery = defaultImportRecovery();
+}
 
 state.route = 'import';
 state.bill = defaultBill();
@@ -1521,18 +1656,67 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
 
 /* ==== 全站外壳（main.js）：分析流程 1→4、三种数据状态、了解口径、导航命名 —— 最后导入，避免其订阅影响前面的用例 ==== */
 {
-  const els = { 'capability-chips': makeEl('div'), nav: makeEl('nav'), view: makeEl('main'), 'footer-labels': makeEl('div') };
+  const els = { 'capability-chips': makeEl('div'), nav: makeEl('nav'), view: makeEl('main'), 'footer-labels': makeEl('div'), assistant: makeEl('aside'), 'app-body': makeEl('div'), 'assistant-toggle': makeEl('button') };
   els.nav.after = (n) => { els.flow = n; };
   const hashListeners = [];
   globalThis.document.getElementById = (id) => els[id] ?? null;
   globalThis.location = { hash: '#/import' };
-  globalThis.window = { addEventListener: (t, fn) => { if (t === 'hashchange') hashListeners.push(fn); } };
+  let mobileLayout = false;
+  globalThis.window = {
+    innerWidth: 1440,
+    addEventListener: (t, fn) => { if (t === 'hashchange') hashListeners.push(fn); },
+    matchMedia: () => ({ matches: mobileLayout }),
+  };
   state.report = { scenario: 'R', symbol: 'pool' };
   state.bill = defaultBill();
   await imp('src/main.js');
   const shell = () => texts(els.flow).join('|');
   const currentStep = () => { const n = findByClass(els.flow, 'current')[0]; return n ? texts(n).join('') : ''; };
   const goHash = async (h) => { location.hash = h; for (const fn of hashListeners) fn(); await settle(); };
+  check('外壳·助手：宽屏默认显示在业务主区右侧，且可收起/展开',
+    texts(els.assistant).join('|').includes('AI 规则助手')
+    && els['app-body'].className.includes('assistant-open')
+    && els['assistant-toggle'].textContent === '收起助手'
+    && els['assistant-toggle'].attrs['aria-expanded'] === 'true', texts(els.assistant).join('|').slice(0, 240));
+  await els['assistant-toggle'].onclick();
+  check('外壳·助手：桌面收起后主区恢复全宽，按钮文案切为“打开 AI 助手”',
+    state.assistant.open === false && !els['app-body'].className.includes('assistant-open')
+    && els['assistant-toggle'].textContent === '打开 AI 助手' && els['assistant-toggle'].attrs['aria-expanded'] === 'false', els['app-body'].className);
+  await els['assistant-toggle'].onclick();
+  mobileLayout = true;
+  globalThis.window.innerWidth = 390;
+  await goHash('#/import');
+  check('外壳·助手：窄屏按钮不显示“收起助手”，点击后进入独立全屏助手视图',
+    els['assistant-toggle'].textContent === 'AI 助手' && !els['app-body'].className.includes('assistant-mobile-open')
+    && state.assistant.mobileView === false, els['assistant-toggle'].textContent);
+  await els['assistant-toggle'].onclick();
+  check('外壳·助手：窄屏进入助手后主区隐藏，返回按钮出现',
+    state.assistant.mobileView === true && els['app-body'].className.includes('assistant-mobile-open')
+    && findButtons(els.assistant).some((b) => labelOf(b).includes('返回业务')), els['app-body'].className);
+  await els['assistant-toggle'].onclick();
+  mobileLayout = false;
+  globalThis.window.innerWidth = 1440;
+  await goHash('#/import');
+  state.bill = { ...defaultBill(), status: 'confirmed', sourceType: 'local', fileName: 'chat-gate.csv', contextId: 'ctx-gate' };
+  state.chat = defaultChat('ctx-gate');
+  state.route = 'chat';
+  mountCycle();
+  const gateCallsBefore = siteCalls.length;
+  const gateInput = findInputs(current)[0];
+  gateInput.value = '明天买什么？';
+  const gateSend = findButtons(current).find((b) => labelOf(b) === '发送');
+  for (const fn of gateSend?.listeners.click ?? []) await fn({});
+  await flush();
+  check('入口门禁：不支持的问答在本地拦截，零站点请求，不进入在线复述',
+    siteCalls.length === gateCallsBefore
+    && state.chat.messages.some((m) => m.reason === 'W_CHAT_SCOPE_LOCAL')
+    && texts(current).join('|').includes('本地范围拦截'), JSON.stringify({ calls: siteCalls.length - gateCallsBefore, messages: state.chat.messages.slice(-1) }));
+  state.route = 'import';
+  state.bill = defaultBill();
+  state.chat = defaultChat();
+  mountCycle();
+  await goHash('#/import');
+  state.report = { scenario: 'R', symbol: 'pool' };
   check('外壳·流程提示：1 导入账单 → 2 核对交易 → 3 查看报告 → 4 查看证据 / 设置规则；导入页未选账单时第 1 步为当前（文字标注“当前”）',
     shell().includes('1 导入账单') && shell().includes('2 核对交易') && shell().includes('3 查看报告') && shell().includes('4 查看证据 / 设置规则')
     && currentStep() === '1 导入账单当前', currentStep());

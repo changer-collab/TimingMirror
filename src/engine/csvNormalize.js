@@ -34,8 +34,9 @@ export function parseCsvText(text) {
   };
 }
 
-/** 解析结果 → 标准化交易 + warnings + errors + blocked（O1 整批阻断；blocked 时 trades 为空） */
-export function normalizeRows({ header, rows }, sourceFile = '') {
+/** 解析结果 → 标准化交易 + warnings + errors + blocked（O1 整批阻断；blocked 时 trades 为空）
+ *  options.skipQuantityCheck 仅供逐行草稿校验使用；最终账单仍走默认的整表数量校验。 */
+export function normalizeRows({ header, rows }, sourceFile = '', { skipQuantityCheck = false } = {}) {
   const warnings = []; const errors = [];
   if (!Array.isArray(header) || !Array.isArray(rows) || header.length === 0 || rows.length === 0) {
     return emptyResult(sourceFile);
@@ -96,7 +97,9 @@ export function normalizeRows({ header, rows }, sourceFile = '') {
     });
   });
 
-  quantityCheck(validTrades).forEach((e) => errors.push(e)); // O3：与格式错误汇总（O1 不首错即停）
+  if (!skipQuantityCheck) {
+    quantityCheck(validTrades).forEach((e) => errors.push(e)); // O3：与格式错误汇总（O1 不首错即停）
+  }
   const blocked = errors.length > 0;
   return { schema_version: 'candidate-3', source_file: sourceFile, blocked, trades: blocked ? [] : validTrades, warnings, errors }; // O1：整批阻断，无部分结果
 }

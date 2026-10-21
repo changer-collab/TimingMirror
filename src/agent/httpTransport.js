@@ -1,5 +1,5 @@
 // M1-C10 在线接入准备 · 本地代理 HTTP transport（接口候选，未冻结）
-// 职责：把 onlineBoundary 的 transport 接口映射到本地代理的两个 POST 端点。
+// 职责：把 onlineBoundary / 规则助手 / 导入补救的 transport 接口映射到站点端点。
 // 不实现：真实百炼供应商请求、API Key 配置、UI 接线或云部署。
 // 请求体严格为 { question } 或 { question, facts }；signal 只用于 fetch 取消，不进入 JSON。
 // 站点同源请求携带浏览器登录会话（same-origin）；本地代理不携带凭证（omit）。
@@ -14,6 +14,9 @@ export const DEFAULT_PROXY_PATHS = Object.freeze({
 export const SITE_FUNCTION_PATHS = Object.freeze({
   intent: '/functions/v1/app/api/llm/intent',
   restate: '/functions/v1/app/api/llm/restate',
+  ruleIntent: '/functions/v1/app/api/llm/rule-intent',
+  importRecover: '/functions/v1/app/api/llm/import-recover',
+  importVision: '/functions/v1/app/api/llm/import-vision',
 });
 
 export const HTTP_TRANSPORT_CODES = Object.freeze({
@@ -61,8 +64,12 @@ function normalizePaths(paths) {
     throw new TypeError('paths 必须为对象');
   }
   const out = {};
-  for (const key of ['intent', 'restate']) {
+  for (const key of ['intent', 'restate', 'ruleIntent', 'importRecover', 'importVision']) {
     const value = paths[key];
+    if (value === undefined) {
+      if (key === 'ruleIntent' || key === 'importRecover' || key === 'importVision') continue;
+      throw new TypeError(`paths.${key} 缺失`);
+    }
     if (typeof value !== 'string' || !value.startsWith('/')
       || value.startsWith('//') || value.includes('?') || value.includes('#')) {
       throw new TypeError('paths 必须为站内绝对路径');
@@ -105,7 +112,14 @@ export function createHttpTransport({
       throw transportError(HTTP_TRANSPORT_CODES.RESPONSE);
     }
     if (!response.ok) {
-      throw transportError(HTTP_TRANSPORT_CODES.STATUS);
+      const error = transportError(HTTP_TRANSPORT_CODES.STATUS);
+      error.status = Number.isInteger(response.status) ? response.status : null;
+      try {
+        const payload = await response.json();
+        if (payload && typeof payload.code === 'string') error.upstreamCode = payload.code;
+        if (payload && typeof payload.message === 'string') error.upstreamMessage = payload.message;
+      } catch { /* 错误体不是 JSON 时只保留 HTTP 状态 */ }
+      throw error;
     }
     let payload;
     try {
@@ -130,6 +144,31 @@ export function createHttpTransport({
     },
     restate({ question, facts, signal } = {}) {
       return call(routes.restate, { question, facts }, signal);
+    },
+    ruleIntent({ question, stage, allowed_intents, allowed_templates, allowed_tools, context_summary, signal } = {}) {
+      if (!routes.ruleIntent) throw transportError(HTTP_TRANSPORT_CODES.CONFIG);
+      return call(routes.ruleIntent, {
+        question,
+        stage,
+        allowed_intents,
+        allowed_templates,
+        allowed_tools,
+        context_summary,
+      }, signal);
+    },
+    importRecover({ content, stage, source_kind, flow_id, request_id, signal } = {}) {
+      if (!routes.importRecover) throw transportError(HTTP_TRANSPORT_CODES.CONFIG);
+      return call(routes.importRecover, { content, stage, source_kind, flow_id, request_id }, signal);
+    },
+    importVision({ images, stage, source_kind, flow_id, request_id, signal } = {}) {
+      if (!routes.importVision) throw transportError(HTTP_TRANSPORT_CODES.CONFIG);
+      return call(routes.importVision, {
+        images: Array.isArray(images) ? images.map((image) => ({ mime: image.mime, data_base64: image.data_base64 })) : images,
+        stage,
+        source_kind,
+        flow_id,
+        request_id,
+      }, signal);
     },
   });
 }
