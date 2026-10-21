@@ -380,5 +380,6 @@ node tests/waterfall.test.mjs → 8/8
 ### 9.7 提交状态
 
 - 分支：`feat/report-ux-2026-10-21`，基线 `c52c103`；
-- 当前变更仍在工作区，未提交、未推送、未发布站点；
-- 提交时按路径逐项暂存，不使用 `git add .`。
+- 提交：`d243bf2 feat: 精简报告展示并改为上传示例场景`；
+- 已推送分支并创建 PR #43：https://github.com/changer-collab/TimingMirror/pull/43
+- 未合并、未发布站点；合并与发布需另行确认。
