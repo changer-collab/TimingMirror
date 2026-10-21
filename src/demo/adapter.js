@@ -19,6 +19,11 @@ import { computeIndicators, RESULT_LABELS } from '../engine/indicators.js';
 import { buildProvenanceReport } from '../engine/provenance.js';
 import { runReview } from '../agent/reviewPipeline.js';
 import { replaceSell } from '../engine/counterfactual.js';
+import { buildDragDecomposition } from '../engine/decompose.js';
+import { buildPatternList } from '../engine/behavior.js';
+import { buildReturnWaterfall } from '../engine/waterfall.js';
+import { computeStockSelf } from '../engine/stockSelf.js';
+import { computePGR } from '../engine/pgr.js';
 import { CONTRACT_CODES, CONTRACT_TEMPLATES, dayChangePct, matchContract } from '../engine/contractMatch.js';
 import {
   parseRuleSpec, scopeApplies, notApplicableMessage, describeScopeChange, scopeLabel, normalizeScope,
@@ -598,12 +603,158 @@ export async function loadReportEngine(scenario = DEFAULT_SCENARIO) {
   return out;
 }
 
+/* —— 报告页补充分析（非 Agent）：只消费已复核发布的数据与同一份行情实例 ——
+   原则：组合结果未发布时不生成任何图表/画像结论；行为、标的自身涨幅、PGR/PLR 均为候选补充口径。 */
+export function emptyUserInsights(reason = '尚未生成补充分析') {
+  return {
+    portfolio: {
+      available: false, reason, report: null, decomposition: null, waterfall: null,
+      counterfactuals: [], counterfactual_errors: [],
+    },
+    behavior: { available: false, reason, data: null },
+    stock_self: { available: false, reason, data: null },
+    pgr: { available: false, reason, data: null },
+    review_summary: null,
+  };
+}
+
+function reviewSummaryOf(review) {
+  if (!review) return null;
+  return {
+    status: review.status,
+    portfolio_published: review.portfolio_published === true,
+    published_count: Array.isArray(review.published_facts) ? review.published_facts.length : 0,
+    blocked_count: Array.isArray(review.blocked_facts) ? review.blocked_facts.length : 0,
+    degraded_count: Array.isArray(review.degraded) ? review.degraded.length : 0,
+    verify_id: review.meta?.verify_id ?? null,
+    provenance_summary: review.provenance?.summary ?? null,
+  };
+}
+
+function buildUserInsights({ stage, trades, closes, review }) {
+  const insights = emptyUserInsights('');
+  insights.review_summary = reviewSummaryOf(review);
+  if (!review || review.portfolio_published !== true) {
+    const reason = review?.blocked_symbols?.length
+      ? '复核未发布组合结果：有标的缺价或被扣发，图表与补充画像不生成'
+      : '复核未发布组合结果：补充分析不生成，避免展示未经复核的数字';
+    insights.portfolio.reason = reason;
+    insights.behavior.reason = reason;
+    insights.stock_self.reason = reason;
+    insights.pgr.reason = reason;
+    return insights;
+  }
+
+  let report = null;
+  try {
+    report = computeIndicators({ trades, closes });
+    insights.portfolio.available = true;
+    insights.portfolio.reason = '';
+    insights.portfolio.report = report;
+  } catch (e) {
+    const reason = `组合指标重算失败：${String(e && e.message ? e.message : e)}`;
+    insights.portfolio.reason = reason;
+    insights.portfolio.available = false;
+  }
+
+  if (report) {
+    try {
+      insights.portfolio.decomposition = buildDragDecomposition({ report, trades });
+    } catch (e) {
+      insights.portfolio.counterfactual_errors.push({
+        code: 'E_INSIGHT_DECOMPOSE', message: `损耗分解失败：${String(e && e.message ? e.message : e)}`,
+      });
+    }
+    try {
+      insights.portfolio.waterfall = buildReturnWaterfall({ report });
+    } catch (e) {
+      insights.portfolio.counterfactual_errors.push({
+        code: 'E_INSIGHT_WATERFALL', message: `收益瀑布失败：${String(e && e.message ? e.message : e)}`,
+      });
+    }
+
+    const valuationDate = stage.val.effective_date;
+    const sells = trades
+      .filter((t) => t && t.side === 'sell')
+      .sort((a, b) => (a.trade_date < b.trade_date ? -1 : a.trade_date > b.trade_date ? 1 : (a.source?.line ?? 0) - (b.source?.line ?? 0)));
+    const maxCharts = 24;
+    for (const sell of sells.slice(0, maxCharts)) {
+      try {
+        const symbolTrades = trades.filter((t) => t.symbol === sell.symbol);
+        const result = replaceSell({
+          symbol: sell.symbol,
+          trades: symbolTrades,
+          tradeId: sell.trade_id,
+          effectiveDate: valuationDate,
+          closeOf: (d) => stage.market.getClose(sell.symbol, d),
+          tradingDays: stage.market.tradingDays,
+        });
+        insights.portfolio.counterfactuals.push({
+          symbol: sell.symbol,
+          trade_id: sell.trade_id,
+          trade_date: sell.trade_date,
+          price: sell.price,
+          quantity: sell.quantity,
+          replace: result.replace,
+          series: result.series,
+          markers: symbolTrades.map((t) => ({
+            trade_id: t.trade_id,
+            trade_date: t.trade_date,
+            side: t.side,
+            price: t.price,
+            quantity: t.quantity,
+            replaced: t.trade_id === sell.trade_id,
+          })),
+        });
+      } catch (e) {
+        insights.portfolio.counterfactual_errors.push({
+          code: 'E_INSIGHT_CF',
+          trade_id: sell.trade_id,
+          symbol: sell.symbol,
+          message: `单笔反事实失败：${String(e && e.message ? e.message : e)}`,
+        });
+      }
+    }
+  }
+
+  try {
+    insights.behavior.data = buildPatternList({ trades, market: stage.market });
+    insights.behavior.available = true;
+    insights.behavior.reason = '';
+  } catch (e) {
+    insights.behavior.reason = `行为发现失败：${String(e && e.message ? e.message : e)}`;
+  }
+
+  try {
+    insights.stock_self.data = computeStockSelf({
+      trades,
+      valuationDate: stage.val.effective_date,
+      resolveDate: (d) => stage.market.resolveValuation(d),
+      closeOf: (symbol, d) => stage.market.getClose(symbol, d),
+    });
+    insights.stock_self.available = insights.stock_self.data.available === true;
+    insights.stock_self.reason = insights.stock_self.available ? '' : '标的自身涨幅覆盖不足';
+  } catch (e) {
+    insights.stock_self.reason = `标的自身涨幅失败：${String(e && e.message ? e.message : e)}`;
+  }
+
+  try {
+    insights.pgr.data = computePGR({ trades, closes });
+    insights.pgr.available = insights.pgr.data.ok === true;
+    insights.pgr.reason = insights.pgr.available ? '' : 'PGR/PLR 样本或行情不足';
+  } catch (e) {
+    insights.pgr.reason = `PGR/PLR 失败：${String(e && e.message ? e.message : e)}`;
+  }
+  return insights;
+}
+
 /* —— 报告页：用户账单引擎链路（Tushare 动态行情）——
    输出契约（页面消费）：
    { sourceType:'local', fileName, dataMode, marketSource, supportScope, asOfDate,
      status('ok'|'partial'|'blocked'|'error'), blocked, warnings[], errors[],
      valuation, marketRange, snapshot, prices, blockedSymbols[], poolBlocked,
-     review, factsByScope{}, provenance, labels } */
+     review, factsByScope{}, provenance, labels,
+     insights: { portfolio, behavior, stock_self, pgr, review_summary } } */
 export async function loadUserBillReport(bill) {
   const out = {
     sourceType: 'local',
@@ -626,6 +777,7 @@ export async function loadUserBillReport(bill) {
     factsByScope: {},
     provenance: null,
     labels: RESULT_LABELS,
+    insights: emptyUserInsights('账单未确认：补充分析不生成'),
   };
   if (!bill || bill.status !== 'confirmed' || bill.sourceType !== 'local' || bill.blocked || !Array.isArray(bill.trades) || bill.trades.length === 0) {
     out.status = 'blocked';
@@ -642,6 +794,7 @@ export async function loadUserBillReport(bill) {
     out.status = 'blocked';
     out.blocked = true;
     out.errors.push(...stage.errors);
+    out.insights = emptyUserInsights('行情未就绪：补充分析不生成');
     return out;
   }
   out.prices = stage.prices;
@@ -675,6 +828,14 @@ export async function loadUserBillReport(bill) {
     for (const d of review.degraded) out.errors.push({ line: 0, code: d.code, message: d.message });
   } else {
     out.status = review.status === 'degraded' ? 'partial' : 'ok';
+  }
+
+  // 4) 补充分析（非 Agent）：组合未发布时整体不生成；其余为候选口径
+  try {
+    out.insights = buildUserInsights({ stage, trades, closes, review });
+  } catch (e) {
+    out.insights = emptyUserInsights(`补充分析生成失败：${String(e && e.message ? e.message : e)}`);
+    out.insights.review_summary = reviewSummaryOf(review);
   }
   return out;
 }
