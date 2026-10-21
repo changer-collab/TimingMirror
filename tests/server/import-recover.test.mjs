@@ -115,8 +115,8 @@ async function invoke(handler, body, { method = 'POST' } = {}) {
 
   const missing = createHandler({ transport: {} });
   const notConfigured = await invoke(missing, { content: CONTENT, stage: IMPORT_RECOVER_STAGE, source_kind: 'text' });
-  check('Handler：transport 无 importRecover → 503 模型未启用', notConfigured.status === 503
-    && notConfigured.json.code === SITE_FUNCTION_CODES.MODEL_NOT_CONFIGURED, JSON.stringify(notConfigured));
+  check('Handler：transport 无 importRecover → 502 模型不可用', notConfigured.status === 502
+    && notConfigured.json.code === SITE_FUNCTION_CODES.MODEL_UNAVAILABLE, JSON.stringify(notConfigured));
 
   const get = await invoke(handler, null, { method: 'GET' });
   check('Handler：GET 405', get.status === 405 && get.json.code === SITE_FUNCTION_CODES.METHOD);

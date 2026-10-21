@@ -183,8 +183,8 @@ async function invoke(handler, body) {
 
   const noMethod = createHandler({ transport: {} });
   const missing = await invoke(noMethod, { question: QUESTION, stage: RULE_INTENT_STAGE });
-  check('Handler：transport 无 ruleIntent → 503 模型未启用', missing.status === 503
-    && missing.json.code === SITE_FUNCTION_CODES.MODEL_NOT_CONFIGURED, JSON.stringify(missing));
+  check('Handler：transport 无 ruleIntent → 502 模型不可用', missing.status === 502
+    && missing.json.code === SITE_FUNCTION_CODES.MODEL_UNAVAILABLE, JSON.stringify(missing));
 }
 
 /* —— DashScope ruleIntent 请求形状 —— */

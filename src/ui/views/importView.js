@@ -1,5 +1,6 @@
-// 导入 · 确认：本机读取 CSV/TSV/Excel/文本型 PDF/粘贴文字 → 常规校验 → 不完整时可让 AI 整理草稿。
+// 导入 · 确认：本机读取 CSV/TSV/Excel/文本型 PDF/粘贴文字/截图与扫描 PDF → 常规校验 → 不完整时可让 AI 整理草稿。
 // 边界：常规解析优先且零模型请求；只有用户点击才发送提取文字；草稿可编辑，最终仍由 normalizeRows 与既有确认流程写入。
+// 选择文件或拖拽文件均走同一本机读取链路；拖拽只切换遮罩，不写 state。
 import { el, chip } from '../components.js';
 import { defaultBill, defaultChat, defaultImportRecovery, createBillContextId } from '../../state.js';
 import * as demo from '../../demo/adapter.js';
@@ -291,6 +292,52 @@ function applySession(recovery, session) {
     flowId: session.flow_id ?? recovery.flowId,
     requestId: requestIds.length ? requestIds[requestIds.length - 1] : recovery.requestId,
   };
+}
+
+const PAPERCLIP_SVG = '<svg viewBox="0 0 24 24" width="72" height="72" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
+
+function hasFiles(ev) {
+  const types = ev.dataTransfer && ev.dataTransfer.types;
+  return !!types && Array.from(types).includes('Files');
+}
+
+// 拖拽仅切换遮罩样式，不写 state，避免拖动过程中整页重渲染
+function attachDropZone(wrap, ctx) {
+  const icon = el('div', { class: 'im-drop-icon' });
+  icon.innerHTML = PAPERCLIP_SVG;
+  const overlay = el('div', { class: 'im-drop-overlay' }, [
+    el('div', { class: 'im-drop-box' }, [
+      icon,
+      el('div', { class: 'im-drop-title' }, ['拖拽文件至此处']),
+      el('div', { class: 'im-drop-sub' }, ['支持 CSV / TSV / Excel / PDF / 图片']),
+    ]),
+  ]);
+  let depth = 0;
+  const show = (on) => overlay.classList.toggle('active', on);
+  wrap.addEventListener('dragenter', (ev) => {
+    if (!hasFiles(ev)) return;
+    ev.preventDefault();
+    depth += 1;
+    if (ctx.state.bill.status !== 'loading') show(true);
+  });
+  wrap.addEventListener('dragover', (ev) => {
+    if (!hasFiles(ev)) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = ctx.state.bill.status === 'loading' ? 'none' : 'copy';
+  });
+  wrap.addEventListener('dragleave', (ev) => {
+    if (!hasFiles(ev)) return;
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) show(false);
+  });
+  wrap.addEventListener('drop', (ev) => {
+    if (!hasFiles(ev)) return;
+    ev.preventDefault();
+    depth = 0;
+    show(false);
+    onFilePicked({ target: { files: ev.dataTransfer.files } }, ctx);
+  });
+  wrap.append(overlay);
 }
 
 async function applySource(ctx, { sourceId, contextId, sourceKind, content, table = null, fileName, fileSize }) {
@@ -1590,5 +1637,6 @@ export function renderImport(root, ctx) {
   const recovery = recoverySection(ctx);
   if (recovery) wrap.append(recovery);
 
+  attachDropZone(wrap, ctx);
   root.append(wrap);
 }

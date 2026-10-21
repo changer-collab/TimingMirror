@@ -115,8 +115,8 @@ async function invoke(handler, body, { method = 'POST' } = {}) {
 
   const missing = createHandler({ transport: {} });
   const unavailable = await invoke(missing, { images: [IMAGE], stage: IMPORT_VISION_STAGE, source_kind: 'image' });
-  check('Handler：transport 无 vision → 503', unavailable.status === 503
-    && unavailable.json.code === SITE_FUNCTION_CODES.MODEL_NOT_CONFIGURED, unavailable.text);
+  check('Handler：transport 无 vision → 502 模型不可用', unavailable.status === 502
+    && unavailable.json.code === SITE_FUNCTION_CODES.MODEL_UNAVAILABLE, unavailable.text);
 
   const get = await invoke(handler, null, { method: 'GET' });
   check('Handler：GET 405', get.status === 405 && get.json.code === SITE_FUNCTION_CODES.METHOD);
