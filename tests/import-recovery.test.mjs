@@ -34,6 +34,7 @@ import { exportImportTraceJsonl } from '../src/agent/traceAudit.js';
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
+// Node 25 暴露全局 sessionStorage；未测试持久化的用例显式传 storage:null，避免跨用例串用预算。
 
 const CSV = '日期,标的,方向,价格,数量,费用,税费\n2024-09-24,600519,买入,100.00,100,5.00,0.00\n';
 const AI_TRADE = {
@@ -196,7 +197,7 @@ function makePdf({ text = 'date,symbol,side,price,quantity\n2024-09-24,600519,bu
       return { rawText: calls.length === 1 ? 'not-json' : AI_BODY };
     },
   };
-  const client = createImportRecovery({ transport, timeoutMs: 1000 });
+  const client = createImportRecovery({ transport, timeoutMs: 1000, storage: null });
   check('flow 起点：创建客户端不建 flow、不发请求', calls.length === 0
     && client.getSession().flow_id === null && client.getSession().model_calls === 0
     && client.getTrace() === null);
@@ -233,7 +234,7 @@ function makePdf({ text = 'date,symbol,side,price,quantity\n2024-09-24,600519,bu
     async importRecover(request) { calls.push({ kind: 'text', request }); return { rawText: AI_BODY }; },
     async importVision(request) { calls.push({ kind: 'vision', request }); return { rawText: AI_BODY }; },
   };
-  const client = createImportRecovery({ transport, timeoutMs: 1000 });
+  const client = createImportRecovery({ transport, timeoutMs: 1000, storage: null });
   const text = await client.requestRecovery({ content: CSV, sourceKind: 'csv' });
   const vision = await client.requestVision({ images, sourceKind: 'pdf_scan', pageCount: 3, pageRange: { start: 2, end: 2 } });
   check('视觉请求：与文字共用同一 flow，按实际请求计数', text.ok === true && vision.ok === true
@@ -311,7 +312,7 @@ function makePdf({ text = 'date,symbol,side,price,quantity\n2024-09-24,600519,bu
       throw error;
     },
   };
-  const client = createImportRecovery({ transport, timeoutMs: 1000 });
+  const client = createImportRecovery({ transport, timeoutMs: 1000, storage: null });
   const failed = await client.requestRecovery({ content: CSV, sourceKind: 'csv' });
   check('错误返回：保留服务端错误码，且本次失败也计入 flow 预算', failed.ok === false
     && failed.status === 'unavailable'
@@ -338,7 +339,7 @@ function makePdf({ text = 'date,symbol,side,price,quantity\n2024-09-24,600519,bu
       return new Promise((resolve) => { resolveFirst = resolve; });
     },
   };
-  const client = createImportRecovery({ transport, timeoutMs: 1000 });
+  const client = createImportRecovery({ transport, timeoutMs: 1000, storage: null });
   const first = client.requestRecovery({ content: CSV, sourceKind: 'csv' });
   const second = await client.requestRecovery({ content: CSV, sourceKind: 'csv' });
   check('并发：第二次点击不发送请求、不改变预算', second.ok === false
@@ -353,7 +354,7 @@ function makePdf({ text = 'date,symbol,side,price,quantity\n2024-09-24,600519,bu
 {
   const calls = [];
   const transport = { async importRecover(request) { calls.push(request); return { rawText: AI_BODY }; } };
-  const client = createImportRecovery({ transport, timeoutMs: 1000 });
+  const client = createImportRecovery({ transport, timeoutMs: 1000, storage: null });
   const blocked = await client.requestRecovery({ content: '账户号 123，身份证 110101199001011234', sourceKind: 'text' });
   check('隐私预检：敏感信息不进入模型，也不创建 flow', blocked.ok === false
     && blocked.code === IMPORT_RECOVERY_CODES.LOCAL_BLOCKED && calls.length === 0

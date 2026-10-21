@@ -1,6 +1,7 @@
 import * as bridge from './realBridge.js';
 import { renderRealReport } from './realReport.js';
 import { renderRealChat } from './realChat.js';
+import { renderRealProfile } from './realProfile.js';
 
 (() => {
   'use strict';
@@ -528,8 +529,9 @@ import { renderRealChat } from './realChat.js';
       <section class="tm-workspace-head">
         <p class="mono-label">REAL RULES / 真实规则</p>
         <h1>规则工作区</h1>
-        <p class="muted">复用现有规则入口与 contracts 状态；保存、模拟和版本记录保持一致。没有账单时也可以保留右侧助手已产生的规则草案。</p>
+        <p class="muted">画像与规则候选只从已复核账单派生；候选做模板预填，保存、模拟和版本记录仍由你确认后生效。没有账单时也可以保留右侧助手已产生的规则草案。</p>
       </section>
+      <div id="tm-real-profile"></div>
       <div id="tm-real-rules"></div>
     </div>`;
   }
@@ -2276,7 +2278,7 @@ import { renderRealChat } from './realChat.js';
     }
     if (state.route === 'report' && mode === 'demo') bindReport();
     if (state.route === 'report' && mode === 'real' && isConfirmedLocal()) {
-      renderRealReport(document.getElementById('tm-real-report'), sharedState().bill);
+      renderRealReport(document.getElementById('tm-real-report'), sharedState().bill, bridge.getCtx());
     }
     if (state.route === 'chat' && mode === 'demo') bindChat();
     if (state.route === 'chat' && mode === 'real' && isConfirmedLocal()) {
@@ -2284,6 +2286,7 @@ import { renderRealChat } from './realChat.js';
     }
     if (state.route === 'rules' && mode === 'demo') bindRules();
     if (state.route === 'rules' && mode === 'real') {
+      renderRealProfile(document.getElementById('tm-real-profile'), bridge.getCtx());
       bridge.mountContractView(document.getElementById('tm-real-rules'));
     }
 
