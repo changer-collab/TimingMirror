@@ -668,6 +668,62 @@ function streamOfChunks(chunks) {
     && nullItemsDoc.symbols['600519'].bars_fwdadj.length === 0
     && nullItemsDoc.symbols['600519'].adj_factor_base === null, JSON.stringify(nullItemsDoc.symbols['600519']));
 
+  // 真实 stock_basic 的 SSE/D 含 7 位 symbol 记录；无关异常行不应阻断整批快照。
+  const oddStockBasicUpstream = createFakeUpstream({
+    stockBasicData: {
+      L: [...stockBasic.L, ['6005191.SH', '6005191']],
+      P: [],
+      D: [['000003.SZ', '000003'], ['0000031.SZ', '0000031']],
+    },
+  });
+  const oddStockBasicTransport = createTushareMarketTransport({
+    token: TOKEN, fetchImpl: oddStockBasicUpstream.fetchImpl, timeoutMs: 1000, retryDelayMs: 0, sleepImpl: async () => {},
+    now: () => new Date('2026-10-19T01:30:00.000Z'),
+  });
+  const oddStockBasicDoc = await oddStockBasicTransport.snapshot({ symbols: ['600519', '000003'], start: START, end: END });
+  check('Tushare：无关的 7 位 stock_basic 异常行被跳过，请求标的仍构建快照',
+    oddStockBasicDoc.symbols['600519'].ts_code === '600519.SH'
+    && oddStockBasicDoc.symbols['000003'].ts_code === '000003.SZ'
+    && oddStockBasicDoc.asOfDate === '2025-01-06',
+    JSON.stringify({ symbols: oddStockBasicDoc.symbols, asOfDate: oddStockBasicDoc.asOfDate }));
+
+  const targetOddUpstream = createFakeUpstream({
+    stockBasicData: { L: [['600519.SH', '600519'], ['0000011.SZ', '0000011']], P: [], D: [] },
+  });
+  const targetOddTransport = createTushareMarketTransport({
+    token: TOKEN, fetchImpl: targetOddUpstream.fetchImpl, timeoutMs: 1000, retryDelayMs: 0, sleepImpl: async () => {},
+  });
+  let targetOddError = null;
+  try { await targetOddTransport.snapshot({ symbols: ['000001'], start: START, end: END }); } catch (e) { targetOddError = e; }
+  check('Tushare：请求标的仅存在于异常 stock_basic 行 → E_MARKET_SYMBOL_UNKNOWN，不误判格式错误',
+    targetOddError && targetOddError.code === MARKET_TRANSPORT_CODES.SYMBOL_UNKNOWN,
+    targetOddError && targetOddError.code);
+
+  const allOddUpstream = createFakeUpstream({
+    stockBasicData: { L: [['6005191.SH', '6005191']], P: [], D: [] },
+  });
+  const allOddTransport = createTushareMarketTransport({
+    token: TOKEN, fetchImpl: allOddUpstream.fetchImpl, timeoutMs: 1000, retryDelayMs: 0, sleepImpl: async () => {},
+  });
+  let allOddError = null;
+  try { await allOddTransport.snapshot({ symbols: ['600519'], start: START, end: END }); } catch (e) { allOddError = e; }
+  check('Tushare：stock_basic 全部行无效 → 仍为 E_MARKET_RESPONSE_INVALID（不伪装成空映射）',
+    allOddError && allOddError.code === MARKET_TRANSPORT_CODES.RESPONSE, allOddError && allOddError.code);
+
+  // 交易日历含当日、但 daily 尚未入库（Tushare 15:00–16:00 才更新）：应取最近已收盘 bar，不报格式错误。
+  const pendingTodayUpstream = createFakeUpstream({ calendarData: [...calendar, '2025-01-07'] });
+  const pendingTodayTransport = createTushareMarketTransport({
+    token: TOKEN, fetchImpl: pendingTodayUpstream.fetchImpl, timeoutMs: 1000, retryDelayMs: 0, sleepImpl: async () => {},
+    now: () => new Date('2026-10-19T01:30:00.000Z'),
+  });
+  const pendingTodayDoc = await pendingTodayTransport.snapshot({ symbols: ['600519'], start: START, end: '2025-01-07' });
+  check('Tushare：交易日历含当日而 daily 未入库 → asOfDate 取最近已收盘 bar，请求范围原样留痕',
+    pendingTodayDoc.asOfDate === '2025-01-06'
+    && pendingTodayDoc.calendar.trading_days.join(',') === calendar.join(',')
+    && pendingTodayDoc.snapshot.requested_range.end === '2025-01-07'
+    && pendingTodayDoc.manifest.date_range.end === '2025-01-06',
+    JSON.stringify({ asOfDate: pendingTodayDoc.asOfDate, calendar: pendingTodayDoc.calendar, requested: pendingTodayDoc.snapshot.requested_range }));
+
   const malformedDataUpstream = createFakeUpstream({
     failAt: ({ sent }) => (sent.api_name === 'stock_basic'
       ? { body: { code: 0, data: { items: [['600519.SH', '600519', 'L']] } } }
