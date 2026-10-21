@@ -6,7 +6,7 @@ import { renderImport } from './ui/views/importView.js';
 import { renderReport } from './ui/views/reportView.js';
 import { renderChat } from './ui/views/chatView.js';
 import { renderContract } from './ui/views/contractView.js';
-import { renderAssistantPanel, assistantDefaultOpen } from './ui/assistantPanel.js';
+import { getRuleAssistantClient, renderAssistantPanel, assistantDefaultOpen } from './ui/assistantPanel.js';
 
 const NAV = [
   { id: 'import', label: '导入 · 确认', hash: '#/import' },
@@ -63,7 +63,7 @@ function toggleAssistant() {
   }
 }
 
-const ctx = { state, set, go, adapter };
+const ctx = { state, set, go, adapter, ruleAssistantClient: getRuleAssistantClient() };
 
 function routeFromHash() {
   const id = (location.hash || '#/import').replace(/^#\//, '');
