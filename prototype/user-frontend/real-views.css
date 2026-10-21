@@ -42,6 +42,13 @@ body {
   display: none;
 }
 
+/* 规则弹窗挂到 body 顶层，避免被主内容滚动容器与页脚层级裁剪 */
+.tm-rule-modal-host {
+  position: fixed;
+  inset: 0;
+  z-index: 320;
+}
+
 #tm-assistant-root {
   min-height: 100%;
 }
