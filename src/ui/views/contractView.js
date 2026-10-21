@@ -8,19 +8,42 @@ const VERDICT = {
   triggered: { text: '命中', kind: 'warn' },
   not_triggered: { text: '未命中', kind: 'ok' },
   missing_data: { text: '数据不足', kind: 'mode' },
+  not_applicable: { text: '不适用', kind: 'mode' },
 };
-const SUMMARY = [['triggered', '命中', 'warn'], ['not_triggered', '未命中', 'ok'], ['missing_data', '数据不足', 'mode'], ['error', '无法判定', 'warn']];
+// 买入后卖出提醒：账单没有“历史买入完整”依据，找不到窗口内买入时一律不显示“未命中”。
+const UNCONFIRMED_BUY_CODES = new Set(['E_BUY_HISTORY_UNCONFIRMED', 'E_BUY_OUTSIDE_WINDOW_UNCONFIRMED', 'E_SAME_DAY_BUY_UNCONFIRMED']);
+const BUY_SELL_MISSING_NOTE = Object.freeze({
+  E_BUY_HISTORY_UNCONFIRMED: '数据不足：账单中没有该标的在申报日前的买入记录，也没有“历史买入完整”的可靠依据；不能当成“从未买入”，本次不显示“未命中”。',
+  E_BUY_OUTSIDE_WINDOW_UNCONFIRMED: '数据不足：当前账单里可见的最近买入已超出窗口，但可能存在未导出的窗口内买入；本次不显示“未命中”，也不作命中判定。',
+  E_SAME_DAY_BUY_UNCONFIRMED: '数据不足：当前账单只有同日买入，成交先后顺序未知，且可能存在未导出的更早或窗口内买入；本次不显示“未命中”，也不作命中判定。',
+});
+const SUMMARY = [['triggered', '命中', 'warn'], ['not_triggered', '未命中', 'ok'], ['missing_data', '数据不足', 'mode'], ['not_applicable', '不适用', 'mode'], ['error', '无法判定', 'warn']];
 const SIM_CANDIDATE_LINE = '候选口径（待冻结）：规则只用于提醒，不自动交易，也不改变报告结论。';
-const KIND_LABEL = Object.freeze({ change_pct_threshold: '买入限制', sell_buyback_window: '卖出后限制' });
+const KIND_LABEL = Object.freeze({ change_pct_threshold: '买入限制', sell_buyback_window: '卖出后限制', buy_sell_window: '买入后卖出提醒' });
 const INTRO = '设置在历史情境测试中用于提醒自己的交易规则。';
 const PRIVACY = '规则仅保存在当前浏览器；不会自动交易，也不会改变分析报告结论。';
-const CURRENT_NOTE = '不同类型的规则可以同时生效；每种类型只保留一条当前规则，保存新参数后会自动替代旧规则，旧规则进入历史规则。';
+const AGENT_NOTE = '对话页目前不读取本页保存的规则，也不能使用“限定股票代码”等新能力；规则只在本页的历史情境测试中参与判定。';
+const CURRENT_NOTE = '不同类型的规则可以同时生效；每种类型只保留一条当前规则（无论适用全部股票还是单个股票代码），保存新参数后会替代旧规则，旧规则进入历史规则。';
 const REPLACE_NOTE = '保存后，新规则会立即生效；当前同类型规则会进入历史记录，不再参与测试。';
 const STOP_NOTE = '停用后，该规则进入历史规则，不再参与之后的历史情境测试；可随时恢复为当前规则。';
 const RECONFIRM_NOTE = '这条规则的保存内容与当前校验标识不一致。为避免误用，它暂不参与测试。请核对后用“新增规则”重新保存，或停用该规则。';
 const EMPTY_NOTE = '暂无当前生效的规则，测试时不会产生规则提醒。点击“新增规则”开始设置。';
 const HISTORY_NOTE = '被新规则替代、手动停用的规则和旧演示记录都保留在这里，不参与测试；版本记录只追加、不删除。';
 const HISTORY_TAG = Object.freeze({ replaced: '已被替代', superseded: '已被替代', stopped: '已停用' });
+const NL_INTRO = '用一句话描述你想遵守的交易规则，系统会识别并生成规则预览；识别与关键词检查只是辅助，请对照原话核对。你确认后才会保存并启用，取消或修改描述都不会生效。';
+const NL_PRIVACY = '识别时只把下方输入框里的这段文字发送到站点服务端，由百炼模型理解意图；不发送 CSV、交易记录、账户信息或已保存的规则。规则是否合法、能否执行、测试时是否命中，均由本地程序按规则模板确定性判定，不执行模型生成的任何代码。';
+const NL_CHECK_WARNING = '关键词和模型检查只能覆盖常见表达，不能保证发现所有股票名称、附加条件或隐含限定；系统不承诺“绝不遗漏”，请务必逐字对照原话核对。';
+const NL_FALLBACK = '已有规则、模板新增与历史情境测试不受影响；也可以改选具体模板直接填写参数。';
+const CUSTOM_TEMPLATE = '__custom__';
+const SCOPE_UI_LABEL = Object.freeze({ all: '全部股票', symbol: '单个股票' });
+const CONFIRM_TEXT = Object.freeze({ 'day_unit:trading_day': '“天”按交易日计', 'comparator:gt': '按“超过（严格大于）阈值”判定' });
+const NL_STATUS = Object.freeze({
+  supported: { text: '当前系统支持执行', kind: 'ok' },
+  unsupported: { text: '暂不支持', kind: 'warn' },
+  unclear: { text: '需要补充', kind: 'mode' },
+  invalid: { text: '参数无效', kind: 'warn' },
+  error: { text: '识别未完成', kind: 'warn' },
+});
 const VIA_TEXT = Object.freeze({
   替代: (r) => `被同类型规则 v${safe(r.replaced_by_v)} 替代`,
   整理: (r) => `整理同类规则时停用，保留 v${safe(r.kept_v)}`,
@@ -36,6 +59,7 @@ const displayTradeSource = (source) => (source && source.kind === 'demo_bill_a' 
 
 let simContextLoadingKey = null;
 let simToken = null;
+let nlToken = null;
 let focusedModal = null;
 let closeActiveModal = null;
 let escBound = false;
@@ -47,13 +71,33 @@ function bindEsc() {
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && closeActiveModal) closeActiveModal(); });
 }
 
+function scopeDraftOf(scope) {
+  return scope && scope.kind === 'symbol' ? { kind: 'symbol', symbol: scope.symbol } : { kind: 'all', symbol: '' };
+}
+
 function draftFor(tpl, fromRule = null) {
   const fields = {};
   for (const f of tpl.fields) {
     const saved = fromRule ? fromRule.fields?.[f.key] : undefined;
     fields[f.key] = String(saved === undefined ? f.default : saved);
   }
-  return { template_id: tpl.template_id, fields, note: fromRule ? fromRule.latest_note : '' };
+  return { template_id: tpl.template_id, fields, note: fromRule ? fromRule.latest_note : '', scope: scopeDraftOf(fromRule ? fromRule.scope : null) };
+}
+
+// 页面草稿 → 引擎入参：只去掉代码两端空白，格式由引擎校验（不补零、不纠正）
+const scopeArgOf = (draft) => (draft && draft.scope && draft.scope.kind === 'symbol' ? { kind: 'symbol', symbol: String(draft.scope.symbol ?? '').trim() } : { kind: 'all' });
+
+// 替代时的范围变化：须勾选确认才能保存 / 恢复；确认绑定到具体的变化说明，参数改动后需重新确认
+function scopeChangeBox(change, acked, onToggle, role) {
+  if (!change) return null;
+  if (!change.requires_ack) return el('div', { class: 'muted small cv-scope-same' }, [change.message]);
+  const box = el('input', { type: 'checkbox', 'data-role': role, checked: acked ? '' : null });
+  box.addEventListener('change', (e) => onToggle(!!e.target.checked));
+  return el('div', { class: 'cv-scope-change', 'data-scope-change': change.kind }, [
+    el('div', { class: 'calc-line' }, [`适用范围变化：${change.from} → ${change.to}`]),
+    el('div', { class: 'cv-nl-warn' }, [change.message]),
+    el('label', { class: 'cv-nl-ack' }, [box, el('span', {}, ['我已知晓适用范围的变化，确认替代当前规则。'])]),
+  ]);
 }
 
 const decisionText = (r) => [
@@ -71,6 +115,7 @@ function conditionText(rule) {
   if (!d) return null;
   if (rule.kind === 'change_pct_threshold') return `触发条件：申报买入当天涨幅超过 ${d}`;
   if (rule.kind === 'sell_buyback_window') return `触发条件：卖出后 ${d}内再次买入同一标的`;
+  if (rule.kind === 'buy_sell_window') return `触发条件：买入后 ${d}内卖出同一标的（不含买入当天，同日买入不计）`;
   return null;
 }
 
@@ -88,7 +133,13 @@ function ruleDetail(rule) {
   return el('details', { class: 'cv-rule-detail' }, [
     el('summary', {}, ['查看详情']),
     el('div', { class: 'muted small' }, [`版本 v${safe(rule.v)} · ${safe(rule.template_name)} · ${rule.fields_text}`]),
+    el('div', { class: 'muted small' }, [`适用范围：${safe(rule.scope_text)} · 记录格式：${safe(rule.schema)}`]),
     cond ? el('div', { class: 'muted small' }, [cond]) : null,
+    rule.timing ? el('div', { class: 'muted small' }, [`时间口径：${rule.timing}`]) : null,
+    rule.origin_text ? el('div', { class: 'muted small' }, [`来源：自然语言描述「${rule.origin_text}」（经程序校验后按「${safe(rule.template_name)}」模板保存，原文不参与判定）`]) : null,
+    rule.origin_text && Object.keys(rule.origin_confirmations).length
+      ? el('div', { class: 'muted small' }, [`保存时你确认的理解：${Object.entries(rule.origin_confirmations).map(([k, v]) => CONFIRM_TEXT[`${k}:${v}`] ?? `${k}=${v}`).join('；')}`])
+      : null,
     el('div', { class: 'muted small cv-hash cv-hash-full' }, [`${adapter.CONTRACT_HASH_NOTE}：${rule.hash}`]),
     el('div', { class: 'muted small' }, [`哈希算法：${safe(rule.hash_algorithm)}（候选占位算法，待 M0-C1 冻结后可能替换）`]),
     el('div', { class: 'muted small' }, [`创建时间：${fmtAt(rule.records[0].at)} · 最近状态变更：${fmtAt(rule.latest.at)}`]),
@@ -123,7 +174,8 @@ export function renderContract(root, ctx) {
     const tpl = templates.find((t) => t.template_id === wanted) ?? templates.find((t) => !slotOf(t.template_id)?.current) ?? templates[0];
     set({ contracts: { modal: { mode, targetHash: rule ? rule.hash : null }, draft: draftFor(tpl, rule) } });
   }
-  const closeEditor = () => set({ contracts: { modal: null } });
+  const closeEditor = () => { nlToken = null; set({ contracts: { modal: null, nl: null } }); };
+  const emptyNl = () => ({ text: '', status: 'idle', result: null, choices: {}, ack: false });
 
   const page = el('div', { class: 'stack cv-page' });
 
@@ -133,12 +185,16 @@ export function renderContract(root, ctx) {
       el('h2', { class: 'cv-title' }, ['交易规则']),
       el('div', { class: 'cv-intro' }, [INTRO]),
       el('div', { class: 'cv-privacy' }, [PRIVACY]),
+      el('div', { class: 'muted small cv-agent-note' }, [AGENT_NOTE]),
       el('details', { class: 'cv-tech-note' }, [
         el('summary', {}, ['技术说明（候选口径）']),
-        el('div', { class: 'muted small' }, [`规则只能由引擎模板（${templates.length} 个）＋可编辑数值字段生成，自由文本不作为可执行规则；哈希为候选占位算法，待 M0-C1 冻结；示例账单可切换 Tushare 动态日线（服务端获取，非实时）或合成回归行情；已确认本地账单仅使用签收门通过的真实缓存。`]),
+        el('div', { class: 'muted small' }, [`规则最终只能由引擎模板（${templates.length} 个）＋可编辑数值字段＋适用范围（全部股票 / 单个 6 位代码）生成；自然语言描述只经模型识别意图，再由程序映射为模板、参数与范围并校验，原文不直接作为可执行规则；全部股票的规则仍按原 contract-v1 格式保存，限定单个代码的规则按 contract-v2 保存，已保存记录不迁移、不改写；哈希为候选占位算法，待 M0-C1 冻结；示例账单可切换 Tushare 动态日线（服务端获取，非实时）或合成回归行情；已确认本地账单仅使用签收门通过的真实缓存。`]),
+        el('div', { class: 'muted small' }, ['非交易日处理沿用各来源原有口径（待统一）：已确认本地账单的测试中非交易日显示“数据不足”；示例账单的涨幅规则按“不晚于申报日的最近交易日”取数并标明实际使用的交易日，不追回规则显示“数据不足”。任何来源缺价都不回退其他日期。']),
       ]),
     ]),
-    el('button', { class: 'btn primary cv-add', 'data-role': 'add-rule', onclick: () => openEditor('add') }, ['新增规则']),
+    el('div', { class: 'cv-head-actions' }, [
+      el('button', { class: 'btn primary cv-add', 'data-role': 'add-rule', onclick: () => openEditor('add') }, ['新增规则']),
+    ]),
   ]));
 
   /* —— 当前生效规则：按类型，每种类型最多一条（由 adapter 派生）—— */
@@ -160,6 +216,7 @@ export function renderContract(root, ctx) {
         ]),
       ]),
       el('div', { class: 'cv-rule-text' }, [safe(rule.text)]),
+      el('div', { class: 'cv-rule-scope', 'data-scope': rule.scope && rule.scope.kind === 'symbol' ? rule.scope.symbol : 'all' }, [`适用范围：${safe(rule.scope_text)}`]),
       cond ? el('div', { class: 'cv-rule-cond' }, [cond]) : null,
       confirming ? el('div', { class: 'cv-confirm' }, [
         el('div', { class: 'calc-line' }, [`确认停用“${safe(rule.text)}”？`]),
@@ -213,20 +270,47 @@ export function renderContract(root, ctx) {
   }
 
   /* —— 历史规则（默认折叠）：被替代 / 手动停用 / 旧演示记录 —— */
+  // 恢复会改变适用范围时：先展开确认（显示范围变化），勾选确认后才写入恢复记录
+  function restoreConfirm(rule, rs) {
+    let acked = false;
+    const box = el('div', { class: 'cv-confirm', 'data-role': 'restore-pending' });
+    const paint = () => box.replaceChildren(
+      el('div', { class: 'calc-line' }, [`恢复“${safe(rule.text)}”为当前规则，将替代当前规则「${safe(rs.current.text)}」（版本 v${safe(rs.current.v)}）。`]),
+      scopeChangeBox(rs.scope_change, acked, (v) => { acked = v; paint(); }, 'restore-scope-ack'),
+      el('div', { class: 'row' }, [
+        el('button', {
+          class: 'btn small primary', 'data-role': 'restore-confirm', disabled: acked ? null : '',
+          onclick: () => commitAll(adapter.contractRestoreRecords(c.versions, { hash: rule.hash, confirmScopeChange: acked }), { restorePending: null }),
+        }, ['确认恢复并替代']),
+        el('button', { class: 'btn small', 'data-role': 'restore-cancel', onclick: () => set({ contracts: { restorePending: null } }) }, ['取消']),
+      ]),
+    );
+    paint();
+    return box;
+  }
   function historyItem(rule) {
     const slotCur = slotOf(rule.template_id)?.current ?? null;
+    const rs = rule.restorable ? adapter.contractRestoreState(c.versions, { hash: rule.hash }) : null;
+    const needsAck = !!(rs && rs.scope_change && rs.scope_change.requires_ack);
+    const pending = needsAck && c.restorePending === rule.hash;
+    const restore = () => (needsAck
+      ? set({ contracts: { restorePending: rule.hash } })
+      : commitAll(adapter.contractRestoreRecords(c.versions, { hash: rule.hash })));
     return el('div', { class: `cv-hist ${rule.state}`, 'data-hash': rule.hash, 'data-state': rule.state }, [
       el('div', { class: 'row cv-rule-head' }, [
         chip(HISTORY_TAG[rule.state] ?? '历史', 'mode'),
         el('span', { class: 'cv-rule-name' }, [safe(rule.template_name)]),
         el('span', { class: 'cv-rule-ver' }, [`版本 v${safe(rule.v)}`]),
-        rule.restorable
-          ? el('span', { class: 'cv-rule-actions' }, [el('button', { class: 'btn small', 'data-role': 'restore', onclick: () => commitAll(adapter.contractRestoreRecords(c.versions, { hash: rule.hash })) }, ['恢复为当前规则'])])
+        rule.restorable && !pending
+          ? el('span', { class: 'cv-rule-actions' }, [el('button', { class: 'btn small', 'data-role': 'restore', onclick: restore }, ['恢复为当前规则'])])
           : null,
       ]),
       el('div', { class: 'cv-rule-text' }, [safe(rule.text)]),
+      el('div', { class: 'cv-rule-scope' }, [`适用范围：${safe(rule.scope_text)}`]),
       el('div', { class: 'cv-hist-reason' }, [historyReason(rule)]),
       rule.restorable && slotCur ? el('div', { class: 'muted small' }, [`恢复后，当前同类型规则（版本 v${safe(slotCur.v)}）会进入历史规则。`]) : null,
+      needsAck && !pending ? el('div', { class: 'muted small' }, [rs.scope_change.message]) : null,
+      pending ? restoreConfirm(rule, rs) : null,
       ruleDetail(rule),
     ]);
   }
@@ -240,7 +324,7 @@ export function renderContract(root, ctx) {
     el('div', { class: 'cv-hist-reason' }, ['未经规则引擎解析：不参与测试，不能恢复。']),
   ]);
   const histCount = ruleSet.history.length + ruleSet.legacy.length;
-  page.append(el('details', { class: 'card cv-history', 'data-role': 'history' }, [
+  page.append(el('details', { class: 'card cv-history', 'data-role': 'history', open: c.restorePending ? '' : null }, [
     el('summary', {}, [`历史规则（${histCount}）`]),
     el('div', { class: 'muted small' }, [HISTORY_NOTE]),
     histCount ? null : el('div', { class: 'muted small' }, ['暂无历史规则。']),
@@ -250,7 +334,9 @@ export function renderContract(root, ctx) {
 
   /* —— 历史情境测试：只用每种类型唯一的当前规则；交易来源由 adapter 按账单状态决定 —— */
   const current = ruleSet.current;
-  const hasBuyback = current.some((r) => r.uses_trades);
+  const hasBuyback = current.some((r) => r.kind === 'sell_buyback_window');
+  const hasBuySell = current.some((r) => r.kind === 'buy_sell_window');
+  const hasTrades = hasBuyback || hasBuySell;
   const hasSurge = current.some((r) => r.kind === 'change_pct_threshold');
   const localBill = !!(state.bill && state.bill.status === 'confirmed' && state.bill.sourceType === 'local');
   const marketSource = localBill ? 'signed-cache' : (c.marketSource === 'synthetic-fixture' ? 'synthetic-fixture' : adapter.DEFAULT_MARKET_SOURCE);
@@ -293,24 +379,32 @@ export function renderContract(root, ctx) {
     sim.append(el('div', { class: 'row' }, [chip(`${marketLabel} · 非实时行情 · 不构成投资建议`, 'mode')]));
     sim.append(el('div', { class: 'muted small' }, [SIM_CANDIDATE_LINE]));
   }
-  // 交易来源明细按当前规则的模板类型显示：不追回读取卖出记录，涨幅只读行情。
+  // 交易来源明细按当前规则的模板类型显示：不追回读取卖出记录，买入后卖出提醒读取买入记录，涨幅只读行情。
+  const tradeUse = hasBuyback && hasBuySell
+    ? '不追回读取卖出记录，买入后卖出提醒读取买入记录'
+    : hasBuySell
+      ? '买入后卖出提醒只读取同一标的的买入记录'
+      : '不追回读取卖出记录';
+  const otherUse = hasBuySell
+    ? '交易类规则只用交易日历和账单交易，不读取价格'
+    : '涨幅规则不读取账单交易；交易类规则只用交易日历和账单交易，不读取价格';
   const srcNote = localBill
-    ? (hasBuyback && hasSurge
-      ? '（仅不追回规则读取这些交易，涨幅规则不读取账单交易；不追回仅用交易日历和账单交易，不读取价格）'
-      : hasBuyback
-        ? '（不追回仅用交易日历和账单交易，不读取价格）'
+    ? (hasTrades && hasSurge
+      ? `（仅${tradeUse}；${otherUse}）`
+      : hasTrades
+        ? `（${tradeUse}；只用交易日历和账单交易，不读取价格）`
         : hasSurge
           ? `（涨幅规则只读取${marketLabel}，不使用账单交易）`
           : '')
-    : (hasBuyback && hasSurge
-      ? '（仅不追回规则读取这些交易，涨幅规则不读取账单交易）'
-      : hasBuyback
-        ? '（不追回规则使用该来源的卖出记录）'
+    : (hasTrades && hasSurge
+      ? `（仅${tradeUse}；涨幅规则不读取账单交易）`
+      : hasTrades
+        ? `（${tradeUse}）`
         : hasSurge
           ? '（涨幅规则只读取行情，不使用账单交易）'
           : '');
   sim.append(el('div', { class: `calc-line cv-source ${src.kind}` }, [
-    `交易来源：${displayTradeSource(src)} · ${localBill && hasBuyback && !hasSurge ? '交易日历来源' : '行情'}：${displayMarket(marketLabel)}`,
+    `交易来源：${displayTradeSource(src)} · ${localBill && hasTrades && !hasSurge ? '交易日历来源' : '行情'}：${displayMarket(marketLabel)}`,
     srcNote,
   ]));
   if (localBill && sc?.supportScope) sim.append(el('div', { class: 'muted small cv-market-scope' }, [
@@ -341,14 +435,35 @@ export function renderContract(root, ctx) {
   } else if (sc.error) {
     sim.append(el('div', { class: 'error' }, [`${localBill ? '历史情境测试阻断' : '行情加载失败'}：${sc.error}`]));
   } else {
+    const simAction = c.sim.action === 'sell' ? 'sell' : 'buy';
     sim.append(el('div', { class: 'muted small' }, [
-      `用当前生效的规则（${current.length} 条，每种类型一条）分别判定“假如在该日申报买入该标的”；历史规则不参与。行情范围 ${sc.range.start} ~ ${sc.range.end}，共 ${sc.tradingDays.length} 个交易日；缺价、超范围不补造、不回退。`,
+      `用当前生效的规则（${current.length} 条，每种类型一条）分别判定“假如在该日${simAction === 'sell' ? '卖出' : '买入'}该标的”；历史规则不参与。行情范围 ${sc.range.start} ~ ${sc.range.end}，共 ${sc.tradingDays.length} 个交易日；缺价、超范围不补造、不回退。`,
     ]));
     if (sc.marketSource && sc.marketSource.dynamic) {
       sim.append(el('div', { class: 'muted small' }, [
         `行情拉取：${fmtAt(sc.marketSource.fetchedAt)} · 最新交易日 ${sc.marketSource.latestTradeDate ?? sc.marketSource.asOfDate}${sc.marketSource.snapshotId ? ` · 快照 ${sc.marketSource.snapshotId}` : ''}${sc.marketSource.checksum ? ` · 校验 ${sc.marketSource.checksum.slice(0, 12)}…` : ''}（服务端获取，非实时）`,
       ]));
     }
+    const actGroup = el('div', { class: 'rp-control-group' });
+    actGroup.append(el('span', { class: 'rp-control-label' }, ['情境动作']));
+    const actSeg = el('div', { class: 'rp-seg' });
+    for (const o of [{ id: 'buy', label: '假如买入' }, { id: 'sell', label: '假如卖出' }]) {
+      actSeg.append(el('button', {
+        type: 'button',
+        class: simAction === o.id ? 'active' : '',
+        'data-role': `sim-action-${o.id}`,
+        onclick: () => {
+          if (simAction === o.id) return;
+          simToken = null;
+          set({ contracts: { sim: { ...state.contracts.sim, action: o.id, result: null, running: false } } });
+        },
+      }, [o.label]));
+    }
+    actGroup.append(actSeg);
+    sim.append(actGroup);
+    sim.append(el('div', { class: 'muted small cv-action-note' }, [
+      '买入提醒类规则只在“假如买入”情境判定，卖出提醒类规则只在“假如卖出”情境判定；另一类动作显示“不适用”，不读取行情或交易。规则只做历史复盘提醒，不下单、不阻止交易，也不是实时监控。',
+    ]));
     const symSelect = el('select', {
       class: 'input', 'data-role': 'sim-symbol',
       onchange: (e) => { simToken = null; c.sim = { ...c.sim, symbol: e.target.value, result: null, running: false }; paintSim(); },
@@ -360,7 +475,7 @@ export function renderContract(root, ctx) {
     simBtn = el('button', {
       class: 'btn primary',
       onclick: async () => {
-        const req = { versions: c.versions, symbol: c.sim.symbol, date: c.sim.date, bill: state.bill, marketSource };
+        const req = { versions: c.versions, symbol: c.sim.symbol, date: c.sim.date, bill: state.bill, marketSource, action: simAction };
         const token = {};
         simToken = token;
         set({ contracts: { sim: { ...state.contracts.sim, running: true, result: null } } });
@@ -368,7 +483,7 @@ export function renderContract(root, ctx) {
         const applied = simToken === token && adapter.contractTradeSource(state.bill, marketSource).key === src.key;
         if (applied) set({ contracts: { sim: { ...state.contracts.sim, running: false, result } } });
       },
-    }, [c.sim.running ? '测试中…' : '测试该日买入是否触发规则']);
+    }, [c.sim.running ? '测试中…' : `测试该日${simAction === 'sell' ? '卖出' : '买入'}是否触发规则`]);
     sim.append(el('div', { class: 'row' }, [
       el('label', { class: 'cv-field' }, [el('span', { class: 'muted small' }, [localBill ? '标的（账单标的 + 当前行情缓存标的）' : '标的（账单标的 + 示例标的）']), symSelect]),
       el('label', { class: 'cv-field' }, [el('span', { class: 'muted small' }, ['申报日期']), dateInput]),
@@ -377,6 +492,10 @@ export function renderContract(root, ctx) {
     if (hasBuyback) {
       const sells = sc.sells.map((s) => `${s.trade_id} ${s.symbol} ${s.trade_date}`).join('；') || '无';
       sim.append(el('div', { class: 'muted small cv-sells' }, [`卖出记录来源：${displayTradeSource(sc.tradesSource)}——卖出：${sells}`]));
+    }
+    if (hasBuySell) {
+      const buys = sc.buys.map((b) => `${b.trade_id} ${b.symbol} ${b.trade_date}`).join('；') || '无';
+      sim.append(el('div', { class: 'muted small cv-buys' }, [`买入记录来源：${displayTradeSource(sc.tradesSource)}——买入：${buys}`]));
     }
   }
   sim.append(simResultBox);
@@ -399,9 +518,10 @@ export function renderContract(root, ctx) {
 
   function renderModal() {
     const edit = c.modal.mode === 'edit';
+    const custom = !edit && c.draft.template_id === CUSTOM_TEMPLATE;
     const target = edit ? ruleSet.current.find((r) => r.hash === c.modal.targetHash) ?? null : null;
-    const tpl = templates.find((t) => t.template_id === c.draft.template_id) ?? templates[0];
-    const preview = () => adapter.previewContract({ template_id: c.draft.template_id, fields: c.draft.fields });
+    const tpl = custom ? null : templates.find((t) => t.template_id === c.draft.template_id) ?? templates[0];
+    const preview = () => adapter.previewContract({ template_id: c.draft.template_id, fields: c.draft.fields, scope: scopeArgOf(c.draft) });
     const dialog = el('div', { class: 'cv-modal', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'cv-modal-title', tabindex: '-1', 'data-role': 'rule-modal' });
     dialog.append(el('div', { class: 'cv-modal-head' }, [
       el('h3', { id: 'cv-modal-title', class: 'cv-modal-title' }, [edit ? '修改交易规则' : '新增交易规则']),
@@ -421,11 +541,23 @@ export function renderContract(root, ctx) {
         el('select', {
           class: 'input', 'data-role': 'template',
           onchange: (e) => {
+            nlToken = null;
+            if (e.target.value === CUSTOM_TEMPLATE) {
+              set({ contracts: { draft: { template_id: CUSTOM_TEMPLATE, fields: {}, note: c.draft.note, scope: c.draft.scope ?? scopeDraftOf(null) }, nl: emptyNl() } });
+              return;
+            }
             const next = templates.find((t) => t.template_id === e.target.value);
-            if (next) set({ contracts: { draft: { ...draftFor(next), note: c.draft.note } } });
+            if (next) set({ contracts: { draft: { ...draftFor(next), note: c.draft.note, scope: c.draft.scope ?? scopeDraftOf(null) }, nl: null } });
           },
-        }, templates.map((t) => el('option', { value: t.template_id, selected: t.template_id === tpl.template_id ? 'selected' : null }, [t.name]))),
+        }, [
+          ...templates.map((t) => el('option', { value: t.template_id, selected: t.template_id === c.draft.template_id ? 'selected' : null }, [t.name])),
+          el('option', { value: CUSTOM_TEMPLATE, selected: custom ? 'selected' : null }, ['自定义规则（用一句话描述）']),
+        ]),
       ]));
+    }
+    if (custom) {
+      dialog.append(renderNlEditor());
+      return el('div', { class: 'cv-modal-backdrop', 'data-role': 'modal-backdrop' }, [dialog]);
     }
     dialog.append(el('div', { class: 'muted small' }, [`模板文本：${tpl.text_template}`]));
     const fieldRow = el('div', { class: 'row' });
@@ -436,6 +568,23 @@ export function renderContract(root, ctx) {
       fieldRow.append(el('label', { class: 'cv-field' }, [el('span', { class: 'muted small' }, [`${f.label}（${rule}；默认 ${f.default}）`]), input]));
     }
     dialog.append(fieldRow);
+    const scopeDraft = c.draft.scope ?? scopeDraftOf(null);
+    c.draft.scope = scopeDraft;
+    const scopeSelect = el('select', {
+      class: 'input cv-scope-select', 'data-role': 'scope-kind',
+      onchange: (e) => {
+        const kind = e.target.value;
+        const current = c.draft.scope ?? scopeDraftOf(null);
+        if (kind !== current.kind) set({ contracts: { draft: { ...c.draft, scope: { kind, symbol: current.symbol ?? '' } } } });
+      },
+    }, adapter.CONTRACT_SCOPE_OPTIONS.map((o) => el('option', { value: o.kind, selected: o.kind === scopeDraft.kind ? 'selected' : null }, [SCOPE_UI_LABEL[o.kind] ?? o.label])));
+    const scopeNodes = [el('span', { class: 'muted small' }, ['适用范围']), scopeSelect];
+    if (scopeDraft.kind === 'symbol') {
+      const symInput = el('input', { class: 'input cv-input', type: 'text', inputmode: 'numeric', maxlength: '6', 'data-role': 'scope-symbol-input', placeholder: '例如 600519', value: scopeDraft.symbol ?? '' });
+      symInput.addEventListener('input', (e) => { c.draft.scope = { kind: 'symbol', symbol: e.target.value }; paintLive(); });
+      scopeNodes.push(symInput, el('div', { class: 'muted small' }, [adapter.CONTRACT_SCOPE_OPTIONS.find((o) => o.kind === 'symbol').note]));
+    }
+    dialog.append(el('div', { class: 'cv-field cv-scope-field' }, scopeNodes));
     const note = el('textarea', { class: 'input', rows: '2', 'data-role': 'note', placeholder: '可选：写下你为什么想要这条规则' });
     note.value = c.draft.note ?? '';
     note.addEventListener('input', (e) => { c.draft.note = e.target.value; });
@@ -444,9 +593,16 @@ export function renderContract(root, ctx) {
     const live = el('div', { class: 'cv-live' });
     const hint = el('div', { class: 'muted small cv-hint' });
     const replaceNote = el('div', { class: 'cv-replace-note' });
+    let scopeAckFor = null;
+    const scopeAckKey = (d) => `${d.current?.hash}:${preview().hash}`;
+    const scopeAcked = (d) => !!(d.scope_change && d.scope_change.requires_ack && scopeAckFor === scopeAckKey(d));
     const saveBtn = el('button', {
       class: 'btn primary', 'data-role': 'modal-save',
-      onclick: () => commitAll(adapter.contractSaveRecords(c.versions, { parsed: preview(), note: c.draft.note }), { modal: null }),
+      onclick: () => {
+        const parsed = preview();
+        const d = adapter.contractEditorState(c.versions, parsed);
+        commitAll(adapter.contractSaveRecords(c.versions, { parsed, note: c.draft.note, confirmScopeChange: scopeAcked(d) }), { modal: null });
+      },
     }, [edit ? '保存并替换当前规则' : '保存并启用']);
     dialog.append(live, el('div', { class: 'cv-modal-foot' }, [
       hint,
@@ -469,8 +625,10 @@ export function renderContract(root, ctx) {
         ]));
       } else {
         nodes.push(el('div', { class: 'rule-text' }, [parsed.text]));
+        nodes.push(el('div', { class: 'calc-line' }, [`适用范围：${parsed.scope_text}`]));
         nodes.push(el('div', { class: 'calc-line' }, [`阈值：${parsed.threshold.display}`]));
         nodes.push(el('div', { class: 'calc-line' }, [`提醒：${parsed.reminder}`]));
+        nodes.push(el('div', { class: 'muted small' }, [`时间口径：${parsed.timing}`]));
         nodes.push(el('details', { class: 'cv-tech-note' }, [
           el('summary', {}, ['技术信息（候选哈希）']),
           el('div', { class: 'muted small cv-hash' }, [`${adapter.CONTRACT_HASH_NOTE}：${parsed.hash}`]),
@@ -478,7 +636,8 @@ export function renderContract(root, ctx) {
         ]));
       }
       live.replaceChildren(...nodes);
-      saveBtn.disabled = !d.canSave;
+      const needAck = !!(d.scope_change && d.scope_change.requires_ack);
+      saveBtn.disabled = !d.canSave || (needAck && !scopeAcked(d));
       const hintText = {
         invalid: '参数无效：请先修正参数，保存不可用。',
         unchanged: '与当前规则相同：同一规则不会重复保存；备注不参与判定，不能单独形成新规则。',
@@ -486,12 +645,188 @@ export function renderContract(root, ctx) {
         blocked: '该参数对应的历史记录内容与校验标识不一致，不能保存；请换用其他参数。',
         new: `保存后生成版本 v${d.next_version}，立即参与历史情境测试。`,
       }[d.action];
-      hint.replaceChildren(el('span', {}, [hintText]));
+      hint.replaceChildren(el('span', {}, [needAck && !scopeAcked(d) ? `${hintText} 本次会改变此类规则的适用范围，请先勾选确认。` : hintText]));
       const replacing = edit || (d.current && d.canSave);
-      replaceNote.replaceChildren(...(replacing ? [el('span', {}, [d.current && !edit ? `已有同类型当前规则（版本 v${d.current.v}）。${REPLACE_NOTE}` : REPLACE_NOTE])] : []));
+      replaceNote.replaceChildren(...(replacing ? [el('span', {}, [d.current && !edit ? `已有同类型当前规则（版本 v${d.current.v}）。${REPLACE_NOTE}` : REPLACE_NOTE])] : []),
+        ...(d.canSave && d.scope_change ? [scopeChangeBox(d.scope_change, scopeAcked(d), (v) => { scopeAckFor = v ? scopeAckKey(d) : null; paintLive(); }, 'scope-ack')] : []));
     }
     paintLive();
     return el('div', { class: 'cv-modal-backdrop', 'data-role': 'modal-backdrop' }, [dialog]);
+  }
+
+  /* —— 自定义规则（嵌入新增弹窗）：识别 → 程序校验后的预览 → 用户确认才保存；修改描述即作废预览 —— */
+  function renderNlEditor() {
+    const nl = c.nl ?? emptyNl();
+    c.nl = nl;
+    const loading = nl.status === 'loading';
+    const panel = el('div', { class: 'cv-nl-embedded', 'data-role': 'nl-panel' });
+    panel.append(el('div', { class: 'section-title' }, ['用一句话描述规则']));
+    panel.append(el('div', { class: 'muted small' }, [NL_INTRO]));
+    panel.append(el('div', { class: 'cv-nl-privacy' }, [NL_PRIVACY]));
+    panel.append(el('div', { class: 'muted small' }, [`目前可执行的规则类型示例：${adapter.CONTRACT_NL_EXAMPLES.map((x) => `“${x}”`).join('；')}。`]));
+
+    const counter = el('span', { class: 'muted small cv-nl-count' });
+    const stillCustom = () => state.contracts.modal?.mode === 'add' && state.contracts.draft?.template_id === CUSTOM_TEMPLATE;
+    const recognizeBtn = el('button', {
+      class: 'btn primary', 'data-role': 'nl-recognize',
+      onclick: async () => {
+        const text = c.nl.text;
+        const token = {};
+        nlToken = token;
+        set({ contracts: { nl: { text, status: 'loading', result: null, choices: {}, ack: false } } });
+        const result = await adapter.recognizeContractText(text);
+        if (nlToken !== token || !stillCustom()) return;
+        nlToken = null;
+        set({ contracts: { nl: { text, status: 'done', result, choices: {}, ack: false } } });
+      },
+    }, [loading ? '识别中…' : '识别规则']);
+    const resultBox = el('div', { class: 'cv-nl-result' });
+    const actions = el('div', { class: 'row cv-modal-actions' });
+    const input = el('textarea', {
+      class: 'input', rows: '3', 'data-role': 'nl-text', maxlength: String(adapter.CONTRACT_NL_MAX_CHARS),
+      placeholder: '例如：当天涨幅超过 5% 的股票我不买', disabled: loading ? '' : null,
+    });
+    input.value = nl.text;
+    input.addEventListener('input', (e) => {
+      const changed = c.nl.status !== 'idle';
+      c.nl = { text: e.target.value, status: 'idle', result: null, choices: {}, ack: false };
+      if (changed) nlToken = null;
+      paintNl();
+    });
+    panel.append(el('label', { class: 'cv-field' }, [el('span', { class: 'muted small' }, ['规则描述（只发送这段文字）']), input]));
+    panel.append(el('div', { class: 'row cv-nl-bar' }, [recognizeBtn, counter]));
+    panel.append(resultBox, el('div', { class: 'cv-modal-foot' }, [actions]));
+
+    function paintNl() {
+      const cur = c.nl;
+      counter.replaceChildren(el('span', {}, [`${[...cur.text.trim()].length} / ${adapter.CONTRACT_NL_MAX_CHARS} 字`]));
+      recognizeBtn.disabled = cur.status === 'loading' || cur.text.trim() === '';
+      const r = cur.status === 'done' ? cur.result : null;
+      resultBox.replaceChildren(...(cur.status === 'loading'
+        ? [el('div', { class: 'muted' }, ['正在识别…（只发送规则文字）'])]
+        : r ? nlResult(r) : []));
+      const btns = [el('button', { class: 'btn', 'data-role': 'nl-cancel', onclick: closeEditor }, ['取消'])];
+      if (r && r.status === 'supported') {
+        const ss = adapter.contractNlSaveState(c.versions, r, { choices: cur.choices, ack: cur.ack, scopeAck: cur.scopeAck });
+        btns.push(el('button', {
+          class: 'btn', 'data-role': 'nl-to-template',
+          onclick: () => {
+            nlToken = null;
+            const fields = Object.fromEntries(Object.entries(r.parsed.fields).map(([k, v]) => [k, String(v)]));
+            set({ contracts: { modal: { mode: 'add', targetHash: null }, nl: null, draft: { template_id: r.parsed.template_id, fields, note: '', scope: scopeDraftOf(r.parsed.scope) } } });
+          },
+        }, ['在模板中调整参数']));
+        btns.push(el('button', {
+          class: 'btn primary', 'data-role': 'nl-save', disabled: ss.canSave ? null : '',
+          onclick: () => {
+            const now = adapter.contractNlSaveState(c.versions, r, { choices: c.nl.choices, ack: c.nl.ack, scopeAck: c.nl.scopeAck });
+            if (!now.canSave) return;
+            nlToken = null;
+            commitAll(adapter.contractSaveRecords(c.versions, { parsed: r.parsed, note: null, origin: { text: r.text, confirmations: c.nl.choices }, confirmScopeChange: !!c.nl.scopeAck }), { modal: null, nl: null });
+          },
+        }, ['确认保存并启用']));
+      }
+      actions.replaceChildren(...btns);
+    }
+
+    function confirmBlock(item) {
+      const chosen = c.nl.choices[item.key];
+      const picked = item.options.find((o) => o.id === chosen) ?? null;
+      return el('div', { class: 'cv-nl-confirm', 'data-confirm': item.key }, [
+        el('div', { class: 'calc-line' }, [item.question]),
+        el('div', { class: 'rp-seg' }, item.options.map((o) => el('button', {
+          class: chosen === o.id ? 'active' : '', type: 'button', 'data-role': `nl-choice-${item.key}-${o.id}`,
+          onclick: () => { c.nl = { ...c.nl, choices: { ...c.nl.choices, [item.key]: o.id } }; paintNl(); },
+        }, [o.label]))),
+        picked && !picked.supported ? el('div', { class: 'cv-nl-warn' }, [`暂不支持：${picked.message} 未生成可启用的规则。`]) : null,
+        picked ? null : el('div', { class: 'muted small' }, ['未选择前不能保存。']),
+      ]);
+    }
+
+    function nlResult(r) {
+      const pending = r.status === 'supported' && !adapter.contractNlSaveState(c.versions, r, { choices: c.nl.choices, ack: true }).confirm.ok;
+      const s = pending ? { text: '待你确认', kind: 'mode' } : NL_STATUS[r.status] ?? NL_STATUS.error;
+      const nodes = [el('div', { class: 'row' }, [el('span', { class: `chip ${s.kind}`, 'data-role': 'nl-status' }, [s.text])])];
+      const understanding = r.understanding
+        ? el('div', { class: 'muted small' }, [`模型理解（仅供核对，不参与判定）：${r.understanding}`])
+        : null;
+      if (r.status === 'supported') {
+        const ss = adapter.contractNlSaveState(c.versions, r, { choices: c.nl.choices, ack: c.nl.ack, scopeAck: c.nl.scopeAck });
+        const d = ss.editor;
+        nodes.push(el('div', { class: 'section-title' }, ['规则预览']));
+        nodes.push(el('div', { class: 'cv-nl-compare' }, [
+          el('div', { class: 'calc-line' }, [`你的原话：「${r.text}」`]),
+          el('div', { class: 'calc-line' }, [`系统按模板生成的规则（请对照原话核对）：${r.fullRule}`]),
+        ]));
+        nodes.push(el('div', { class: 'cv-nl-preview' }, [
+          el('div', { class: 'rule-text' }, [r.parsed.text]),
+          el('div', { class: 'calc-line' }, [`规则类型：${r.template_name}`]),
+          el('div', { class: 'calc-line', 'data-role': 'nl-scope' }, [`适用范围：${r.scope_text}`]),
+          el('div', { class: 'calc-line' }, [`触发条件：${r.condition}`]),
+          el('div', { class: 'calc-line' }, [`关键参数：${r.params.map((p) => `${p.label} = ${p.value}`).join('；')}（阈值 ${r.parsed.threshold.display}）`]),
+          el('div', { class: 'calc-line' }, [`提醒内容：${r.reminder}`]),
+          el('div', { class: 'calc-line' }, [`执行方式：${r.execution}`]),
+          understanding,
+        ]));
+        nodes.push(el('div', { class: 'cv-nl-checks' }, [
+          el('div', { class: 'muted small' }, ['程序检查（按原文判定，与模型结果无关）：']),
+          el('ul', { class: 'cv-nl-list' }, r.checks.map((x) => el('li', {}, [x]))),
+        ]));
+        for (const item of r.confirmations) nodes.push(confirmBlock(item));
+        const ack = el('input', { type: 'checkbox', 'data-role': 'nl-ack', checked: c.nl.ack ? '' : null });
+        ack.addEventListener('change', (e) => { c.nl = { ...c.nl, ack: !!e.target.checked }; paintNl(); });
+        nodes.push(el('div', { class: 'cv-nl-warn' }, [NL_CHECK_WARNING]));
+        nodes.push(el('label', { class: 'cv-nl-ack' }, [ack, el('span', {}, ['我已逐字对照原话核对：上面的预览与我的本意一致；我理解程序检查不能保证发现所有股票名称、附加条件或隐含限定。'])]));
+        nodes.push(el('div', { class: 'muted small' }, ['最终保存与参与测试的是程序生成的规则文本与参数，而不是你的原话或模型的理解；如与本意不符，请修改描述后重新识别，或在模板中调整参数。']));
+        const hint = {
+          choice_pending: '还有待确认的理解，确认前不能保存。',
+          choice_unsupported: '你选择的理解当前系统不支持，不能保存。',
+          ack_pending: '请先勾选核对确认，才能保存。',
+          scope_ack_pending: '本次保存会改变此类规则的适用范围，请先勾选范围变化确认。',
+          editor_unchanged: '与当前规则完全相同：无需重复保存。',
+          editor_restore: null,
+          editor_blocked: '该参数对应的历史记录内容与校验标识不一致，不能保存；请换用其他参数。',
+        }[ss.reason] ?? (d.action === 'restore'
+          ? `与历史版本 v${safe(d.same && d.same.v)} 相同：确认后恢复该版本为当前规则，不新增版本号。`
+          : `确认后生成版本 v${d.next_version}，立即参与历史情境测试。`);
+        nodes.push(el('div', { class: 'muted small cv-hint' }, [hint]));
+        if (d.current && d.canSave) nodes.push(el('div', { class: 'cv-replace-note' }, [`已有同类型当前规则（版本 v${d.current.v}）。${REPLACE_NOTE}`]));
+        if (d.canSave && d.scope_change) nodes.push(scopeChangeBox(d.scope_change, !!c.nl.scopeAck, (v) => { c.nl = { ...c.nl, scopeAck: v }; paintNl(); }, 'nl-scope-ack'));
+        return nodes;
+      }
+      if (r.status === 'unsupported') {
+        nodes.push(el('div', { class: 'calc-line' }, [`你的原话：「${safe(r.text)}」`]));
+        nodes.push(el('div', { class: 'calc-line' }, ['这条规则当前系统还不能完整执行：未生成规则，也不会保存或启用；检测到只有部分内容受支持时，不会只截取那部分启用。原因：']));
+        nodes.push(el('ul', { class: 'cv-nl-list' }, [...r.needs.map((n) => el('li', {}, [n.message])), ...r.detail.map((x) => el('li', {}, [x]))]));
+        if (understanding) nodes.push(understanding);
+        nodes.push(el('div', { class: 'muted small' }, [`可以改写为当前支持的规则，例如：${r.examples.map((x) => `“${x}”`).join('；')}。`]));
+        return nodes;
+      }
+      if (r.status === 'unclear') {
+        nodes.push(el('div', { class: 'calc-line' }, [`你的原话：「${safe(r.text)}」`]));
+        nodes.push(el('div', { class: 'calc-line' }, ['描述还不够明确，未生成规则。请补充后重新识别：']));
+        nodes.push(el('ul', { class: 'cv-nl-list' }, r.questions.map((q) => el('li', {}, [q]))));
+        if (understanding) nodes.push(understanding);
+        return nodes;
+      }
+      if (r.status === 'invalid') {
+        nodes.push(el('div', { class: 'cv-error' }, [
+          el('div', { class: 'calc-line' }, [`参数未通过规则引擎校验：${safe(r.message)}`]),
+          el('div', { class: 'muted small' }, ['未生成规则：不猜测、不自动纠正。请修改描述后重新识别。']),
+          el('details', { class: 'cv-tech-note' }, [el('summary', {}, ['技术详情（错误码）']), el('div', { class: 'muted small' }, [safe(r.code)])]),
+        ]));
+        return nodes;
+      }
+      nodes.push(el('div', { class: 'cv-error' }, [
+        el('div', { class: 'calc-line' }, [`原因：${safe(r.message)}`]),
+        el('div', { class: 'muted small' }, [NL_FALLBACK]),
+        el('details', { class: 'cv-tech-note' }, [el('summary', {}, ['技术详情（错误码）']), el('div', { class: 'muted small' }, [`${safe(r.code)}${r.httpStatus ? ` · HTTP ${r.httpStatus}` : ''}`])]),
+      ]));
+      return nodes;
+    }
+
+    paintNl();
+    return panel;
   }
 
   root.append(page);
@@ -508,7 +843,7 @@ export function renderContract(root, ctx) {
 
 function simBatch(b) {
   const box = el('div', { class: 'cv-sim-batch' });
-  box.append(el('div', { class: 'row' }, [el('strong', {}, [`${safe(b.symbol)} · 申报日 ${safe(b.requested_date)}`])]));
+  box.append(el('div', { class: 'row' }, [el('strong', {}, [`${safe(b.symbol)} · 申报日 ${safe(b.requested_date)} · ${b.scenario_action === 'sell' ? '假如卖出' : '假如买入'}`])]));
   const reconfirmNote = b.needs_reconfirm_n
     ? el('div', { class: 'muted small cv-reconfirm-note' }, [`另有 ${b.needs_reconfirm_n} 条规则因内容与候选哈希不一致未参与本次判定（见“待重新确认的规则”），不会自动修正。`])
     : null;
@@ -520,13 +855,14 @@ function simBatch(b) {
   }
   const s = b.summary;
   box.append(el('div', { class: 'cv-sim-headline' }, [
-    `本次测试：${b.rules_n} 条规则中，命中 ${s.triggered} 条 / 未命中 ${s.not_triggered} 条 / 数据不足 ${s.missing_data} 条${s.error ? ` / 无法判定 ${s.error} 条` : ''}`,
+    `本次测试：${b.rules_n} 条规则中，命中 ${s.triggered} 条 / 未命中 ${s.not_triggered} 条 / 数据不足 ${s.missing_data} 条${s.not_applicable ? ` / 不适用 ${s.not_applicable} 条` : ''}${s.error ? ` / 无法判定 ${s.error} 条` : ''}`,
   ]));
   box.append(el('div', { class: 'cv-sim-used' }, [
-    `本次测试使用的规则：${b.rules_used.map((r) => `${safe(r.template_name)}「${safe(r.text)}」（版本 v${safe(r.v)}）`).join('；')}`,
+    `本次测试使用的规则：${b.rules_used.map((r) => `${safe(r.template_name)}「${safe(r.text)}」（版本 v${safe(r.v)}${r.action_label ? `；提醒动作：${safe(r.action_label)}` : ''}${r.scope_text && r.scope_text !== '全部股票' ? `；适用范围：${safe(r.scope_text)}` : ''}）`).join('；')}`,
   ]));
-  box.append(el('div', { class: 'row cv-sim-summary' }, SUMMARY.map(([k, label, kind]) => el('span', { class: `chip ${kind}`, 'data-verdict': k }, [`${label} ${b.summary[k]} 条`]))));
-  box.append(el('div', { class: 'muted small' }, ['每种类型的当前规则在同一情境下分别判定，结果互不覆盖；历史规则不参与。涨幅规则只用行情，不追回规则才读取账单交易。']));
+  box.append(el('div', { class: 'row cv-sim-summary' }, SUMMARY.map(([k, label, kind]) => el('span', { class: `chip ${kind}`, 'data-verdict': k }, [`${label} ${b.summary[k] ?? 0} 条`]))));
+  box.append(el('div', { class: 'muted small' }, ['每种类型的当前规则在同一情境下分别判定，结果互不覆盖；历史规则不参与。买入提醒类规则只在“假如买入”情境判定，卖出提醒类规则只在“假如卖出”情境判定，另一类显示“不适用”且不读取行情或交易。涨幅规则只用行情，不追回和买入后卖出提醒读取账单交易。']));
+  box.append(el('div', { class: 'muted small cv-sim-timing' }, ['这是基于日线与交易日期的历史复盘：涨幅按收盘数据计算，只能在收盘后得到，不是盘中实时提醒；账单没有成交时刻，同日买入不计为“买入后”。规则只做提醒，不下单、不阻止交易，也不是实时监控。']));
   if (reconfirmNote) box.append(reconfirmNote);
   for (const r of b.results) box.append(simResult(r));
   return box;
@@ -543,20 +879,39 @@ function factLines(fact, change) {
     lines.push(`申报日：${safe(fact.date)}`);
   }
   if (fact.last_sell) lines.push(`最近卖出：${fact.last_sell.trade_id} · ${fact.last_sell.trade_date}`);
-  if (fact.distance_trading_days !== undefined) lines.push(`距最近卖出：${fact.distance_trading_days} 个交易日（窗口 ${fact.window_days} 个交易日）`);
+  if (fact.last_buy) lines.push(`最近买入：${fact.last_buy.trade_id} · ${fact.last_buy.trade_date}`);
+  if (fact.distance_trading_days !== undefined) {
+    lines.push(fact.last_buy
+      ? `距最近买入：${fact.distance_trading_days} 个交易日（窗口 ${fact.window_days} 个交易日）`
+      : `距最近卖出：${fact.distance_trading_days} 个交易日（窗口 ${fact.window_days} 个交易日）`);
+  }
+  if (fact.same_day_buy_count) lines.push(`同日买入 ${fact.same_day_buy_count} 笔：账单没有成交时刻，先后顺序未知，不计为“买入后”`);
+  if (fact.result_basis === 'imported_records') lines.push('结果依据：当前导入账单中的可见买入记录');
+  if (fact.history_completeness === 'unconfirmed') lines.push('账单完整性：未确认');
   return lines;
 }
 
 function simResult(r) {
-  const v = r.ok ? VERDICT[r.verdict] ?? { text: safe(r.verdict), kind: 'mode' } : { text: '无法判定', kind: 'warn' };
-  const box = el('div', { class: `cv-sim-result ${r.ok ? r.verdict : 'error'}`, 'data-hash': r.rule.hash });
+  const verdict = r.display_verdict ?? (r.ok ? r.verdict : 'error');
+  const v = verdict === 'missing_data' && UNCONFIRMED_BUY_CODES.has(r.code)
+    ? { text: '无法确认', kind: 'mode' }
+    : VERDICT[verdict] ?? { text: '无法判定', kind: 'warn' };
+  const box = el('div', { class: `cv-sim-result ${verdict}`, 'data-hash': r.rule.hash });
   box.append(el('div', { class: 'row' }, [
     el('span', { class: `chip cv-verdict ${v.kind}` }, [v.text]),
     chip(`版本 v${safe(r.rule.v)}`, 'mode'),
+    chip(`适用：${safe(r.rule.scope_text)}`, 'mode'),
+    chip(r.scenario_action === 'sell' ? '情境：卖出' : '情境：买入', 'mode'),
     el('strong', {}, [safe(r.rule.text)]),
   ]));
   box.append(el('div', { class: 'muted small' }, [`${safe(r.symbol)} · 申报日 ${safe(r.requested_date)} · ${safe(r.rule.template_name)} · ${r.rule.fields_text}`]));
-  if (!r.ok) {
+  if (r.date_mapping) box.append(el('div', { class: 'calc-line cv-date-mapping' }, [`申报日 ${r.date_mapping.requested_date} → ${r.date_mapping.has_price ? '实际使用交易日' : '映射交易日'} ${r.date_mapping.effective_date}：${r.date_mapping.message}`]));
+  if (r.ok && r.verdict === 'not_applicable') {
+    box.append(el('div', { class: 'calc-line' }, [safe(r.message)]));
+    box.append(el('div', { class: 'muted small' }, [r.label]));
+    return box;
+  }
+  if (verdict === 'error') {
     box.append(el('div', { class: 'cv-error' }, [
       el('div', { class: 'error' }, ['无法判定']),
       el('div', { class: 'calc-line' }, [safe(r.message) || '未提供具体原因']),
@@ -565,9 +920,16 @@ function simResult(r) {
         el('div', { class: 'muted small' }, [safe(r.code)]),
       ]),
     ]));
-  } else if (r.verdict === 'missing_data') {
+  } else if (verdict === 'missing_data') {
     box.append(el('div', { class: 'calc-line' }, [`引擎原因：${r.change && !r.change.complete ? r.change.message : safe(r.message)}`]));
-    box.append(el('div', { class: 'muted small' }, ['数据不足：不补造数值、不回退其他日期，本次不作命中判定。']));
+    if (r.rule.kind === 'buy_sell_window' && r.match && r.match.fact) {
+      box.append(el('div', { class: 'calc-line' }, [`情境事实：${factLines(r.match.fact, r.change).join('；')}`]));
+    }
+    const buySellNote = r.rule.kind === 'buy_sell_window'
+      ? (BUY_SELL_MISSING_NOTE[r.code] ?? '数据不足：无法计算买入后的交易日窗口，不猜测；本次不显示“未命中”，也不作命中判定。')
+      : null;
+    box.append(el('div', { class: 'muted small' }, [buySellNote
+      ?? '数据不足：不补造数值，缺价时不改用其他日期的价格，本次不作命中判定。']));
     box.append(el('details', { class: 'cv-tech-note' }, [
       el('summary', {}, ['技术详情（原因码）']),
       el('div', { class: 'muted small' }, [safe(r.code)]),
@@ -593,10 +955,14 @@ function simResult(r) {
       ? `交易来源：${displayTradeSource(r.tradesSource)} · 交易日历来源：${displayMarket(r.tradesSource.market_label)}（不读取价格）`
       : `行情：${displayMarket(r.tradesSource.market_label)}（涨幅模板不使用账单交易）`,
   ]));
+  if (r.rule.timing) box.append(el('div', { class: 'muted small cv-timing' }, [`时间口径：${r.rule.timing}`]));
   if (r.in_market_cache === false) {
+    const tradeOnly = r.rule.kind === 'buy_sell_window'
+      ? '买入后卖出提醒只使用交易日历与账单交易，不读取价格'
+      : '不追回判定只使用交易日历与账单交易，不读取价格';
     box.append(el('div', { class: 'muted small' }, [r.tradesSource && r.tradesSource.kind === 'user_bill'
-      ? `标的 ${safe(r.symbol)} 不在当前行情缓存支持范围：${r.uses_trades ? '不追回判定只使用交易日历与账单交易，不读取价格' : '无法读取涨跌幅'}；不替换标的、不回退演示账单。`
-      : `标的 ${safe(r.symbol)} 不在本次行情支持范围：${r.uses_trades ? '不追回判定只使用交易日历与账单交易，不读取价格' : '无法读取涨跌幅'}；不替换标的、不回退其他行情来源。`]));
+      ? `标的 ${safe(r.symbol)} 不在当前行情缓存支持范围：${r.uses_trades ? tradeOnly : '无法读取涨跌幅'}；不替换标的、不回退演示账单。`
+      : `标的 ${safe(r.symbol)} 不在本次行情支持范围：${r.uses_trades ? tradeOnly : '无法读取涨跌幅'}；不替换标的、不回退其他行情来源。`]));
   }
   box.append(el('details', { class: 'cv-tech-note' }, [
     el('summary', {}, ['技术信息（规则哈希）']),

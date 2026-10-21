@@ -1,6 +1,6 @@
 // 站点 Edge Function 的 HTTP handler（Web Request/Response；可注入 fake transport）。
-// 路由由平台挂在 /functions/v1/app 下；这里按 /api/llm/intent、/api/llm/restate 与 /api/market/snapshot 后缀分派。
-// 不记录 question/facts/rawText/行情请求，不返回上游原始错误或 token。
+// 路由由平台挂在 /functions/v1/app 下；这里按 /api/llm/intent、/api/llm/restate、/api/llm/rule 与 /api/market/snapshot 后缀分派。
+// 不记录 question/facts/text/rawText/行情请求，不返回上游原始错误或 token。
 import { projectFacts } from './validation.mjs';
 import { DYNAMIC_CACHE_ARTIFACT, MARKET_MAX_RANGE_DAYS, MARKET_MAX_SYMBOLS, isMarketDate } from './market.mjs';
 
@@ -51,6 +51,10 @@ const MESSAGES = Object.freeze({
 const F6 = new Set(['value', 'unit', 'display', 'formula_ref', 'source_ref']);
 const INTENT_KEYS = new Set(['question']);
 const RESTATE_KEYS = new Set(['question', 'facts']);
+const RULE_KEYS = new Set(['text']);
+export const RULE_TEXT_MAX_CHARS = 200;
+// 规则识别响应的协议版本（仅附加字段，旧客户端忽略；新客户端据此拒绝不认识新模板的旧函数）。
+export const RULE_INTENT_PROTOCOL = 'rule-intent-v2';
 const MARKET_KEYS = new Set(['symbols', 'start', 'end']);
 const MARKET_STATUS = Object.freeze({
   [SITE_FUNCTION_CODES.MARKET_NOT_CONFIGURED]: 503,
@@ -205,9 +209,11 @@ export function createHandler({ transport = null, marketTransport = null, maxBod
       ? 'intent'
       : path.endsWith('/api/llm/restate')
         ? 'restate'
-        : path.endsWith('/api/market/snapshot')
-          ? 'market'
-          : null;
+        : path.endsWith('/api/llm/rule')
+          ? 'rule'
+          : path.endsWith('/api/market/snapshot')
+            ? 'market'
+            : null;
     if (stage === null) return errorResponse(404, SITE_FUNCTION_CODES.NOT_FOUND);
     if (request.method !== 'POST') {
       return errorResponse(405, SITE_FUNCTION_CODES.METHOD, { Allow: 'POST' });
@@ -245,7 +251,15 @@ export function createHandler({ transport = null, marketTransport = null, maxBod
     }
 
     let requestBody;
-    if (stage === 'intent') {
+    if (stage === 'rule') {
+      if (!hasOnlyKeys(body, RULE_KEYS)) {
+        return errorResponse(400, SITE_FUNCTION_CODES.UNKNOWN_FIELD);
+      }
+      if (typeof body.text !== 'string' || body.text.trim() === '' || [...body.text].length > RULE_TEXT_MAX_CHARS) {
+        return errorResponse(400, SITE_FUNCTION_CODES.REQUEST_INVALID);
+      }
+      requestBody = { text: body.text };
+    } else if (stage === 'intent') {
       if (!hasOnlyKeys(body, INTENT_KEYS)) {
         return errorResponse(400, SITE_FUNCTION_CODES.UNKNOWN_FIELD);
       }
@@ -277,6 +291,8 @@ export function createHandler({ transport = null, marketTransport = null, maxBod
 
     const result = await callTransport(transport, stage, requestBody);
     if (!result.ok) return errorResponse(result.status, result.code);
-    return jsonResponse(200, { rawText: result.rawText });
+    return jsonResponse(200, stage === 'rule'
+      ? { rawText: result.rawText, protocol: RULE_INTENT_PROTOCOL }
+      : { rawText: result.rawText });
   };
 }

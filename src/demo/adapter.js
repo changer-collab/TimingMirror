@@ -7,7 +7,8 @@
 // 数据链路（报告页·用户账单）：确认后的标准化 state.bill → 签收真实缓存共享市场段 → runReview 复核与发布门槛 → published_facts。
 // 数据链路（导入页·用户账单）：本地 CSV 文本（FileReader）→ csvNormalize 校验（仅本机，不上传、不落 localStorage）。
 //   浏览器只向同源函数发送标的代码与日期范围；不发送成交、数量、价格、文件名或 CSV 内容，计算全部在本地。
-// 数据链路（契约页）：CONTRACT_TEMPLATES → parseContract 预览；版本记录 → contractRuleSet（按哈希合并、重新解析、每个模板派生唯一当前规则）；
+// 数据链路（契约页）：CONTRACT_TEMPLATES → parseRuleSpec 预览（适用范围：全部股票 / 单个 6 位代码）；自然语言描述 → 站点函数 /api/llm/rule 意图识别 → ruleIntent 确定性映射到模板 → parseRuleSpec；
+//   版本记录 → contractRuleSet（按哈希合并、重新解析、每个模板派生唯一当前规则）；
 //   历史情境：每个模板的当前规则 → 按账单模式选择行情（本地账单＝已签收缓存；示例＝所选行情来源）→ dayChangePct / 交易来源 → matchContract。
 // 未接线：实时/分钟级行情（当前为最新已收盘日线）、百炼真实调用；契约为候选口径（占位哈希，待 M0-C1 冻结）。
 // 对话页在线复述：仅复用已确认本地账单的 review，经站点同源边界发送组合四事实（当前 fake 验证；函数未发布/激活时走兜底）。
@@ -18,7 +19,12 @@ import { computeIndicators, RESULT_LABELS } from '../engine/indicators.js';
 import { buildProvenanceReport } from '../engine/provenance.js';
 import { runReview } from '../agent/reviewPipeline.js';
 import { replaceSell } from '../engine/counterfactual.js';
-import { CONTRACT_TEMPLATES, parseContract, dayChangePct, matchContract } from '../engine/contractMatch.js';
+import { CONTRACT_TEMPLATES, dayChangePct, matchContract } from '../engine/contractMatch.js';
+import {
+  parseRuleSpec, scopeApplies, notApplicableMessage, describeScopeChange, scopeLabel, normalizeScope,
+  actionApplies, notApplicableActionMessage, actionLabel, RULE_SCHEMA_V1, RULE_SCHEMA_V2, RULE_SPEC_CODES, RULE_CAPABILITIES,
+} from '../engine/ruleSpec.js';
+import { recognizeRule, confirmationState, RULE_TEXT_MAX_CHARS, SUPPORTED_RULE_EXAMPLES } from '../agent/ruleIntent.js';
 
 // 动态行情 Endpoint（同源；服务端注入 TUSHARE_TOKEN，浏览器不接触 token）
 export const MARKET_SNAPSHOT_URL = '/functions/v1/app/api/market/snapshot';
@@ -857,30 +863,89 @@ export function contractTemplates() {
     template_id: t.template_id,
     name: t.name,
     kind: t.kind,
+    action: RULE_CAPABILITIES.conditions[t.template_id]?.action ?? 'buy',
     text_template: t.text_template,
     reminder: t.reminder,
+    timing: RULE_CAPABILITIES.conditions[t.template_id]?.timing ?? '',
     fields: Object.entries(t.fields).map(([key, f]) => ({ key, label: f.label, default: f.default, min: f.min, integer: f.integer })),
   }));
 }
 
-export function previewContract({ template_id, fields } = {}) {
-  return parseContract({ template_id, fields });
+export const CONTRACT_SCOPE_OPTIONS = Object.freeze([
+  { kind: 'all', label: RULE_CAPABILITIES.scopes.all.label },
+  { kind: 'symbol', label: RULE_CAPABILITIES.scopes.symbol.label, note: RULE_CAPABILITIES.scopes.symbol.note },
+]);
+
+// 全部股票 → 与 parseContract 完全相同的文本与哈希（contract-v1）；单个 6 位代码 → contract-v2
+export function previewContract({ template_id, fields, scope } = {}) {
+  return parseRuleSpec({ template_id, fields, scope });
+}
+
+// 自然语言规则识别：只把规则文本发往同源站点函数；返回结果中的 parsed 由引擎 parseRuleSpec / parseContract 生成
+export { RULE_TEXT_MAX_CHARS as CONTRACT_NL_MAX_CHARS, SUPPORTED_RULE_EXAMPLES as CONTRACT_NL_EXAMPLES };
+export function recognizeContractText(text, opts = {}) {
+  return recognizeRule(text, opts);
+}
+
+// 自然语言结果能否保存：待确认项均选了系统支持的选项、用户已核对完整表达、且版本状态允许保存
+export function contractNlSaveState(versions, result, { choices = {}, ack = false, scopeAck = false } = {}) {
+  if (!result || result.status !== 'supported') return { canSave: false, reason: 'not_supported', editor: null, confirm: null };
+  const confirm = confirmationState(result, choices);
+  const editor = contractEditorState(versions, result.parsed);
+  const scopePending = !!(editor.scope_change && editor.scope_change.requires_ack && !scopeAck);
+  const reason = !confirm.ok ? (confirm.blocked.length ? 'choice_unsupported' : 'choice_pending') : !ack ? 'ack_pending' : !editor.canSave ? `editor_${editor.action}` : scopePending ? 'scope_ack_pending' : null;
+  return { canSave: reason === null, reason, editor, confirm };
 }
 
 /* —— 契约规则集合与版本状态机（版本＝候选哈希；记录只追加不删除）——
    记录级启用：同一哈希最新一条决策为“已确认/已改写”；“已拒绝”＝不启用。
    当前规则：每个模板最多一条——启用且校验通过的同模板规则中，最近一次启用（保存 / 恢复）的那条；
-   其余同模板启用规则派生为“已被较新的同类型规则替代”（只派生、不改写记录；下次对该模板写入时补追加状态记录）。 */
-const CONTRACT_RECORD_SCHEMA = 'contract-v1';
+   其余同模板启用规则派生为“已被较新的同类型规则替代”（只派生、不改写记录；下次对该模板写入时补追加状态记录）。
+   记录格式：全部股票＝contract-v1（原样，不迁移）；单个 6 位代码＝contract-v2（含 scope）；同一类型的 v1 / v2 共用一个“当前规则”位置。 */
+const CONTRACT_RECORD_SCHEMA = RULE_SCHEMA_V1;
+const RULE_SCHEMAS = new Set([RULE_SCHEMA_V1, RULE_SCHEMA_V2]);
 const ENABLED_STATUS = new Set(['已确认', '已改写']);
 const REPLACE_VIA = new Set(['替代', '整理']);
 export const CONTRACT_RULE_HASH_MISMATCH = 'E_CONTRACT_RULE_HASH_MISMATCH';
+export const CONTRACT_RULE_SCHEMA_MISMATCH = 'E_CONTRACT_RULE_SCHEMA_MISMATCH';
 
-const isRuleRecord = (r) => !!r && typeof r === 'object' && r.schema === CONTRACT_RECORD_SCHEMA && typeof r.hash === 'string';
+const isRuleRecord = (r) => !!r && typeof r === 'object' && RULE_SCHEMAS.has(r.schema) && typeof r.hash === 'string';
 
 function fieldsTextOf(template_id, fields) {
   const t = CONTRACT_TEMPLATES[template_id];
-  return Object.entries(fields ?? {}).map(([k, v]) => `${t?.fields[k]?.label ?? k}：${v}`).join('；');
+  return Object.entries(fields ?? {}).map(([k, v]) => `${t?.fields?.[k]?.label ?? k}：${v}`).join('；');
+}
+
+// 按记录格式重新解析：v1 不读取任何 scope（v1 记录带 scope 视为异常，避免回退到旧版时范围被静默放大）；v2 必须是单个代码
+function reparseGroup(g) {
+  const first = g.records[0];
+  const schemas = new Set(g.records.map((r) => r.schema));
+  if (schemas.size > 1) {
+    return { parsed: null, integrity: { ok: false, code: CONTRACT_RULE_SCHEMA_MISMATCH, message: `同一哈希 ${g.hash} 下的记录格式不一致（${[...schemas].join(' / ')}）：本规则不参与判定结果（不猜测、不改写记录）。` } };
+  }
+  if (first.schema === RULE_SCHEMA_V1 && g.records.some((r) => r.scope !== undefined)) {
+    return { parsed: null, integrity: { ok: false, code: CONTRACT_RULE_SCHEMA_MISMATCH, message: 'contract-v1 记录不应包含适用范围字段：本规则不参与判定结果（不猜测、不改写记录）。' } };
+  }
+  let parsed;
+  // 后续状态记录也必须对应同一内容，不能仅凭首条记录的哈希信任后续的启用状态。
+  for (const rec of g.records) {
+    const current = parseRuleSpec({ template_id: rec.template_id, fields: rec.fields ?? {}, scope: rec.schema === RULE_SCHEMA_V2 ? (rec.scope ?? null) : undefined });
+    if (!current.supported) return { parsed: null, integrity: { ok: false, code: current.code, message: `记录无法被引擎重新解析：${current.message}` } };
+    if (current.schema !== rec.schema) {
+      return { parsed: null, integrity: { ok: false, code: CONTRACT_RULE_SCHEMA_MISMATCH, message: `记录格式 ${rec.schema} 与其适用范围（${current.scope_text}）不一致：本规则不参与判定结果（不猜测、不改写记录）。` } };
+    }
+    if (current.hash !== g.hash || rec.text !== current.text || (rec.hash_algorithm && rec.hash_algorithm !== current.hash_algorithm)) {
+      return { parsed: null, integrity: { ok: false, code: CONTRACT_RULE_HASH_MISMATCH, message: `记录哈希 ${g.hash}、文本或算法标识与引擎重新生成的规则不一致（计算哈希 ${current.hash}）：本规则不参与判定结果（不猜测、不改写记录）。` } };
+    }
+    parsed ??= current;
+  }
+  return { parsed, integrity: { ok: true, code: null, message: '' } };
+}
+
+function recordScopeOf(first) {
+  if (first.schema !== RULE_SCHEMA_V2) return { kind: 'all' };
+  const s = normalizeScope(first.scope ?? null);
+  return s.ok ? s.scope : null;
 }
 
 export function contractRuleSet(versions = []) {
@@ -899,13 +964,9 @@ export function contractRuleSet(versions = []) {
   const rules = [...groups.values()].map((g) => {
     const first = g.records[0];
     const v = g.v ?? first.v;
-    // 判定只用引擎按记录模板＋参数重新解析的结果；与记录哈希不一致时不判定（不猜测、不改写记录）
-    const parsed = parseContract({ template_id: first.template_id, fields: first.fields ?? {} });
-    const integrity = !parsed.supported
-      ? { ok: false, code: parsed.code, message: `记录无法被引擎重新解析：${parsed.message}` }
-      : parsed.hash !== g.hash
-        ? { ok: false, code: CONTRACT_RULE_HASH_MISMATCH, message: `记录哈希 ${g.hash} 与引擎按其模板参数重新计算的 ${parsed.hash} 不一致：本规则不参与判定结果（不猜测、不改写记录）。` }
-        : { ok: true, code: null, message: '' };
+    // 判定只用引擎按记录模板＋参数（＋v2 范围）重新解析的结果；与记录哈希不一致时不判定（不猜测、不改写记录）
+    const { parsed, integrity } = reparseGroup(g);
+    const scope = parsed ? parsed.scope : recordScopeOf(first);
     const lastEnabled = [...g.records].reverse().find((r) => ENABLED_STATUS.has(r.status));
     const kind = CONTRACT_TEMPLATES[first.template_id]?.kind ?? null;
     return {
@@ -918,10 +979,15 @@ export function contractRuleSet(versions = []) {
       template_id: first.template_id,
       template_name: first.template_name,
       kind,
-      uses_trades: kind === 'sell_buyback_window',
+      action: RULE_CAPABILITIES.conditions[first.template_id]?.action ?? 'buy',
+      uses_trades: kind === 'sell_buyback_window' || kind === 'buy_sell_window',
       fields: { ...(first.fields ?? {}) },
       fields_text: fieldsTextOf(first.template_id, first.fields),
       text: first.text,
+      schema: first.schema,
+      scope,
+      scope_text: scope ? scopeLabel(scope) : '适用范围无效',
+      timing: RULE_CAPABILITIES.conditions[first.template_id]?.timing ?? '',
       hash_algorithm: first.hash_algorithm,
       records: g.records,
       latest: g.latest,
@@ -930,6 +996,8 @@ export function contractRuleSet(versions = []) {
       duplicates: [...new Set(g.records.map((r) => r.v))].filter((x) => x !== v),
       notes: [...new Set(g.records.map((r) => r.note).filter(Boolean))],
       latest_note: [...g.records].reverse().find((r) => r.note)?.note ?? '',
+      origin_text: g.records.find((r) => r.origin && r.origin.kind === 'natural_language' && typeof r.origin.text === 'string')?.origin.text ?? null,
+      origin_confirmations: { ...(g.records.find((r) => r.origin && r.origin.kind === 'natural_language')?.origin.confirmations ?? {}) },
       integrity,
       parsed: integrity.ok ? parsed : null,
     };
@@ -974,19 +1042,32 @@ export function contractRuleSet(versions = []) {
 }
 
 // 编辑弹窗状态：new＝新版本；restore＝与历史规则同哈希（恢复该版本，不新增版本号）；unchanged＝与当前规则相同；blocked＝同哈希记录校验不一致
+// scope_change：会替代同类型当前规则时的适用范围变化（范围有变化须用户确认后才写入）
 export function contractEditorState(versions, parsed) {
   const ruleSet = contractRuleSet(versions);
-  const base = { ruleSet, current: null, same: null, action: 'invalid', canSave: false, next_version: ruleSet.next_version };
+  const base = { ruleSet, current: null, same: null, action: 'invalid', canSave: false, next_version: ruleSet.next_version, scope_change: null };
   if (!parsed || !parsed.supported) return base;
   const current = ruleSet.slots.find((s) => s.template_id === parsed.template_id)?.current ?? null;
   const same = ruleSet.rules.find((r) => r.hash === parsed.hash) ?? null;
   const action = !same ? 'new' : same.state === 'current' ? 'unchanged' : same.integrity.ok ? 'restore' : 'blocked';
-  return { ...base, current, same, action, canSave: action === 'new' || action === 'restore' };
+  const canSave = action === 'new' || action === 'restore';
+  const scope_change = canSave && current ? describeScopeChange(current.scope, parsed.scope ?? { kind: 'all' }, parsed.template_name) : null;
+  return { ...base, current, same, action, canSave, scope_change };
+}
+
+// 从历史恢复前的预览：是否可恢复、将替代的当前规则、范围变化
+export function contractRestoreState(versions, { hash } = {}) {
+  const ruleSet = contractRuleSet(versions);
+  const rule = ruleSet.rules.find((r) => r.hash === hash) ?? null;
+  const current = rule ? ruleSet.slots.find((s) => s.template_id === rule.template_id)?.current ?? null : null;
+  const restorable = !!(rule && rule.restorable);
+  const scope_change = restorable && current && current !== rule ? describeScopeChange(current.scope, rule.scope, rule.template_name) : null;
+  return { rule, current, restorable, scope_change };
 }
 
 function recordBase(src, note) {
-  return {
-    schema: CONTRACT_RECORD_SCHEMA,
+  const rec = {
+    schema: src.schema === RULE_SCHEMA_V2 ? RULE_SCHEMA_V2 : CONTRACT_RECORD_SCHEMA,
     template_id: src.template_id,
     template_name: src.template_name,
     fields: { ...src.fields },
@@ -997,9 +1078,12 @@ function recordBase(src, note) {
     at: new Date().toISOString(),
     note: String(note ?? '').trim() || null,
   };
+  if (rec.schema === RULE_SCHEMA_V2) rec.scope = src.scope && typeof src.scope === 'object' ? { ...src.scope } : src.scope ?? null;
+  return rec;
 }
 
 // 同模板其余启用规则（含派生替代的旧并行规则）各追加一条“已拒绝 · 经替代”状态记录；版本号不变、不删除记录、不涉及其他模板
+// 被替代规则沿用自身记录格式（v1 规则追加 v1 记录），旧版本读取时仍能识别其“已被替代”
 function retireSameTemplate(ruleSet, template_id, by, at) {
   return ruleSet.rules
     .filter((r) => r.template_id === template_id && r.hash !== by.hash && r.enabled && r.integrity.ok)
@@ -1010,10 +1094,12 @@ function retireSameTemplate(ruleSet, template_id, by, at) {
 }
 
 // 保存并启用：新哈希 → 新版本成为该模板唯一当前规则（有当前规则时记为“已改写”）；历史同哈希 → 恢复该版本；与当前相同 → 不写入
-export function contractSaveRecords(versions, { parsed, note } = {}) {
+// 会改变适用范围的替代须 confirmScopeChange；origin：自然语言来源（原文 + 用户对歧义项的选择），仅作记录展示，不进入哈希与判定
+export function contractSaveRecords(versions, { parsed, note, origin = null, confirmScopeChange = false } = {}) {
   const d = contractEditorState(versions, parsed);
   if (!d.canSave) return [];
-  if (d.action === 'restore') return contractRestoreRecords(versions, { hash: parsed.hash, note });
+  if (d.scope_change && d.scope_change.requires_ack && !confirmScopeChange) return [];
+  if (d.action === 'restore') return contractRestoreRecords(versions, { hash: parsed.hash, note, confirmScopeChange });
   const at = new Date().toISOString();
   const retired = retireSameTemplate(d.ruleSet, parsed.template_id, { v: d.next_version, hash: parsed.hash }, at);
   const rec = {
@@ -1021,14 +1107,19 @@ export function contractSaveRecords(versions, { parsed, note } = {}) {
     v: d.next_version, status: d.current ? '已改写' : '已确认', from_v: d.current ? d.current.v : null,
     replaces_v: retired.map((r) => r.v),
   };
+  if (origin && typeof origin.text === 'string' && origin.text.trim()) {
+    rec.origin = { kind: 'natural_language', text: origin.text.trim(), confirmations: { ...(origin.confirmations ?? {}) } };
+  }
   return [rec, ...retired];
 }
 
-// 恢复历史规则为当前规则：追加一条“经恢复”的状态记录（版本号不变），同模板原当前规则经替代进入历史
-export function contractRestoreRecords(versions, { hash, note } = {}) {
+// 恢复历史规则为当前规则：追加一条“经恢复”的状态记录（版本号不变），同模板原当前规则经替代进入历史；范围有变化须 confirmScopeChange
+export function contractRestoreRecords(versions, { hash, note, confirmScopeChange = false } = {}) {
   const ruleSet = contractRuleSet(versions);
   const rule = ruleSet.rules.find((r) => r.hash === hash);
   if (!rule || !rule.restorable) return [];
+  const { scope_change } = contractRestoreState(versions, { hash });
+  if (scope_change && scope_change.requires_ack && !confirmScopeChange) return [];
   const at = new Date().toISOString();
   const rec = { ...recordBase(rule.latest, note), at, v: rule.v, status: rule.reenable_status, transition_from: rule.status, via: '恢复' };
   return [rec, ...retireSameTemplate(ruleSet, rule.template_id, rule, at)];
@@ -1130,6 +1221,7 @@ export async function contractSimContext({ bill, marketSource = DEFAULT_MARKET_S
       symbols: symbols.map((s) => ({ symbol: s, in_market_cache: market.symbols.includes(s), in_bill: billSymbols.includes(s) })),
       range: { ...market.range }, tradingDays: [...market.tradingDays],
       sells: trades.filter((t) => t.side === 'sell').map((t) => ({ trade_id: t.trade_id, symbol: t.symbol, trade_date: t.trade_date })),
+      buys: trades.filter((t) => t.side === 'buy').map((t) => ({ trade_id: t.trade_id, symbol: t.symbol, trade_date: t.trade_date })),
     };
   }
   const labels = contractSimLabels(marketSource);
@@ -1149,17 +1241,59 @@ export async function contractSimContext({ bill, marketSource = DEFAULT_MARKET_S
     range: { ...market.range },
     tradingDays: [...market.tradingDays],
     sells: trades.filter((t) => t.side === 'sell').map((t) => ({ trade_id: t.trade_id, symbol: t.symbol, trade_date: t.trade_date })),
+    buys: trades.filter((t) => t.side === 'buy').map((t) => ({ trade_id: t.trade_id, symbol: t.symbol, trade_date: t.trade_date })),
   };
 }
 
-async function evaluateRuleSigned(rule, { symbol, date, bill, context }) {
+function simRuleOut(rule) {
+  return {
+    hash: rule.hash, short_hash: rule.short_hash, v: rule.v, status: rule.status, text: rule.text, template_id: rule.template_id, template_name: rule.template_name, fields_text: rule.fields_text,
+    schema: rule.schema, scope: rule.scope, scope_text: rule.scope_text, timing: rule.timing, action: rule.action, action_label: actionLabel(rule.action), kind: rule.kind,
+  };
+}
+
+// 适用范围或提醒动作不匹配：不读取行情与交易，直接“不适用”（不计入命中 / 未命中 / 数据不足）
+function scopeGate(out, rule, symbol, action) {
+  if (!scopeApplies(rule.scope, symbol)) {
+    return { ...out, ok: true, verdict: 'not_applicable', code: RULE_SPEC_CODES.SCOPE_NOT_APPLICABLE, message: notApplicableMessage(rule.scope, symbol) };
+  }
+  if (!actionApplies(rule.action, action)) {
+    return { ...out, ok: true, verdict: 'not_applicable', code: RULE_SPEC_CODES.ACTION_NOT_APPLICABLE, message: notApplicableActionMessage(rule.action, action) };
+  }
+  return null;
+}
+
+const ruleReadsTrades = (rule) => {
+  const kind = CONTRACT_TEMPLATES[rule.template_id]?.kind;
+  return kind === 'sell_buyback_window' || kind === 'buy_sell_window';
+};
+
+// 非交易日处理沿用各来源现有 v1 路径（待统一）：签收缓存路径非交易日一律“数据不足”；示例路径涨幅规则按 B3 映射到不晚于申报日的最近交易日、不追回规则“数据不足”。
+// B3 映射发生时如实返回申报日与实际使用的交易日；缺价（B4）不回退任何日期。
+function dateMappingOf(requestedDate, change, market) {
+  const valuation = change?.complete ? { blocked: false, effective_date: change.effective_date } : market.resolveValuation(requestedDate);
+  if (valuation.blocked || valuation.effective_date === requestedDate) return null;
+  const effective = valuation.effective_date;
+  return {
+    requested_date: requestedDate,
+    effective_date: effective,
+    basis: 'B3',
+    has_price: !!change?.complete,
+    message: `申报日 ${requestedDate} 不是交易日：按“不晚于申报日的最近交易日”映射为 ${effective}。${change?.complete ? `使用该日收盘数据（前收日 ${change.prev_date}）。` : '该日或前收日数据不足，不改用其他日期的价格。'}`,
+  };
+}
+
+async function evaluateRuleSigned(rule, { symbol, date, bill, context, action }) {
+  const applies = scopeApplies(rule.scope, symbol) && actionApplies(rule.action, action);
   const out = {
-    ok: false, ...simulationLabels(context), symbol: symbol ?? null, requested_date: date ?? null,
-    rule: { hash: rule.hash, short_hash: rule.short_hash, v: rule.v, status: rule.status, text: rule.text, template_name: rule.template_name, fields_text: rule.fields_text },
-    verdict: null, code: null, message: '', change: null, match: null,
-    tradesSource: { ...contractTradeSource(bill), market_label: context.marketSource.label }, uses_trades: CONTRACT_TEMPLATES[rule.template_id]?.kind === 'sell_buyback_window', in_market_cache: null,
+    ok: false, ...simulationLabels(context), symbol: symbol ?? null, requested_date: date ?? null, scenario_action: action,
+    rule: simRuleOut(rule),
+    verdict: null, code: null, message: '', change: null, match: null, date_mapping: null,
+    tradesSource: applies ? { ...contractTradeSource(bill), market_label: context.marketSource.label } : null, uses_trades: ruleReadsTrades(rule), in_market_cache: null,
   };
   if (!rule.integrity.ok) return { ...out, code: rule.integrity.code, message: rule.integrity.message };
+  const gated = scopeGate(out, rule, symbol, action);
+  if (gated) return gated;
   if (out.tradesSource.kind === 'user_bill' && !isConfirmedLocalBill(bill)) return { ...out, code: 'E_BILL_NOT_CONFIRMED', message: '本地账单校验未通过，禁止回退演示数据。' };
   if (!context.ok) return { ...out, code: context.errors[0].code, message: context.errors.map((e) => e.message).join('；') };
   const parsed = rule.parsed;
@@ -1169,7 +1303,8 @@ async function evaluateRuleSigned(rule, { symbol, date, bill, context }) {
     if (context.marketSource.signed) {
       if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ...out, code: CONTRACT_SIM_INPUT_INVALID, message: '情境日期无效（须为 YYYY-MM-DD）' };
       if (date < market.range.start || date > market.range.end) return { ...out, ok: true, verdict: 'missing_data', code: 'E_VALUATION_OUT_OF_RANGE', message: `情境日期 ${date} 超出已签收缓存日期范围，不改用其他日期。` };
-      if (!market.symbols.includes(symbol)) return { ...out, code: 'E_MARKET_OUT_OF_SUPPORT', message: `标的 ${symbol} 不在已签收缓存支持清单，不能进行本次测试（不是缺价）。` };
+      // 买入后卖出规则只用买入记录与交易日历，不读取价格；不以“标的不在价格缓存”阻断。
+      if (parsed.kind !== 'buy_sell_window' && !market.symbols.includes(symbol)) return { ...out, code: 'E_MARKET_OUT_OF_SUPPORT', message: `标的 ${symbol} 不在已签收缓存支持清单，不能进行本次测试（不是缺价）。` };
       if (!market.tradingDays.includes(date)) return { ...out, ok: true, verdict: 'missing_data', code: 'E_DATE_NOT_IN_CALENDAR', message: `日期 ${date} 不在已签收缓存交易日历中，不改用其他日期。` };
       const boundary = localMarketBoundary(bill.trades, context);
       if (boundary.global.length) return { ...out, code: boundary.global[0].code, message: boundary.global.map((e) => e.message).join('；') };
@@ -1182,7 +1317,7 @@ async function evaluateRuleSigned(rule, { symbol, date, bill, context }) {
         changePct: change.complete ? change.change_pct : null,
         reason_code: change.complete ? null : change.code,
       });
-      return { ...out, ok: true, verdict: match.verdict, code: match.code, message: match.message, change, match };
+      return { ...out, ok: true, verdict: match.verdict, code: match.code, message: match.message, change, match, date_mapping: dateMappingOf(date, change, market) };
     }
     const { source, trades } = await sourceTrades(bill, 'signed-cache');
     const match = matchContract(parsed, { symbol, date, trades, tradingDays: market.tradingDays });
@@ -1192,15 +1327,18 @@ async function evaluateRuleSigned(rule, { symbol, date, bill, context }) {
   }
 }
 
-async function evaluateRuleDemo(rule, { symbol, date, bill, marketSource }) {
+async function evaluateRuleDemo(rule, { symbol, date, bill, marketSource, action }) {
   const labels = contractSimLabels(marketSource);
+  const applies = scopeApplies(rule.scope, symbol) && actionApplies(rule.action, action);
   const out = {
-    ok: false, label: labels.label, scopeNote: labels.scopeNote, symbol: symbol ?? null, requested_date: date ?? null,
-    rule: { hash: rule.hash, short_hash: rule.short_hash, v: rule.v, status: rule.status, text: rule.text, template_name: rule.template_name, fields_text: rule.fields_text },
-    verdict: null, code: null, message: '', change: null, match: null,
-    tradesSource: contractTradeSource(bill, labels.id), uses_trades: CONTRACT_TEMPLATES[rule.template_id]?.kind === 'sell_buyback_window', in_market_cache: null,
+    ok: false, label: labels.label, scopeNote: labels.scopeNote, symbol: symbol ?? null, requested_date: date ?? null, scenario_action: action,
+    rule: simRuleOut(rule),
+    verdict: null, code: null, message: '', change: null, match: null, date_mapping: null,
+    tradesSource: applies ? contractTradeSource(bill, labels.id) : null, uses_trades: ruleReadsTrades(rule), in_market_cache: null,
   };
   if (!rule.integrity.ok) return { ...out, code: rule.integrity.code, message: rule.integrity.message };
+  const gated = scopeGate(out, rule, symbol, action);
+  if (gated) return gated;
   const parsed = rule.parsed;
   try {
     const { source, trades } = await sourceTrades(bill, labels.id);
@@ -1215,7 +1353,7 @@ async function evaluateRuleDemo(rule, { symbol, date, bill, marketSource }) {
         changePct: change.complete ? change.change_pct : null,
         reason_code: change.complete ? null : change.code,
       });
-      return { ...out, ok: true, verdict: match.verdict, code: match.code, message: match.message, change, match, tradesSource: source };
+      return { ...out, ok: true, verdict: match.verdict, code: match.code, message: match.message, change, match, tradesSource: source, date_mapping: dateMappingOf(date, change, market) };
     }
     const match = matchContract(parsed, { symbol, date, trades, tradingDays: market.tradingDays });
     return { ...out, ok: true, verdict: match.verdict, code: match.code, message: match.message, match, tradesSource: source };
@@ -1224,28 +1362,38 @@ async function evaluateRuleDemo(rule, { symbol, date, bill, marketSource }) {
   }
 }
 
+function simulationDisplay(result) {
+  const display_verdict = result.code === 'E_MARKET_OUT_OF_SUPPORT' ? 'missing_data' : result.ok ? result.verdict : 'error';
+  return { ...result, display_verdict };
+}
+
 // 一次情境、每个模板唯一的当前规则逐条判定（各自走引擎链路，结果按规则分别返回，互不覆盖）；
 // 历史规则不参与；完整性失败的启用规则不参与判定，仅在 needs_reconfirm 中如实回传（不猜测、不改写记录）。
 // 本地账单走已签收缓存（marketSource 参数不改变本地账单的行情来源）；示例账单按所选行情来源判定。
-export async function simulateContracts({ versions, symbol, date, bill, marketSource = DEFAULT_MARKET_SOURCE } = {}) {
+export async function simulateContracts({ versions, symbol, date, bill, marketSource = DEFAULT_MARKET_SOURCE, action = 'buy' } = {}) {
+  if (action !== 'buy' && action !== 'sell') throw new TypeError('情境动作须为 buy（假如买入）或 sell（假如卖出）');
   const { executable, needsReconfirm } = contractRuleSet(versions);
   const needsReconfirmOut = needsReconfirm.map((r) => ({
     hash: r.hash, short_hash: r.short_hash, v: r.v, status: r.status, text: r.text,
     template_name: r.template_name, fields_text: r.fields_text, code: r.integrity.code, message: r.integrity.message,
   }));
-  const rulesUsed = executable.map((r) => ({ hash: r.hash, v: r.v, text: r.text, template_name: r.template_name }));
-  const summary = { triggered: 0, not_triggered: 0, missing_data: 0, error: 0 };
+  const rulesUsed = executable.map((r) => ({ hash: r.hash, v: r.v, text: r.text, template_name: r.template_name, scope_text: r.scope_text, action: r.action, action_label: actionLabel(r.action) }));
+  const summary = { triggered: 0, not_triggered: 0, missing_data: 0, not_applicable: 0, error: 0 };
   if (isLocalBill(bill)) {
-    const context = await marketContext(bill);
+    const applicable = executable.some((r) => scopeApplies(r.scope, symbol) && actionApplies(r.action, action));
+    const context = applicable ? await marketContext(bill) : {
+      marketSource: { id: 'real-cache', label: REAL_MARKET_LABEL }, supportScope: null, asOfDate: null,
+    };
     const results = [];
-    for (const rule of executable) results.push(await evaluateRuleSigned(rule, { symbol, date, bill, context }));
-    for (const r of results) summary[r.ok ? r.verdict : 'error'] += 1;
+    for (const rule of executable) results.push(simulationDisplay(await evaluateRuleSigned(rule, { symbol, date, bill, context, action })));
+    for (const r of results) summary[r.display_verdict] += 1;
     return {
       ...simulationLabels(context), marketSource: context.marketSource, supportScope: context.supportScope, asOfDate: context.asOfDate,
       marketSourceId: 'signed-cache',
       symbol: symbol ?? null,
       requested_date: date ?? null,
-      tradesSource: { ...contractTradeSource(bill), market_label: context.marketSource.label },
+      scenario_action: action,
+      tradesSource: applicable ? { ...contractTradeSource(bill), market_label: context.marketSource.label } : null,
       rules_n: executable.length,
       rules_used: rulesUsed,
       empty: executable.length === 0,
@@ -1257,14 +1405,15 @@ export async function simulateContracts({ versions, symbol, date, bill, marketSo
   }
   const labels = contractSimLabels(marketSource);
   const results = [];
-  for (const rule of executable) results.push(await evaluateRuleDemo(rule, { symbol, date, bill, marketSource: labels.id }));
-  for (const r of results) summary[r.ok ? r.verdict : 'error'] += 1;
+  for (const rule of executable) results.push(simulationDisplay(await evaluateRuleDemo(rule, { symbol, date, bill, marketSource: labels.id, action })));
+  for (const r of results) summary[r.display_verdict] += 1;
   return {
     label: labels.label,
     scopeNote: labels.scopeNote,
     marketSourceId: labels.id,
     symbol: symbol ?? null,
     requested_date: date ?? null,
+    scenario_action: action,
     tradesSource: contractTradeSource(bill, labels.id),
     rules_n: executable.length,
     rules_used: rulesUsed,

@@ -20,6 +20,11 @@ export const CONTRACT_CODES = Object.freeze({
   PREV_DAY_BEYOND_CACHE: 'E_PREV_DAY_BEYOND_CACHE',
   DATE_NOT_IN_CALENDAR: 'E_DATE_NOT_IN_CALENDAR',
   SELL_DAY_NOT_IN_CALENDAR: 'E_SELL_DAY_NOT_IN_CALENDAR',
+  TRADING_CALENDAR_MISSING: 'E_TRADING_CALENDAR_MISSING',
+  BUY_DAY_NOT_IN_CALENDAR: 'E_BUY_DAY_NOT_IN_CALENDAR',
+  BUY_HISTORY_UNCONFIRMED: 'E_BUY_HISTORY_UNCONFIRMED',
+  BUY_OUTSIDE_WINDOW_UNCONFIRMED: 'E_BUY_OUTSIDE_WINDOW_UNCONFIRMED',
+  SAME_DAY_BUY_UNCONFIRMED: 'E_SAME_DAY_BUY_UNCONFIRMED',
 });
 
 export const HASH_ALGORITHM = 'fnv1a64-placeholder';
@@ -47,6 +52,17 @@ export const CONTRACT_TEMPLATES = Object.freeze({
     comparator: '<=',
     reminder: '申报买入时，若距最近一次卖出同一标的不足你确认的交易日窗口，将显示警告。',
   }),
+  sell_within_after_buy: Object.freeze({
+    template_id: 'sell_within_after_buy',
+    name: '买入后 N 个交易日内卖出提醒',
+    kind: 'buy_sell_window',
+    fields: Object.freeze({
+      days: Object.freeze({ label: '买入后窗口（交易日）', default: 3, min: 1, integer: true }),
+    }),
+    text_template: '买入后 {days} 个交易日内卖出同一只票时，提醒我。',
+    comparator: '<=',
+    reminder: '申报卖出时，若距最近一次买入同一标的的交易日数在窗口内，将显示提醒（只提醒，不阻止或执行交易）。',
+  }),
 });
 
 const FNV_OFFSET = 0xcbf29ce484222325n;
@@ -60,6 +76,10 @@ function fnv1a64(str) {
     h = (h * FNV_PRIME) & MASK64;
   }
   return h.toString(16).padStart(16, '0');
+}
+
+export function canonicalHash(canonical) {
+  return fnv1a64(JSON.stringify(canonical));
 }
 
 function toNumber(value) {
@@ -127,9 +147,15 @@ export function parseContract({ template_id, fields = {} } = {}) {
   if (template.kind === 'change_pct_threshold') {
     condition = { kind: template.kind, comparator: template.comparator, threshold: resolved.threshold_pct / 100 };
     threshold = { unit: 'ratio', value: condition.threshold, display: `${resolved.threshold_pct.toFixed(1)}%` };
-  } else {
+  } else if (template.kind === 'sell_buyback_window' || template.kind === 'buy_sell_window') {
     condition = { kind: template.kind, comparator: template.comparator, window_days: resolved.days };
     threshold = { unit: 'trading_days', value: resolved.days, display: `${resolved.days} 个交易日` };
+  } else {
+    return {
+      supported: false,
+      code: CONTRACT_CODES.TEMPLATE_UNKNOWN,
+      message: `模板「${template.name}」的判定类型「${template.kind}」未登记，不能执行。`,
+    };
   }
   const text = template.text_template.replace(/\{(\w+)\}/g, (_, k) => String(resolved[k]));
   const canonical = {
@@ -298,6 +324,113 @@ export function matchContract(parsed, context) {
       warning: triggered
         ? { rule_text: parsed.text, threshold_display: parsed.threshold.display, situation: fact }
         : null,
+    };
+  }
+  if (parsed.kind === 'buy_sell_window') {
+    const { symbol, date, trades, tradingDays } = context ?? {};
+    if (!Array.isArray(trades)) {
+      throw new TypeError('matchContract：buy_sell_window 需提供 trades');
+    }
+    if (!Array.isArray(tradingDays) || tradingDays.length === 0) {
+      return {
+        ...base(parsed),
+        verdict: 'missing_data',
+        code: CONTRACT_CODES.TRADING_CALENDAR_MISSING,
+        fact: { symbol, date, last_buy: null },
+        message: '缺少交易日历（或日历为空）：无法计算买入后的交易日窗口，不猜测（F-9.2）。',
+        warning: null,
+      };
+    }
+    const k = tradingDays.indexOf(date);
+    if (k < 0) {
+      return {
+        ...base(parsed),
+        verdict: 'missing_data',
+        code: CONTRACT_CODES.DATE_NOT_IN_CALENDAR,
+        fact: { symbol, date, last_buy: null },
+        message: `日期 ${date} 不在交易日历：无法计算买入后的交易日窗口，不猜测（F-9.2）。`,
+        warning: null,
+      };
+    }
+    const sameDayBuys = trades.filter((t) => t.side === 'buy' && t.symbol === symbol && t.trade_date === date);
+    const anyKnownBuy = trades.some((t) => t.side === 'buy' && t.symbol === symbol && t.trade_date <= date);
+    if (!anyKnownBuy) {
+      return {
+        ...base(parsed),
+        verdict: 'missing_data',
+        code: CONTRACT_CODES.BUY_HISTORY_UNCONFIRMED,
+        fact: { symbol, date, last_buy: null, same_day_buy_count: 0 },
+        message: `无法确认：账单中没有 ${symbol} 在 ${date} 当日或之前的买入记录；账单没有“历史买入完整”的可靠依据，不能据此认定从未买入，也不编造“未触发”（其他标的的买入记录不参与）。`,
+        warning: null,
+      };
+    }
+    let lastBuy = null;
+    for (const t of trades) {
+      if (t.side !== 'buy' || t.symbol !== symbol || t.trade_date >= date) continue;
+      if (!lastBuy || t.trade_date >= lastBuy.trade_date) lastBuy = t;
+    }
+    const sameDayCount = sameDayBuys.length;
+    if (!lastBuy) {
+      const fact = { symbol, date, last_buy: null, same_day_buy_count: sameDayCount, history_completeness: 'unconfirmed', unconfirmed_reasons: ['same_day_order', 'history_completeness'] };
+      return {
+        ...base(parsed),
+        verdict: 'missing_data',
+        code: CONTRACT_CODES.SAME_DAY_BUY_UNCONFIRMED,
+        fact,
+        message: `无法确认：当前账单中 ${symbol} 在 ${date} 只有同日买入（${sameDayCount} 笔）。账单没有成交时刻，同日买入的先后顺序无法确定，也不计为“买入后”；同时账单完整性未经确认，可能存在未导出的更早或窗口内买入。本次不显示“未命中”，也不作命中判定。`,
+        warning: null,
+      };
+    }
+    const kBuy = tradingDays.indexOf(lastBuy.trade_date);
+    if (kBuy < 0) {
+      return {
+        ...base(parsed),
+        verdict: 'missing_data',
+        code: CONTRACT_CODES.BUY_DAY_NOT_IN_CALENDAR,
+        fact: { symbol, date, last_buy: { trade_id: lastBuy.trade_id, trade_date: lastBuy.trade_date } },
+        message: `最近买入日 ${lastBuy.trade_date} 不在交易日历：无法计算买入后的交易日窗口，不猜测（F-9.2）。`,
+        warning: null,
+      };
+    }
+    const distance = k - kBuy;
+    const triggered = distance >= 1 && distance <= parsed.condition.window_days;
+    if (!triggered) {
+      const fact = {
+        symbol,
+        date,
+        last_buy: { trade_id: lastBuy.trade_id, trade_date: lastBuy.trade_date },
+        distance_trading_days: distance,
+        window_days: parsed.condition.window_days,
+        same_day_buy_count: sameDayCount,
+        history_completeness: 'unconfirmed',
+        unconfirmed_reasons: [...(sameDayCount ? ['same_day_order'] : []), 'history_completeness'],
+      };
+      return {
+        ...base(parsed),
+        verdict: 'missing_data',
+        code: CONTRACT_CODES.BUY_OUTSIDE_WINDOW_UNCONFIRMED,
+        fact,
+        message: `无法确认：当前账单中可见的最近一次买入（${lastBuy.trade_date}）距 ${date} 为 ${distance} 个交易日，已超出买入后 ${parsed.threshold.display}窗口${sameDayCount ? `；另有 ${sameDayCount} 笔同日买入，先后顺序无法确定` : ''}。账单完整性未经确认，可能存在未导出的窗口内买入，因此本次不显示“未命中”，也不作命中判定。`,
+        warning: null,
+      };
+    }
+    const fact = {
+      symbol,
+      date,
+      last_buy: { trade_id: lastBuy.trade_id, trade_date: lastBuy.trade_date },
+      distance_trading_days: distance,
+      window_days: parsed.condition.window_days,
+      same_day_buy_count: sameDayCount,
+      history_completeness: 'unconfirmed',
+      result_basis: 'imported_records',
+    };
+    return {
+      ...base(parsed),
+      verdict: 'triggered',
+      code: null,
+      fact,
+      message: `规则命中：当前导入账单中 ${symbol} 最近一次买入（${lastBuy.trade_date}）距 ${date} 为 ${distance} 个交易日，落在买入后 ${parsed.threshold.display}窗口内（同日买入不计）。结果基于当前账单里的可见买入记录，账单完整性未经确认。`,
+      warning: { rule_text: parsed.text, threshold_display: parsed.threshold.display, situation: fact },
     };
   }
   throw new TypeError(`matchContract：未知判定类型 ${parsed.kind}`);
