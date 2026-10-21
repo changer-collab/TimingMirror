@@ -1,6 +1,6 @@
 // 新前端的真实能力桥：共享业务状态、路由映射、助手挂载与既有视图适配。
 import { state as shared, notify } from '../../src/state.js';
-import { renderAssistantPanel } from '../../src/ui/assistantPanel.js';
+import { getRuleAssistantClient, renderAssistantPanel } from '../../src/ui/assistantPanel.js';
 import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../../src/agent/httpTransport.js';
 import { createImportRecovery } from '../../src/agent/importRecovery.js';
 import { renderContract } from '../../src/ui/views/contractView.js';
@@ -141,6 +141,7 @@ const ctx = {
   set,
   go,
   importRecovery: getRecoveryClient(),
+  ruleAssistantClient: getRuleAssistantClient(),
   assistantTitle: 'AI 助手',
   assistantSubtitle: '账单、规则与结果上下文',
   assistantShowFactLink: true,

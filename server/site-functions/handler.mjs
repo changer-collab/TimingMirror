@@ -18,6 +18,11 @@ import {
   normalizeImportVisionRequest,
   validateImportVisionResponse,
 } from './importVision.mjs';
+import {
+  RESULT_EXPLANATION_CODES,
+  normalizeResultExplanationRequest,
+  validateResultExplanationResponse,
+} from './resultExplanation.mjs';
 
 export const SITE_FUNCTION_CODES = Object.freeze({
   NOT_FOUND: 'E_FUNCTION_NOT_FOUND',
@@ -39,6 +44,8 @@ export const SITE_FUNCTION_CODES = Object.freeze({
   IMPORT_RECOVER_RESPONSE: IMPORT_RECOVER_CODES.RESPONSE,
   IMPORT_VISION_REQUEST_INVALID: IMPORT_VISION_CODES.REQUEST_INVALID,
   IMPORT_VISION_RESPONSE: IMPORT_VISION_CODES.RESPONSE,
+  RESULT_EXPLANATION_REQUEST_INVALID: RESULT_EXPLANATION_CODES.REQUEST_INVALID,
+  RESULT_EXPLANATION_RESPONSE: RESULT_EXPLANATION_CODES.RESPONSE,
   MARKET_NOT_CONFIGURED: 'E_MARKET_NOT_CONFIGURED',
   MARKET_REQUEST_INVALID: 'E_MARKET_REQUEST_INVALID',
   MARKET_SYMBOL_UNKNOWN: 'E_MARKET_SYMBOL_UNKNOWN',
@@ -68,6 +75,8 @@ const MESSAGES = Object.freeze({
   [SITE_FUNCTION_CODES.IMPORT_RECOVER_RESPONSE]: '账单识别响应未通过服务端校验',
   [SITE_FUNCTION_CODES.IMPORT_VISION_REQUEST_INVALID]: '图片识别请求未通过服务端校验',
   [SITE_FUNCTION_CODES.IMPORT_VISION_RESPONSE]: '图片识别响应未通过服务端校验',
+  [SITE_FUNCTION_CODES.RESULT_EXPLANATION_REQUEST_INVALID]: '结果解释请求未通过服务端校验',
+  [SITE_FUNCTION_CODES.RESULT_EXPLANATION_RESPONSE]: '结果解释响应未通过服务端校验',
   [SITE_FUNCTION_CODES.MARKET_NOT_CONFIGURED]: '行情未启用：服务端尚未配置 TUSHARE_TOKEN',
   [SITE_FUNCTION_CODES.MARKET_REQUEST_INVALID]: '行情请求未通过服务端校验',
   [SITE_FUNCTION_CODES.MARKET_SYMBOL_UNKNOWN]: '行情标的未在股票列表中找到（请核对 6 位 A 股代码）',
@@ -247,19 +256,21 @@ export function createHandler({
     const path = url.pathname;
     const stage = path.endsWith('/api/llm/rule-intent')
       ? 'ruleIntent'
-      : path.endsWith('/api/llm/import-recover')
-        ? 'importRecover'
-        : path.endsWith('/api/llm/import-vision')
-          ? 'importVision'
-          : path.endsWith('/api/llm/intent')
-            ? 'intent'
-            : path.endsWith('/api/llm/restate')
-              ? 'restate'
-              : path.endsWith('/api/llm/rule')
-                ? 'rule'
-                : path.endsWith('/api/market/snapshot')
-                  ? 'market'
-                  : null;
+      : path.endsWith('/api/llm/result-explanation')
+        ? 'resultExplanation'
+        : path.endsWith('/api/llm/import-recover')
+          ? 'importRecover'
+          : path.endsWith('/api/llm/import-vision')
+            ? 'importVision'
+            : path.endsWith('/api/llm/intent')
+              ? 'intent'
+              : path.endsWith('/api/llm/restate')
+                ? 'restate'
+                : path.endsWith('/api/llm/rule')
+                  ? 'rule'
+                  : path.endsWith('/api/market/snapshot')
+                    ? 'market'
+                    : null;
     if (stage === null) return errorResponse(404, SITE_FUNCTION_CODES.NOT_FOUND);
     if (request.method !== 'POST') {
       return errorResponse(405, SITE_FUNCTION_CODES.METHOD, { Allow: 'POST' });
@@ -313,6 +324,27 @@ export function createHandler({
         return errorResponse(502, SITE_FUNCTION_CODES.RULE_INTENT_RESPONSE);
       }
       return jsonResponse(200, { rawText: JSON.stringify(checked.value) });
+    }
+    if (stage === 'resultExplanation') {
+      const validated = normalizeResultExplanationRequest(body);
+      if (!validated.ok) return errorResponse(400, validated.code);
+      const result = await callTransport(transport, 'resultExplanation', validated.request);
+      if (!result.ok) return errorResponse(result.status, result.code);
+      const checked = validateResultExplanationResponse(result.rawText, validated.request);
+      if (!checked.ok) {
+        return errorResponse(502, SITE_FUNCTION_CODES.RESULT_EXPLANATION_RESPONSE);
+      }
+      const binding = {
+        flow_id: validated.request.flow_id,
+        request_id: validated.request.request_id,
+        rule_version: validated.request.rule.version,
+        rule_hash: validated.request.rule.hash,
+        scope: validated.request.rule.scope,
+        simulation_result_id: validated.request.simulation.result_id,
+      };
+      return jsonResponse(200, {
+        rawText: JSON.stringify({ answer_text: checked.answer_text, binding }),
+      });
     }
     if (stage === 'importRecover') {
       const validated = normalizeImportRecoverRequest(body);

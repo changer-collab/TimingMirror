@@ -15,6 +15,7 @@ export const SITE_FUNCTION_PATHS = Object.freeze({
   intent: '/functions/v1/app/api/llm/intent',
   restate: '/functions/v1/app/api/llm/restate',
   ruleIntent: '/functions/v1/app/api/llm/rule-intent',
+  resultExplanation: '/functions/v1/app/api/llm/result-explanation',
   importRecover: '/functions/v1/app/api/llm/import-recover',
   importVision: '/functions/v1/app/api/llm/import-vision',
 });
@@ -64,10 +65,10 @@ function normalizePaths(paths) {
     throw new TypeError('paths 必须为对象');
   }
   const out = {};
-  for (const key of ['intent', 'restate', 'ruleIntent', 'importRecover', 'importVision']) {
+  for (const key of ['intent', 'restate', 'ruleIntent', 'resultExplanation', 'importRecover', 'importVision']) {
     const value = paths[key];
     if (value === undefined) {
-      if (key === 'ruleIntent' || key === 'importRecover' || key === 'importVision') continue;
+      if (key === 'ruleIntent' || key === 'resultExplanation' || key === 'importRecover' || key === 'importVision') continue;
       throw new TypeError(`paths.${key} 缺失`);
     }
     if (typeof value !== 'string' || !value.startsWith('/')
@@ -155,6 +156,10 @@ export function createHttpTransport({
         allowed_tools,
         context_summary,
       }, signal);
+    },
+    resultExplanation({ stage, flow_id, request_id, rule, simulation, signal } = {}) {
+      if (!routes.resultExplanation) throw transportError(HTTP_TRANSPORT_CODES.CONFIG);
+      return call(routes.resultExplanation, { stage, flow_id, request_id, rule, simulation }, signal);
     },
     importRecover({ content, stage, source_kind, flow_id, request_id, signal } = {}) {
       if (!routes.importRecover) throw transportError(HTTP_TRANSPORT_CODES.CONFIG);

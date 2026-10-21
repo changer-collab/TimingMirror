@@ -166,7 +166,7 @@ export function renderContract(root, ctx) {
   function commitAll(recs, extra = {}) {
     if (!recs || !recs.length) return;
     simToken = null;
-    set({ contracts: { versions: [...c.versions, ...recs], sim: { ...c.sim, result: null, running: false }, ...extra } });
+    set({ contracts: { versions: [...c.versions, ...recs], sim: { ...c.sim, result: null, running: false, runId: null }, ...extra } });
     saveContractsDemo();
   }
   function openEditor(mode, { rule = null, template_id = null } = {}) {
@@ -174,8 +174,16 @@ export function renderContract(root, ctx) {
     const tpl = templates.find((t) => t.template_id === wanted) ?? templates.find((t) => !slotOf(t.template_id)?.current) ?? templates[0];
     set({ contracts: { modal: { mode, targetHash: rule ? rule.hash : null }, draft: draftFor(tpl, rule) } });
   }
-  const closeEditor = () => { nlToken = null; set({ contracts: { modal: null, nl: null } }); };
-  const emptyNl = () => ({ text: '', status: 'idle', result: null, choices: {}, ack: false });
+  const closeEditor = () => {
+    nlToken = null;
+    set({
+      contracts: { modal: null, nl: null },
+      assistant: state.assistant.pendingConfirmationFlowId
+        ? { ...state.assistant, pendingConfirmationFlowId: null }
+        : state.assistant,
+    });
+  };
+  const emptyNl = () => ({ text: '', status: 'idle', result: null, choices: {}, ack: false, flowId: null, modelCalls: 0, budgetMax: 2 });
 
   const page = el('div', { class: 'stack cv-page' });
 
@@ -358,7 +366,7 @@ export function renderContract(root, ctx) {
           if (marketSource === o.id) return;
           simToken = null;
           simContextLoadingKey = null;
-          set({ contracts: { marketSource: o.id, simContext: null, sim: { ...state.contracts.sim, result: null, running: false } } });
+          set({ contracts: { marketSource: o.id, simContext: null, sim: { ...state.contracts.sim, result: null, running: false, runId: null } } });
         },
       }, [o.label]));
     }
@@ -371,7 +379,7 @@ export function renderContract(root, ctx) {
   if (c.simContext && c.simContext.sourceKey !== src.key) {
     simToken = null;
     c.simContext = null;
-    c.sim = { ...c.sim, result: null, running: false };
+    c.sim = { ...c.sim, result: null, running: false, runId: null };
   }
   const sc = c.simContext;
   const marketLabel = sc?.marketSource?.label ?? src.market_label;
@@ -420,10 +428,10 @@ export function renderContract(root, ctx) {
       simContextLoadingKey = src.key;
       adapter.contractSimContext({ bill: state.bill, marketSource })
         .then((d) => {
-          if (d.error) return { simContext: d, sim: { ...state.contracts.sim, result: null, running: false } };
+          if (d.error) return { simContext: d, sim: { ...state.contracts.sim, result: null, running: false, runId: null } };
           const cur = state.contracts.sim;
           const symbol = d.symbols.some((s) => s.symbol === cur.symbol) ? cur.symbol : d.symbols[0]?.symbol ?? '';
-          return { simContext: d, sim: { ...cur, symbol, date: cur.date && cur.date >= d.range.start && cur.date <= d.range.end ? cur.date : d.asOfDate, result: null } };
+          return { simContext: d, sim: { ...cur, symbol, date: cur.date && cur.date >= d.range.start && cur.date <= d.range.end ? cur.date : d.asOfDate, result: null, runId: null } };
         })
         .catch((e) => ({ simContext: { error: String(e && e.message ? e.message : e), sourceKey: src.key } }))
         .then((patch) => {
@@ -455,7 +463,7 @@ export function renderContract(root, ctx) {
         onclick: () => {
           if (simAction === o.id) return;
           simToken = null;
-          set({ contracts: { sim: { ...state.contracts.sim, action: o.id, result: null, running: false } } });
+          set({ contracts: { sim: { ...state.contracts.sim, action: o.id, result: null, running: false, runId: null } } });
         },
       }, [o.label]));
     }
@@ -466,22 +474,23 @@ export function renderContract(root, ctx) {
     ]));
     const symSelect = el('select', {
       class: 'input', 'data-role': 'sim-symbol',
-      onchange: (e) => { simToken = null; c.sim = { ...c.sim, symbol: e.target.value, result: null, running: false }; paintSim(); },
+      onchange: (e) => { simToken = null; c.sim = { ...c.sim, symbol: e.target.value, result: null, running: false, runId: null }; paintSim(); },
     }, sc.symbols.map((s) => el('option', { value: s.symbol, selected: s.symbol === c.sim.symbol ? 'selected' : null }, [
       `${s.symbol}${s.in_bill && src.kind === 'user_bill' ? '（账单标的）' : ''}${s.in_market_cache ? '' : '（不在本次行情）'}`,
     ])));
     const dateInput = el('input', { class: 'input cv-input', type: 'date', 'data-role': 'sim-date', value: c.sim.date });
-    dateInput.addEventListener('input', (e) => { simToken = null; c.sim = { ...c.sim, date: e.target.value, result: null, running: false }; paintSim(); });
+    dateInput.addEventListener('input', (e) => { simToken = null; c.sim = { ...c.sim, date: e.target.value, result: null, running: false, runId: null }; paintSim(); });
     simBtn = el('button', {
       class: 'btn primary',
       onclick: async () => {
         const req = { versions: c.versions, symbol: c.sim.symbol, date: c.sim.date, bill: state.bill, marketSource, action: simAction };
         const token = {};
         simToken = token;
-        set({ contracts: { sim: { ...state.contracts.sim, running: true, result: null } } });
+        const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        set({ contracts: { sim: { ...state.contracts.sim, running: true, result: null, runId } } });
         const result = await adapter.simulateContracts(req);
         const applied = simToken === token && adapter.contractTradeSource(state.bill, marketSource).key === src.key;
-        if (applied) set({ contracts: { sim: { ...state.contracts.sim, running: false, result } } });
+        if (applied) set({ contracts: { sim: { ...state.contracts.sim, running: false, result, runId } } });
       },
     }, [c.sim.running ? '测试中…' : `测试该日${simAction === 'sell' ? '卖出' : '买入'}是否触发规则`]);
     sim.append(el('div', { class: 'row' }, [
@@ -601,7 +610,12 @@ export function renderContract(root, ctx) {
       onclick: () => {
         const parsed = preview();
         const d = adapter.contractEditorState(c.versions, parsed);
-        commitAll(adapter.contractSaveRecords(c.versions, { parsed, note: c.draft.note, confirmScopeChange: scopeAcked(d) }), { modal: null });
+        commitAll(adapter.contractSaveRecords(c.versions, {
+          parsed,
+          note: c.draft.note,
+          confirmScopeChange: scopeAcked(d),
+          assistantFlowId: c.modal?.assistantFlowId ?? null,
+        }), { modal: null });
       },
     }, [edit ? '保存并替换当前规则' : '保存并启用']);
     dialog.append(live, el('div', { class: 'cv-modal-foot' }, [
@@ -658,6 +672,7 @@ export function renderContract(root, ctx) {
   function renderNlEditor() {
     const nl = c.nl ?? emptyNl();
     c.nl = nl;
+    const nlClient = ctx.ruleAssistantClient ?? null;
     const loading = nl.status === 'loading';
     const panel = el('div', { class: 'cv-nl-embedded', 'data-role': 'nl-panel' });
     panel.append(el('div', { class: 'section-title' }, ['用一句话描述规则']));
@@ -671,13 +686,76 @@ export function renderContract(root, ctx) {
       class: 'btn primary', 'data-role': 'nl-recognize',
       onclick: async () => {
         const text = c.nl.text;
+        if (nlClient && c.modal?.assistantFlowId && state.assistant.pending) {
+          c.nl = { ...c.nl, status: 'done', result: { status: 'error', message: '助手请求进行中，请稍后再试。' } };
+          set({ contracts: { nl: c.nl } });
+          paintNl();
+          return;
+        }
+        let flowId = c.modal?.assistantFlowId ?? c.nl.flowId ?? null;
+        if (nlClient) {
+          if (!flowId) {
+            const started = nlClient.beginExternalFlow({ stage: 'rule_nl' });
+            flowId = started.flow_id;
+            c.nl = { ...c.nl, flowId, modelCalls: started.model_calls, budgetMax: started.budget_max };
+          }
+          const flow = nlClient.getFlow(flowId);
+          if (!flow || flow.model_calls >= flow.budget_max) {
+            c.nl = {
+              ...c.nl,
+              flowId,
+              modelCalls: flow?.model_calls ?? c.nl.modelCalls ?? 0,
+              budgetMax: flow?.budget_max ?? c.nl.budgetMax ?? 2,
+              status: 'done',
+              result: { status: 'error', message: '模型请求预算已用尽；请新开独立任务或改用模板编辑。' },
+            };
+            set({ contracts: { nl: c.nl } });
+            paintNl();
+            return;
+          }
+        }
         const token = {};
         nlToken = token;
-        set({ contracts: { nl: { text, status: 'loading', result: null, choices: {}, ack: false } } });
+        c.nl = {
+          ...c.nl,
+          text,
+          flowId,
+          status: 'loading',
+          result: null,
+          choices: {},
+          ack: false,
+        };
+        set({ contracts: { nl: c.nl } });
         const result = await adapter.recognizeContractText(text);
+        let flowCounts = null;
+        if (nlClient && flowId && result.stage !== 'precheck') {
+          const recorded = nlClient.recordExternalModelCall({
+            flowId,
+            stage: 'rule_nl',
+            status: result.status === 'error' ? 'failed' : 'ok',
+            code: result.code ?? null,
+          });
+          if (recorded.ok) {
+            const flow = recorded.flow;
+            flowCounts = { modelCalls: flow.model_calls, budgetMax: flow.budget_max };
+            if (c.modal?.assistantFlowId === flowId && state.assistant.flowId === flowId) {
+              set({
+                assistant: {
+                  ...state.assistant,
+                  modelCalls: flow.model_calls,
+                  budgetMax: flow.budget_max,
+                  trace: flow.trace,
+                  outbound: flow.outbound,
+                },
+              });
+            }
+          }
+        }
         if (nlToken !== token || !stillCustom()) return;
         nlToken = null;
-        set({ contracts: { nl: { text, status: 'done', result, choices: {}, ack: false } } });
+        if (flowCounts) c.nl = { ...c.nl, ...flowCounts };
+        c.nl = { ...c.nl, text, flowId, status: 'done', result, choices: {}, ack: false };
+        set({ contracts: { nl: c.nl } });
       },
     }, [loading ? '识别中…' : '识别规则']);
     const resultBox = el('div', { class: 'cv-nl-result' });
@@ -689,7 +767,7 @@ export function renderContract(root, ctx) {
     input.value = nl.text;
     input.addEventListener('input', (e) => {
       const changed = c.nl.status !== 'idle';
-      c.nl = { text: e.target.value, status: 'idle', result: null, choices: {}, ack: false };
+      c.nl = { ...c.nl, text: e.target.value, status: 'idle', result: null, choices: {}, ack: false };
       if (changed) nlToken = null;
       paintNl();
     });
@@ -699,7 +777,8 @@ export function renderContract(root, ctx) {
 
     function paintNl() {
       const cur = c.nl;
-      counter.replaceChildren(el('span', {}, [`${[...cur.text.trim()].length} / ${adapter.CONTRACT_NL_MAX_CHARS} 字`]));
+      const flowText = cur.flowId ? ` · 模型请求 ${cur.modelCalls ?? 0}/${cur.budgetMax ?? 2}` : '';
+      counter.replaceChildren(el('span', {}, [`${[...cur.text.trim()].length} / ${adapter.CONTRACT_NL_MAX_CHARS} 字${flowText}`]));
       recognizeBtn.disabled = cur.status === 'loading' || cur.text.trim() === '';
       const r = cur.status === 'done' ? cur.result : null;
       resultBox.replaceChildren(...(cur.status === 'loading'
@@ -713,7 +792,7 @@ export function renderContract(root, ctx) {
           onclick: () => {
             nlToken = null;
             const fields = Object.fromEntries(Object.entries(r.parsed.fields).map(([k, v]) => [k, String(v)]));
-            set({ contracts: { modal: { mode: 'add', targetHash: null }, nl: null, draft: { template_id: r.parsed.template_id, fields, note: '', scope: scopeDraftOf(r.parsed.scope) } } });
+            set({ contracts: { modal: { mode: 'add', targetHash: null, assistantFlowId: c.modal?.assistantFlowId ?? null }, nl: null, draft: { template_id: r.parsed.template_id, fields, note: '', scope: scopeDraftOf(r.parsed.scope) } } });
           },
         }, ['在模板中调整参数']));
         btns.push(el('button', {
@@ -722,7 +801,13 @@ export function renderContract(root, ctx) {
             const now = adapter.contractNlSaveState(c.versions, r, { choices: c.nl.choices, ack: c.nl.ack, scopeAck: c.nl.scopeAck });
             if (!now.canSave) return;
             nlToken = null;
-            commitAll(adapter.contractSaveRecords(c.versions, { parsed: r.parsed, note: null, origin: { text: r.text, confirmations: c.nl.choices }, confirmScopeChange: !!c.nl.scopeAck }), { modal: null, nl: null });
+            commitAll(adapter.contractSaveRecords(c.versions, {
+              parsed: r.parsed,
+              note: null,
+              origin: { text: r.text, confirmations: c.nl.choices },
+              confirmScopeChange: !!c.nl.scopeAck,
+              assistantFlowId: c.modal?.assistantFlowId ?? null,
+            }), { modal: null, nl: null });
           },
         }, ['确认保存并启用']));
       }

@@ -30,6 +30,15 @@ const RESTATE_SYSTEM = [
   'answer_text 使用简体中文，简洁；不要输出 Markdown、代码块或额外字段。',
 ].join('\n');
 
+const RESULT_EXPLANATION_SYSTEM = [
+  '你是 TimingMirror 的结果解释器。用户消息是 JSON：{"rule":{...},"simulation":{...}}。',
+  '只能解释给定规则在给定模拟中的结果，不得引入输入中没有的新数字、日期、标的或事实。',
+  '不得预测收益或涨跌，不得推荐买入/卖出，不得做组合、总收益或下一步操作结论。',
+  '只说明本次执行是否完成、命中/未命中以及逐项 verdict/code/message 的含义；不声称独立复核。',
+  '输出 JSON 对象：{"answer_text":"..."}。',
+  'answer_text 使用简体中文，简洁；不要输出 Markdown、代码块、URL、文件名或额外字段。',
+].join('\n');
+
 const RULE_INTENT_SYSTEM = [
   '你是 TimingMirror 的规则理解器。',
   '只允许选择用户消息 allowed_templates 中的模板，不得创建新规则、预测收益或提供买卖建议。',
@@ -234,6 +243,12 @@ export function createDashScopeTransport({
         { role: 'system', content: RULE_INTENT_SYSTEM },
         { role: 'user', content: JSON.stringify({ question, allowed_templates, context_summary }) },
       ]);
+    },
+    resultExplanation({ rule, simulation }) {
+      return call([
+        { role: 'system', content: RESULT_EXPLANATION_SYSTEM },
+        { role: 'user', content: JSON.stringify({ rule, simulation }) },
+      ], { temperature: 0.1 });
     },
     importRecover({ content, source_kind }) {
       return call([
