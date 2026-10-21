@@ -32,7 +32,7 @@ const demoTrades = normalizeRows(parseCsvText(readText('m0/csv-input/fixtures/de
 
 /* ---- 模板注册表 ---- */
 {
-  check('注册表：2 个模板（涨幅阈值 / 卖出后追回），且已冻结', Object.keys(CONTRACT_TEMPLATES).length === 2 && eqArr(Object.keys(CONTRACT_TEMPLATES), ['no_buy_on_surge', 'no_buy_back_within']) && Object.isFrozen(CONTRACT_TEMPLATES) && Object.isFrozen(CONTRACT_TEMPLATES.no_buy_on_surge.fields), '');
+  check('注册表：3 个模板（涨幅阈值 / 卖出后追回 / 买入后卖出提醒），且已冻结', Object.keys(CONTRACT_TEMPLATES).length === 3 && eqArr(Object.keys(CONTRACT_TEMPLATES), ['no_buy_on_surge', 'no_buy_back_within', 'sell_within_after_buy']) && Object.isFrozen(CONTRACT_TEMPLATES) && Object.isFrozen(CONTRACT_TEMPLATES.no_buy_on_surge.fields), '');
   check('注册表：哈希算法为占位标注（待 M0 §4-7 冻结后替换）', HASH_ALGORITHM === 'fnv1a64-placeholder', HASH_ALGORITHM);
 }
 
@@ -52,6 +52,14 @@ const demoTrades = normalizeRows(parseCsvText(readText('m0/csv-input/fixtures/de
   check('解析：追回模板默认 3 个交易日，阈值单位 = trading_days', pB.supported === true && pB.condition.window_days === 3 && pB.threshold.unit === 'trading_days' && pB.threshold.display === '3 个交易日' && pB.text === '卖出后 3 个交易日内不追回同一只票。', JSON.stringify(pB.threshold));
   const pB7 = parseContract({ template_id: 'no_buy_back_within', fields: { days: '7' } });
   check('解析：追回模板字段可编辑（7 个交易日）且哈希随参数变化', pB7.condition.window_days === 7 && pB7.hash !== pB.hash, pB7.hash);
+
+  const pS = parseContract({ template_id: 'sell_within_after_buy' });
+  check('解析：买入后卖出模板默认 3 个交易日、比较符 ≤、文本与哈希独立', pS.supported === true && pS.kind === 'buy_sell_window' && pS.condition.window_days === 3
+    && pS.condition.comparator === '<=' && pS.threshold.unit === 'trading_days' && pS.threshold.display === '3 个交易日'
+    && pS.text === '买入后 3 个交易日内卖出同一只票时，提醒我。' && pS.hash !== pB.hash && pS.hash !== parseContract({ template_id: 'no_buy_on_surge' }).hash, JSON.stringify(pS));
+  const pS1 = parseContract({ template_id: 'sell_within_after_buy', fields: { days: '1' } });
+  check('解析：买入后卖出模板窗口可编辑、非法天数报错', pS1.condition.window_days === 1 && pS1.hash !== pS.hash
+    && parseContract({ template_id: 'sell_within_after_buy', fields: { days: 0 } }).code === CONTRACT_CODES.FIELD_INVALID, pS1.hash);
 }
 
 /* ---- 自由文本与字段错误：不猜测、不静默套默认（F-5.3） ---- */
@@ -159,6 +167,53 @@ const demoTrades = normalizeRows(parseCsvText(readText('m0/csv-input/fixtures/de
   const t8 = matchContract(pB, { symbol: '000000', date: '2024-10-11', trades: weird, tradingDays: days });
   check('追回：卖出日不在交易日历 → 缺失行情（不猜测）', t8.verdict === 'missing_data' && t8.code === CONTRACT_CODES.SELL_DAY_NOT_IN_CALENDAR, t8.code);
   check('追回：未提供 trades/tradingDays → 抛错（调用方须显式提供上下文）', throws(() => matchContract(pB, { symbol: '000000', date: '2024-10-11' })), '');
+}
+
+/* ---- matchContract：买入后卖出模板（窗口第 1 / N / N+1 天；同日不计；完整性未知） ---- */
+{
+  const pS = parseContract({ template_id: 'sell_within_after_buy' }); // 3 个交易日
+  const days = market.tradingDays;
+  const at = (date) => matchContract(pS, { symbol: '888888', date, trades: demoTrades, tradingDays: days });
+
+  const d1 = at('2024-09-26');
+  check('买入后卖出：窗口第 1 天（09-25 买入 → 09-26）→ 命中，距离 1，注明基于当前导入记录', d1.verdict === 'triggered' && d1.fact.distance_trading_days === 1 && d1.fact.last_buy.trade_id === 'T002'
+    && d1.fact.result_basis === 'imported_records' && d1.message.includes('基于当前账单里的可见买入记录'), JSON.stringify(d1.fact));
+  const dN = at('2024-09-30');
+  check('买入后卖出：窗口第 N 天（第 3 个交易日）→ 命中（含等于）', dN.verdict === 'triggered' && dN.fact.distance_trading_days === 3, JSON.stringify(dN.fact));
+  const dN1 = at('2024-10-08');
+  check('买入后卖出：窗口第 N+1 天 → 无法确认 / 数据不足（不显示未命中），说明可能有未导出交易', dN1.verdict === 'missing_data'
+    && dN1.code === CONTRACT_CODES.BUY_OUTSIDE_WINDOW_UNCONFIRMED && dN1.fact.distance_trading_days === 4
+    && dN1.fact.history_completeness === 'unconfirmed' && dN1.message.includes('可能存在未导出的窗口内买入')
+    && dN1.message.includes('不显示“未命中”'), dN1.message);
+  const same = at('2024-09-25');
+  check('买入后卖出：仅有同日买入 → 无法确认 / 数据不足（先后顺序未知，不显示未命中）', same.verdict === 'missing_data'
+    && same.code === CONTRACT_CODES.SAME_DAY_BUY_UNCONFIRMED && same.fact.last_buy === null
+    && same.fact.same_day_buy_count === 1 && same.fact.history_completeness === 'unconfirmed'
+    && same.message.includes('先后顺序无法确定') && same.message.includes('未导出的更早或窗口内买入'), same.message);
+  const sameWithEarlier = matchContract(pS, { symbol: '000000', date: '2024-09-27', trades: demoTrades, tradingDays: days });
+  check('买入后卖出：同一天另有买入时，仍以严格更早的买入计算（09-24 → 09-27 第 3 天）→ 命中', sameWithEarlier.verdict === 'triggered'
+    && sameWithEarlier.fact.last_buy.trade_date === '2024-09-24' && sameWithEarlier.fact.same_day_buy_count === 1, JSON.stringify(sameWithEarlier.fact));
+  const staleWithSameDay = matchContract(pS, {
+    symbol: '000000', date: '2024-10-10', tradingDays: days,
+    trades: [...demoTrades, { trade_id: 'B9', trade_date: '2024-10-10', symbol: '000000', side: 'buy', price: 1, quantity: 1 }],
+  });
+  check('买入后卖出：最近可见买入超出窗口且另有同日买入 → 无法确认，分别说明未导出交易与同日顺序未知',
+    staleWithSameDay.verdict === 'missing_data' && staleWithSameDay.code === CONTRACT_CODES.BUY_OUTSIDE_WINDOW_UNCONFIRMED
+    && staleWithSameDay.fact.same_day_buy_count === 1 && staleWithSameDay.message.includes('同日买入')
+    && staleWithSameDay.message.includes('先后顺序无法确定') && staleWithSameDay.message.includes('未导出的窗口内买入'), staleWithSameDay.message);
+  const other = matchContract(pS, { symbol: '000000', date: '2024-09-25', trades: demoTrades, tradingDays: days });
+  check('买入后卖出：只使用同一标的的买入（888888 的 09-25 买入不影响 000000）', other.verdict === 'triggered' && other.fact.last_buy.trade_id === 'T001' && other.fact.distance_trading_days === 1, JSON.stringify(other.fact));
+  const noBuy = at('2024-09-26');
+  check('买入后卖出：不同标的没有买入记录 → 数据不足（不是未触发）', matchContract(pS, { symbol: '111111', date: '2024-09-26', trades: demoTrades, tradingDays: days }).verdict === 'missing_data'
+    && matchContract(pS, { symbol: '111111', date: '2024-09-26', trades: demoTrades, tradingDays: days }).code === CONTRACT_CODES.BUY_HISTORY_UNCONFIRMED && noBuy.verdict === 'triggered', '');
+  const emptyTrades = matchContract(pS, { symbol: '888888', date: '2024-09-26', trades: [], tradingDays: days });
+  check('买入后卖出：账单为空 → 无法确认 / 数据不足，不编造未触发', emptyTrades.verdict === 'missing_data' && emptyTrades.code === CONTRACT_CODES.BUY_HISTORY_UNCONFIRMED, emptyTrades.code);
+  check('买入后卖出：缺交易日历 / 日历为空 → 数据不足', matchContract(pS, { symbol: '888888', date: '2024-09-26', trades: demoTrades, tradingDays: [] }).code === CONTRACT_CODES.TRADING_CALENDAR_MISSING
+    && matchContract(pS, { symbol: '888888', date: '2024-09-26', trades: demoTrades }).code === CONTRACT_CODES.TRADING_CALENDAR_MISSING, '');
+  check('买入后卖出：申报日不在交易日历 → 数据不足（不猜测窗口）', matchContract(pS, { symbol: '888888', date: '2024-10-01', trades: demoTrades, tradingDays: days }).code === CONTRACT_CODES.DATE_NOT_IN_CALENDAR, '');
+  const weirdBuy = [{ trade_id: 'B1', trade_date: '2024-10-01', symbol: '888888', side: 'buy', price: 1, quantity: 1 }];
+  check('买入后卖出：买入日不在交易日历 → 数据不足', matchContract(pS, { symbol: '888888', date: '2024-10-08', trades: weirdBuy, tradingDays: days }).code === CONTRACT_CODES.BUY_DAY_NOT_IN_CALENDAR, '');
+  check('买入后卖出：未提供 trades / tradingDays → 抛错（调用方须显式提供上下文）', throws(() => matchContract(pS, { symbol: '888888', date: '2024-09-26' })), '');
 }
 
 /* ---- 汇总 ---- */

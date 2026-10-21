@@ -266,6 +266,68 @@ function streamOfChunks(chunks) {
     delayedError && delayedError.code === 'E_MODEL_TIMEOUT', delayedError && delayedError.code);
 }
 
+/* ==== 规则识别路由：只接受 { text }，不转发其他字段；未配置/缺方法/超长均明确失败 ==== */
+{
+  const RULE_TEXT = '当天涨幅超过5%的股票我不买';
+  const calls = [];
+  const transport = {
+    ...createFakeTransport(),
+    async rule(request) { calls.push(request); return { rawText: '{"status":"unclear"}' }; },
+  };
+  const handler = createHandler({ transport, maxBodyBytes: 4096 });
+  const ok = await invoke(handler, '/api/llm/rule', { body: { text: RULE_TEXT } });
+  check('规则识别路由：200 且仅返回 rawText 与协议版本', ok.status === 200 && Object.keys(ok.json ?? {}).join(',') === 'rawText,protocol'
+    && ok.json.protocol === 'rule-intent-v2', ok.text);
+  check('规则识别路由：transport 只收到 { text } 原文', calls.length === 1 && Object.keys(calls[0]).join(',') === 'text' && calls[0].text === RULE_TEXT, JSON.stringify(calls));
+
+  const extra = await invoke(handler, '/api/llm/rule', { body: { text: RULE_TEXT, trades: [{ price: 1 }] } });
+  const empty = await invoke(handler, '/api/llm/rule', { body: { text: '   ' } });
+  const notString = await invoke(handler, '/api/llm/rule', { body: { text: 5 } });
+  const tooLong = await invoke(handler, '/api/llm/rule', { body: { text: '涨'.repeat(201) } });
+  const atLimit = await invoke(handler, '/api/llm/rule', { body: { text: '涨'.repeat(200) } });
+  check('规则识别路由：附带交易等字段 → 400 E_FUNCTION_UNKNOWN_FIELD，不调用模型', extra.status === 400 && extra.json.code === SITE_FUNCTION_CODES.UNKNOWN_FIELD, extra.text);
+  check('规则识别路由：空文本 / 非字符串 / 超过 200 字 → 400 E_FUNCTION_REQUEST_INVALID；200 字可通过',
+    [empty, notString, tooLong].every((r) => r.status === 400 && r.json.code === SITE_FUNCTION_CODES.REQUEST_INVALID) && atLimit.status === 200,
+    JSON.stringify([empty.status, notString.status, tooLong.status, atLimit.status]));
+  check('规则识别路由：被拒绝的请求均未调用模型', calls.length === 2, String(calls.length));
+
+  const noKey = await invoke(createHandler({ transport: null }), '/api/llm/rule', { body: { text: RULE_TEXT } });
+  check('规则识别路由：未配置 DASHSCOPE_API_KEY → 503 E_MODEL_NOT_CONFIGURED', noKey.status === 503 && noKey.json.code === SITE_FUNCTION_CODES.MODEL_NOT_CONFIGURED, noKey.text);
+  const legacy = await invoke(createHandler({ transport: createFakeTransport() }), '/api/llm/rule', { body: { text: RULE_TEXT } });
+  check('规则识别路由：transport 缺少 rule() → 502 E_MODEL_UNAVAILABLE（脱敏）', legacy.status === 502 && legacy.json.code === SITE_FUNCTION_CODES.MODEL_UNAVAILABLE, legacy.text);
+  const get = await invoke(handler, '/api/llm/rule', { method: 'GET', body: undefined });
+  check('规则识别路由：GET 405', get.status === 405, String(get.status));
+}
+
+/* ==== DashScope rule()：系统提示列出三个模板与固定代码，区分提醒动作，用户消息只含规则原文 ==== */
+{
+  const calls = [];
+  const transport = createDashScopeTransport({
+    apiKey: 'synthetic-key-marker',
+    timeoutMs: 1000,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(JSON.stringify({ output: { choices: [{ message: { content: '{"status":"unsupported"}' } }] } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  const text = '如果同一只股票连续亏损两次，提醒我暂停交易一天';
+  const r = await transport.rule({ text });
+  const sent = JSON.parse(calls[0].options.body);
+  const msgs = sent.input.messages;
+  check('DashScope rule()：同一端点、JSON mode、两条消息', calls[0].url === DASHSCOPE_ENDPOINT && sent.parameters.response_format?.type === 'json_object' && msgs.length === 2);
+  check('DashScope rule()：系统提示含三个模板 ID 与“不得假设默认值”约束', msgs[0].role === 'system'
+    && msgs[0].content.includes('no_buy_on_surge') && msgs[0].content.includes('no_buy_back_within')
+    && msgs[0].content.includes('sell_within_after_buy') && msgs[0].content.includes('不得自行假设默认值'));
+  check('DashScope rule()：系统提示区分申报买入 / 申报卖出模板，并要求买入后卖出明确同一只股票或单个代码', msgs[0].content.includes('提醒动作：申报买入')
+    && msgs[0].content.includes('提醒动作：申报卖出') && msgs[0].content.includes('same_symbol')
+    && msgs[0].content.includes('days_sell') && msgs[0].content.includes('不能把“买入”和“卖出”分开当成其他模板')
+    && msgs[0].content.includes('只提醒，不阻止卖出'));
+  check('DashScope rule()：用户消息只含规则原文', msgs[1].role === 'user' && msgs[1].content === text);
+  check('DashScope rule()：系统提示约定 scope 字段（仅原文明确写出的单个 6 位代码），且禁止按名称推断代码', msgs[0].content.includes('"scope":{"kind":"all|symbol","symbol":null}')
+    && msgs[0].content.includes('6 位数字股票代码') && msgs[0].content.includes('不得推断或补全股票代码'));
+  check('DashScope rule()：返回 rawText', r.rawText === '{"status":"unsupported"}');
+}
+
 /* ==== DashScope restate：提示词强制逐字复制 display（回归：pp 被改写为 %） ==== */
 {
   const calls = [];
