@@ -184,9 +184,8 @@ async function loadStockBasicMappings({ callTushare, rowLimit }) {
       for (const row of rows) {
         const symbol = String(row.symbol ?? '').trim();
         const tsCode = String(row.ts_code ?? '').trim();
-        if (!SYMBOL_RE.test(symbol) || !TS_CODE_RE.test(tsCode) || !tsCode.startsWith(symbol)) {
-          throw fail(MARKET_TRANSPORT_CODES.RESPONSE);
-        }
+        // 真实 stock_basic（如 SSE/D）会夹带 7 位 symbol 等异常记录；单条无关记录不应阻断整批快照。
+        if (!SYMBOL_RE.test(symbol) || !TS_CODE_RE.test(tsCode) || !tsCode.startsWith(symbol)) continue;
         if (!mapping.has(symbol)) mapping.set(symbol, tsCode);
       }
     }
@@ -257,7 +256,12 @@ async function buildSnapshot({
   symbols, start, end, callTushare, getStockBasicMappings, now,
   chunkTradingDays, rowLimit, maxConcurrency,
 }) {
-  const mapping = await getStockBasicMappings();
+  // 共享索引只保留通过严格校验的行；本次请求再收窄到请求标的，避免无关记录参与判定。
+  const allMapping = await getStockBasicMappings();
+  const mapping = new Map();
+  for (const symbol of symbols) {
+    if (allMapping.has(symbol)) mapping.set(symbol, allMapping.get(symbol));
+  }
   const tsCodes = resolveTsCodes(symbols, mapping);
 
   const calendarRows = await callTushare({
