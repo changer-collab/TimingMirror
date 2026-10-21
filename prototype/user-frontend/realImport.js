@@ -23,15 +23,10 @@ import { IMPORT_VISION_MAX_IMAGES, validateVisionInput } from '../../src/agent/i
 import { getPdfPageCount, renderPdfPages } from '../../src/engine/pdfRender.js';
 import { prepareImageFile } from '../../src/engine/visionImage.js';
 import { finalizeConfirmedBill } from '../../src/agent/importFinalize.js';
+import { REPORT_SCENARIOS, matchReportScenario } from '../../src/demo/reportScenarios.js';
 
 const FILE_ACCEPT = '.csv,.tsv,.xlsx,.pdf,.txt,.png,.jpg,.jpeg,.webp,text/csv,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/*';
 const SOURCE_LABEL = Object.freeze({ csv: 'CSV', tsv: 'TSV', xlsx: 'Excel', pdf: 'PDF', text: '粘贴文字', image: '截图', unsupported: '文件' });
-const SAMPLE_CSV = '\uFEFF日期,标的,方向,价格,数量,费用,税费\n'
-  + '2024-11-06,600519,买入,200.00,100,5.00,0.00\n'
-  + '2025-01-15,600519,卖出,220.00,100,5.00,10.00\n'
-  + '2024-11-06,300750,买入,150.00,200,5.00,0.00\n'
-  + '2025-03-14,300750,卖出,160.00,100,5.00,10.00\n'
-  + '2024-11-07,601318,买入,100.00,500,,\n';
 
 const ui = { pasteOpen: false };
 let pdfSource = null;
@@ -51,6 +46,21 @@ function fmtSize(bytes) {
 
 function freshBill(fields = {}) {
   return { ...defaultBill(), ...fields };
+}
+
+function loadedBillFields(bill) {
+  return {
+    trades: bill.trades,
+    warnings: bill.warnings,
+    errors: bill.errors,
+    dataMode: bill.dataMode,
+    sourceNote: bill.sourceNote,
+    resultLabelling: bill.resultLabelling,
+    demo: bill.demo === true,
+    demoScenarioId: bill.demoScenarioId ?? null,
+    demoScenario: bill.demoScenario ?? null,
+    marketSource: bill.marketSource ?? null,
+  };
 }
 
 function readText(file) {
@@ -184,18 +194,19 @@ function uploadCardHTML(state, rec) {
 }
 
 function sampleCardHTML() {
-  return `<aside class="sample-card" aria-label="示例账单">
-    <span class="sample-stamp">DEMO BILL / 示例</span>
-    <h2>没有账单？<br>先用示例走一遍。</h2>
-    <p>5 笔交易、3 个标的，其中一行故意缺失费用与税费，方便看清标注规则。</p>
-    <dl class="sample-stats">
-      <div><dt>交易</dt><dd>5</dd></div>
-      <div><dt>标的</dt><dd>3</dd></div>
-      <div><dt>缺失行</dt><dd>1</dd></div>
-    </dl>
-    <button class="btn btn-primary" id="load-demo" type="button" data-demo-route="report">加载示例账单 <span class="arrow">→</span></button>
-    <button class="btn btn-outline" id="download-demo" type="button" data-action="download-demo">下载示例 CSV <span aria-hidden="true">↓</span></button>
-    <p class="fine">示例数据只用于演示产品流程，不构成任何投资建议。</p>
+  const items = REPORT_SCENARIOS.map((scenario) => `<button class="scenario-item" type="button" data-action="download-scenario" data-scenario="${esc(scenario.id)}">
+    <span class="scenario-main">
+      <span class="scenario-title">${esc(scenario.title)}</span>
+      <span class="scenario-tag">${esc(scenario.tag)}</span>
+    </span>
+    <span class="scenario-download">下载 CSV ↓</span>
+  </button>`).join('');
+  return `<aside class="sample-card scenario-card" aria-label="示例场景">
+    <span class="sample-stamp">DEMO / 4 个场景</span>
+    <h2>没有账单？<br>下载示例再上传。</h2>
+    <p>下载任一场景的 CSV，拖回左侧导入，就能看到对应报告。示例行情会随文件自动匹配。</p>
+    <div class="scenario-list">${items}</div>
+    <p class="fine" data-role="scenario-hint">示例 CSV 只含合成交易，不是真实账户。</p>
   </aside>`;
 }
 
@@ -488,16 +499,19 @@ function renderBelow(state, rec) {
   return '';
 }
 
-function downloadDemoCsv() {
-  const blob = new Blob([SAMPLE_CSV], { type: 'text/csv;charset=utf-8' });
+function downloadScenarioCsv(scenario, button) {
+  if (!scenario) return;
+  const blob = new Blob([scenario.csv], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'demo-bill.csv';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = scenario.fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const hint = button.closest('.scenario-card')?.querySelector('[data-role="scenario-hint"]');
+  if (hint) hint.textContent = `已下载 ${scenario.fileName}。把它拖回左侧，核对并确认后即可查看报告。`;
 }
 
 export function renderRealImport(host, ctx) {
@@ -546,8 +560,8 @@ export function renderRealImport(host, ctx) {
         if (ui.pasteOpen) host.querySelector('#tm-paste-input')?.focus();
       } else if (action === 'parse-paste') {
         handlePaste(ctx, host.querySelector('#tm-paste-input')?.value ?? '');
-      } else if (action === 'download-demo') {
-        downloadDemoCsv();
+      } else if (action === 'download-scenario') {
+        downloadScenarioCsv(REPORT_SCENARIOS.find((item) => item.id === button.getAttribute('data-scenario')), button);
       } else if (action === 'ai-text') {
         aiRecover(ctx);
       } else if (action === 'ai-vision') {
@@ -660,9 +674,11 @@ async function applySource(ctx, { sourceId, contextId, sourceKind, content, tabl
     note: '未识别到标准表头；可以粘贴带表头的文字，或让 AI 整理交易明细。',
   };
   if (isLocalDraftComplete(localDraft, fileName)) {
-    const bill = await demo.loadUserBillFromTable(localDraftTable(localDraft), fileName, { method: 'manual' });
+    const table = localDraftTable(localDraft);
+    const scenario = matchReportScenario({ fileName, table });
+    const bill = await demo.loadUserBillFromTable(table, fileName, { method: 'manual', scenario });
     set({
-      bill: freshBill({ contextId, status: 'loaded', sourceType: 'local', fileName, fileSize, trades: bill.trades, warnings: bill.warnings, errors: bill.errors, dataMode: bill.dataMode, sourceNote: bill.sourceNote, resultLabelling: bill.resultLabelling, importMethod: 'manual' }),
+      bill: freshBill({ contextId, status: 'loaded', sourceType: 'local', fileName, fileSize, ...loadedBillFields(bill), importMethod: 'manual' }),
       chat: defaultChat(contextId),
       importRecovery: { ...base, status: 'local_ready', localDraft, draft: null },
     });
@@ -817,9 +833,10 @@ async function validateDraft(ctx) {
   }
   const method = draft.rows.some((row) => row.source === 'ai' && row.include !== false) ? 'ai' : 'manual';
   const modality = rec.vision?.kind ? 'vision' : 'text';
-  const bill = await demo.loadUserBillFromTable(checked.table, sourceFile, { method, modality });
+  const scenario = matchReportScenario({ fileName: sourceFile, table: checked.table });
+  const bill = await demo.loadUserBillFromTable(checked.table, sourceFile, { method, modality, scenario });
   set({
-    bill: freshBill({ contextId: state.bill.contextId ?? createBillContextId(), status: 'loaded', sourceType: 'local', fileName: sourceFile, fileSize: rec.fileSize, blocked: false, trades: bill.trades, warnings: bill.warnings, errors: bill.errors, dataMode: bill.dataMode, sourceNote: bill.sourceNote, resultLabelling: bill.resultLabelling, importMethod: method, importModality: modality }),
+    bill: freshBill({ contextId: state.bill.contextId ?? createBillContextId(), status: 'loaded', sourceType: 'local', fileName: sourceFile, fileSize: rec.fileSize, blocked: false, ...loadedBillFields(bill), importMethod: method, importModality: modality }),
     importRecovery: { ...rec, draft, status: 'accepted', error: null, validationErrors: [] },
   });
 }

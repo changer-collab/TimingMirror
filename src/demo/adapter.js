@@ -24,6 +24,7 @@ import { buildPatternList } from '../engine/behavior.js';
 import { buildReturnWaterfall } from '../engine/waterfall.js';
 import { computeStockSelf } from '../engine/stockSelf.js';
 import { computePGR } from '../engine/pgr.js';
+import { DEMO_REPORT_MARKET_SOURCE, getReportScenario, loadReportScenarioMarket } from './reportScenarios.js';
 import { CONTRACT_CODES, CONTRACT_TEMPLATES, dayChangePct, matchContract } from '../engine/contractMatch.js';
 import {
   parseRuleSpec, scopeApplies, notApplicableMessage, describeScopeChange, scopeLabel, normalizeScope,
@@ -61,6 +62,7 @@ const MARKET_SOURCE_META = Object.freeze({
     cacheName: '已签收真实行情缓存',
     note: '本地签收的冻结行情快照（data/market-cache.json）；仅用于离线核查，不进入页面行情链路',
   }),
+  'demo-frozen': Object.freeze({ ...DEMO_REPORT_MARKET_SOURCE, cacheName: '示例行情' }),
 });
 export const MARKET_SOURCES = Object.freeze(Object.values(MARKET_SOURCE_META));
 
@@ -294,6 +296,10 @@ async function loadMarket(sourceId = DEFAULT_MARKET_SOURCE, scope = null) {
   }
   if (sourceId === 'synthetic-fixture') return syntheticMarket();
   if (sourceId === 'signed-cache') return signedMarket();
+  if (sourceId === 'demo-frozen') {
+    if (!scope?.scenarioId) throw new Error('示例行情缺少场景标识（内部调用未提供）');
+    return loadReportScenarioMarket(scope.scenarioId);
+  }
   throw new Error(`未知行情来源：${sourceId}`);
 }
 
@@ -306,6 +312,7 @@ function marketMeta(mkt) {
     note: source.note,
     signed: source.signed === true,
     dynamic: source.dynamic === true,
+    demo: source.demo === true,
     artifact: source.artifact ?? null,
     provider: source.provider ?? null,
     fetchedAt: source.fetchedAt ?? null,
@@ -376,16 +383,19 @@ function localTradeBoundary(trades) {
     : [];
 }
 
-// 共享市场段（本地账单）：Tushare 动态行情 → 末笔检查 → 取价；缺价按 B4 扣发对应标的与组合。
-async function runUserMarketStage(trades) {
+// 共享市场段（本地账单）：默认 Tushare 动态行情；示例场景显式使用冻结合成行情。
+// 两条来源不互相回退：示例场景不会请求网络，真实账单也不会回落到示例价格。
+async function runUserMarketStage(trades, { marketSource = DEFAULT_MARKET_SOURCE, demoScenarioId = null } = {}) {
   const boundary = localTradeBoundary(trades);
   if (boundary.length) {
     return { ok: false, market: null, marketSource: null, supportScope: null, asOfDate: null, marketRange: null, snapshot: null, val: null, errors: boundary };
   }
   let mkt;
   try {
-    const scope = marketScopeFromTrades(trades);
-    mkt = await loadMarket(DEFAULT_MARKET_SOURCE, scope);
+    const scope = marketSource === 'demo-frozen'
+      ? { scenarioId: demoScenarioId }
+      : marketScopeFromTrades(trades);
+    mkt = await loadMarket(marketSource, scope);
   } catch (e) {
     return {
       ok: false, market: null, marketSource: null, supportScope: null, asOfDate: null, marketRange: null, snapshot: null, val: null,
@@ -450,6 +460,43 @@ export const USER_BILL_VISION_DATA_MODE = Object.freeze({
   note: '原始文件未上传；只有你点击识别时，所选压缩截图或本地渲染页面图片才会发送给视觉模型整理交易明细；行情服务端只接收标的代码与日期范围，取数失败时阻断、不回退静态或合成行情',
 });
 
+export const DEMO_REPORT_DATA_MODE = Object.freeze({
+  id: 'demo_report_frozen_market',
+  label: '示例场景 + 冻结合成行情',
+  note: '合成账单与合成价格，仅用于演示不同报告状态；不是真实账户、真实行情或投资建议',
+});
+
+/** 导入页示例场景 → 已确认示例账单；报告仍走同一复核链路，但行情固定为冻结合成快照。 */
+export async function loadReportScenarioBill(id, { contextId = null } = {}) {
+  const scenario = getReportScenario(id);
+  if (!scenario) throw new Error(`未知示例场景：${id}`);
+  const normalized = normalizeRows(scenario.table, scenario.fileName);
+  if (normalized.blocked || normalized.trades.length === 0) {
+    throw new Error(`示例场景数据未通过校验：${normalized.errors.map((e) => e.message).join('；') || '没有可计算交易'}`);
+  }
+  return {
+    status: 'confirmed',
+    sourceType: 'local',
+    source: 'demo',
+    confirmed: true,
+    fileName: scenario.fileName,
+    fileSize: 0,
+    trades: normalized.trades,
+    warnings: normalized.warnings,
+    errors: normalized.errors,
+    blocked: false,
+    dataMode: DEMO_REPORT_DATA_MODE,
+    sourceNote: `示例场景：${scenario.title}（合成账单 + 冻结合成行情；非真实账户）`,
+    resultLabelling: RESULT_LABELS,
+    contextId,
+    demo: true,
+    demoScenarioId: scenario.id,
+    demoScenario: { id: scenario.id, title: scenario.title, tag: scenario.tag, story: scenario.story, headline: scenario.headline },
+    marketSource: 'demo-frozen',
+    importMethod: 'demo',
+  };
+}
+
 export async function loadUserBillFromText(csvText, fileName) {
   const name = String(fileName || 'user-bill.csv');
   const normalized = normalizeRows(parseCsvText(String(csvText)), name);
@@ -466,8 +513,9 @@ export async function loadUserBillFromText(csvText, fileName) {
   };
 }
 
-/** 表格（CSV/TSV/Excel/PDF 提取或 AI 草稿）→ 用户账单；正式入账仍走默认整表校验。 */
-export async function loadUserBillFromTable(table, fileName, { method = 'manual', modality = 'text', note = '' } = {}) {
+/** 表格（CSV/TSV/Excel/PDF 提取或 AI 草稿）→ 用户账单；正式入账仍走默认整表校验。
+    `scenario` 仅在用户上传下载的示例 CSV 时传入，用于把行情固定到该场景的冻结合成快照。 */
+export async function loadUserBillFromTable(table, fileName, { method = 'manual', modality = 'text', note = '', scenario = null } = {}) {
   const name = String(fileName || 'user-bill.csv');
   const normalized = normalizeRows(table, name);
   const methodText = method === 'ai'
@@ -478,13 +526,21 @@ export async function loadUserBillFromTable(table, fileName, { method = 'manual'
     : (modality === 'vision' ? USER_BILL_VISION_DATA_MODE : USER_BILL_AI_DATA_MODE);
   return {
     sourceType: 'local',
-    dataMode,
+    dataMode: scenario ? DEMO_REPORT_DATA_MODE : dataMode,
     fileName: name,
+    ...(scenario ? {
+      demo: true,
+      demoScenarioId: scenario.id,
+      demoScenario: { id: scenario.id, title: scenario.title, tag: scenario.tag, story: scenario.story, headline: scenario.headline },
+      marketSource: 'demo-frozen',
+    } : {}),
     blocked: normalized.blocked,
     trades: normalized.trades,
     warnings: normalized.warnings,
     errors: normalized.errors,
-    sourceNote: `来源：${name}（${methodText}，未上传原始文件；schema ${normalized.schema_version}）${note ? `；${note}` : ''}`,
+    sourceNote: scenario
+      ? `示例场景：${scenario.title}（上传的示例 CSV，本机解析；合成账单 + 冻结合成行情；非真实账户）`
+      : `来源：${name}（${methodText}，未上传原始文件；schema ${normalized.schema_version}）${note ? `；${note}` : ''}`,
     resultLabelling: RESULT_LABELS,
   };
 }
@@ -756,10 +812,14 @@ function buildUserInsights({ stage, trades, closes, review }) {
      review, factsByScope{}, provenance, labels,
      insights: { portfolio, behavior, stock_self, pgr, review_summary } } */
 export async function loadUserBillReport(bill) {
+  const demo = bill?.demo === true && bill?.marketSource === 'demo-frozen';
   const out = {
     sourceType: 'local',
     fileName: bill && bill.fileName ? bill.fileName : '',
     dataMode: (bill && bill.dataMode) || USER_BILL_DATA_MODE,
+    demo,
+    demoScenario: demo ? (bill.demoScenario ?? { id: bill.demoScenarioId ?? null, title: '示例场景', headline: '示例报告' }) : null,
+    marketSourceId: demo ? 'demo-frozen' : DEFAULT_MARKET_SOURCE,
     marketSource: null,
     supportScope: null,
     asOfDate: null,
@@ -788,7 +848,10 @@ export async function loadUserBillReport(bill) {
   const trades = bill.trades;
   out.warnings = [...(bill.warnings ?? [])];
 
-  const stage = await runUserMarketStage(trades);
+  const stage = await runUserMarketStage(trades, {
+    marketSource: out.marketSourceId,
+    demoScenarioId: bill.demoScenarioId ?? bill.demoScenario?.id ?? null,
+  });
   Object.assign(out, { marketSource: stage.marketSource, supportScope: stage.supportScope, asOfDate: stage.asOfDate, marketRange: stage.marketRange, snapshot: stage.snapshot, valuation: stage.val });
   if (!stage.ok) {
     out.status = 'blocked';

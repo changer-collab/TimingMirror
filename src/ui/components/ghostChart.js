@@ -35,6 +35,11 @@ function textNode(str) { return document.createTextNode(String(str)); }
 
 const xStep = (n) => (W - PAD.l - PAD.r) / Math.max(n - 1, 1);
 const xPos = (i, n) => (n <= 1 ? PAD.l + (W - PAD.l - PAD.r) / 2 : PAD.l + xStep(n) * i);
+const AXIS_FMT = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
+const MONEY_FMT = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtAxis = (v) => AXIS_FMT.format(v);
+const fmtMoney = (v) => `¥${MONEY_FMT.format(v)}`;
+const fmtPrice = (v) => MONEY_FMT.format(v);
 
 function extent(values) {
   const v = values.filter(Number.isFinite);
@@ -137,8 +142,8 @@ function frame(ext, H) {
     g.append(svgEl('line', { x1: PAD.l, x2: W - PAD.r, y1: y, y2: y, class: 'gc-grid' }));
   }
   if (ext) {
-    g.append(svgText(PAD.l - 8, yPos(ext.hi, ext, H) + 4, ext.hi, 'gc-axis gc-axis-end'));
-    g.append(svgText(PAD.l - 8, yPos(ext.lo, ext, H) + 4, ext.lo, 'gc-axis gc-axis-end'));
+    g.append(svgText(PAD.l - 8, yPos(ext.hi, ext, H) + 4, fmtAxis(ext.hi), 'gc-axis gc-axis-end'));
+    g.append(svgText(PAD.l - 8, yPos(ext.lo, ext, H) + 4, fmtAxis(ext.lo), 'gc-axis gc-axis-end'));
   }
   return g;
 }
@@ -156,6 +161,7 @@ function axisLabelAttrs(i, n) {
 
 export function renderGhostChart(root, cf) {
   const { series, markers } = cf;
+  const compact = cf.compact === true;
   const points = series.points;
   const n = points.length;
   const xs = (i) => xPos(i, n);
@@ -169,12 +175,14 @@ export function renderGhostChart(root, cf) {
   const tip = div('gc-tip');
   tip.setAttribute('style', 'display:none');
 
-  wrap.append(div('gc-reading-guide', [
-    textNode('读图提示：上图比较你的实际结果、买入后持有，以及“这笔卖出没有发生”的假设结果；下图只显示每日收盘价和交易发生的时间点。'),
-  ]));
+  if (!compact) {
+    wrap.append(div('gc-reading-guide', [
+      textNode('读图提示：上图比较你的实际结果、买入后持有，以及“这笔卖出没有发生”的假设结果；下图只显示每日收盘价和交易发生的时间点。'),
+    ]));
+  }
 
   //  上：资产路径 
-  wrap.append(div('gc-panel-title', [textNode('资产价值变化：实际操作 / 买入后持有 / 假如这笔卖出没有发生；红色带表示两者差额')]));
+  wrap.append(div('gc-panel-title', [textNode(compact ? '资产价值' : '资产价值变化：实际操作 / 买入后持有 / 假如这笔卖出没有发生；红色带表示两者差额')]));
   const svg1 = svgEl('svg', { viewBox: `0 0 ${W} ${H1}`, class: 'gc-svg', role: 'img' });
   svg1.append(frame(extA, H1));
   const gapPath = gapD(points, xs, yA, yA);
@@ -196,7 +204,7 @@ export function renderGhostChart(root, cf) {
   wrap.append(svg1);
 
   //  下：收盘价与买卖点 
-  wrap.append(div('gc-panel-title', [textNode('每日收盘价与交易时间点：绿色为买入，红色为卖出，橙色圈为本次模拟的卖出笔')]));
+  wrap.append(div('gc-panel-title', [textNode(compact ? '收盘价与买卖点' : '每日收盘价与交易时间点：绿色为买入，红色为卖出，橙色圈为本次模拟的卖出笔')]));
   const svg2 = svgEl('svg', { viewBox: `0 0 ${W} ${H2}`, class: 'gc-svg', role: 'img' });
   svg2.append(frame(extC, H2));
   const closeD = lineD(points, 'close', xs, yC);
@@ -230,7 +238,14 @@ export function renderGhostChart(root, cf) {
   wrap.append(tip);
 
   //  图例 
-  const legend = div('gc-legend', [
+  const legend = div('gc-legend', compact ? [
+    div('gc-legend-item', [spanSw('gc-sw gc-sw-actual'), textNode('实际')]),
+    div('gc-legend-item', [spanSw('gc-sw gc-sw-ghost'), textNode('一直持有')]),
+    div('gc-legend-item', [spanSw('gc-sw gc-sw-cf'), textNode('假如没卖')]),
+    div('gc-legend-item', [spanSw('gc-sw gc-sw-gap'), textNode('差额')]),
+    div('gc-legend-item', [spanSw('gc-sw gc-sw-buy'), textNode('买')]),
+    div('gc-legend-item', [spanSw('gc-sw gc-sw-sell'), textNode('卖')]),
+  ] : [
     div('gc-legend-item', [spanSw('gc-sw gc-sw-actual'), textNode('实际结果（你的操作）')]),
     div('gc-legend-item', [spanSw('gc-sw gc-sw-ghost'), textNode('买入后持有')]),
     div('gc-legend-item', [spanSw('gc-sw gc-sw-cf'), textNode('假如这笔卖出没发生')]),
@@ -250,13 +265,14 @@ export function renderGhostChart(root, cf) {
 
   const marketCaption = cf.marketSource && cf.marketSource.dynamic
     ? 'Tushare 动态日线（最新已收盘，服务端获取，非实时，草案口径）'
-    : '合成行情 · 非真实行情（m0 合成夹具，草案口径）';
+    : (cf.marketSource?.demo ? '合成行情 · 仅用于演示' : '合成行情 · 非真实行情（m0 合成夹具，草案口径）');
   wrap.append(div('gc-caption', [
-    textNode(`${marketCaption}：仅替换所选卖出笔，其余成交不变；不构成投资建议`),
+    textNode(compact ? `${marketCaption}；只替换所选卖出，其余成交不变。` : `${marketCaption}：仅替换所选卖出笔，其余成交不变；不构成投资建议`),
   ]));
 
   //  十字线：上下面板同步 
-  const fmt = (v) => (Number.isFinite(v) ? String(v) : '—（缺价）');
+  const fmtValue = (v) => (Number.isFinite(v) ? fmtMoney(v) : '—（缺价）');
+  const fmtClose = (v) => (Number.isFinite(v) ? fmtPrice(v) : '—（缺价）');
   function setIndex(i) {
     if (i === null || i === undefined || i < 0 || i >= n) {
       cross1.setAttribute('style', 'display:none');
@@ -273,11 +289,11 @@ export function renderGhostChart(root, cf) {
     const p = points[i];
     tip.replaceChildren(
       div('gc-tip-date', [textNode(p.date)]),
-      div('gc-tip-row', [textNode(`实际 ${fmt(p.actual)}`)]),
-      div('gc-tip-row', [textNode(`对照 ${fmt(p.ghost)}`)]),
-      div('gc-tip-row', [textNode(`反事实 ${fmt(p.cf)}`)]),
-      div('gc-tip-row', [textNode(`缺口 ${fmt(p.gap)}`)]),
-      div('gc-tip-row', [textNode(`收盘价 ${fmt(p.close)}`)]),
+      div('gc-tip-row', [textNode(`实际 ${fmtValue(p.actual)}`)]),
+      div('gc-tip-row', [textNode(`对照 ${fmtValue(p.ghost)}`)]),
+      div('gc-tip-row', [textNode(`反事实 ${fmtValue(p.cf)}`)]),
+      div('gc-tip-row', [textNode(`缺口 ${fmtValue(p.gap)}`)]),
+      div('gc-tip-row', [textNode(`收盘价 ${fmtClose(p.close)}`)]),
     );
     tip.setAttribute('style', '');
   }

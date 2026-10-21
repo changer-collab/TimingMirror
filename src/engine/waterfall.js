@@ -1,7 +1,7 @@
 // 收益瀑布（P0）—— 本金 → 买入不动收益 → 择时损耗 → 实际到手。
 // 恒等式：buyCost + (ghostValue − buyCost) − dragMoney = actualValue。
 // 边界：只重排 computeIndicators 已算出的组合数字，不引入新口径；标的自身涨幅是另一张卡，不混入本瀑布。
-import { fmtMoney, fmtPP } from './display.js';
+import { fmtMoney, fmtPct, fmtPP } from './display.js';
 
 export const WATERFALL_FORMULA_TEXT = 'buyCost + (ghostValue − buyCost) − dragMoney = actualValue';
 
@@ -38,7 +38,7 @@ export function buildReturnWaterfall({ report } = {}) {
       bar_start: p.buyCost,
       bar_end: p.ghostValue,
       cumulative: p.ghostValue,
-      display: { amount: fmtMoney(ghostGain), ratio: fmtPP(p.ghostRet) },
+      display: { amount: fmtMoney(ghostGain), ratio: fmtPct(p.ghostRet) },
       note: '同样的钱、同样的股数，买入后不动的对照收益',
     },
     {
@@ -62,7 +62,7 @@ export function buildReturnWaterfall({ report } = {}) {
       bar_start: 0,
       bar_end: p.actualValue,
       cumulative: p.actualValue,
-      display: { amount: fmtMoney(actualGain), ratio: fmtPP(p.actualRet) },
+      display: { amount: fmtMoney(actualGain), ratio: fmtPct(p.actualRet) },
       note: '已复核的组合结果',
     },
   ];
