@@ -915,13 +915,16 @@ export function renderContract(root, ctx) {
   }
 
   root.append(page);
+  const mountModal = typeof ctx.setRuleModal === 'function' ? ctx.setRuleModal : null;
   if (backdrop) {
-    root.append(backdrop);
+    if (mountModal) mountModal(backdrop);
+    else root.append(backdrop);
     if (focusedModal !== c.modal) {
       focusedModal = c.modal;
       backdrop.children[0].focus();
     }
   } else {
+    if (mountModal) mountModal(null);
     focusedModal = null;
   }
 }

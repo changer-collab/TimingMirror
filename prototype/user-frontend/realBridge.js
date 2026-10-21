@@ -9,6 +9,25 @@ import { renderRealImport } from './realImport.js';
 const MOBILE_BREAKPOINT = 1280;
 const OLD_CSS = '/src/ui/styles.css';
 
+// 规则视图运行在 shadow root 中。样式文本先缓存，再同步写入每个 shadow root，
+// 避免首次挂载（以及页面重建宿主）时闪现未排版内容。
+let oldCssText = null;
+let oldCssPromise = null;
+
+function loadOldCss() {
+  if (oldCssText) return Promise.resolve(oldCssText);
+  if (oldCssPromise) return oldCssPromise;
+  if (typeof fetch !== 'function' || typeof document === 'undefined') {
+    oldCssPromise = Promise.resolve(null);
+    return oldCssPromise;
+  }
+  oldCssPromise = fetch(OLD_CSS, { credentials: 'same-origin' })
+    .then((res) => (res.ok ? res.text() : Promise.reject(new Error(`stylesheet ${res.status}`))))
+    .then((text) => { oldCssText = text; return text; })
+    .catch(() => null);
+  return oldCssPromise;
+}
+
 const SHADOW_STYLE = `
 :host {
   display: block;
@@ -146,10 +165,12 @@ const ctx = {
   assistantSubtitle: '账单、规则与结果上下文',
   assistantShowFactLink: true,
   scrollToSimulation,
+  setRuleModal,
 };
 
 export function initBridge({ onChange } = {}) {
   onChangeCallback = typeof onChange === 'function' ? onChange : null;
+  loadOldCss();
   const wide = typeof window !== 'undefined' && Number.isFinite(window.innerWidth)
     ? window.innerWidth >= MOBILE_BREAKPOINT
     : true;
@@ -164,6 +185,7 @@ export function getCtx() { return ctx; }
 export function setRoute(route) {
   currentRoute = route;
   shared.route = route === 'rules' ? 'contract' : route;
+  if (route !== 'rules') setRuleModal(null);
 }
 
 export function hasRealState() {
@@ -214,26 +236,91 @@ export function openRealRules() {
 function ensureShadow(host) {
   if (shadowHosts.has(host)) return shadowHosts.get(host);
   const shadow = host.attachShadow({ mode: 'open' });
-  const link = document.createElement('link');
-  link.rel = 'stylesheet';
-  link.href = OLD_CSS;
-  shadow.append(link);
   const style = document.createElement('style');
   style.textContent = SHADOW_STYLE;
   shadow.append(style);
   const root = document.createElement('div');
   root.className = 'tm-shadow-root';
   shadow.append(root);
-  const entry = { shadow, root };
+  const entry = { shadow, root, host, styleEl: style, stylesReady: false, pendingPaint: null };
+  const paintPending = () => {
+    const paint = entry.pendingPaint;
+    entry.pendingPaint = null;
+    if (paint) paint();
+  };
+  if (oldCssText) {
+    style.textContent = oldCssText + SHADOW_STYLE;
+    entry.stylesReady = true;
+  } else {
+    loadOldCss().then((text) => {
+      if (text) {
+        style.textContent = text + SHADOW_STYLE;
+      } else {
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = OLD_CSS;
+        link.addEventListener('load', () => { entry.stylesReady = true; paintPending(); }, { once: true });
+        link.addEventListener('error', () => { entry.stylesReady = true; paintPending(); }, { once: true });
+        shadow.insertBefore(link, style);
+        return;
+      }
+      entry.stylesReady = true;
+      paintPending();
+    });
+  }
   shadowHosts.set(host, entry);
   return entry;
 }
 
 function renderInShadow(host, renderer, after) {
-  const { root } = ensureShadow(host);
-  root.replaceChildren();
-  renderer(root, ctx);
-  if (typeof after === 'function') after(root);
+  const entry = ensureShadow(host);
+  const paint = () => {
+    if (!entry.stylesReady || !entry.host.isConnected) return;
+    host.removeAttribute('aria-busy');
+    entry.root.replaceChildren();
+    renderer(entry.root, ctx);
+    if (typeof after === 'function') after(entry.root);
+  };
+  if (entry.stylesReady) {
+    paint();
+    return;
+  }
+  entry.pendingPaint = paint;
+  if (!entry.root.children.length) {
+    host.setAttribute('aria-busy', 'true');
+    const loading = document.createElement('div');
+    loading.setAttribute('style', 'padding: 28px 4px; color: #5b6468; font: 14px/1.75 system-ui, -apple-system, "Noto Sans SC", sans-serif;');
+    loading.textContent = '正在载入规则工作区…';
+    entry.root.replaceChildren(loading);
+  }
+}
+
+let ruleModalEntry = null;
+
+export function setRuleModal(node) {
+  if (!node && !ruleModalEntry) return;
+  if (!ruleModalEntry) {
+    const host = document.createElement('div');
+    host.id = 'tm-rule-modal';
+    host.className = 'tm-rule-modal-host';
+    host.hidden = true;
+    document.body.append(host);
+    ruleModalEntry = ensureShadow(host);
+  }
+  const entry = ruleModalEntry;
+  const apply = () => {
+    if (entry.pendingModal !== node) return;
+    entry.root.replaceChildren(...(node ? [node] : []));
+    entry.host.hidden = !node;
+  };
+  entry.pendingModal = node ?? null;
+  if (!node) {
+    entry.root.replaceChildren();
+    entry.host.hidden = true;
+    return;
+  }
+  if (entry.stylesReady) apply();
+  else entry.pendingPaint = apply;
 }
 
 export function mountImportView(host) {

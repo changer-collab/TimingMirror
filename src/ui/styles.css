@@ -141,16 +141,18 @@ body {
 .cv-reconfirm-note { color: var(--amber); }
 .cv-empty, .cv-sim-empty { border: 1px dashed var(--line); border-radius: 8px; padding: 10px 14px; color: var(--dim); font-size: 14px; }
 .cv-sim-used { font-size: 14px; color: var(--dim); }
-/* 新增 / 修改弹窗：遮罩覆盖整个视口，背景页面同时设置 inert */
-.cv-modal-backdrop { position: fixed; inset: 0; z-index: 100; background: rgba(20, 33, 61, .38); display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px; overflow-y: auto; }
-.cv-modal { width: min(680px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 18px 48px rgba(20, 33, 61, .28); padding: 20px 24px 22px; display: flex; flex-direction: column; gap: 12px; outline: none; }
-.cv-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+/* 新增 / 修改弹窗：遮罩覆盖整个视口；弹窗限高、内部滚动，页头与操作区保持可见 */
+.cv-modal-backdrop { position: fixed; inset: 0; z-index: 100; background: rgba(20, 33, 61, .38); display: flex; align-items: center; justify-content: center; padding: 16px; overflow-y: auto; }
+.cv-modal { --cv-pad-x: 24px; --cv-pad-top: 20px; --cv-pad-bottom: 22px; width: min(680px, 100%); max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; overscroll-behavior: contain; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 18px 48px rgba(20, 33, 61, .28); padding: var(--cv-pad-top) var(--cv-pad-x) var(--cv-pad-bottom); display: flex; flex-direction: column; gap: 12px; outline: none; }
+.cv-modal { scrollbar-width: none; -ms-overflow-style: none; }
+.cv-modal::-webkit-scrollbar { display: none; }
+.cv-modal-head { position: sticky; top: calc(-1 * var(--cv-pad-top)); z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: calc(-1 * var(--cv-pad-top)) calc(-1 * var(--cv-pad-x)) 0; padding: var(--cv-pad-top) var(--cv-pad-x) 12px; background: var(--panel); border-bottom: 1px solid var(--line-soft); }
 .cv-modal-title { font-size: 19px; color: var(--cream); }
 .cv-modal-close { background: none; border: 0; font-size: 26px; line-height: 1; color: var(--faint); cursor: pointer; padding: 4px 8px; border-radius: 6px; }
 .cv-modal-close:hover { color: var(--cream); background: var(--panel2); }
 .cv-modal-note { font-size: 14px; color: var(--amber-ink); background: var(--amber-tint); border: 1px solid #E8C88A; border-radius: 8px; padding: 8px 12px; }
 .cv-tpl-fixed { font-weight: 700; color: var(--cream); }
-.cv-modal-foot { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line-soft); padding-top: 12px; }
+.cv-modal-foot { position: sticky; bottom: calc(-1 * var(--cv-pad-bottom)); z-index: 2; display: flex; flex-direction: column; gap: 8px; margin: 0 calc(-1 * var(--cv-pad-x)) calc(-1 * var(--cv-pad-bottom)); padding: 12px var(--cv-pad-x) var(--cv-pad-bottom); background: var(--panel); border-top: 1px solid var(--line-soft); }
 .cv-replace-note { font-size: 14px; color: var(--amber-ink); }
 .cv-replace-note:empty { display: none; }
 .cv-modal-actions { justify-content: flex-end; }
@@ -458,8 +460,8 @@ body {
   .rp-delta { padding: 14px; }
   .gc-tip { left: 8px; right: 8px; top: 6px; max-width: none; }
   .cv-head { padding: 14px; }
-  .cv-modal-backdrop { padding: 3vh 10px; }
-  .cv-modal { padding: 16px 14px 18px; }
+  .cv-modal-backdrop { padding: 10px; }
+  .cv-modal { --cv-pad-x: 14px; --cv-pad-top: 16px; --cv-pad-bottom: 18px; padding: 16px 14px 18px; max-height: calc(100vh - 20px); max-height: calc(100dvh - 20px); }
   .cv-modal-actions { flex-wrap: wrap; }
   .cv-modal-actions .btn { flex: 1 1 auto; }
   .cv-slot-empty { align-items: flex-start; }
