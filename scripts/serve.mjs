@@ -10,22 +10,25 @@ import { dirname, join, normalize, extname, sep } from 'node:path';
 import { createHandler } from '../server/site-functions/handler.mjs';
 import { createDashScopeTransport } from '../server/site-functions/dashscope.mjs';
 import { createTushareMarketTransport } from '../server/site-functions/market.mjs';
+import { createLocalFakeImportModel } from './local-fake-import-model.mjs';
 
 const ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), '..'));
 const PORT = Number(process.argv.find((a) => a.startsWith('--port='))?.split('=')[1] ?? process.env.PORT ?? 5180);
-const MARKET_PATH = '/functions/v1/app/api/market/snapshot';
-const RULE_PATH = '/functions/v1/app/api/llm/rule';
-const FUNCTION_PATHS = new Set([MARKET_PATH, RULE_PATH]);
+const FUNCTION_PREFIX = '/functions/v1/app/';
 
-// 凭证只从开发机环境变量读取，不写入文件或日志；未配置时接口明确返回 E_MARKET_NOT_CONFIGURED / E_MODEL_NOT_CONFIGURED。
+// 凭证只从开发机环境变量读取，不写入文件或日志；未配置时对应接口明确返回 NOT_CONFIGURED。
+// 本地未配置 DASHSCOPE_API_KEY 时用 fake 跑导入与助手链路（仅开发验证，线上入口不引用）；配置后直连真实模型。
 const tushareToken = (process.env.TUSHARE_TOKEN ?? '').trim();
 const dashscopeKey = (process.env.DASHSCOPE_API_KEY ?? '').trim();
+const usingFakeModel = dashscopeKey === '';
 const appHandler = createHandler({
-  transport: dashscopeKey === '' ? null : createDashScopeTransport({ apiKey: dashscopeKey }),
+  transport: usingFakeModel
+    ? createLocalFakeImportModel()
+    : createDashScopeTransport({ apiKey: dashscopeKey }),
   marketTransport: tushareToken === '' ? null : createTushareMarketTransport({ token: tushareToken }),
 });
 
-function readRequestBody(req, limit = 256 * 1024) {
+function readRequestBody(req, limit = 12 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let total = 0;
@@ -52,27 +55,38 @@ const MIME = {
   '.csv': 'text/csv; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
   '.ico': 'image/x-icon',
+  '.wasm': 'application/wasm',
+  '.bcmap': 'application/octet-stream',
+  '.pfb': 'application/octet-stream',
+  '.ttf': 'font/ttf',
+  '.otf': 'font/otf',
+  '.icc': 'application/vnd.iccprofile',
 };
 
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://localhost:${PORT}`);
-    if (FUNCTION_PATHS.has(url.pathname)) {
+    if (url.pathname.startsWith(FUNCTION_PREFIX)) {
       let body;
       try {
-        body = await readRequestBody(req);
+        body = ['GET', 'HEAD'].includes(req.method) ? undefined : await readRequestBody(req);
       } catch {
         res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ ok: false, code: 'E_FUNCTION_BODY_TOO_LARGE', message: '请求体超过大小限制' }));
         return;
       }
-      const request = new Request(`http://localhost:${PORT}${url.pathname}`, {
+      const request = new Request(`http://localhost:${PORT}${url.pathname}${url.search}`, {
         method: req.method,
         headers: { 'content-type': req.headers['content-type'] ?? '' },
-        body: req.method === 'POST' ? body : undefined,
+        body,
       });
       const response = await appHandler(request);
+      if (usingFakeModel && (url.pathname.endsWith('/api/llm/import-recover') || url.pathname.endsWith('/api/llm/import-vision'))) {
+        console.log(`[dev-fake] ${url.pathname.split('/').pop()} ${req.method} → ${response.status}`);
+      }
       res.writeHead(response.status, Object.fromEntries(response.headers));
       res.end(Buffer.from(await response.arrayBuffer()));
       return;
@@ -102,4 +116,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`TimingMirror dev server → http://localhost:${PORT}`);
+  console.log(usingFakeModel
+    ? '本地 fake 模型已启用：import-recover、import-vision、rule-intent、restate（不调用真实模型；行情仍需 TUSHARE_TOKEN）'
+    : '已读取开发机 DASHSCOPE_API_KEY，模型请求将调用真实上游');
 });

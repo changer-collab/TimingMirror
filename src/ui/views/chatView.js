@@ -10,6 +10,7 @@ import {
   CHAT_ONLINE_FALLBACK_TEXT,
   CHAT_ONLINE_CODES,
 } from '../../agent/chatOnline.js';
+import { isSupportedChatQuestion } from '../../agent/chatScope.js';
 
 const PROMPTS = ['组合整体表现如何？'];
 
@@ -132,6 +133,27 @@ export function renderChat(root, ctx) {
   async function send(text) {
     const q = String(text || '').trim();
     if (!q || !inBillContext(state) || state.chat.pending) return;
+    if (!isSupportedChatQuestion(q)) {
+      set({
+        chat: {
+          ...state.chat,
+          draft: '',
+          messages: [
+            ...state.chat.messages,
+            { role: 'user', text: q },
+            {
+              role: 'assistant',
+              text: '当前仅支持“组合整体表现”的四项结果（实际收益、对照收益、择时损耗、损耗金额）。本次问题未发送。',
+              tag: '本地范围拦截',
+              tone: 'warn',
+              reason: 'W_CHAT_SCOPE_LOCAL',
+              next: '可以点击上方“组合整体表现如何？”，或把问题限定在组合整体范围。',
+            },
+          ],
+        },
+      });
+      return;
+    }
     const contextId = contextKey(state.bill.contextId);
     const requestId = nextRequestId();
     const isCurrent = () => contextKey(state.bill.contextId) === contextId

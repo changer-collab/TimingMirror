@@ -155,6 +155,120 @@ try {
   check('站点 transport：返回 rawText', result.rawText === '{"answer_text":"ok"}');
 }
 
+/* ==== 站点 ruleIntent：阶段请求形状 ==== */
+{
+  const calls = [];
+  const siteTransport = createHttpTransport({
+    baseUrl: SAME_ORIGIN_BASE,
+    paths: SITE_FUNCTION_PATHS,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(JSON.stringify({ rawText: '{"intent":"contract_setup"}' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+  });
+  const result = await siteTransport.ruleIntent({
+    question: '当天涨幅超过 5% 的票我绝不买入。',
+    stage: 'draft_rule',
+    allowed_intents: ['contract_setup'],
+    allowed_templates: [{ template_id: 'no_buy_on_surge', fields: { threshold_pct: { min: 0, integer: false } } }],
+    allowed_tools: ['contract.parse'],
+    context_summary: { object_type: 'rule' },
+  });
+  const body = JSON.parse(calls[0].options.body);
+  check('站点 ruleIntent：固定同源路径', calls[0].url === SITE_FUNCTION_PATHS.ruleIntent
+    && calls[0].url === '/functions/v1/app/api/llm/rule-intent');
+  check('站点 ruleIntent：body 仅阶段字段', Object.keys(body).join(',') === 'question,stage,allowed_intents,allowed_templates,allowed_tools,context_summary');
+  check('站点 ruleIntent：同源会话且无认证头', calls[0].options.credentials === 'same-origin'
+    && !Object.keys(calls[0].options.headers).some((h) => /authorization|api[-_]?key/i.test(h)));
+  check('站点 ruleIntent：返回 rawText', result.rawText === '{"intent":"contract_setup"}');
+}
+
+/* ==== 站点 importRecover：只发送提取文字与来源类型 ==== */
+{
+  const calls = [];
+  const siteTransport = createHttpTransport({
+    baseUrl: SAME_ORIGIN_BASE,
+    paths: SITE_FUNCTION_PATHS,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(JSON.stringify({ rawText: '{"trades":[],"unresolved":[]}' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+  });
+  const result = await siteTransport.importRecover({
+    content: '日期,标的\n2024-09-24,600519',
+    stage: 'bill_extract',
+    source_kind: 'csv',
+    flow_id: 'import-flow-x-001',
+    request_id: 'import-req-x-1',
+  });
+  const body = JSON.parse(calls[0].options.body);
+  check('站点 importRecover：固定同源路径', calls[0].url === SITE_FUNCTION_PATHS.importRecover
+    && calls[0].url === '/functions/v1/app/api/llm/import-recover');
+  check('站点 importRecover：body 含文字/来源与 audit ID', Object.keys(body).sort().join(',') === 'content,flow_id,request_id,source_kind,stage'
+    && body.flow_id === 'import-flow-x-001' && body.request_id === 'import-req-x-1');
+  check('站点 importRecover：同源会话且无认证头', calls[0].options.credentials === 'same-origin'
+    && !Object.keys(calls[0].options.headers).some((h) => /authorization|api[-_]?key/i.test(h)));
+  check('站点 importRecover：返回 rawText', result.rawText === '{"trades":[],"unresolved":[]}');
+}
+
+/* ==== 站点 importRecover：错误码透传（只进调试，不改主文案） ==== */
+{
+  const siteTransport = createHttpTransport({
+    baseUrl: SAME_ORIGIN_BASE,
+    paths: SITE_FUNCTION_PATHS,
+    fetchImpl: async () => new Response(JSON.stringify({
+      ok: false,
+      code: 'E_IMPORT_RECOVER_RESPONSE_INVALID',
+      message: '账单识别响应未通过服务端校验',
+    }), { status: 502, headers: { 'Content-Type': 'application/json' } }),
+  });
+  let caught = null;
+  try {
+    await siteTransport.importRecover({ content: 'x', stage: 'bill_extract', source_kind: 'text' });
+  } catch (error) {
+    caught = error;
+  }
+  check('站点 importRecover：非 2xx 保留状态码与服务端错误码', !!caught
+    && caught.code === HTTP_TRANSPORT_CODES.STATUS
+    && caught.status === 502
+    && caught.upstreamCode === 'E_IMPORT_RECOVER_RESPONSE_INVALID', JSON.stringify({ code: caught?.code, status: caught?.status, upstreamCode: caught?.upstreamCode }));
+}
+
+/* ==== 站点 importVision：多图只发送 mime/Base64 与 audit ID ==== */
+{
+  const calls = [];
+  const siteTransport = createHttpTransport({
+    baseUrl: SAME_ORIGIN_BASE,
+    paths: SITE_FUNCTION_PATHS,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(JSON.stringify({ rawText: '{"trades":[],"unresolved":[]}' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+  });
+  await siteTransport.importVision({
+    images: [{ mime: 'image/jpeg', data_base64: 'AAAA', bytes: 3, width: 10 }],
+    stage: 'bill_extract_vision',
+    source_kind: 'pdf_scan',
+    flow_id: 'import-flow-x-001',
+    request_id: 'import-req-x-2',
+  });
+  const body = JSON.parse(calls[0].options.body);
+  check('站点 importVision：固定同源路径', calls[0].url === SITE_FUNCTION_PATHS.importVision
+    && calls[0].url === '/functions/v1/app/api/llm/import-vision');
+  check('站点 importVision：只发送 mime/Base64，不带宽度/文件名', Object.keys(body).sort().join(',') === 'flow_id,images,request_id,source_kind,stage'
+    && Object.keys(body.images[0]).sort().join(',') === 'data_base64,mime'
+    && body.flow_id === 'import-flow-x-001' && body.request_id === 'import-req-x-2');
+}
+
 /* ==== intent/restate 成功 + 实际 HTTP 请求白名单 ==== */
 {
   const proxyTransport = createFakeTransport();

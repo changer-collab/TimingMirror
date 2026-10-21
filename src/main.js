@@ -6,6 +6,7 @@ import { renderImport } from './ui/views/importView.js';
 import { renderReport } from './ui/views/reportView.js';
 import { renderChat } from './ui/views/chatView.js';
 import { renderContract } from './ui/views/contractView.js';
+import { renderAssistantPanel, assistantDefaultOpen } from './ui/assistantPanel.js';
 
 const NAV = [
   { id: 'import', label: '导入 · 确认', hash: '#/import' },
@@ -46,6 +47,20 @@ function go(id) {
   const target = `#/${id}`;
   if (location.hash === target) { state.route = id; renderShell(); renderView(); }
   else location.hash = target;
+}
+
+function isMobileLayout() {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(max-width: 1024px)').matches
+    : false;
+}
+
+function toggleAssistant() {
+  if (isMobileLayout()) {
+    set({ assistant: { ...state.assistant, mobileView: !state.assistant.mobileView, open: true } });
+  } else {
+    set({ assistant: { ...state.assistant, open: !state.assistant.open } });
+  }
 }
 
 const ctx = { state, set, go, adapter };
@@ -112,6 +127,25 @@ function renderShell() {
     capabilityDetails(),
   );
 
+  const toggle = document.getElementById('assistant-toggle');
+  if (toggle) {
+    const mobile = isMobileLayout();
+    toggle.textContent = mobile
+      ? (state.assistant.mobileView ? '返回业务页面' : 'AI 助手')
+      : (state.assistant.open ? '收起助手' : '打开 AI 助手');
+    toggle.setAttribute('aria-expanded', String(mobile ? state.assistant.mobileView : state.assistant.open));
+    toggle.onclick = toggleAssistant;
+  }
+  const appBody = document.getElementById('app-body');
+  if (appBody) {
+    appBody.className = 'app-body'
+      + (state.assistant.open ? ' assistant-open' : '')
+      + (state.assistant.mobileView ? ' assistant-mobile-open' : '');
+  }
+  if (typeof document !== 'undefined' && document.body && document.body.classList) {
+    document.body.classList.toggle('assistant-mobile-active', state.assistant.mobileView === true);
+  }
+
   const nav = document.getElementById('nav');
   clear(nav);
   for (const n of NAV) nav.append(el('a', { href: n.hash, class: `tab ${state.route === n.id ? 'active' : ''}`.trim() }, [n.label]));
@@ -149,11 +183,20 @@ function renderView() {
   clear(root);
   root.className = 'view' + (state.route === 'report' ? ' view-report' : '');
   VIEWS[state.route](root, ctx);
+  const assistantRoot = document.getElementById('assistant');
+  if (assistantRoot) renderAssistantPanel(assistantRoot, ctx);
 }
 
 state.contracts.versions = loadContractsDemo();
 state.route = routeFromHash();
-window.addEventListener('hashchange', () => { state.route = routeFromHash(); renderShell(); renderView(); });
+const initialWidth = typeof window !== 'undefined' && Number.isFinite(window.innerWidth) ? window.innerWidth : 1440;
+state.assistant.open = assistantDefaultOpen(initialWidth);
+window.addEventListener('hashchange', () => {
+  state.route = routeFromHash();
+  if (state.assistant.mobileView) state.assistant.mobileView = false;
+  renderShell();
+  renderView();
+});
 subscribe(() => { renderShell(); renderView(); });
 renderShell();
 renderView();

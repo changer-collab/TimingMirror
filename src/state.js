@@ -16,7 +16,48 @@ export function defaultBill() {
     status: 'none', scenario: 'R', trades: [], warnings: [], errors: [],
     sourceNote: '', resultLabelling: null, error: '',
     sourceType: null, fileName: '', fileSize: 0, blocked: false, dataMode: null,
-    contextId: null,
+    contextId: null, importMethod: null,
+  };
+}
+
+export function defaultImportRecovery() {
+  return {
+    status: 'idle',
+    sourceId: null,
+    sourceKind: null,
+    fileName: '',
+    fileSize: 0,
+    content: '',
+    contentEdited: false,
+    localDraft: null,
+    localNote: '',
+    draft: null,
+    unresolved: [],
+    pending: false,
+    error: null,
+    notice: null,
+    validationErrors: [],
+    unsupported: null,
+    modelCalls: 0,
+    budgetMax: 2,
+    budgetExhausted: false,
+    flowId: null,
+    requestId: null,
+    trace: null,
+    vision: {
+      kind: null,
+      fileName: '',
+      pageCount: 0,
+      startPage: 1,
+      endPage: 1,
+      images: [],
+      totalBytes: 0,
+      totalBase64Chars: 0,
+      payloadBytes: 0,
+      status: 'idle',
+      error: null,
+      notice: '',
+    },
   };
 }
 
@@ -28,12 +69,49 @@ export function defaultContracts() {
   return { versions: [], draft: null, marketSource: 'dynamic-tushare', sim: { symbol: '', date: '', action: 'buy', result: null, running: false }, simContext: null };
 }
 
+export function defaultAssistant() {
+  return {
+    open: true,
+    mobileView: false,
+    input: '',
+    pending: false,
+    flowId: null,
+    requestId: null,
+    stage: 'idle',
+    messages: [],
+    draft: null,
+    plan: null,
+    trace: null,
+    explanation: '',
+    error: null,
+    staleNotice: null,
+    contextKey: null,
+    semanticConfirmation: null,
+    currentRule: null,
+    ruleDrift: null,
+    simulation: null,
+    consistency: null,
+    modelCalls: 0,
+    budgetMax: 2,
+    outbound: false,
+    pendingConfirmationFlowId: null,
+    versionsBaselineCount: null,
+    versionsBaselineHashes: [],
+    dataContextKey: null,
+    ruleStateKey: null,
+    simulationKey: null,
+    marketNotice: null,
+  };
+}
+
 export const state = {
   route: 'import',
   bill: defaultBill(),
   report: { scenario: 'R', symbol: 'pool' },
   chat: defaultChat(),
   contracts: defaultContracts(),
+  assistant: defaultAssistant(),
+  importRecovery: defaultImportRecovery(),
 };
 
 export function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }

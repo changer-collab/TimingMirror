@@ -1,3 +1,7 @@
+import * as bridge from './realBridge.js';
+import { renderRealReport } from './realReport.js';
+import { renderRealChat } from './realChat.js';
+
 (() => {
   'use strict';
 
@@ -117,9 +121,9 @@
   const TITLES = {
     home: '择时镜子 TimingMirror · 把交易照见成证据',
     import: '导入账单 · 择时镜子',
-    report: '示例报告 · 择时镜子',
+    report: '报告 · 择时镜子',
     chat: '问镜子 · 择时镜子',
-    rules: '我的规则 · 择时镜子',
+    rules: '规则 · 择时镜子',
   };
 
   const app = document.getElementById('app');
@@ -204,6 +208,9 @@
     const html = document.documentElement;
     const previous = html.style.scrollBehavior;
     html.style.scrollBehavior = 'auto';
+    const main = document.getElementById('tm-main');
+    if (main) main.scrollTop = 0;
+    document.body.scrollTop = 0;
     window.scrollTo(0, 0);
     html.style.scrollBehavior = previous;
   }
@@ -256,6 +263,8 @@
   }
 
   function renderChrome() {
+    const mode = pageMode();
+    const statusInfo = sessionStatusInfo();
     topbarEl.innerHTML = `<div class="topbar-inner">
       ${brandHTML()}
       <nav class="nav" aria-label="主导航">
@@ -267,10 +276,11 @@
       </nav>
       <div class="topbar-right">
         <nav class="view-switch" aria-label="界面视图">
-          <a class="view-option" href="../../" title="打开开发者视图">开发者</a>
+          <a class="view-option tm-dev-link" href="../../" title="打开开发者视图（独立页面）" data-developer-link>开发者</a>
           <span class="view-option is-active" aria-current="page">用户端</span>
         </nav>
-        <span class="proto-chip">样本 / 原型</span>
+        <button id="assistant-toggle" class="tm-assistant-toggle" type="button" aria-controls="tm-assistant" aria-expanded="false">AI 助手</button>
+        <span class="proto-chip tm-mode-chip ${statusInfo.tone}">${statusInfo.text}</span>
         <a class="btn btn-primary btn-sm" href="#/import">进入账本 <span class="arrow">→</span></a>
       </div>
     </div>`;
@@ -287,6 +297,13 @@
       return `<a href="#/${route}"${current}>${label}</a>`;
     }).join('');
 
+    const footerNote = statusInfo.tone === 'real'
+      ? '已确认本地账单 · 本机处理 · 不构成投资建议'
+      : statusInfo.tone === 'demo'
+        ? '示例数据 · 不构成投资建议'
+        : statusInfo.tone === 'pending'
+          ? `${statusInfo.text} · 真实账单尚未完成 · 不构成投资建议`
+          : '尚未确认账单 · 不构成投资建议';
     footerEl.innerHTML = `<div class="container">
       <div class="footer-inner">
         <div class="footer-brand">
@@ -298,7 +315,7 @@
             <h4>页面</h4>
             <ul>
               <li><a href="#/import">导入账单</a></li>
-              <li><a href="#/report">示例报告</a></li>
+              <li><a href="#/report" data-demo-link data-demo-route="report">示例报告</a></li>
               <li><a href="#/chat">问镜子</a></li>
               <li><a href="#/rules">我的规则</a></li>
             </ul>
@@ -312,8 +329,8 @@
         </div>
       </div>
       <div class="footer-bottom">
-        <span>© ${new Date().getFullYear()} TimingMirror · 用户端原型</span>
-        <span>虚构示例数据 · 不构成投资建议</span>
+        <span>© ${new Date().getFullYear()} TimingMirror · 用户端</span>
+        <span>${footerNote}</span>
       </div>
     </div>`;
   }
@@ -336,10 +353,194 @@
     </section>`;
   }
 
+  function pageMode(route = state.route) {
+    return bridge.getMode(route);
+  }
+
+  function sharedState() {
+    return bridge.getShared();
+  }
+
+  function isConfirmedLocal() {
+    const bill = sharedState().bill;
+    return bill?.status === 'confirmed' && bill?.sourceType === 'local';
+  }
+
+  function importStatusText() {
+    const shared = sharedState();
+    const bill = shared.bill ?? {};
+    const rec = shared.importRecovery ?? {};
+    if (bill.status === 'confirmed') return { text: '已确认账单', tone: 'real' };
+    if (bill.status === 'loading' || rec.pending || ['reading', 'preparing', 'rendering'].includes(rec.status)) {
+      return { text: '导入中', tone: 'pending' };
+    }
+    if (bill.status === 'invalid' || bill.status === 'error' || rec.status === 'error' || rec.status === 'unsupported') {
+      return { text: '需修正', tone: 'pending' };
+    }
+    if (bill.status === 'loaded' || (rec.status && rec.status !== 'idle')) return { text: '待确认', tone: 'pending' };
+    return { text: '空状态', tone: 'empty' };
+  }
+
+  function sessionStatusInfo() {
+    const shared = sharedState();
+    if (shared.bill?.status === 'confirmed' && shared.bill?.sourceType === 'local') {
+      return { text: '已确认账单', tone: 'real' };
+    }
+    if (bridge.hasRealState()) return importStatusText();
+    if (state.route === 'rules' && pageMode('rules') === 'real') return { text: '规则任务', tone: 'real' };
+    if (bridge.isDemoSelected()) return { text: '示例模式', tone: 'demo' };
+    return { text: '空状态', tone: 'empty' };
+  }
+
+  function modeChipText() {
+    return sessionStatusInfo().text;
+  }
+
+  function hasSessionState() {
+    const shared = sharedState();
+    return bridge.hasRealState()
+      || bridge.isDemoSelected()
+      || (shared.assistant?.messages?.length ?? 0) > 0
+      || !!shared.assistant?.draft
+      || (state.chat?.messages?.length ?? 0) > 0
+      || state.bill?.status !== 'idle';
+  }
+
+  function enterDemoRoute(route) {
+    if (!bridge.enterDemo()) {
+      showToast('已有真实导入任务，示例视图不会覆盖当前账单。');
+      return;
+    }
+    if (route && currentRoute() !== route) {
+      location.hash = `#/${route}`;
+    } else {
+      render();
+    }
+    showToast('已进入示例模式；示例数据不会写入真实账单。');
+  }
+
+  function confirmDeveloperExit(href) {
+    const leave = () => { location.href = href; };
+    if (!hasSessionState()) { leave(); return; }
+    showModal({
+      title: '离开新前端？',
+      subtitle: 'DEVELOPER VIEW / 调试入口',
+      body: '<p>开发者视图是独立页面。离开后，当前助手对话、规则草案、导入草稿和真实账单状态不会跨页面保留；只有导入预算可能留在本标签页。</p><p class="fine">建议先完成当前导入或复制需要保留的内容。</p>',
+      actions: [
+        { label: '留在此页', className: 'btn-outline' },
+        { label: '仍要离开', className: 'btn-ghost danger', onClick: leave },
+      ],
+    });
+  }
+
+  function emptyStatePage(route) {
+    const copy = route === 'report'
+      ? ['还没有可报告的真实账单。', '导入并确认账单后，这里只显示已复核的真实结果，不填充示例数字。']
+      : route === 'chat'
+        ? ['还没有可问答的真实账单。', '导入并确认账单后，事实问答只复述这笔账单的已复核结果。']
+        : ['还没有真实账单或规则任务。', '导入账单后可使用现有规则工作区；也可以直接使用右侧 AI 助手描述规则。'];
+    return `${pageHead({
+      code: route === 'report' ? 'STEP 02 / REPORT' : route === 'chat' ? 'STEP 03 / ASK' : 'STEP 04 / RULES',
+      title: copy[0],
+      intro: `<p>${copy[1]}</p>`,
+      right: '<span class="sample-tag">空状态</span>',
+    })}
+    <div class="container page-body">
+      <section class="panel tm-empty-state">
+        <p class="mono-label">NO REAL BILL / 尚未开始</p>
+        <h2>先导入并确认一份账单。</h2>
+        <p class="muted">真实结果、事实问答和规则任务共用同一份已确认账单；示例视图需要你主动选择。</p>
+        <div class="actions">
+          <a class="btn btn-primary" href="#/import">导入账单 <span class="arrow">→</span></a>
+          <button class="btn btn-outline" type="button" data-demo-route="${route}">查看示例</button>
+        </div>
+      </section>
+    </div>`;
+  }
+
+  function realPendingPage(route) {
+    const shared = sharedState();
+    const bill = shared.bill ?? {};
+    const rec = shared.importRecovery ?? {};
+    const reading = bill.status === 'loading' || ['reading', 'preparing', 'rendering'].includes(rec.status);
+    const failed = bill.status === 'error' || bill.status === 'invalid' || rec.status === 'error' || rec.status === 'unsupported';
+    const title = reading ? '账单还在读取或识别。' : failed ? '账单还没有通过校验。' : '账单还没有正式确认。';
+    const detail = reading
+      ? '完成后会在本页显示真实结果；切页不会重置导入任务。'
+      : failed
+        ? '请在导入页修正或重新识别；这里不会回退到示例报告或示例问答。'
+        : '请先在导入页核对交易并确认；未确认前不展示示例数字。';
+    const issues = [
+      ...(Array.isArray(bill.errors) ? bill.errors.slice(0, 5).map((e) => e.message || e.code) : []),
+      rec.error?.message,
+    ].filter(Boolean);
+    return `${pageHead({
+      code: route === 'report' ? 'STEP 02 / REPORT' : 'STEP 03 / ASK',
+      title,
+      intro: `<p>${detail}</p>`,
+      right: `<span class="sample-tag">${reading ? '导入中' : failed ? '需修正' : '待确认'}</span>`,
+    })}
+    <div class="container page-body">
+      <section class="panel tm-empty-state">
+        <p class="mono-label">REAL IMPORT / ${reading ? 'IN PROGRESS' : failed ? 'NEEDS FIX' : 'WAITING CONFIRM'}</p>
+        <h2>${reading ? '正在处理你的本地账单。' : failed ? '当前账单不能用于真实结果。' : '确认后才进入真实结果。'}</h2>
+        <p class="muted">${reading ? '读取、AI 识别或本地渲染仍在进行；完成后会使用同一份账单。' : '示例数据不会补进真实账单结果。'}</p>
+        ${issues.length ? `<ul class="tm-issue-list">${issues.map((m) => `<li>${esc(m)}</li>`).join('')}</ul>` : ''}
+        <div class="actions">
+          <a class="btn btn-primary" href="#/import">返回导入页 <span class="arrow">→</span></a>
+        </div>
+      </section>
+    </div>`;
+  }
+
+  function realReportPage() {
+    if (!isConfirmedLocal()) return realPendingPage('report');
+    const bill = sharedState().bill;
+    return `${pageHead({
+      code: 'STEP 02 / REPORT',
+      title: '同一把尺，<br>量出差距。',
+      intro: `<div class="report-meta">
+        <div class="report-account"><span>REAL BILL / 已确认本地账单</span><span>${esc(bill.fileName || '未知文件')}</span></div>
+        <dl>
+          <div><dt>数据来源</dt><dd>本机账单 · 未上传</dd></div>
+          <div><dt>结果</dt><dd>仅展示已复核事实</dd></div>
+          <div><dt>状态</dt><dd><span class="status-dot">真实账单</span></dd></div>
+        </dl>
+      </div>`,
+      right: '<span class="sample-tag">真实账单</span><a class="text-link" href="#/import">换一份账单</a>',
+    })}
+    <div id="tm-real-report"></div>`;
+  }
+
+  function realChatPage() {
+    if (!isConfirmedLocal()) return realPendingPage('chat');
+    return `${pageHead({
+      code: 'STEP 03 / ASK',
+      title: '问它为什么，<br>别问它买什么。',
+      intro: '<p>只复述当前已确认账单的已复核事实。数字在本机再校验；不预测、不荐股、不替你决定。</p><ul class="mini-rules"><li>真实账单</li><li>四项事实</li><li>失败即兜底</li></ul>',
+      right: '<span class="sample-tag">真实账单</span>',
+    })}
+    <div id="tm-real-chat"></div>`;
+  }
+
+  function realRulesPage() {
+    return `<div class="container page-body">
+      <section class="tm-workspace-head">
+        <p class="mono-label">REAL RULES / 真实规则</p>
+        <h1>规则工作区</h1>
+        <p class="muted">复用现有规则入口与 contracts 状态；保存、模拟和版本记录保持一致。没有账单时也可以保留右侧助手已产生的规则草案。</p>
+      </section>
+      <div id="tm-real-rules"></div>
+    </div>`;
+  }
+
   /* ---------- home ---------- */
 
   function homePage() {
-    return `<div class="home">
+    const realBanner = isConfirmedLocal()
+      ? `<div class="container tm-real-home-banner"><strong>当前有已确认的本地账单。</strong><span>${esc(sharedState().bill.fileName || '本地账单')} · 报告、问答和助手都使用这笔账单。</span><a class="text-link" href="#/report">查看真实报告 →</a><a class="text-link" href="#/chat">去事实问答 →</a></div>`
+      : '';
+    return `${realBanner}<div class="home">
       <section class="hero">
         <div class="container hero-grid">
           <div class="hero-copy reveal">
@@ -348,7 +549,7 @@
             <p class="lede">看清实际收益、买入不动与择时损耗的差距。每个数字，都能回到原始成交行。</p>
             <div class="hero-actions">
               <a class="btn btn-primary btn-lg" href="#/import">导入我的账单 <span class="arrow">→</span></a>
-              <a class="link-arrow" href="#/report">先看示例报告 <span aria-hidden="true">↗</span></a>
+              <a class="link-arrow" href="#/report" data-demo-link data-demo-route="report">先看示例报告 <span aria-hidden="true">↗</span></a>
             </div>
             <p class="hero-privacy"><span class="lock-dot" aria-hidden="true"></span>原始 CSV 只在本机处理，不上传。</p>
           </div>
@@ -378,7 +579,7 @@
             </div>
             <div class="ledger-foot">
               <span>每个数字，都能回到原始成交行。</span>
-              <a href="#/report">打开完整读数 <span aria-hidden="true">→</span></a>
+              <a href="#/report" data-demo-link data-demo-route="report">打开完整读数 <span aria-hidden="true">→</span></a>
             </div>
             <span class="ledger-note">决定权，始终在你。</span>
           </aside>
@@ -504,14 +705,14 @@
               <p class="eyebrow">ASK THE MIRROR</p>
               <h2>问它为什么，<br>别问它买什么。</h2>
               <p>它只复述这份账单里的事实：哪一笔代价最高、差额从哪里来、如果没卖会怎样。不预测涨跌，不推荐标的。</p>
-              <a class="btn btn-outline" href="#/chat">看看它怎么回答 <span class="arrow">→</span></a>
+              <a class="btn btn-outline" href="#/chat" data-demo-link data-demo-route="chat">看看它怎么回答 <span class="arrow">→</span></a>
             </div>
             <div class="talk-demo">
               <div class="talk-q">为什么差额是 6,440？</div>
               <div class="talk-a">
                 <span class="sample-tag">示例 · 事实复述</span>
                 <p>因为期末对照价值是 <strong>¥118,920</strong>，你的实际价值是 <strong>¥112,480</strong>。差额 = 对照 − 实际 = <strong>¥6,440</strong>，占对照收益的 <strong>34.0%</strong>。</p>
-                <a href="#/report" data-evidence-link>查看证据 →</a>
+                <a href="#/report" data-demo-link data-demo-route="report">查看证据 →</a>
               </div>
             </div>
           </div>
@@ -525,7 +726,7 @@
             <h2>下一次决定之前，<br>先看清上一次。</h2>
             <div class="cta-actions">
               <a class="btn btn-primary btn-lg" href="#/import">导入我的账单 <span class="arrow">→</span></a>
-              <a class="link-arrow" href="#/report">先看示例报告 <span aria-hidden="true">↗</span></a>
+              <a class="link-arrow" href="#/report" data-demo-link data-demo-route="report">先看示例报告 <span aria-hidden="true">↗</span></a>
             </div>
             <p class="cta-note">虚构示例 · 不构成投资建议 · 不荐股 · 不预测 · 决定权在你</p>
           </div>
@@ -572,9 +773,15 @@
   }
 
   function importStepper() {
-    const status = state.bill.status;
-    const confirmed = state.bill.confirmed;
-    const active = confirmed ? 3 : (status === 'loaded' || status === 'invalid') ? 2 : 1;
+    const shared = sharedState();
+    const bill = shared.bill ?? {};
+    const rec = shared.importRecovery ?? {};
+    const confirmed = bill.status === 'confirmed';
+    const active = confirmed
+      ? 3
+      : (bill.status === 'loaded' || bill.status === 'invalid' || (rec.status && rec.status !== 'idle'))
+        ? 2
+        : 1;
     const cls = (n) => `step${n < active ? ' is-done' : ''}${n === active ? ' is-active' : ''}`;
     return `<div class="stepper" aria-label="导入到报告的三个步骤">
       <div class="${cls(1)}"><b>01</b><span>导入账单</span></div>
@@ -645,59 +852,7 @@
   }
 
   function importPage() {
-    const loading = state.bill.status === 'loading';
-    const dropInner = loading
-      ? `<span class="dropzone-mark" aria-hidden="true">…</span>
-         <h2>正在本机读取…</h2>
-         <p>${esc(state.bill.fileName || '账单文件')}</p>
-         <p class="dropzone-foot mono">READING LOCALLY · 不会上传</p>`
-      : `<span class="dropzone-mark" aria-hidden="true">+</span>
-         <h2>把 CSV 拖到这里</h2>
-         <p>或 <span class="text-link">选择文件</span>。第一行为表头，UTF-8 编码。</p>
-         <div class="dropzone-actions"><span class="btn btn-outline">选择 CSV 文件</span></div>
-         <p class="dropzone-foot mono">.CSV · ≤ 2 MB · 只在本机读取</p>`;
-
-    let below = '';
-    if (state.bill.status === 'invalid' || state.bill.status === 'error') {
-      below = errorPanelHTML();
-    } else if (state.bill.status === 'loaded') {
-      below = billPanelHTML();
-    }
-
-    return `${pageHead({
-      code: 'STEP 01 / IMPORT',
-      title: '先把账单<br>放进来。',
-      intro: `<p>选择一份 CSV，在本机完成读取与校验。确认之前，账单不会离开浏览器。</p>
-        <ul class="mini-rules"><li>本地读取</li><li>原始文件不上传</li><li>逐行可核对</li><li>错误整批阻断</li></ul>`,
-      right: '<span class="sample-tag">示例流程</span>',
-    })}
-    <div class="container page-body">
-      ${importStepper()}
-      <div class="import-grid">
-        <section class="panel upload-card" aria-label="选择 CSV 账单文件">
-          <div class="panel-head"><span>01 / 本地文件</span><span class="lock-note">原始 CSV 不上传</span></div>
-          <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="选择或拖入 CSV 账单文件" ${loading ? 'aria-disabled="true"' : ''}>
-            ${dropInner}
-          </div>
-          <input type="file" id="file-input" accept=".csv,text/csv" hidden>
-          <p class="upload-note">支持日期、标的、方向、价格、数量；费用、税费可选，缺失会按 0 标注。文件最大 2 MB，只在本机读取。</p>
-        </section>
-        <aside class="sample-card" aria-label="示例账单">
-          <span class="sample-stamp">DEMO BILL / 示例</span>
-          <h2>没有账单？<br>先用示例走一遍。</h2>
-          <p>5 笔交易、3 个标的，其中一行故意缺失费用与税费，方便看清标注规则。</p>
-          <dl class="sample-stats">
-            <div><dt>交易</dt><dd>5</dd></div>
-            <div><dt>标的</dt><dd>3</dd></div>
-            <div><dt>缺失行</dt><dd>1</dd></div>
-          </dl>
-          <button class="btn btn-primary" id="load-demo" type="button">加载示例账单 <span class="arrow">→</span></button>
-          <button class="btn btn-outline" id="download-demo" type="button">下载示例 CSV <span aria-hidden="true">↓</span></button>
-          <p class="fine">示例数据只用于演示产品流程，不构成任何投资建议。</p>
-        </aside>
-      </div>
-      ${below}
-    </div>`;
+    return '<div id="tm-real-import"></div>';
   }
 
   /* ---------- report ---------- */
@@ -820,6 +975,9 @@
   }
 
   function reportPage() {
+    const mode = pageMode('report');
+    if (mode === 'real') return realReportPage();
+    if (mode === 'empty') return emptyStatePage('report');
     const chart = buildChart();
     const localNotice = (state.bill.source === 'local' && (state.bill.confirmed || state.bill.status === 'loaded'))
       ? `<div class="notice" role="status"><div>你导入的「${esc(state.bill.fileName)}」已通过本机基础校验（${state.bill.trades.length} 笔交易）。本原型尚未接入计算引擎，<strong>报告数字仍为示例数据</strong>，这里只演示从导入、核对到报告的完整流程。</div></div>`
@@ -1122,6 +1280,9 @@
   }
 
   function chatPage() {
+    const mode = pageMode('chat');
+    if (mode === 'real') return realChatPage();
+    if (mode === 'empty') return emptyStatePage('chat');
     const messages = state.chat.messages.map(messageHTML).join('');
     const typing = state.chat.pending
       ? `<div class="msg msg-bot"><span class="msg-avatar" aria-hidden="true">镜</span><div class="msg-body"><div class="msg-meta"><strong>镜子</strong></div><div class="bubble bot"><div class="chat-typing" aria-label="正在组织事实回答"><i></i><i></i><i></i></div></div></div></div>`
@@ -1323,6 +1484,9 @@
   }
 
   function renderRulesPage() {
+    const mode = pageMode('rules');
+    if (mode === 'real') return realRulesPage();
+    if (mode === 'empty') return emptyStatePage('rules');
     const candidates = state.rules.candidates.filter((c) => c.status === 'open');
     const active = state.rules.active;
     const activeCount = active.filter((a) => a.state === 'active').length;
@@ -2083,8 +2247,18 @@
 
   /* ---------- render ---------- */
 
+  function onSharedChange(keys) {
+    if (keys.length === 1 && keys[0] === 'assistant') {
+      bridge.renderAssistant();
+      return;
+    }
+    render();
+  }
+
   function render() {
     state.route = currentRoute();
+    bridge.setRoute(state.route);
+    const mode = pageMode();
     document.title = TITLES[state.route];
     renderChrome();
 
@@ -2096,16 +2270,43 @@
     else if (state.route === 'rules') html = renderRulesPage();
     app.innerHTML = html;
 
-    if (state.route === 'home' || state.route === 'report') animateCounters(app);
-    if (state.route === 'import') bindImport();
-    if (state.route === 'report') bindReport();
-    if (state.route === 'chat') bindChat();
-    if (state.route === 'rules') bindRules();
+    if (state.route === 'home') animateCounters(app);
+    if (state.route === 'import') {
+      bridge.mountImportView(document.getElementById('tm-real-import'));
+    }
+    if (state.route === 'report' && mode === 'demo') bindReport();
+    if (state.route === 'report' && mode === 'real' && isConfirmedLocal()) {
+      renderRealReport(document.getElementById('tm-real-report'), sharedState().bill);
+    }
+    if (state.route === 'chat' && mode === 'demo') bindChat();
+    if (state.route === 'chat' && mode === 'real' && isConfirmedLocal()) {
+      renderRealChat(document.getElementById('tm-real-chat'), bridge.getCtx());
+    }
+    if (state.route === 'rules' && mode === 'demo') bindRules();
+    if (state.route === 'rules' && mode === 'real') {
+      bridge.mountContractView(document.getElementById('tm-real-rules'));
+    }
+
+    bridge.bindAssistantToggle();
+    bridge.renderAssistant();
+    bridge.applyAssistantShell();
   }
 
   /* ---------- global events ---------- */
 
   document.addEventListener('click', (e) => {
+    const developer = e.target.closest('[data-developer-link]');
+    if (developer) {
+      e.preventDefault();
+      confirmDeveloperExit(developer.getAttribute('href') || '../../');
+      return;
+    }
+    const demo = e.target.closest('[data-demo-link], [data-demo-route]');
+    if (demo) {
+      e.preventDefault();
+      enterDemoRoute(demo.getAttribute('data-demo-route'));
+      return;
+    }
     const evidenceLink = e.target.closest('[data-evidence-link]');
     if (!evidenceLink) return;
     e.preventDefault();
@@ -2129,6 +2330,10 @@
     scrollTop();
   });
 
+  window.addEventListener('resize', () => {
+    bridge.onViewportChange();
+  });
+
   if (!location.hash) {
     try {
       history.replaceState(null, '', `${location.pathname}${location.search}#/home`);
@@ -2137,5 +2342,6 @@
     }
   }
 
+  bridge.initBridge({ onChange: onSharedChange });
   render();
 })();

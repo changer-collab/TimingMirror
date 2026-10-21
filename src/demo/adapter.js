@@ -19,7 +19,7 @@ import { computeIndicators, RESULT_LABELS } from '../engine/indicators.js';
 import { buildProvenanceReport } from '../engine/provenance.js';
 import { runReview } from '../agent/reviewPipeline.js';
 import { replaceSell } from '../engine/counterfactual.js';
-import { CONTRACT_TEMPLATES, dayChangePct, matchContract } from '../engine/contractMatch.js';
+import { CONTRACT_CODES, CONTRACT_TEMPLATES, dayChangePct, matchContract } from '../engine/contractMatch.js';
 import {
   parseRuleSpec, scopeApplies, notApplicableMessage, describeScopeChange, scopeLabel, normalizeScope,
   actionApplies, notApplicableActionMessage, actionLabel, RULE_SCHEMA_V1, RULE_SCHEMA_V2, RULE_SPEC_CODES, RULE_CAPABILITIES,
@@ -250,12 +250,45 @@ async function dynamicMarket(scope) {
   return promise;
 }
 
+let signedPromise = null;
+function signedMarket() {
+  if (!signedPromise) {
+    signedPromise = (async () => {
+      const doc = await fetchJson('/data/market-cache.json');
+      const market = createMarketCache(fromPullDraft(doc));
+      const meta = MARKET_SOURCE_META['signed-cache'];
+      const asOfDate = doc.manifest?.asOfDate ?? market.range.end;
+      return {
+        market,
+        valuationDate: asOfDate,
+        source: {
+          ...meta,
+          signed: true,
+          artifact: doc.artifact ?? null,
+          provider: doc.manifest?.data_source ?? null,
+          manifestVersion: doc.manifest_version ?? null,
+          fetchedAt: doc.fetched_at ?? null,
+          latestTradeDate: doc.snapshot?.latest_trade_date ?? null,
+          snapshotId: doc.snapshot?.snapshot_id ?? null,
+          checksum: doc.checksum ?? null,
+          range: { ...market.range },
+          symbols: [...market.symbols],
+          asOfDate,
+          snapshot: market.snapshot,
+        },
+      };
+    })().catch((e) => { signedPromise = null; throw e; });
+  }
+  return signedPromise;
+}
+
 async function loadMarket(sourceId = DEFAULT_MARKET_SOURCE, scope = null) {
   if (sourceId === 'dynamic-tushare') {
     if (!scope) throw new Error('动态行情缺少标的与日期范围（内部调用未提供）');
     return dynamicMarket(scope);
   }
   if (sourceId === 'synthetic-fixture') return syntheticMarket();
+  if (sourceId === 'signed-cache') return signedMarket();
   throw new Error(`未知行情来源：${sourceId}`);
 }
 
@@ -400,6 +433,18 @@ export const USER_BILL_DATA_MODE = Object.freeze({
   note: '交易文件仅在本机处理；服务端只接收标的代码与日期范围，取最新已收盘日线（非实时）；取数失败或超出单次标的上限时报告明确阻断，不回退静态缓存或合成行情',
 });
 
+export const USER_BILL_AI_DATA_MODE = Object.freeze({
+  id: 'user_bill_ai_assisted_dynamic_market',
+  label: '用户本地账单（AI 识别后校对） + Tushare 动态行情',
+  note: '原始文件未上传；只有你点击 AI 识别时，提取出的文字会发送给模型整理交易明细；行情服务端只接收标的代码与日期范围，取数失败时阻断、不回退静态或合成行情',
+});
+
+export const USER_BILL_VISION_DATA_MODE = Object.freeze({
+  id: 'user_bill_vision_assisted_dynamic_market',
+  label: '用户本地账单（截图/页面识别后校对） + Tushare 动态行情',
+  note: '原始文件未上传；只有你点击识别时，所选压缩截图或本地渲染页面图片才会发送给视觉模型整理交易明细；行情服务端只接收标的代码与日期范围，取数失败时阻断、不回退静态或合成行情',
+});
+
 export async function loadUserBillFromText(csvText, fileName) {
   const name = String(fileName || 'user-bill.csv');
   const normalized = normalizeRows(parseCsvText(String(csvText)), name);
@@ -412,6 +457,29 @@ export async function loadUserBillFromText(csvText, fileName) {
     warnings: normalized.warnings,
     errors: normalized.errors,
     sourceNote: `来源：${name}（本机文件，未上传；schema ${normalized.schema_version}）`,
+    resultLabelling: RESULT_LABELS,
+  };
+}
+
+/** 表格（CSV/TSV/Excel/PDF 提取或 AI 草稿）→ 用户账单；正式入账仍走默认整表校验。 */
+export async function loadUserBillFromTable(table, fileName, { method = 'manual', modality = 'text', note = '' } = {}) {
+  const name = String(fileName || 'user-bill.csv');
+  const normalized = normalizeRows(table, name);
+  const methodText = method === 'ai'
+    ? (modality === 'vision' ? '视觉识别后由你校对' : 'AI 识别后由你校对')
+    : '本机解析';
+  const dataMode = method !== 'ai'
+    ? USER_BILL_DATA_MODE
+    : (modality === 'vision' ? USER_BILL_VISION_DATA_MODE : USER_BILL_AI_DATA_MODE);
+  return {
+    sourceType: 'local',
+    dataMode,
+    fileName: name,
+    blocked: normalized.blocked,
+    trades: normalized.trades,
+    warnings: normalized.warnings,
+    errors: normalized.errors,
+    sourceNote: `来源：${name}（${methodText}，未上传原始文件；schema ${normalized.schema_version}）${note ? `；${note}` : ''}`,
     resultLabelling: RESULT_LABELS,
   };
 }
@@ -540,7 +608,7 @@ export async function loadUserBillReport(bill) {
   const out = {
     sourceType: 'local',
     fileName: bill && bill.fileName ? bill.fileName : '',
-    dataMode: USER_BILL_DATA_MODE,
+    dataMode: (bill && bill.dataMode) || USER_BILL_DATA_MODE,
     marketSource: null,
     supportScope: null,
     asOfDate: null,
@@ -772,6 +840,14 @@ export const CONTRACT_MARKET_OPTIONS = Object.freeze([
 ]);
 
 export function contractSimLabels(sourceId = DEFAULT_MARKET_SOURCE) {
+  if (sourceId === 'signed-cache') {
+    return {
+      id: 'signed-cache',
+      label: MARKET_SOURCE_META['signed-cache'].label,
+      scopeNote: '已签收冻结行情快照（仅离线核查）· 不构成投资建议',
+      marketLabel: MARKET_SOURCE_META['signed-cache'].label,
+    };
+  }
   const synthetic = sourceId === 'synthetic-fixture';
   return {
     id: synthetic ? 'synthetic-fixture' : 'dynamic-tushare',
@@ -1222,7 +1298,16 @@ async function evaluateRuleDemo(rule, { symbol, date, bill, marketSource, action
     const scope = labels.id === 'dynamic-tushare' ? contractMarketScope(trades, local) : null;
     const market = (await loadMarket(labels.id, scope)).market;
     out.in_market_cache = market.symbols.includes(symbol);
+    // 签收缓存路径沿用 v1 口径：范围内非交易日不映射、不补价；日期超范围由缓存引擎报 OUT_OF_RANGE。
+    const signedCache = marketSource === 'signed-cache';
+    const inCacheRange = date >= market.range.start && date <= market.range.end;
     if (parsed.kind === 'change_pct_threshold') {
+      if (signedCache && inCacheRange && !market.tradingDays.includes(date)) {
+        return { ...out, ok: true, verdict: 'missing_data', code: CONTRACT_CODES.DATE_NOT_IN_CALENDAR, message: `申报日 ${date} 不是交易日；签收缓存路径不映射、不补价，按数据不足处理（B3/B4）。`, tradesSource: source };
+      }
+      if (!out.in_market_cache) {
+        return { ...out, ok: true, verdict: 'missing_data', code: 'E_MARKET_OUT_OF_SUPPORT', message: `标的 ${symbol} 不在行情缓存支持范围（范围外，非当日缺价 R2）。`, tradesSource: source };
+      }
       const change = dayChangePct(market, symbol, date);
       const match = matchContract(parsed, {
         symbol,
@@ -1230,7 +1315,10 @@ async function evaluateRuleDemo(rule, { symbol, date, bill, marketSource, action
         changePct: change.complete ? change.change_pct : null,
         reason_code: change.complete ? null : change.code,
       });
-      return { ...out, ok: true, verdict: match.verdict, code: match.code, message: match.message, change, match, tradesSource: source, date_mapping: dateMappingOf(date, change, market) };
+      return { ...out, ok: true, verdict: match.verdict, code: match.code, message: match.message, change, match, tradesSource: source, date_mapping: signedCache ? null : dateMappingOf(date, change, market) };
+    }
+    if (signedCache && !inCacheRange) {
+      return { ...out, ok: true, verdict: 'missing_data', code: 'E_VALUATION_OUT_OF_RANGE', message: `日期 ${date} 超出签收缓存范围（${market.range.start} 至 ${market.range.end}）；不改用其他日期。`, tradesSource: source };
     }
     const match = matchContract(parsed, { symbol, date, trades, tradingDays: market.tradingDays });
     return { ...out, ok: true, verdict: match.verdict, code: match.code, message: match.message, match, tradesSource: source };
@@ -1261,7 +1349,7 @@ export async function simulateContracts({ versions, symbol, date, bill, marketSo
   const summary = { triggered: 0, not_triggered: 0, missing_data: 0, not_applicable: 0, error: 0 };
   const labels = contractSimLabels(marketSource);
   const results = [];
-  for (const rule of executable) results.push(simulationDisplay(await evaluateRuleDemo(rule, { symbol, date, bill, marketSource: labels.id, action })));
+  for (const rule of executable) results.push(simulationDisplay(await evaluateRuleDemo(rule, { symbol, date, bill, marketSource, action })));
   for (const r of results) summary[r.display_verdict] += 1;
   return {
     label: labels.label,

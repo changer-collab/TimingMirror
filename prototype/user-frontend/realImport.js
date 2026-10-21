@@ -1,0 +1,825 @@
+// 新前端导入视图：页面结构与文案沿用 PR #37 用户端导入页；解析、AI 预算、视觉、草稿、校验和确认复用既有模块。
+import { defaultBill, defaultChat, defaultImportRecovery, createBillContextId } from '../../src/state.js';
+import * as demo from '../../src/demo/adapter.js';
+import {
+  IMPORT_SOURCE_KINDS,
+  detectSourceKind,
+  parseDelimitedText,
+  extractSource,
+} from '../../src/engine/importSource.js';
+import {
+  buildLocalDraft,
+  isLocalDraftComplete,
+  localDraftTable,
+  buildAiDraft,
+  addBlankRow,
+  removeRow,
+  refreshRowStatus,
+  draftToNormalized,
+  draftSummary,
+  draftRowStatusText,
+} from '../../src/engine/importDraft.js';
+import { IMPORT_VISION_MAX_IMAGES, validateVisionInput } from '../../src/agent/importVision.js';
+import { getPdfPageCount, renderPdfPages } from '../../src/engine/pdfRender.js';
+import { prepareImageFile } from '../../src/engine/visionImage.js';
+import { finalizeConfirmedBill } from '../../src/agent/importFinalize.js';
+
+const FILE_ACCEPT = '.csv,.tsv,.xlsx,.pdf,.txt,.png,.jpg,.jpeg,.webp,text/csv,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/*';
+const SOURCE_LABEL = Object.freeze({ csv: 'CSV', tsv: 'TSV', xlsx: 'Excel', pdf: 'PDF', text: '粘贴文字', image: '截图', unsupported: '文件' });
+const SAMPLE_CSV = '\uFEFF日期,标的,方向,价格,数量,费用,税费\n'
+  + '2024-11-06,600519,买入,200.00,100,5.00,0.00\n'
+  + '2025-01-15,600519,卖出,220.00,100,5.00,10.00\n'
+  + '2024-11-06,300750,买入,150.00,200,5.00,0.00\n'
+  + '2025-03-14,300750,卖出,160.00,100,5.00,10.00\n'
+  + '2024-11-07,601318,买入,100.00,500,,\n';
+
+const ui = { pasteOpen: false };
+let pdfSource = null;
+let sourceSeq = 0;
+
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[ch]));
+}
+
+function fmtSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  return `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+function freshBill(fields = {}) {
+  return { ...defaultBill(), ...fields };
+}
+
+function readText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ''));
+    reader.onerror = () => reject(new Error(`无法读取文件内容：${file.name}`));
+    reader.readAsText(file);
+  });
+}
+
+function readBuffer(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(new Uint8Array(reader.result));
+    reader.onerror = () => reject(new Error(`无法读取文件内容：${file.name}`));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function client(ctx) {
+  return ctx.importRecovery;
+}
+
+function sessionInfo(ctx) {
+  try { return client(ctx).getSession(); } catch { return { flow_id: null, model_calls: 0, budget_max: 2, remaining: 2 }; }
+}
+
+function recoveryBase({ sourceId, sourceKind, fileName, fileSize, content, session, status = 'reading' }) {
+  return {
+    ...defaultImportRecovery(),
+    status,
+    sourceId,
+    sourceKind,
+    fileName,
+    fileSize,
+    content,
+    modelCalls: session.model_calls ?? 0,
+    budgetMax: session.budget_max ?? 2,
+    budgetExhausted: (session.model_calls ?? 0) >= (session.budget_max ?? 2),
+    flowId: session.flow_id ?? null,
+  };
+}
+
+function applySession(recovery, session) {
+  const requestIds = Array.isArray(session.request_ids) ? session.request_ids : [];
+  return {
+    ...recovery,
+    modelCalls: session.model_calls ?? recovery.modelCalls,
+    budgetMax: session.budget_max ?? recovery.budgetMax,
+    budgetExhausted: (session.model_calls ?? recovery.modelCalls) >= (session.budget_max ?? recovery.budgetMax),
+    flowId: session.flow_id ?? recovery.flowId,
+    requestId: requestIds.length ? requestIds[requestIds.length - 1] : recovery.requestId,
+  };
+}
+
+function errorLine(rec) {
+  if (rec?.error?.message) return `<p class="tm-inline-error" role="alert">${esc(rec.error.message)}</p>`;
+  return '';
+}
+
+function sendNotice(rec) {
+  if (rec?.vision?.images?.length) return `将发送所选 ${rec.vision.images.length} 张压缩图片；原始文件不会上传。`;
+  if (String(rec?.content ?? '').trim()) return '将发送提取出的文字；原始文件不会上传。';
+  return '只有你点击识别时才会发送内容；原始文件不会上传。';
+}
+
+function pageHeadHTML() {
+  return `<section class="page-head">
+    <div class="container">
+      <div class="page-topline">
+        <span class="page-code">STEP 01 / IMPORT</span>
+        <div class="page-topline-right"><span class="sample-tag">本机导入</span></div>
+      </div>
+      <div class="page-head-grid">
+        <h1>先把账单<br>放进来。</h1>
+        <div class="page-intro">
+          <p>选择一份账单，在本机完成读取与校验。确认之前，账单不会离开浏览器。</p>
+          <ul class="mini-rules"><li>本地读取</li><li>原始文件不上传</li><li>逐行可核对</li><li>错误整批阻断</li></ul>
+        </div>
+      </div>
+      <div class="page-head-rule" aria-hidden="true"></div>
+    </div>
+  </section>`;
+}
+
+function stepperHTML(bill, rec) {
+  const confirmed = bill.status === 'confirmed';
+  const reviewing = bill.status === 'loaded' || bill.status === 'invalid'
+    || !!rec.draft || rec.sourceKind === 'image'
+    || (rec.sourceKind === 'pdf' && !!rec.vision);
+  const active = confirmed ? 3 : reviewing ? 2 : 1;
+  const cls = (n) => `step${n < active ? ' is-done' : ''}${n === active ? ' is-active' : ''}`;
+  return `<div class="stepper" aria-label="导入到报告的三个步骤">
+    <div class="${cls(1)}"><b>01</b><span>导入账单</span></div>
+    <div class="${cls(2)}"><b>02</b><span>逐行核对</span></div>
+    <div class="${cls(3)}"><b>03</b><span>生成报告</span></div>
+  </div>`;
+}
+
+function uploadCardHTML(state, rec) {
+  const bill = state.bill ?? {};
+  const reading = bill.status === 'loading' || rec.status === 'reading';
+  const dropInner = reading
+    ? `<span class="dropzone-mark" aria-hidden="true">…</span>
+       <h2>正在本机读取…</h2>
+       <p>${esc(rec.fileName || bill.fileName || '账单文件')}</p>
+       <p class="dropzone-foot mono">READING LOCALLY · 不会上传</p>`
+    : `<span class="dropzone-mark" aria-hidden="true">+</span>
+       <h2>把账单拖到这里</h2>
+       <p>或 <span class="text-link">选择文件</span>。CSV / TSV 第一行为表头，UTF-8 编码。</p>
+       <div class="dropzone-actions"><span class="btn btn-outline">选择账单文件</span></div>
+       <p class="dropzone-foot mono">CSV / TSV · XLSX · PDF · 截图 · 只在本机读取</p>`;
+  const pasteOpen = ui.pasteOpen;
+  const pasteValue = pasteOpen && rec.sourceKind === 'text' ? esc(rec.content) : '';
+  return `<section class="panel upload-card" aria-label="选择账单文件">
+    <div class="panel-head"><span>01 / 本地文件</span><span class="lock-note">原始文件不上传</span></div>
+    <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="选择或拖入账单文件" ${reading ? 'aria-disabled="true"' : ''}>
+      ${dropInner}
+    </div>
+    <input type="file" id="file-input" accept="${FILE_ACCEPT}" multiple hidden>
+    <p class="upload-note">支持 CSV / TSV、Excel（第一个工作表）、文本型 PDF、扫描 PDF 与截图；费用、税费可选，缺失会按 0 标注。原始文件只在本机读取。</p>
+    <div class="tm-paste-entry">
+      <button class="text-link tm-paste-toggle" type="button" data-action="toggle-paste" aria-expanded="${pasteOpen}">粘贴文字</button>
+    </div>
+    <div class="tm-paste" id="tm-paste-panel" ${pasteOpen ? '' : 'hidden'}>
+      <textarea id="tm-paste-input" rows="4" placeholder="粘贴 CSV、表格文字或账单片段">${pasteValue}</textarea>
+      <button class="btn btn-outline btn-sm" type="button" data-action="parse-paste">解析文字</button>
+    </div>
+  </section>`;
+}
+
+function sampleCardHTML() {
+  return `<aside class="sample-card" aria-label="示例账单">
+    <span class="sample-stamp">DEMO BILL / 示例</span>
+    <h2>没有账单？<br>先用示例走一遍。</h2>
+    <p>5 笔交易、3 个标的，其中一行故意缺失费用与税费，方便看清标注规则。</p>
+    <dl class="sample-stats">
+      <div><dt>交易</dt><dd>5</dd></div>
+      <div><dt>标的</dt><dd>3</dd></div>
+      <div><dt>缺失行</dt><dd>1</dd></div>
+    </dl>
+    <button class="btn btn-primary" id="load-demo" type="button" data-demo-route="report">加载示例账单 <span class="arrow">→</span></button>
+    <button class="btn btn-outline" id="download-demo" type="button" data-action="download-demo">下载示例 CSV <span aria-hidden="true">↓</span></button>
+    <p class="fine">示例数据只用于演示产品流程，不构成任何投资建议。</p>
+  </aside>`;
+}
+
+function imageStrip(vision) {
+  if (!vision?.images?.length) return '';
+  const images = vision.images.map((image) => `<figure class="tm-thumb"><img src="data:${image.mime};base64,${image.data_base64}" alt="${image.pageNumber ? `第 ${image.pageNumber} 页` : '截图'}"><figcaption>${image.pageNumber ? `第 ${image.pageNumber} 页` : fmtSize(image.bytes)}</figcaption></figure>`).join('');
+  return `<div class="tm-thumb-strip">${images}</div>`;
+}
+
+function pdfSelector(rec) {
+  const vision = rec.vision ?? {};
+  if (rec.sourceKind !== 'pdf' && vision.kind !== 'pdf_scan') return '';
+  const count = vision.pageCount || 0;
+  const start = vision.startPage || 1;
+  const end = vision.endPage || Math.min(count || 1, IMPORT_VISION_MAX_IMAGES);
+  return `<details class="tm-pdf" ${vision.kind === 'pdf_scan' ? 'open' : ''}>
+    <summary>PDF 页面识别${count ? ` · 共 ${count} 页` : ''}</summary>
+    <div class="tm-pdf-row">
+      <label>起始页 <input id="tm-page-start" type="number" min="1" max="${count || 1}" value="${start}"></label>
+      <label>结束页 <input id="tm-page-end" type="number" min="1" max="${count || 1}" value="${end}"></label>
+      <button class="btn btn-outline btn-sm" type="button" data-action="render-pdf" ${lastPdfBusy(rec) ? 'disabled' : ''}>${lastPdfBusy(rec) ? '渲染中…' : '渲染所选页面'}</button>
+    </div>
+    <p class="tm-note">一次最多 ${IMPORT_VISION_MAX_IMAGES} 页；渲染在本机完成，不发送文件。</p>
+  </details>`;
+}
+
+function lastPdfBusy(rec) {
+  return rec?.vision?.status === 'rendering' || rec?.vision?.status === 'preparing';
+}
+
+function draftTable(rec) {
+  const draft = rec.draft;
+  if (!draft) return '';
+  const rows = draft.rows.map((row, index) => {
+    const status = draftRowStatusText(row);
+    const issues = Array.isArray(row.issues) && row.issues.length ? row.issues.join('；') : '';
+    const input = (key, extra = '') => `<input class="tm-cell-input" data-row="${esc(row.id)}" data-field="${key}" value="${esc(row.fields[key] ?? '')}" ${extra}>`;
+    return `<tr class="tm-draft-row ${row.status}">
+      <td class="line-no"><label class="tm-line-pick"><input type="checkbox" data-row="${esc(row.id)}" data-include ${row.include === false ? '' : 'checked'} aria-label="导入第 ${row.line ?? index + 2} 行"><span>${String(row.line ?? index + 2).padStart(2, '0')}</span></label></td>
+      <td>${input('date', 'inputmode="numeric"')}</td>
+      <td>${input('symbol', 'inputmode="numeric"')}</td>
+      <td><select class="tm-cell-input" data-row="${esc(row.id)}" data-field="side"><option value="买入" ${row.fields.side === '买入' ? 'selected' : ''}>买入</option><option value="卖出" ${row.fields.side === '卖出' ? 'selected' : ''}>卖出</option></select></td>
+      <td>${input('price', 'inputmode="decimal"')}</td>
+      <td>${input('quantity', 'inputmode="numeric"')}</td>
+      <td>${input('fee', 'inputmode="decimal"')}</td>
+      <td>${input('tax', 'inputmode="decimal"')}</td>
+      <td class="tm-row-status">${esc(status)}${issues ? `<span>${esc(issues)}</span>` : ''}</td>
+      <td><button class="tm-link" type="button" data-action="remove-row" data-row="${esc(row.id)}">删除</button></td>
+    </tr>`;
+  }).join('');
+  return `<div class="table-wrap"><table class="ledger tm-draft-table">
+    <caption class="sr-only">交易草稿，可逐行核对日期、标的、方向、价格、数量、费用与税费。</caption>
+    <thead><tr><th>行</th><th>日期</th><th>标的</th><th>方向</th><th class="num">价格</th><th class="num">数量</th><th class="num">费用</th><th class="num">税费</th><th>状态</th><th></th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`;
+}
+
+function tradesTableHTML(trades) {
+  const rows = trades.map((trade, index) => {
+    const line = trade.source?.line ?? index + 2;
+    const date = trade.trade_date || trade.date;
+    const feeMissing = trade.fee_missing === true || trade.fee === null || trade.fee === undefined;
+    const taxMissing = trade.tax_missing === true || trade.tax === null || trade.tax === undefined;
+    return `<tr class="${feeMissing || taxMissing ? 'is-missing' : ''}">
+      <td class="line-no">${String(line).padStart(2, '0')}</td>
+      <td>${esc(date)}</td>
+      <td><span class="sym">${esc(trade.symbol)}</span></td>
+      <td><span class="side ${trade.side === 'buy' ? 'buy' : 'sell'}">${trade.side === 'buy' ? '买入' : '卖出'}</span></td>
+      <td class="num">${Number(trade.price).toFixed(2)}</td>
+      <td class="num">${Number(trade.quantity)}</td>
+      <td class="num">${feeMissing ? '<span class="missing">缺失（按 0）</span>' : Number(trade.fee ?? 0).toFixed(2)}</td>
+      <td class="num">${taxMissing ? '<span class="missing">缺失（按 0）</span>' : Number(trade.tax ?? 0).toFixed(2)}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="table-wrap">
+    <table class="ledger">
+      <caption class="sr-only">交易列表，可逐行核对日期、标的、方向、价格、数量、费用与税费。</caption>
+      <thead><tr><th>行</th><th>日期</th><th>标的</th><th>方向</th><th class="num">价格</th><th class="num">数量</th><th class="num">费用</th><th class="num">税费</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function billWarningsHTML(bill) {
+  const missing = (bill.trades ?? []).filter((trade) => trade.fee_missing === true || trade.tax_missing === true);
+  if (!missing.length) return '';
+  const lines = missing.map((trade) => trade.source?.line).filter(Boolean).join('、');
+  return `<div class="bill-warning" role="status">
+    <strong>${missing.length} 行费用或税费缺失</strong>
+    <span>${lines ? `第 ${lines} 行` : '缺失行'}按 0 展示并标注。</span>
+  </div>`;
+}
+
+function details(rec) {
+  const text = String(rec.content ?? '');
+  const trace = rec.trace;
+  return `<details class="tm-import-details">
+    <summary>原文与识别信息</summary>
+    <div class="tm-details-body">
+      <p>${esc(SOURCE_LABEL[rec.sourceKind] || '文件')} · ${rec.fileName ? esc(rec.fileName) : '未选择文件'} · 模型请求 ${rec.modelCalls ?? 0}/${rec.budgetMax ?? 2}${rec.flowId ? ` · 任务 ${esc(rec.flowId)}` : ''}</p>
+      ${text ? `<pre class="tm-original">${esc(text.slice(0, 4000))}${text.length > 4000 ? '\n…' : ''}</pre>` : '<p class="tm-note">没有保留可展开的识别文字。</p>'}
+      ${trace ? `<p class="tm-tech">trace：${esc((trace.messages ?? []).map((m) => m.type).join(' → '))} · flow ${esc(trace.flow_id ?? '—')}</p>` : ''}
+    </div>
+  </details>`;
+}
+
+function aiButton(state, rec) {
+  const bill = state.bill ?? {};
+  if (rec.pending || rec.draft || bill.status === 'loaded' || bill.status === 'confirmed'
+    || rec.status === 'local_ready' || rec.status === 'accepted') return '';
+  const text = String(rec.content ?? '').trim();
+  const imageCount = rec.vision?.images?.length ?? 0;
+  const canText = ['csv', 'tsv', 'xlsx', 'pdf', 'text'].includes(rec.sourceKind) && text.length > 0;
+  const canVision = imageCount > 0 && rec.vision?.status === 'ready';
+  if (!canText && !canVision) return '';
+  if (rec.budgetExhausted) return `<p class="tm-note">本次导入任务的模型请求次数已用完；仍可手动修改或重新解析。</p>`;
+  const label = imageCount ? `让 AI 识别这 ${imageCount} 张图` : (rec.modelCalls > 0 ? `再次让 AI 识别（剩 ${Math.max(0, rec.budgetMax - rec.modelCalls)} 次）` : '让 AI 帮我识别');
+  return `<div class="tm-ai-row"><button class="btn btn-primary" type="button" data-action="${imageCount ? 'ai-vision' : 'ai-text'}">${label}</button><span class="tm-note">${sendNotice(rec)}</span></div>`;
+}
+
+function pendingPanelHTML(rec) {
+  return `<section class="panel bill tm-pending-panel" aria-labelledby="pending-title">
+    <div class="bill-head">
+      <div>
+        <p class="mono-label">READING / 识别中</p>
+        <h2 id="pending-title">正在整理可核对交易。</h2>
+      </div>
+      <div class="bill-tags"><span class="status-tag">进行中</span></div>
+    </div>
+    <p class="tm-note">${rec.vision?.images?.length ? `正在识别所选 ${rec.vision.images.length} 张图片。` : '正在识别提取出的文字。'}完成后会直接显示可编辑交易表。</p>
+    ${errorLine(rec)}
+  </section>`;
+}
+
+function errorPanelHTML(state, rec) {
+  const bill = state.bill ?? {};
+  const errors = Array.isArray(bill.errors) ? bill.errors : [];
+  const message = rec.error?.message || bill.error;
+  if (bill.status === 'error' || rec.status === 'unsupported'
+    || (rec.error && !errors.length && !rec.draft)) {
+    return `<div class="error-panel" role="alert">
+      <h2>没有读取成功</h2>
+      <p>${esc(message || '未知错误')}</p>
+      <p class="fine">原始文件不会被上传。修正问题后，可以重新选择文件。</p>
+      ${aiButton(state, rec)}
+    </div>`;
+  }
+  if (bill.status !== 'invalid' && !errors.length && !rec.error) return '';
+  const shown = errors.slice(0, 10);
+  const rest = errors.length - shown.length;
+  return `<div class="error-panel" role="alert">
+    <h2>不能生成报告：文件里有需要修改的地方</h2>
+    <p>为保证结果可核对，只要一处不通过就整批阻断，不生成部分结果。${bill.fileName ? `当前文件：${esc(bill.fileName)}。` : ''}</p>
+    ${shown.length ? `<ul class="error-list">
+      ${shown.map((e) => `<li>${e.line ? `第 ${e.line} 行 · ` : ''}${esc(e.message)}</li>`).join('')}
+      ${rest > 0 ? `<li>另有 ${rest} 处问题未展开。</li>` : ''}
+    </ul>` : ''}
+    ${errorLine(rec)}
+    <p class="fine">修改后，重新拖入或选择文件即可；当前结果不会被用于报告。</p>
+    ${aiButton(state, rec)}
+  </div>`;
+}
+
+function draftPanelHTML(state, rec) {
+  const draft = rec.draft;
+  const summary = draftSummary(draft);
+  const dates = draft.rows.map((row) => row.fields.date).filter(Boolean).sort();
+  const range = dates.length ? `${dates[0]} → ${dates[dates.length - 1]}` : '—';
+  const symbols = new Set(draft.rows.map((row) => row.fields.symbol).filter(Boolean)).size;
+  const sourceLabel = rec.sourceKind === 'image' || rec.vision?.kind
+    ? 'AI 视觉识别'
+    : rec.modelCalls > 0 ? 'AI 识别' : '本地解析';
+  return `<section class="panel bill" aria-labelledby="draft-title">
+    <div class="bill-head">
+      <div>
+        <p class="mono-label">BILL / 交易核对</p>
+        <h2 id="draft-title">已整理 ${draft.rows.length} 行草稿。</h2>
+      </div>
+      <div class="bill-tags"><span class="status-tag ok">待核对</span><span class="status-tag">仅本机</span></div>
+    </div>
+    <div class="bill-meta">
+      <span>来源 <b>${sourceLabel}</b></span>
+      <span>文件 <b class="file-line">${esc(rec.fileName || '粘贴文字')}</b></span>
+      <span>期间 <b>${range}</b></span>
+      <span>标的 <b>${symbols} 个</b></span>
+      <span>模型请求 <b>${rec.modelCalls ?? 0}/${rec.budgetMax ?? 2}</b></span>
+    </div>
+    <p class="tm-note">已选 ${summary.included} 行 · 可导入 ${summary.valid} 行${summary.duplicate ? ` · 疑似重复 ${summary.duplicate}` : ''}</p>
+    ${rec.notice ? `<div class="bill-warning" role="status"><strong>${esc(rec.notice)}</strong><span>导入前仍需要你逐行核对并校验。</span></div>` : ''}
+    ${errorLine(rec)}
+    ${draftTable(rec)}
+    <div class="bill-actions">
+      <div class="bill-actions-note">
+        <span class="plus" aria-hidden="true">＋</span>
+        <p class="fine">只导入勾选的行；错误与重复提示在对应行。修改后请先校验。</p>
+      </div>
+      <div class="tm-action-group">
+        <button class="btn btn-ghost btn-sm" type="button" data-action="add-row">添加一行</button>
+        <button class="btn btn-primary" type="button" data-action="validate">校验并用于导入</button>
+      </div>
+    </div>
+  </section>`;
+}
+
+function billPanelHTML(state, rec) {
+  const bill = state.bill ?? {};
+  const trades = Array.isArray(bill.trades) ? bill.trades : [];
+  const symbols = new Set(trades.map((trade) => trade.symbol)).size;
+  const dates = trades.map((trade) => trade.trade_date || trade.date).filter(Boolean).sort();
+  const range = dates.length ? `${dates[0]} → ${dates[dates.length - 1]}` : '—';
+  const confirmed = bill.status === 'confirmed';
+  const sourceLabel = rec?.sourceKind === 'text' ? '粘贴文字' : '本地文件';
+  const fileSize = rec?.sourceKind === 'text' ? '—' : (bill.fileSize ? fmtSize(bill.fileSize) : '—');
+  const statusTag = confirmed
+    ? '<span class="status-tag ok">已确认</span>'
+    : '<span class="status-tag ok">本地校验通过</span>';
+  return `<section class="panel bill" id="bill" aria-labelledby="bill-title">
+    <div class="bill-head">
+      <div>
+        <p class="mono-label">BILL / 交易核对</p>
+        <h2 id="bill-title">已读取 ${trades.length} 笔交易。</h2>
+      </div>
+      <div class="bill-tags">${statusTag}<span class="status-tag">仅本机</span></div>
+    </div>
+    <div class="bill-meta">
+      <span>来源 <b>${sourceLabel}</b></span>
+      <span>文件 <b class="file-line">${esc(bill.fileName || '—')}</b></span>
+      <span>期间 <b>${range}</b></span>
+      <span>标的 <b>${symbols} 个</b></span>
+      <span>文件大小 <b>${fileSize}</b></span>
+    </div>
+    ${billWarningsHTML(bill)}
+    ${errorLine(rec)}
+    ${tradesTableHTML(trades)}
+    <div class="bill-actions">
+      <div class="bill-actions-note">
+        <span class="plus" aria-hidden="true">＋</span>
+        <p class="fine">确认只用于生成本地分析，不会上传文件，也不会执行交易。费用与税费按列展示；报告中的数字以已确认账单为准。</p>
+      </div>
+      <div class="tm-action-group">
+        ${rec?.status === 'accepted' && rec.draft ? '<button class="btn btn-ghost btn-sm" type="button" data-action="return-draft">返回修改草稿</button>' : ''}
+        ${confirmed
+          ? '<a class="btn btn-primary" href="#/report">前往报告 <span class="arrow">→</span></a>'
+          : '<button class="btn btn-primary" type="button" data-action="confirm">确认并生成报告 →</button>'}
+      </div>
+    </div>
+  </section>`;
+}
+
+function visionPanelHTML(state, rec) {
+  const vision = rec.vision ?? {};
+  const count = vision.images?.length ?? 0;
+  const title = vision.kind === 'pdf_scan'
+    ? (count ? `PDF 已在本机渲染 ${count} 页。` : '选择要识别的 PDF 页面。')
+    : (count ? `已在本机准备 ${count} 张截图。` : '正在准备截图…');
+  return `<section class="panel bill" aria-labelledby="vision-title">
+    <div class="bill-head">
+      <div>
+        <p class="mono-label">VISION / 图片与 PDF</p>
+        <h2 id="vision-title">${title}</h2>
+      </div>
+      <div class="bill-tags"><span class="status-tag ok">仅本机处理</span><span class="status-tag">识别前不发送</span></div>
+    </div>
+    <div class="bill-meta">
+      <span>来源 <b>${vision.kind === 'pdf_scan' ? '扫描 PDF' : '截图'}</b></span>
+      <span>文件 <b class="file-line">${esc(rec.fileName || vision.fileName || '—')}</b></span>
+      <span>模型请求 <b>${rec.modelCalls ?? 0}/${rec.budgetMax ?? 2}</b></span>
+    </div>
+    ${errorLine(rec)}
+    ${imageStrip(vision)}
+    ${vision.kind === 'pdf_scan' ? pdfSelector(rec) : ''}
+    <div class="bill-actions">
+      ${aiButton(state, rec) || '<p class="fine">图片与 PDF 页面先在本机处理；只有点击识别时才会发送所选内容。</p>'}
+    </div>
+  </section>`;
+}
+
+function renderBelow(state, rec) {
+  const bill = state.bill ?? {};
+  if (rec.pending) return pendingPanelHTML(rec);
+  if (bill.status === 'confirmed') return billPanelHTML(state, rec);
+  const visionActive = !!rec.vision && (rec.sourceKind === 'image' || rec.sourceKind === 'pdf')
+    && !rec.draft && bill.status !== 'loaded' && bill.status !== 'invalid';
+  if (visionActive) return visionPanelHTML(state, rec);
+  if (bill.status === 'loaded') return billPanelHTML(state, rec);
+  if (rec.draft) return draftPanelHTML(state, rec);
+  if (bill.status === 'invalid' || bill.status === 'error' || rec.error?.message || rec.status === 'unsupported') {
+    return errorPanelHTML(state, rec);
+  }
+  return '';
+}
+
+function downloadDemoCsv() {
+  const blob = new Blob([SAMPLE_CSV], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'demo-bill.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export function renderRealImport(host, ctx) {
+  if (!host) return;
+  const { state } = ctx;
+  const rec = state.importRecovery ?? defaultImportRecovery();
+  const bill = state.bill ?? {};
+  const hasSource = !!(rec.fileName || bill.fileName);
+  const hasDetails = hasSource && (String(rec.content ?? '').trim() || rec.trace || rec.draft);
+  host.innerHTML = `${pageHeadHTML()}
+    <div class="container page-body">
+      ${stepperHTML(bill, rec)}
+      <div class="import-grid">
+        ${uploadCardHTML(state, rec)}
+        ${sampleCardHTML()}
+      </div>
+      ${renderBelow(state, rec)}
+      ${hasDetails ? details(rec) : ''}
+    </div>`;
+
+  const drop = host.querySelector('#dropzone');
+  const input = host.querySelector('#file-input');
+  const openPicker = () => input?.click();
+  drop?.addEventListener('click', openPicker);
+  drop?.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPicker(); } });
+  drop?.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('is-over'); });
+  drop?.addEventListener('dragleave', () => drop.classList.remove('is-over'));
+  drop?.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('is-over'); handleFiles(ctx, [...(e.dataTransfer?.files ?? [])]); });
+  input?.addEventListener('change', (e) => handleFiles(ctx, [...(e.target.files ?? [])]));
+  if (ui.pasteOpen) {
+    const ta = host.querySelector('#tm-paste-input');
+    ta?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        handlePaste(ctx, ta.value);
+      }
+    });
+  }
+
+  host.querySelectorAll('[data-action]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const action = button.getAttribute('data-action');
+      if (action === 'toggle-paste') {
+        ui.pasteOpen = !ui.pasteOpen;
+        renderRealImport(host, ctx);
+        if (ui.pasteOpen) host.querySelector('#tm-paste-input')?.focus();
+      } else if (action === 'parse-paste') {
+        handlePaste(ctx, host.querySelector('#tm-paste-input')?.value ?? '');
+      } else if (action === 'download-demo') {
+        downloadDemoCsv();
+      } else if (action === 'ai-text') {
+        aiRecover(ctx);
+      } else if (action === 'ai-vision') {
+        aiVision(ctx);
+      } else if (action === 'render-pdf') {
+        renderPdf(ctx);
+      } else if (action === 'validate') {
+        validateDraft(ctx);
+      } else if (action === 'confirm') {
+        finalizeConfirmedBill({ state, set: ctx.set, go: ctx.go, client: ctx.importRecovery });
+      } else if (action === 'return-draft') {
+        ctx.set({ bill: freshBill({ contextId: state.bill.contextId, status: 'none', sourceType: 'local', fileName: state.bill.fileName, fileSize: state.bill.fileSize }), importRecovery: { ...state.importRecovery, status: 'draft' } });
+      } else if (action === 'add-row') {
+        if (!state.importRecovery?.draft) return;
+        ctx.set({ importRecovery: { ...state.importRecovery, draft: addBlankRow(state.importRecovery.draft) } });
+      } else if (action === 'remove-row') {
+        if (!state.importRecovery?.draft) return;
+        ctx.set({ importRecovery: { ...state.importRecovery, draft: removeRow(state.importRecovery.draft, button.getAttribute('data-row')) } });
+      }
+    });
+  });
+
+  host.querySelectorAll('[data-include]').forEach((checkbox) => {
+    checkbox.addEventListener('change', () => {
+      const draft = state.importRecovery?.draft;
+      if (!draft) return;
+      const row = draft.rows.find((r) => r.id === checkbox.getAttribute('data-row'));
+      if (!row) return;
+      row.include = checkbox.checked;
+      ctx.set({ importRecovery: { ...state.importRecovery, draft } });
+    });
+  });
+  host.querySelectorAll('[data-row][data-field]').forEach((field) => {
+    field.addEventListener('input', () => {
+      const draft = state.importRecovery?.draft;
+      if (!draft) return;
+      const row = draft.rows.find((r) => r.id === field.getAttribute('data-row'));
+      if (!row) return;
+      row.fields[field.getAttribute('data-field')] = field.value;
+    });
+    field.addEventListener('change', () => {
+      const draft = state.importRecovery?.draft;
+      if (!draft) return;
+      const row = draft.rows.find((r) => r.id === field.getAttribute('data-row'));
+      if (!row) return;
+      Object.assign(row, refreshRowStatus(row, state.importRecovery.fileName || '粘贴文字'));
+      ctx.set({ importRecovery: { ...state.importRecovery, draft } });
+    });
+  });
+}
+
+async function handleFiles(ctx, files) {
+  const { state, set } = ctx;
+  if (!files.length) return;
+  if (files.length > 1 && !files.every((f) => detectSourceKind(f.name, f.type) === IMPORT_SOURCE_KINDS.IMAGE)) {
+    set({ importRecovery: { ...defaultImportRecovery(), error: { code: 'E_IMPORT_MULTI_FILE', message: '一次只能选择一个账单文件；多选仅支持截图。' } } });
+    return;
+  }
+  if (files.every((f) => detectSourceKind(f.name, f.type) === IMPORT_SOURCE_KINDS.IMAGE)) {
+    await openImages(ctx, files);
+    return;
+  }
+  const file = files[0];
+  const kind = detectSourceKind(file.name, file.type);
+  const contextId = createBillContextId();
+  const sourceId = ++sourceSeq;
+  const session = sessionInfo(ctx);
+  const base = recoveryBase({ sourceId, sourceKind: kind, fileName: file.name, fileSize: file.size, content: '', session, status: 'reading' });
+  pdfSource = null;
+  if (kind === IMPORT_SOURCE_KINDS.UNSUPPORTED) {
+    set({ bill: freshBill({ contextId, status: 'none', sourceType: 'local', fileName: file.name, fileSize: file.size }), chat: defaultChat(contextId), importRecovery: { ...base, status: 'unsupported', error: { code: 'W_IMPORT_SOURCE_UNSUPPORTED', message: '暂不支持这种文件类型；请使用 CSV、TSV、Excel、文本型 PDF 或截图' } } });
+    return;
+  }
+  set({ bill: freshBill({ contextId, status: 'loading', sourceType: 'local', fileName: file.name, fileSize: file.size }), chat: defaultChat(contextId), importRecovery: base });
+  try {
+    if (kind === IMPORT_SOURCE_KINDS.PDF) {
+      const bytes = await readBuffer(file);
+      pdfSource = { bytes, fileName: file.name, fileSize: file.size };
+      const extracted = await extractSource({ kind, bytes });
+      if (!extracted.ok || !String(extracted.text ?? '').trim()) {
+        await openPdf(ctx, { bytes, fileName: file.name, fileSize: file.size, contextId });
+        return;
+      }
+      await applySource(ctx, { sourceId, contextId, sourceKind: kind, content: extracted.text, fileName: file.name, fileSize: file.size });
+      return;
+    }
+    if (kind === IMPORT_SOURCE_KINDS.XLSX) {
+      const bytes = await readBuffer(file);
+      const extracted = await extractSource({ kind, bytes });
+      if (!extracted.ok) {
+        set({ bill: freshBill({ contextId, status: 'none', sourceType: 'local', fileName: file.name, fileSize: file.size }), importRecovery: { ...base, status: 'unsupported', error: { code: 'W_IMPORT_SOURCE_UNSUPPORTED', message: extracted.message || '无法提取 Excel 文本' } } });
+        return;
+      }
+      await applySource(ctx, { sourceId, contextId, sourceKind: kind, content: extracted.text, table: extracted.table ?? null, fileName: file.name, fileSize: file.size });
+      return;
+    }
+    const text = await readText(file);
+    await applySource(ctx, { sourceId, contextId, sourceKind: kind, content: text, fileName: file.name, fileSize: file.size });
+  } catch (error) {
+    set({ bill: freshBill({ contextId, status: 'error', sourceType: 'local', fileName: file.name, fileSize: file.size, error: error.message }), importRecovery: { ...base, status: 'error', error: { code: 'E_IMPORT_READ', message: error.message } } });
+  }
+}
+
+async function applySource(ctx, { sourceId, contextId, sourceKind, content, table = null, fileName, fileSize }) {
+  const { set } = ctx;
+  const base = recoveryBase({ sourceId, sourceKind, fileName, fileSize, content, session: sessionInfo(ctx), status: 'reading' });
+  const parsed = table ?? parseDelimitedText(content);
+  const localDraft = parsed?.header?.length ? buildLocalDraft(parsed, fileName) : {
+    origin: 'local', headerOk: false, missing: ['日期', '标的', '方向', '价格', '数量'], rows: [], rawRows: parsed?.rows ?? [],
+    note: '未识别到标准表头；可以粘贴带表头的文字，或让 AI 整理交易明细。',
+  };
+  if (isLocalDraftComplete(localDraft, fileName)) {
+    const bill = await demo.loadUserBillFromTable(localDraftTable(localDraft), fileName, { method: 'manual' });
+    set({
+      bill: freshBill({ contextId, status: 'loaded', sourceType: 'local', fileName, fileSize, trades: bill.trades, warnings: bill.warnings, errors: bill.errors, dataMode: bill.dataMode, sourceNote: bill.sourceNote, resultLabelling: bill.resultLabelling, importMethod: 'manual' }),
+      chat: defaultChat(contextId),
+      importRecovery: { ...base, status: 'local_ready', localDraft, draft: null },
+    });
+    return;
+  }
+  const hasRows = Array.isArray(localDraft.rows) && localDraft.rows.length > 0;
+  const normalized = localDraft.headerOk ? localDraftTable(localDraft) : parsed;
+  const errors = normalized?.header?.length ? [{ code: 'E_LOCAL_INCOMPLETE', message: '常规解析不完整，请补全字段或让 AI 整理' }] : [{ code: 'E_HEADER_MISSING', message: '未识别到标准表头（日期、标的、方向、价格、数量）' }];
+  set({
+    bill: freshBill({ contextId, status: 'invalid', sourceType: 'local', fileName, fileSize, blocked: true, errors, sourceNote: `来源：${fileName}（本机解析未完成；未生成正式账单）` }),
+    chat: defaultChat(contextId),
+    importRecovery: { ...base, status: hasRows ? 'draft' : 'needs_ai', localDraft, draft: hasRows ? localDraft : null },
+  });
+}
+
+async function handlePaste(ctx, pasted) {
+  const { state, set } = ctx;
+  const content = String(pasted ?? state.importRecovery?.content ?? '');
+  if (!content.trim()) {
+    set({ importRecovery: { ...(state.importRecovery ?? defaultImportRecovery()), error: { code: 'E_IMPORT_EMPTY_TEXT', message: '请先粘贴账单文字' } } });
+    return;
+  }
+  const contextId = createBillContextId();
+  const sourceId = ++sourceSeq;
+  const base = recoveryBase({ sourceId, sourceKind: 'text', fileName: '粘贴文字', fileSize: content.length, content, session: sessionInfo(ctx), status: 'reading' });
+  set({ bill: freshBill({ contextId, status: 'loading', sourceType: 'local', fileName: '粘贴文字', fileSize: content.length }), chat: defaultChat(contextId), importRecovery: base });
+  await applySource(ctx, { sourceId, contextId, sourceKind: 'text', content, fileName: '粘贴文字', fileSize: content.length });
+}
+
+async function aiRecover(ctx) {
+  const { state, set } = ctx;
+  const rec = state.importRecovery;
+  if (!rec || rec.pending || rec.budgetExhausted) return;
+  const content = String(rec.content ?? '');
+  if (!content.trim()) return;
+  const sourceId = rec.sourceId;
+  const localDraft = rec.localDraft ?? (parseDelimitedText(content)?.header?.length ? buildLocalDraft(parseDelimitedText(content), rec.fileName || '粘贴文字') : null);
+  set({ importRecovery: { ...rec, pending: true, error: null, validationErrors: [] } });
+  try {
+    const result = await client(ctx).requestRecovery({ content, sourceKind: rec.sourceKind || 'text' });
+    const session = client(ctx).getSession();
+    if (state.importRecovery.sourceId !== sourceId) {
+      set({ importRecovery: applySession({ ...state.importRecovery, pending: false }, session) });
+      return;
+    }
+    if (!result.ok) {
+      set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), error: { code: result.code, message: result.message } } });
+      return;
+    }
+    const draft = buildAiDraft({ aiTrades: result.draft.trades, unresolved: result.draft.unresolved, localDraft, sourceFile: rec.fileName || '粘贴文字', requestId: session.request_ids?.at(-1) ?? null });
+    const duplicates = draft.rows.filter((row) => row.duplicateOf).length;
+    set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), status: 'draft', draft, unresolved: result.draft.unresolved, notice: result.draft.trades.length ? `AI 返回 ${result.draft.trades.length} 条交易草稿${duplicates ? `，其中 ${duplicates} 条疑似重复` : ''}` : 'AI 没有整理出新的交易。', error: null } });
+  } catch {
+    set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false }, client(ctx).getSession()), error: { code: 'E_IMPORT_RECOVERY_UNEXPECTED', message: '识别链路出现未预期错误' } } });
+  }
+}
+
+async function openImages(ctx, files) {
+  const { set } = ctx;
+  const contextId = createBillContextId();
+  const sourceId = ++sourceSeq;
+  const base = recoveryBase({ sourceId, sourceKind: 'image', fileName: '截图识别', fileSize: files.reduce((sum, f) => sum + (f.size || 0), 0), content: '', session: sessionInfo(ctx), status: 'vision_pdf' });
+  set({ bill: freshBill({ contextId, status: 'none', sourceType: 'local', fileName: '截图识别', fileSize: base.fileSize }), chat: defaultChat(contextId), importRecovery: { ...base, status: 'vision_pdf', vision: { ...defaultImportRecovery().vision, kind: 'image', fileName: '截图识别', images: [], status: 'preparing' } } });
+  try {
+    const images = [];
+    for (const file of files) images.push(await prepareImageFile(file));
+    const checked = validateVisionInput({ images, sourceKind: 'image' });
+    if (!checked.ok) throw new Error(checked.message);
+    set({ importRecovery: { ...base, status: 'vision_ready', vision: { ...defaultImportRecovery().vision, kind: 'image', fileName: '截图识别', images: checked.images, totalBytes: checked.totalBytes, totalBase64Chars: checked.totalBase64Chars, payloadBytes: checked.payloadBytes, status: 'ready' } } });
+  } catch (error) {
+    set({ importRecovery: { ...base, status: 'error', error: { code: 'E_IMPORT_IMAGE', message: error.message } } });
+  }
+}
+
+async function openPdf(ctx, { bytes, fileName, fileSize, contextId }) {
+  const { set } = ctx;
+  const sourceId = ++sourceSeq;
+  const base = recoveryBase({ sourceId, sourceKind: 'pdf', fileName, fileSize, content: '', session: sessionInfo(ctx), status: 'vision_pdf' });
+  set({ bill: freshBill({ contextId, status: 'none', sourceType: 'local', fileName, fileSize }), chat: defaultChat(contextId), importRecovery: { ...base, status: 'vision_pdf', vision: { ...defaultImportRecovery().vision, kind: 'pdf_scan', fileName, pageCount: 0, status: 'preparing' } } });
+  try {
+    const pageCount = await getPdfPageCount(bytes);
+    const endPage = Math.min(pageCount, IMPORT_VISION_MAX_IMAGES);
+    set({ importRecovery: { ...base, status: 'vision_pdf', vision: { ...defaultImportRecovery().vision, kind: 'pdf_scan', fileName, pageCount, startPage: 1, endPage, status: 'selecting' } } });
+  } catch (error) {
+    set({ importRecovery: { ...base, status: 'error', error: { code: 'E_IMPORT_PDF', message: error.message } } });
+  }
+}
+
+async function renderPdf(ctx) {
+  const { state, set } = ctx;
+  const rec = state.importRecovery;
+  if (!pdfSource || !rec?.vision) return;
+  const start = Number(hostNumber('tm-page-start'));
+  const end = Number(hostNumber('tm-page-end'));
+  const vision = rec.vision;
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start || end > vision.pageCount || end - start + 1 > IMPORT_VISION_MAX_IMAGES) {
+    set({ importRecovery: { ...rec, vision: { ...vision, error: { code: 'E_IMPORT_PAGE_RANGE', message: `请输入 1-${Math.min(vision.pageCount, IMPORT_VISION_MAX_IMAGES)} 页以内的连续页码` } } } });
+    return;
+  }
+  set({ importRecovery: { ...rec, vision: { ...vision, startPage: start, endPage: end, status: 'rendering', error: null } } });
+  try {
+    const images = await renderPdfPages(pdfSource.bytes, Array.from({ length: end - start + 1 }, (_, i) => start + i));
+    const checked = validateVisionInput({ images, sourceKind: 'pdf_scan' });
+    if (!checked.ok) throw new Error(checked.message);
+    set({ importRecovery: { ...state.importRecovery, status: 'vision_ready', vision: { ...vision, startPage: start, endPage: end, images: checked.images, totalBytes: checked.totalBytes, totalBase64Chars: checked.totalBase64Chars, payloadBytes: checked.payloadBytes, status: 'ready', error: null } } });
+  } catch (error) {
+    set({ importRecovery: { ...state.importRecovery, vision: { ...vision, status: 'selecting', error: { code: 'E_IMPORT_PDF_RENDER', message: error.message } } } });
+  }
+}
+
+function hostNumber(id) {
+  return document.getElementById(id)?.value;
+}
+
+async function aiVision(ctx) {
+  const { state, set } = ctx;
+  const rec = state.importRecovery;
+  if (!rec || rec.pending || rec.budgetExhausted) return;
+  const vision = rec.vision;
+  const checked = validateVisionInput({ images: vision?.images ?? [], sourceKind: vision?.kind });
+  if (!checked.ok) return;
+  const sourceId = rec.sourceId;
+  set({ importRecovery: { ...rec, pending: true, error: null } });
+  try {
+    const result = await client(ctx).requestVision({ images: checked.images, sourceKind: vision.kind, pageCount: vision.pageCount, pageRange: vision.kind === 'pdf_scan' ? { start: vision.startPage, end: vision.endPage } : null });
+    const session = client(ctx).getSession();
+    if (state.importRecovery.sourceId !== sourceId) {
+      set({ importRecovery: applySession({ ...state.importRecovery, pending: false }, session) });
+      return;
+    }
+    if (!result.ok) {
+      set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), error: { code: result.code, message: result.message } } });
+      return;
+    }
+    const draft = buildAiDraft({ aiTrades: result.draft.trades, unresolved: result.draft.unresolved, localDraft: rec.localDraft ?? null, sourceFile: rec.fileName || '视觉识别', requestId: session.request_ids?.at(-1) ?? null });
+    set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), status: 'draft', draft, unresolved: result.draft.unresolved, notice: result.draft.trades.length ? `AI 返回 ${result.draft.trades.length} 条交易草稿` : 'AI 没有整理出新的交易。', error: null } });
+  } catch {
+    set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false }, client(ctx).getSession()), error: { code: 'E_IMPORT_VISION_UNEXPECTED', message: '视觉识别链路出现未预期错误' } } });
+  }
+}
+
+async function validateDraft(ctx) {
+  const { state, set } = ctx;
+  const rec = state.importRecovery;
+  if (!rec?.draft) return;
+  const sourceFile = rec.fileName || '粘贴文字';
+  const draft = { ...rec.draft, rows: rec.draft.rows.map((row) => refreshRowStatus(row, sourceFile)) };
+  const checked = draftToNormalized(draft, sourceFile);
+  if (!checked.ok) {
+    set({ importRecovery: { ...rec, draft, error: { code: checked.code, message: checked.message }, validationErrors: checked.normalized?.errors ?? [] } });
+    return;
+  }
+  const method = draft.rows.some((row) => row.source === 'ai' && row.include !== false) ? 'ai' : 'manual';
+  const modality = rec.vision?.kind ? 'vision' : 'text';
+  const bill = await demo.loadUserBillFromTable(checked.table, sourceFile, { method, modality });
+  set({
+    bill: freshBill({ contextId: state.bill.contextId ?? createBillContextId(), status: 'loaded', sourceType: 'local', fileName: sourceFile, fileSize: rec.fileSize, blocked: false, trades: bill.trades, warnings: bill.warnings, errors: bill.errors, dataMode: bill.dataMode, sourceNote: bill.sourceNote, resultLabelling: bill.resultLabelling, importMethod: method, importModality: modality }),
+    importRecovery: { ...rec, draft, status: 'accepted', error: null, validationErrors: [] },
+  });
+}
