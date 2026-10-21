@@ -20,7 +20,7 @@ const near = (a, b) => Number.isFinite(a) && Math.abs(a - b) <= 1e-9;
   check('恒等式：本金 + 买入不动收益 − 损耗 = 实际价值', w.checks.identity_ok === true && near(report.portfolio.buyCost + (report.portfolio.ghostValue - report.portfolio.buyCost) - report.portfolio.dragMoney, report.portfolio.actualValue), JSON.stringify(w.checks));
   check('四行结构：本金/买入不动收益/择时损耗/实际到手', JSON.stringify(w.items.map((i) => i.key)) === JSON.stringify(['cost', 'ghost_gain', 'drag', 'actual']), JSON.stringify(w.items.map((i) => i.key)));
   check('负损耗：标签为“择时改善”，颜色为 gain', w.items[2].label === '择时改善' && w.items[2].kind === 'gain' && near(w.items[2].amount, 50), JSON.stringify(w.items[2]));
-  check('展示串来自引擎：金额带 ¥、比例带 pp/%', w.items.every((i) => i.display.amount.startsWith('¥')) && w.items[1].display.ratio.endsWith('pp') && w.items[0].display.ratio === '100%', JSON.stringify(w.items.map((i) => i.display)));
+  check('展示串来自引擎：金额带 ¥、收益率为 %、损耗为 pp', w.items.every((i) => i.display.amount.startsWith('¥')) && w.items[1].display.ratio.endsWith('%') && w.items[2].display.ratio.endsWith('pp') && w.items[3].display.ratio.endsWith('%') && w.items[0].display.ratio === '100%', JSON.stringify(w.items.map((i) => i.display)));
   check('边界声明：买入不动收益 ≠ 标的自身涨幅', w.notes.some((n) => n.includes('标的自身涨幅')), JSON.stringify(w.notes));
 }
 

@@ -1,12 +1,25 @@
 // 真实账单报告：只把 adapter 已复核的结果与补充分析映射到新前端样式；不重算行情或指标。
-// 边界：组合结果未发布时，不渲染图表的结论；行为、标的自身涨幅、PGR/PLR 均标注为候选补充口径。
+// 边界：未成立的行为、不可用的规则候选与样本不足的 PGR/PLR 不进入用户视图；补充口径不冒充已发布事实。
 import { loadUserBillReport } from '../../src/demo/adapter.js';
+import { fmtMoney } from '../../src/engine/display.js';
 import { renderGhostChart } from '../../src/ui/components/ghostChart.js';
 import { buildRuleCandidates } from '../../src/engine/userProfile.js';
 import { recordReportObservation, ruleStateOf } from './profileStore.js';
 import { openRuleCandidate } from './ruleCandidates.js';
 
 const cache = new Map();
+const EMPTY_RULE_STATE = Object.freeze({ active_templates: [], active_count: 0, version_count: 0 });
+
+const FACT_LABELS = Object.freeze({
+  buyCost: '买入成本',
+  sellProceeds: '卖出所得',
+  actualValue: '期末实际价值',
+  ghostValue: '一直持有价值',
+  actualRet: '实际收益',
+  ghostRet: '一直持有收益',
+  dragMoney: '择时差额',
+  drag: '择时差',
+});
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
@@ -14,374 +27,371 @@ function esc(value) {
   }[ch]));
 }
 
+function moneyText(value) {
+  return String(value ?? '—').replace(/^¥-/, '-¥');
+}
+
+function moneyOf(value) {
+  return Number.isFinite(value) ? moneyText(fmtMoney(value)) : '—';
+}
+
 function displayOf(fact) {
   if (!fact) return '—';
-  if (fact.display !== undefined && fact.display !== null) return String(fact.display);
-  if (fact.value !== undefined && fact.value !== null) return String(fact.value);
+  if (fact.display !== undefined && fact.display !== null) return moneyText(fact.display);
+  if (Number.isFinite(fact.value)) return moneyOf(fact.value);
   return '—';
 }
 
-function statusText(bundle) {
-  const review = bundle.review;
-  if (!review) return '复核未运行';
-  if (review.portfolio_published) return '组合结果已发布';
-  if (review.status === 'degraded') return '部分事实已发布';
-  return '结果未发布';
+function factValue(fact) {
+  if (fact?.key === 'heldShares' && Number.isFinite(fact.value)) return `${fact.value} 股`;
+  return displayOf(fact);
 }
 
-function sourceChips(bundle) {
+function isDemoBundle(bundle, bill) {
+  return bundle?.demo === true || bill?.demo === true;
+}
+
+function sourceChips(bundle, demo) {
   const chips = [];
-  if (bundle.fileName) chips.push(`账单：${bundle.fileName}（本机，未上传）`);
-  if (bundle.dataMode?.label) chips.push(bundle.dataMode.label);
-  if (bundle.marketSource?.label) chips.push(bundle.marketSource.label);
-  if (bundle.asOfDate) chips.push(`行情截止日：${bundle.asOfDate}`);
-  if (bundle.valuation?.effective_date) chips.push(`估值日：${bundle.valuation.requested_date} → ${bundle.valuation.effective_date}`);
-  if (bundle.review) chips.push(`复核：${statusText(bundle)}`);
+  if (demo) {
+    chips.push(`示例场景 · ${bundle.demoScenario?.title || '示例报告'}`);
+    chips.push('合成行情 · 非真实行情');
+    if (bundle.asOfDate) chips.push(`估值日 ${bundle.asOfDate}`);
+    chips.push('演示结果');
+  } else {
+    chips.push('本机账单 · 未上传');
+    if (bundle.marketSource?.shortLabel) chips.push(bundle.marketSource.shortLabel);
+    if (bundle.asOfDate) chips.push(`行情截至 ${bundle.asOfDate}`);
+    chips.push(bundle.review?.portfolio_published === true ? '已复核' : '部分发布');
+  }
   return chips.map((text) => `<span class="rp-chip">${esc(text)}</span>`).join('');
 }
 
-function blockedBlock(bundle) {
-  const review = bundle.review;
+function sectionHead(title, note = '') {
+  return `<div class="report-sec-head"><div class="rs-title"><h2>${esc(title)}</h2></div>${note ? `<p>${esc(note)}</p>` : ''}</div>`;
+}
+
+export function reportVisibility({ bundle = null, insights = null, candidatePack = null } = {}) {
+  const source = insights ?? bundle?.insights ?? {};
+  const portfolio = source.portfolio ?? {};
+  const cfs = Array.isArray(portfolio.counterfactuals) ? portfolio.counterfactuals : [];
+  const items = Array.isArray(portfolio.decomposition?.items) ? portfolio.decomposition.items : [];
+  const pattern = source.behavior?.data?.patterns?.[0] ?? null;
+  const pgr = source.pgr?.data ?? null;
+  const counts = pgr?.counts ?? {};
+  const candidate = candidatePack?.candidates?.[0] ?? null;
+  const pgrReady = !!pgr && pgr.ok !== false
+    && (counts.realized?.total ?? 0) >= 3
+    && (counts.paper?.total ?? 0) >= 2
+    && (pgr.pgr !== null || pgr.plr !== null);
+  return {
+    ghost: portfolio.available === true && cfs.length > 0,
+    waterfall: portfolio.available === true && !!portfolio.waterfall && items.length > 0,
+    attribution: portfolio.available === true && portfolio.decomposition?.blocked !== true && items.length > 0,
+    behavior: pattern?.status === '成立' && (pattern.sample_n ?? 0) > 0,
+    pgr: pgrReady,
+    candidate: candidate?.status === 'available',
+    stockSelf: source.stock_self?.available === true && items.length > 0,
+    basis: (bundle?.review?.published_facts ?? []).some((fact) => (fact.scope || 'portfolio') === 'portfolio'),
+    hasSells: items.length > 0,
+    pattern,
+    pgrData: pgr,
+    candidateData: candidate,
+  };
+}
+
+function blockedBlock(bundle, demo) {
   const errors = Array.isArray(bundle.errors) ? bundle.errors : [];
-  const blocked = Array.isArray(review?.blocked_facts) ? review.blocked_facts : [];
-  const rows = [
-    ...errors.map((e) => `<li>${e.line ? `第 ${e.line} 行 · ` : ''}${esc(e.message || e.code)}</li>`),
-    ...blocked.slice(0, 12).map((f) => `<li>${esc(f.fact_id || '')} · ${esc((f.reason_codes || []).join('、') || f.reason_summary || '未发布')}</li>`),
-  ];
-  if (!rows.length) rows.push('<li>当前没有可发布的真实结果。</li>');
+  const rows = errors.slice(0, 8).map((e) => `<li>${e.line ? `第 ${e.line} 行 · ` : ''}${esc(e.message || e.code)}</li>`);
   return `<section class="panel rp-blocked">
-    <p class="mono-label">REAL REPORT / 阻断</p>
-    <h2 class="rp-blocked-title">${esc(statusText(bundle))}</h2>
-    <p class="rp-note">不会用示例数字补齐。请到导入页核对账单，或在报告页查看行情/复核原因。</p>
-    <ul class="rp-blocked-list">${rows.join('')}</ul>
+    <p class="mono-label">${demo ? 'EXAMPLE REPORT / 示例' : 'REPORT / 阻断'}</p>
+    <h2 class="rp-blocked-title">这份账单暂时不能生成报告</h2>
+    <p class="rp-note">${demo ? '示例数据未通过计算校验。' : '没有用示例数字补齐。请回到导入页核对账单或行情范围。'}</p>
+    ${rows.length ? `<ul class="rp-blocked-list">${rows.join('')}</ul>` : ''}
+    <div class="actions"><a class="btn btn-primary" href="#/import">返回导入页 <span class="arrow">→</span></a></div>
   </section>`;
 }
 
-function sectionHead(idx, title, note) {
-  return `<div class="report-sec-head"><div class="rs-title"><span class="rs-idx">${idx}</span><h2>${esc(title)}</h2></div><p>${esc(note)}</p></div>`;
+function orderedCounterfactuals(cfs) {
+  return [...(Array.isArray(cfs) ? cfs : [])].sort((a, b) => (
+    Math.abs(b.replace?.recoveredMoney ?? 0) - Math.abs(a.replace?.recoveredMoney ?? 0)
+  ));
 }
 
-function unavailableSection(idx, title, reason, note = '不生成未经复核的结论') {
-  return `<section class="report-section rp-insight">
-    ${sectionHead(idx, title, note)}
-    <div class="rp-unavailable"><p><strong>本次不生成：</strong>${esc(reason || '补充分析不可用')}</p></div>
+function topDragItem(items) {
+  return (Array.isArray(items) ? items : []).reduce((best, item) => (
+    !best || Math.abs(item.dragMoney) > Math.abs(best.dragMoney) ? item : best
+  ), null);
+}
+
+function deltaCard(bundle, bill, vis, demo) {
+  const facts = bundle.factsByScope?.portfolio ?? {};
+  const report = bundle.insights?.portfolio?.report?.portfolio ?? {};
+  const dragMoney = Number.isFinite(facts.dragMoney?.value) ? facts.dragMoney.value : (report.dragMoney ?? 0);
+  const direction = dragMoney > 0 ? 'loss' : dragMoney < 0 ? 'good' : 'flat';
+  const headline = direction === 'loss' ? '择时损耗' : direction === 'good' ? '择时改善' : '与一直持有持平';
+  const note = direction === 'loss'
+    ? `如果这些卖出没有发生，按买入不动计算会多赚 ${moneyOf(dragMoney)}。`
+    : direction === 'good'
+      ? `如果这些卖出没有发生，按买入不动计算会多亏 ${moneyOf(-dragMoney)}。`
+      : '这份账单没有卖出交易，所以没有单笔对照。';
+  const top = topDragItem(bundle.insights?.portfolio?.decomposition?.items);
+  const highlight = top ? `<p class="delta-highlight">最大的一笔：${esc(top.trade_date)} 卖出 ${esc(top.symbol)} ${esc(top.quantity)} 股，${top.dragMoney >= 0 ? '少拿' : '少亏'} ${moneyOf(Math.abs(top.dragMoney))}</p>` : '';
+  const tradeLabel = direction === 'loss' ? `少赚 ${moneyOf(dragMoney)}` : direction === 'good' ? `少亏 ${moneyOf(-dragMoney)}` : '持平';
+  const stock = vis.stockSelf
+    ? `<p class="delta-foot">标的自身涨幅 ${esc(bundle.insights.stock_self.data.display?.ret ?? '—')}（候选口径，不是买入不动）</p>`
+    : '';
+  return `<section class="delta-card reveal ${direction}" aria-labelledby="real-delta-title">
+    <div class="delta-main">
+      <p class="delta-eyebrow">${demo ? '示例场景 · 同尺对比' : '本机账单 · 同尺对比'}</p>
+      <p class="delta-label" id="real-delta-title">${headline}</p>
+      <p class="delta-number">${dragMoney === 0 ? '¥0' : moneyOf(Math.abs(dragMoney))}</p>
+      <p class="delta-note">${esc(note)}</p>
+      ${highlight}
+      ${stock}
+    </div>
+    <div class="delta-side${direction === 'flat' ? ' is-flat' : ''}">
+      ${direction === 'flat'
+        ? `<div class="delta-stat"><span>账户结果</span><strong>${esc(displayOf(facts.actualRet))}</strong><small>到手 ${esc(displayOf(facts.actualValue))}</small></div>`
+        : `<div class="delta-stat"><span>实际收益</span><strong>${esc(displayOf(facts.actualRet))}</strong><small>到手 ${esc(displayOf(facts.actualValue))}</small></div>
+      <div class="delta-stat"><span>一直持有</span><strong>${esc(displayOf(facts.ghostRet))}</strong><small>价值 ${esc(displayOf(facts.ghostValue))}</small></div>
+      <div class="delta-stat"><span>择时差</span><strong class="orange">${esc(displayOf(facts.drag))}</strong><small>${esc(tradeLabel)}</small></div>`}
+    </div>
   </section>`;
-}
-
-function stockSelfCard(insights) {
-  const pack = insights?.stock_self ?? null;
-  const data = pack?.data ?? null;
-  const value = data?.display?.ret ?? '—';
-  let coverage = pack?.reason || '补充口径不可用';
-  if (data?.coverage) {
-    const available = Array.isArray(data.per_symbol) ? data.per_symbol.filter((p) => p.available).length : 0;
-    const total = Array.isArray(data.per_symbol) ? data.per_symbol.length : 0;
-    coverage = `覆盖 ${available}/${total} 只标的 · 按买入成本加权`;
-    if (data.status === 'partial') coverage += '（部分缺价，组合值不发布）';
-  }
-  return `<article class="metric-card"><p class="m-idx">04 / STOCK SELF</p><p class="m-label">标的自身涨幅（候选）</p><p class="m-value">${esc(value)}</p><p class="m-desc">首次买入日收盘 → 估值日收盘；${esc(coverage)}。这不是“买入不动”，也不属于已复核发布事实。</p></article>`;
 }
 
 function ghostSection(bundle) {
-  const pack = bundle.insights?.portfolio;
-  if (!pack?.available) return unavailableSection('01', '单笔幽灵线', pack?.reason);
-  const cfs = Array.isArray(pack.counterfactuals) ? pack.counterfactuals : [];
-  if (!cfs.length) {
-    return unavailableSection('01', '单笔幽灵线', '当前账单没有可替换的卖出笔：单笔反事实不适用，不虚构曲线。');
-  }
-  const list = [...cfs].reverse();
-  const defaultIndex = Math.max(0, list.findIndex((cf) => cf.series?.complete !== false));
-  const options = list.map((cf, i) => `<option value="${i}"${i === defaultIndex ? ' selected' : ''}>${esc(cf.trade_date)} ${esc(cf.symbol)} · 卖出 ${esc(cf.quantity)} 股 @ ${esc(cf.price)}</option>`).join('');
-  const errors = Array.isArray(pack.counterfactual_errors) ? pack.counterfactual_errors : [];
+  const portfolio = bundle.insights?.portfolio ?? {};
+  const list = orderedCounterfactuals(portfolio.counterfactuals);
+  const options = list.map((cf, index) => `<option value="${index}"${index === 0 ? ' selected' : ''}>${esc(cf.trade_date)} · ${esc(cf.symbol)} · 卖出 ${esc(cf.quantity)} 股</option>`).join('');
+  const errors = Array.isArray(portfolio.counterfactual_errors) ? portfolio.counterfactual_errors : [];
   const errorNote = errors.length
-    ? `<details class="rp-details"><summary>${errors.length} 笔反事实未能生成</summary><ul class="rp-evidence">${errors.slice(0, 8).map((e) => `<li>${esc(e.symbol || '')} ${esc(e.trade_id || '')} · ${esc(e.message)}</li>`).join('')}</ul></details>`
+    ? `<details class="rp-details"><summary>${errors.length} 笔对照暂不可用</summary><ul class="rp-evidence">${errors.slice(0, 6).map((e) => `<li>${esc(e.symbol || '')} ${esc(e.message)}</li>`).join('')}</ul></details>`
     : '';
   return `<section class="report-section rp-insight">
-    ${sectionHead('01', '单笔幽灵线', '假如这笔卖出没有发生')}
-    <p class="rp-note">同一标的、同一段行情，只替换所选卖出笔；该标的其余成交不变。曲线为单标的候选补充口径，不是组合已复核发布事实。</p>
-    <label class="rp-control"><span>选择要替换的卖出笔</span><select class="rp-select" data-role="cf-select">${options}</select></label>
-    <div class="rp-chart" data-role="ghost-chart"></div>
-    ${errorNote}
+    ${sectionHead('这笔卖出，如果没发生', '只替换一笔，其余成交不变')}
+    <div class="rp-card">
+      <label class="rp-control"><span>选择一笔卖出</span><select class="rp-select" data-role="cf-select">${options}</select></label>
+      <p class="rp-cf-summary" data-role="cf-summary"></p>
+      <div class="rp-chart" data-role="ghost-chart"></div>
+      ${errorNote}
+    </div>
   </section>`;
 }
 
 function waterfallSection(bundle) {
   const w = bundle.insights?.portfolio?.waterfall;
-  if (!w) return unavailableSection('02', '收益瀑布', '组合指标未生成，瀑布不生成。');
   const span = Math.max(w.scale.max - w.scale.min, Number.EPSILON);
+  const notes = { cost: '买入成本', ghost_gain: '同样的钱一直拿着', drag: '和一直持有相比', actual: '你的实际结果' };
   const rows = w.items.map((item) => {
     const start = Math.min(item.bar_start, item.bar_end);
     const width = Math.abs(item.bar_end - item.bar_start);
     const leftPct = ((start - w.scale.min) / span) * 100;
     const widthPct = width > 0 ? Math.max((width / span) * 100, 0.6) : 0;
     return `<div class="wf-row">
-      <div class="wf-label"><span>${esc(item.label)}</span><small>${esc(item.note)}</small></div>
+      <div class="wf-label"><span>${esc(item.label)}</span><small>${esc(notes[item.key] ?? '')}</small></div>
       <div class="wf-track"><span class="wf-bar wf-${esc(item.kind)}" style="left:${leftPct.toFixed(2)}%;width:${widthPct.toFixed(2)}%"></span></div>
-      <div class="wf-value"><strong>${esc(item.display.amount)}</strong><small>${esc(item.display.ratio)}</small></div>
+      <div class="wf-value"><strong>${esc(moneyText(item.display.amount))}</strong><small>${esc(item.display.ratio)}</small></div>
     </div>`;
   }).join('');
-  const identity = w.checks?.identity_ok === true;
   return `<section class="report-section rp-insight">
-    ${sectionHead('02', '收益瀑布', '本金 → 买入不动 → 择时损耗 → 实际')}
-    <div class="rp-waterfall">${rows}</div>
-    <p class="rp-note">恒等式：${esc(w.formula_text)} · ${identity ? '加总已核对' : '加总未通过，不据此下结论'}。瀑布只重排已复核的组合数字；标的自身涨幅是另一张卡，不混入本瀑布。</p>
+    ${sectionHead('差距是怎么来的', '同样的本金，三种结果')}
+    <div class="rp-card">
+      <div class="rp-waterfall">${rows}</div>
+      <p class="rp-caption">${w.checks?.identity_ok === true ? '加总已核对。' : '加总未通过，以下数字只作展示。'}</p>
+    </div>
   </section>`;
 }
 
-function rankingSection(bundle) {
+function attributionSection(bundle) {
   const d = bundle.insights?.portfolio?.decomposition;
-  if (!d) return unavailableSection('03', '损耗归因', '损耗分解未生成，不展示排行。');
-  if (d.blocked) {
-    return `<section class="report-section rp-insight">
-      ${sectionHead('03', '损耗归因', '逐笔卖出与标的聚合')}
-      <div class="rp-unavailable rp-warn"><p><strong>本次不发布：</strong>分解校验未通过。${esc((d.errors || []).map((e) => e.message).join('；'))}</p></div>
-    </section>`;
-  }
-  const symbols = [...(d.by_symbol || [])].sort((a, b) => b.dragMoney - a.dragMoney);
-  const items = (d.items || []).slice(0, 20);
-  const symbolRows = symbols.map((s) => `<tr>
-    <td>${esc(s.symbol)}</td>
-    <td class="num ${s.dragMoney < 0 ? 'rp-good' : ''}">${esc(s.display.dragMoney)}</td>
-    <td class="num">${esc(s.display.share)}</td>
-    <td class="num">${esc(s.line_count)}</td>
+  const items = [...(d.items ?? [])].sort((a, b) => Math.abs(b.dragMoney) - Math.abs(a.dragMoney));
+  const symbols = [...(d.by_symbol ?? [])]
+    .filter((s) => Math.abs(s.dragMoney) > 0.004)
+    .sort((a, b) => Math.abs(b.dragMoney) - Math.abs(a.dragMoney))
+    .slice(0, 4);
+  const max = Math.max(...items.map((item) => Math.abs(item.dragMoney)), 1);
+  const symbolRows = symbols.length > 1 ? `<div class="rp-attrib-list">${symbols.map((s) => `<div class="rp-attrib-row">
+    <span class="rp-attrib-symbol">${esc(s.symbol)}</span>
+    <span class="rp-attrib-track"><i class="rp-attrib-bar ${s.dragMoney >= 0 ? 'loss' : 'good'}" style="width:${Math.max((Math.abs(s.dragMoney) / max) * 100, 1).toFixed(1)}%"></i></span>
+    <strong class="${s.dragMoney >= 0 ? 'loss' : 'good'}">${esc(moneyText(s.display.dragMoney))}</strong>
+  </div>`).join('')}</div>` : '';
+  const top = items.slice(0, 3);
+  const topRows = `<ul class="rp-sell-list">${top.map((item) => `<li>
+    <span class="rp-sell-date">${esc(item.trade_date)}</span>
+    <span class="rp-sell-name">${esc(item.symbol)} · ${esc(item.quantity)} 股</span>
+    <strong class="${item.dragMoney >= 0 ? 'loss' : 'good'}">${esc(moneyText(item.display.dragMoney))}</strong>
+  </li>`).join('')}</ul>`;
+  const allRows = items.map((item) => `<tr>
+    <td>${esc(item.trade_date)}</td>
+    <td>${esc(item.symbol)}</td>
+    <td class="num">${esc(item.quantity)}</td>
+    <td class="num">${esc(Number(item.price).toFixed(2))}</td>
+    <td class="num">${esc(Number(item.close).toFixed(2))}</td>
+    <td class="num ${item.dragMoney < 0 ? 'rp-good' : ''}">${esc(moneyText(item.display.dragMoney))}</td>
   </tr>`).join('');
-  const itemRows = items.map((it) => `<tr>
-    <td>${esc(it.trade_date)}</td>
-    <td>${esc(it.symbol)}</td>
-    <td class="mono">${esc(it.trade_id)}</td>
-    <td class="num">${esc(it.quantity)}</td>
-    <td class="num">${esc(it.price)}</td>
-    <td class="num">${esc(it.close)}</td>
-    <td class="num ${it.dragMoney < 0 ? 'rp-good' : ''}">${esc(it.display.dragMoney)}</td>
-    <td class="num">${esc(it.display.share)}</td>
-  </tr>`).join('');
-  const more = (d.items || []).length > items.length ? `<p class="rp-note">仅展示前 ${items.length} 笔；完整明细保留在本地复核结果中。</p>` : '';
-  return `<section class="report-section rp-insight">
-    ${sectionHead('03', '损耗归因', '逐笔卖出与标的聚合')}
-    <p class="rp-note">损耗只来自卖出笔：卖出数量 ×（估值日收盘 − 卖出价）。占比以组合总损耗为分母（带符号）；负值表示该笔卖出反而优于买入不动。展示序按金额降序，不等于因果结论。</p>
-    <h3 class="rp-subtitle">按标的</h3>
-    <div class="table-wrap"><table class="ledger"><thead><tr><th>标的</th><th class="num">损耗金额</th><th class="num">占比</th><th class="num">卖出笔数</th></tr></thead><tbody>${symbolRows || '<tr><td colspan="4">没有卖出笔</td></tr>'}</tbody></table></div>
-    <h3 class="rp-subtitle">逐笔卖出</h3>
-    <div class="table-wrap"><table class="ledger"><thead><tr><th>日期</th><th>标的</th><th>成交 ID</th><th class="num">数量</th><th class="num">卖出价</th><th class="num">估值收盘</th><th class="num">损耗</th><th class="num">占比</th></tr></thead><tbody>${itemRows || '<tr><td colspan="8">没有卖出笔</td></tr>'}</tbody></table></div>
-    ${more}
-  </section>`;
-}
-
-function behaviorSection(bundle) {
-  const pack = bundle.insights?.behavior;
-  if (!pack?.available || !pack.data) return unavailableSection('04', '行为发现', pack?.reason);
-  const data = pack.data;
-  const pattern = data.patterns?.[0] ?? null;
-  if (!pattern) return unavailableSection('04', '行为发现', '行为发现没有返回可展示的模式。');
-  const tone = pattern.status === '成立' ? 'loss' : pattern.status === '不成立' ? 'ok' : 'mode';
-  const evidence = Array.isArray(pattern.evidence) ? pattern.evidence : [];
-  const evidenceList = evidence.length
-    ? `<ul class="rp-evidence">${evidence.slice(0, 8).map((e) => `<li><span class="mono">${esc(e.trade_id)}</span> · ${esc(e.trade_date)} ${esc(e.symbol)} · 窗口涨幅 ${esc(e.display?.rise ?? '—')}</li>`).join('')}</ul>`
-    : '<p class="rp-note">没有命中样本。</p>';
-  return `<section class="report-section rp-insight">
-    ${sectionHead('04', '行为发现', '样本数 + 成交证据 + 检验方式')}
-    <div class="rp-behavior">
-      <div class="rp-behavior-top"><span class="rp-badge ${tone}">${esc(pattern.status)}</span><strong>${esc(pattern.name)}</strong><span class="rp-meta">命中 ${esc(pattern.sample_n)} / 已评估 ${esc(pattern.evaluated_n)} / 最小样本 ${esc(pattern.min_samples)}</span></div>
-      <p class="rp-note">${esc(pattern.conclusion)}</p>
-      <p class="rp-rule-line">判定口径：${esc(pattern.rule?.side ?? '')}；${esc(pattern.rule?.window ?? '')}涨幅 ${esc(pattern.rule?.comparator ?? '')} ${esc(pattern.rule?.threshold_display ?? '')}</p>
-      <p class="rp-note">${esc(pattern.check_method)}</p>
-      ${evidenceList}
-      <p class="rp-caveat">阈值与窗口是候选配置（${esc(pattern.threshold_meta?.config_version ?? '—')}），待负责人确认后替换；${esc(pattern.threshold_meta?.source ?? '')}。</p>
-    </div>
-  </section>`;
-}
-
-function pgrSection(bundle) {
-  const pack = bundle.insights?.pgr;
-  if (!pack?.available || !pack.data) return unavailableSection('05', '卖出倾向 PGR / PLR', pack?.reason);
-  const data = pack.data;
-  if (data.status === 'blocked') {
-    return `<section class="report-section rp-insight">
-      ${sectionHead('05', '卖出倾向 PGR / PLR', '处置效应候选口径')}
-      <div class="rp-unavailable rp-warn"><p><strong>本次不发布：</strong>${esc((data.errors || []).map((e) => e.message).join('；'))}</p></div>
-    </section>`;
-  }
-  const rc = data.counts?.realized ?? {};
-  const pc = data.counts?.paper ?? {};
-  return `<section class="report-section rp-insight">
-    ${sectionHead('05', '卖出倾向 PGR / PLR', '处置效应候选口径')}
-    <div class="rp-pgr-grid">
-      <div class="rp-pgr-card"><span>PGR（盈利卖出倾向）</span><strong>${esc(data.display?.pgr ?? '—')}</strong><small>已实现盈利 /（已实现盈利 + 纸面盈利）</small></div>
-      <div class="rp-pgr-card"><span>PLR（亏损卖出倾向）</span><strong>${esc(data.display?.plr ?? '—')}</strong><small>已实现亏损 /（已实现亏损 + 纸面亏损）</small></div>
-      <div class="rp-pgr-card"><span>DE = PGR − PLR</span><strong>${esc(data.display?.de ?? '—')}</strong><small>正值＝盈利卖出比例高于亏损卖出比例</small></div>
-    </div>
-    <div class="table-wrap"><table class="ledger"><thead><tr><th>计数</th><th class="num">盈利</th><th class="num">亏损</th><th class="num">零盈亏</th><th class="num">合计</th></tr></thead><tbody>
-      <tr><td>已实现（卖出笔）</td><td class="num">${esc(rc.gain ?? 0)}</td><td class="num">${esc(rc.loss ?? 0)}</td><td class="num">${esc(rc.flat ?? 0)}</td><td class="num">${esc(rc.total ?? 0)}</td></tr>
-      <tr><td>纸面（持仓数）</td><td class="num">${esc(pc.gain ?? 0)}</td><td class="num">${esc(pc.loss ?? 0)}</td><td class="num">${esc(pc.flat ?? 0)}</td><td class="num">${esc(pc.total ?? 0)}</td></tr>
-    </tbody></table></div>
-    <p class="rp-note">参考均值：${esc(data.benchmarks?.cn?.label ?? '—')}（${esc(data.benchmarks?.cn?.source ?? '')}）；${esc(data.benchmarks?.us?.label ?? '—')}（${esc(data.benchmarks?.us?.source ?? '')}）。</p>
-    <p class="rp-caveat">${esc((data.notes || []).join(' '))}</p>
-  </section>`;
-}
-
-function candidateSection(pack) {
-  const c = pack?.candidates?.[0] ?? null;
-  if (!c) {
-    return `<section class="report-section rp-insight">
-      ${sectionHead('06', '规则候选', '由报告证据映射到既有模板')}
-      <p class="rp-note">${esc(pack?.notes?.[0] ?? '当前没有规则候选。')}</p>
-      <a class="btn btn-outline" href="#/rules">打开规则页</a>
-    </section>`;
-  }
-  const tone = c.status === 'available' ? 'loss' : c.status === 'active' ? 'ok' : 'mode';
-  const action = c.status === 'available'
-    ? '<button class="btn btn-primary" type="button" data-open-candidate>用这个阈值打开规则编辑</button>'
-    : c.status === 'active'
-      ? '<a class="btn btn-outline" href="#/rules">查看当前规则</a>'
-      : c.status === 'dismissed'
-        ? '<a class="btn btn-outline" href="#/rules">到规则页恢复候选</a>'
-        : '';
-  const evidence = (c.evidence || []).length
-    ? `<ul class="rp-evidence">${c.evidence.map((e) => `<li><span class="mono">${esc(e.trade_id)}</span> · ${esc(e.line)}</li>`).join('')}</ul>`
+  const more = items.length > top.length
+    ? `<details class="rp-details"><summary>全部 ${items.length} 笔卖出</summary>
+        <div class="table-wrap"><table class="ledger rp-table">
+          <thead><tr><th>日期</th><th>标的</th><th class="num">数量</th><th class="num">卖出价</th><th class="num">估值日收盘</th><th class="num">差额</th></tr></thead>
+          <tbody>${allRows}</tbody>
+        </table></div>
+      </details>`
     : '';
+  const title = (bundle.insights?.portfolio?.report?.portfolio?.dragMoney ?? 0) >= 0 ? '代价集中在哪几笔' : '改善来自哪几笔';
   return `<section class="report-section rp-insight">
-    ${sectionHead('06', '规则候选', '由报告证据映射到既有模板')}
-    <div class="rp-candidate">
-      <div class="rp-candidate-top"><span class="rp-badge ${tone}">${esc(c.status_text)}</span><strong>${esc(c.template_name)}</strong></div>
-      <p class="rp-candidate-text">${esc(c.text)}</p>
-      <p class="rp-note">${esc(c.reason)}</p>
-      <p class="rp-note">${esc(c.basis)}</p>
-      ${evidence}
-      <p class="rp-caveat">${esc(c.caveat)}</p>
-      ${action}
+    ${sectionHead(title, '按卖出笔计算')}
+    <div class="rp-card">
+      ${symbolRows}
+      ${topRows}
+      ${more}
+      <p class="rp-caption">差额＝卖出数量 ×（估值日收盘 − 卖出价）。正值是少拿，负值是少亏。</p>
     </div>
-    <p class="rp-caveat">候选只来自当前账单的行为证据与本地规则记录；不来自 LLM，也不来自其他用户。保存前由你在规则页确认或改写。</p>
   </section>`;
 }
 
-function factsTable(bundle, idx) {
-  const published = Array.isArray(bundle.review?.published_facts) ? bundle.review.published_facts : [];
-  const scopes = new Map();
-  for (const fact of published) {
-    const scope = fact.scope || 'portfolio';
-    if (!scopes.has(scope)) scopes.set(scope, []);
-    scopes.get(scope).push(fact);
-  }
-  const parts = [];
-  for (const [scope, facts] of scopes) {
-    const rows = facts.map((f) => `<tr>
-      <td>${esc(f.key || f.fact_id)}</td>
-      <td class="num">${esc(displayOf(f))}</td>
-      <td class="mono">${esc(f.formula_id || '—')}</td>
-    </tr>`).join('');
-    parts.push(`<details class="evidence-item" ${scope === 'portfolio' ? 'open' : ''}>
-      <summary><span class="ev-idx">${scope === 'portfolio' ? '组合' : esc(scope)}</span><h3>已发布事实 ${facts.length} 项</h3><span class="ev-plus">+</span></summary>
-      <div class="evidence-body table-wrap">
-        <table class="ledger"><thead><tr><th>事实</th><th class="num">结果</th><th>公式</th></tr></thead><tbody>${rows}</tbody></table>
-      </div>
-    </details>`);
-  }
-  return parts.length ? `<section class="report-section"><div class="report-sec-head"><div class="rs-title"><span class="rs-idx">${idx}</span><h2>已发布事实与证据</h2></div><p>只列复核通过的事实</p></div><div class="evidence-list">${parts.join('')}</div></section>` : '';
+function behaviorSection(vis) {
+  const pattern = vis.pattern;
+  const evidence = Array.isArray(pattern.evidence) ? pattern.evidence.slice(0, 6) : [];
+  const lead = `买入前 ${esc(pattern.rule?.window?.replace('买入日前 ', '') || '5 个交易日')}涨幅 ≥ ${esc(pattern.rule?.threshold_display || '10.0%')} 的买入，出现了 ${esc(pattern.sample_n)} 次。`;
+  return `<section class="report-section rp-insight">
+    ${sectionHead('一个值得注意的买入习惯', '只描述这笔账单')}
+    <div class="rp-card rp-behavior">
+      <div class="rp-behavior-top"><span class="rp-badge loss">出现 ${esc(pattern.sample_n)} 次</span><strong>${esc(pattern.name)}</strong></div>
+      <p class="rp-behavior-lead">${lead}</p>
+      <ul class="rp-evidence rp-evidence-grid">${evidence.map((e) => `<li><span>${esc(e.trade_date)}</span><span>${esc(e.symbol)}</span><strong>${esc(e.display?.rise ?? '—')}</strong></li>`).join('')}</ul>
+      <p class="rp-caption">按候选阈值识别，仅描述当前账单。</p>
+    </div>
+  </section>`;
 }
 
-function observationLine(observation) {
-  if (!observation) return '';
-  if (observation.recorded) {
-    return `<p class="rp-note rp-observed">本次观察已记入本地画像（累计 ${esc(observation.profile?.observations ?? 0)} 次）。画像只存派生统计，不含成交明细或文件名。</p>`;
+function ratioPct(value) {
+  return Number.isFinite(value) ? `${(value * 100).toFixed(0)}%` : '—';
+}
+
+function pgrSection(data) {
+  let conclusion = '样本还不够，暂不比较两边。';
+  if (data.pgr !== null && data.plr !== null) {
+    const de = data.de ?? (data.pgr - data.plr);
+    conclusion = de <= -0.05
+      ? '亏损的持仓更容易被卖出。'
+      : de >= 0.05 ? '盈利的持仓更容易被卖出。' : '两边卖出的倾向接近。';
+  } else if (data.pgr !== null) {
+    conclusion = '样本里没有亏损卖出，暂时只看到盈利时的卖出比例。';
+  } else if (data.plr !== null) {
+    conclusion = '样本里没有盈利卖出，暂时只看到亏损时的卖出比例。';
   }
-  return `<p class="rp-note">${esc(observation.reason || '本次未更新画像')}</p>`;
+  const counts = data.counts ?? {};
+  return `<section class="report-section rp-insight">
+    ${sectionHead('卖出习惯', `卖出 ${counts.realized?.total ?? '—'} 笔 · 持仓 ${counts.paper?.total ?? '—'} 只`)}
+    <div class="rp-card rp-habit">
+      <div class="rp-habit-grid">
+        <div><span>盈利时卖出</span><strong>${esc(ratioPct(data.pgr))}</strong></div>
+        <div><span>亏损时卖出</span><strong>${esc(ratioPct(data.plr))}</strong></div>
+      </div>
+      <p class="rp-habit-line">${esc(conclusion)}</p>
+    </div>
+  </section>`;
+}
+
+function candidateSection(candidate) {
+  return `<section class="report-section rp-insight">
+    ${sectionHead('要不要设一条规则？', '保存前由你确认或改写')}
+    <div class="rp-card rp-candidate">
+      <p class="rp-candidate-text">“${esc(candidate.text)}”</p>
+      <p class="rp-note">${esc(candidate.reason)}</p>
+      <div class="rp-actions">
+        <button class="btn btn-primary" type="button" data-open-candidate>用这个阈值打开规则编辑</button>
+        <span class="rp-caption">候选不会自动生效。</span>
+      </div>
+    </div>
+  </section>`;
+}
+
+function basisSection(bundle, demo) {
+  const published = (bundle.review?.published_facts ?? []).filter((fact) => (fact.scope || 'portfolio') === 'portfolio');
+  const rows = published.filter((fact) => FACT_LABELS[fact.key]).map((fact) => `<div><dt>${esc(FACT_LABELS[fact.key])}</dt><dd>${esc(factValue(fact))}</dd></div>`).join('');
+  return `<section class="report-section rp-basis-section">
+    <details class="rp-basis">
+      <summary><span>核对数据</span><small>${published.length} 项已复核</small><i class="rp-basis-plus" aria-hidden="true">+</i></summary>
+      <dl class="rp-basis-grid">${rows}</dl>
+      <p class="rp-caption">按成交价计算，不含费用与税费；数字由本地确定性引擎生成并复核。${demo ? '示例数据只用于演示。' : ''}</p>
+    </details>
+  </section>`;
+}
+
+function footnote(vis) {
+  const supplemental = vis.behavior || vis.pgr || vis.candidate;
+  return `<footer class="rp-footnote">
+    <p>这是一次事后对照，不预测未来，也不构成投资建议。</p>
+    ${supplemental ? '<p>补充图表和规则候选为候选口径，不进入已复核事实。</p>' : ''}
+  </footer>`;
 }
 
 function renderBundle(host, bundle, ctx, bill) {
-  const portfolio = bundle.factsByScope?.portfolio ?? {};
+  const demo = isDemoBundle(bundle, bill);
+  const source = `<div class="rp-status rp-status-top">${sourceChips(bundle, demo)}</div>`;
   const published = bundle.review?.portfolio_published === true;
-  const errors = Array.isArray(bundle.errors) ? bundle.errors : [];
-  const warnings = Array.isArray(bundle.warnings) ? bundle.warnings : [];
-  const source = `<div class="rp-status rp-status-top">${sourceChips(bundle)}</div>`;
   if (!published) {
-    host.innerHTML = `<div class="container report-body">${source}${blockedBlock(bundle)}</div>`;
+    host.innerHTML = `<div class="container report-body">${source}${blockedBlock(bundle, demo)}</div>`;
     return;
   }
 
   const insights = bundle.insights ?? {};
-  const ruleState = ruleStateOf(ctx?.state?.contracts?.versions);
-  let observation = null;
-  try {
-    observation = recordReportObservation({ bundle, bill, ruleState });
-  } catch (e) {
-    observation = { recorded: false, reason: `画像未更新：${String(e && e.message ? e.message : e)}`, profile: null };
+  let profile = null;
+  if (!demo) {
+    try {
+      profile = recordReportObservation({ bundle, bill, ruleState: ruleStateOf(ctx?.state?.contracts?.versions) }).profile;
+    } catch { /* 画像记录失败不阻断报告 */ }
   }
-  const profile = observation?.profile ?? null;
   let candidatePack = null;
   try {
     candidatePack = buildRuleCandidates({
       behavior: insights.behavior?.available ? insights.behavior.data : null,
-      ruleState,
+      ruleState: demo ? EMPTY_RULE_STATE : ruleStateOf(ctx?.state?.contracts?.versions),
       profile,
     });
   } catch {
-    candidatePack = { candidates: [], notes: ['规则候选生成失败：不生成候选。'] };
+    candidatePack = { candidates: [] };
   }
-  const candidate = candidatePack.candidates?.[0] ?? null;
-
-  const actual = portfolio.actualRet;
-  const ghost = portfolio.ghostRet;
-  const drag = portfolio.drag;
-  const dragMoney = portfolio.dragMoney;
-  const issueBlock = errors.length || warnings.length
-    ? `<section class="panel rp-issues">
-        ${errors.length ? `<p><strong>阻断：</strong>${esc(errors.map((e) => e.message || e.code).join('；'))}</p>` : ''}
-        ${warnings.length ? `<p class="rp-note">警告：${esc(warnings.map((w) => w.message || w.code).join('；'))}</p>` : ''}
-      </section>` : '';
+  const vis = reportVisibility({ bundle, insights, candidatePack });
+  const warnings = Array.isArray(bundle.warnings) ? bundle.warnings : [];
+  const warningNote = warnings.length
+    ? `<p class="rp-caption">有 ${warnings.length} 条账单提示已按 0 或缺省口径处理，不影响已复核数字的可回查性。</p>`
+    : '';
 
   host.innerHTML = `<div class="container report-body">
-    ${source}${issueBlock}
-    <section class="delta-card reveal" aria-labelledby="real-delta-title">
-      <div class="delta-main">
-        <p class="delta-eyebrow">REAL BILL / 同尺对比</p>
-        <p class="delta-label" id="real-delta-title">实际结果与买入不动的对照</p>
-        <p class="delta-number">${esc(displayOf(dragMoney))}</p>
-        <p class="delta-note">金钱差额来自已复核事实；不使用示例数字。正值表示相对买入不动少赚，负值表示相对更好。</p>
-      </div>
-      <div class="delta-side">
-        <div class="delta-stat"><span>实际收益</span><strong>${esc(displayOf(actual))}</strong><small>已复核</small></div>
-        <div class="delta-stat"><span>买入不动</span><strong>${esc(displayOf(ghost))}</strong><small>对照路径</small></div>
-        <div class="delta-stat"><span>择时损耗</span><strong class="orange">${esc(displayOf(drag))}</strong><small>${esc(displayOf(dragMoney))}</small></div>
-      </div>
-    </section>
-
-    <div class="metric-grid">
-      <article class="metric-card"><p class="m-idx">01 / ACTUAL</p><p class="m-label">实际收益</p><p class="m-value">${esc(displayOf(actual))}</p><p class="m-desc">来自已复核的本地账单结果</p></article>
-      <article class="metric-card"><p class="m-idx">02 / BUY &amp; HOLD</p><p class="m-label">对照收益</p><p class="m-value">${esc(displayOf(ghost))}</p><p class="m-desc">买入后持有不动的对照路径</p></article>
-      <article class="metric-card"><p class="m-idx">03 / TIMING GAP</p><p class="m-label">择时损耗</p><p class="m-value accent">${esc(displayOf(drag))}</p><p class="m-sub">${esc(displayOf(dragMoney))}</p><p class="m-desc">对照 − 实际；不评价单笔决定</p></article>
-      ${stockSelfCard(insights)}
-    </div>
-    ${observationLine(observation)}
-
-    ${ghostSection(bundle)}
-    ${waterfallSection(bundle)}
-    ${rankingSection(bundle)}
-    ${behaviorSection(bundle)}
-    ${pgrSection(bundle)}
-    ${candidateSection(candidatePack)}
-    ${factsTable(bundle, '07')}
-
-    <div class="boundary" style="margin-top:24px">
-      <h3>这份报告没有告诉你的事</h3>
-      <div class="boundary-grid">
-        <div><b>真实账单</b>本页只展示当前已确认账单的复核结果，不填充原型示例数字。</div>
-        <div><b>候选补充口径</b>标的自身涨幅、单笔幽灵线、PGR/PLR 与行为发现是补充分析，未进入复核发布链路，不能当作已发布事实引用。</div>
-        <div><b>画像与规则</b>画像只保存在当前浏览器；规则候选须由你确认或改写后才生效，系统不替你定规矩。</div>
-        <div><b>不构成建议</b>这是对已发生交易的事后对照，不预测未来，也不替你决定。</div>
-      </div>
-    </div>
+    ${source}
+    ${deltaCard(bundle, bill, vis, demo)}
+    ${vis.ghost ? ghostSection(bundle) : ''}
+    ${vis.waterfall ? waterfallSection(bundle) : ''}
+    ${vis.attribution ? attributionSection(bundle) : ''}
+    ${vis.behavior ? behaviorSection(vis) : ''}
+    ${vis.pgr ? pgrSection(vis.pgrData) : ''}
+    ${vis.candidate ? candidateSection(vis.candidateData) : ''}
+    ${vis.basis ? basisSection(bundle, demo) : ''}
+    ${warningNote}
+    ${footnote(vis)}
   </div>`;
 
   mountGhostChart(host, bundle);
-  bindCandidateButton(host, ctx, candidate);
+  bindCandidateButton(host, ctx, vis.candidateData);
+}
+
+function counterfactualSummary(cf) {
+  const recovered = cf?.replace?.recoveredMoney;
+  if (!Number.isFinite(recovered)) return '';
+  if (recovered > 0) return `不卖这笔，会多拿 ${moneyOf(recovered)}。`;
+  if (recovered < 0) return `不卖这笔，会少拿 ${moneyOf(-recovered)}。`;
+  return '不卖这笔，结果不变。';
 }
 
 function mountGhostChart(host, bundle) {
   const chartHost = host.querySelector('[data-role="ghost-chart"]');
   const select = host.querySelector('[data-role="cf-select"]');
-  const cfs = bundle.insights?.portfolio?.counterfactuals;
-  if (!chartHost || !Array.isArray(cfs) || !cfs.length) return;
-  const list = [...cfs].reverse();
+  const summary = host.querySelector('[data-role="cf-summary"]');
+  const list = orderedCounterfactuals(bundle.insights?.portfolio?.counterfactuals);
+  if (!chartHost || !list.length) return;
   const draw = (index) => {
     const cf = list[index] ?? list[0];
     chartHost.replaceChildren();
@@ -389,10 +399,11 @@ function mountGhostChart(host, bundle) {
       series: cf.series,
       markers: cf.markers,
       marketSource: { ...(bundle.marketSource ?? {}), dynamic: bundle.marketSource?.id === 'dynamic-tushare' },
+      compact: true,
     });
+    if (summary) summary.textContent = counterfactualSummary(cf);
   };
-  const defaultIndex = Math.max(0, list.findIndex((cf) => cf.series?.complete !== false));
-  draw(defaultIndex);
+  draw(0);
   if (select) select.addEventListener('change', () => draw(Number(select.value)));
 }
 

@@ -371,7 +371,9 @@ import { renderRealProfile } from './realProfile.js';
     const shared = sharedState();
     const bill = shared.bill ?? {};
     const rec = shared.importRecovery ?? {};
-    if (bill.status === 'confirmed') return { text: '已确认账单', tone: 'real' };
+    if (bill.status === 'confirmed') return bill.demo
+      ? { text: '示例场景', tone: 'demo' }
+      : { text: '已确认账单', tone: 'real' };
     if (bill.status === 'loading' || rec.pending || ['reading', 'preparing', 'rendering'].includes(rec.status)) {
       return { text: '导入中', tone: 'pending' };
     }
@@ -385,7 +387,7 @@ import { renderRealProfile } from './realProfile.js';
   function sessionStatusInfo() {
     const shared = sharedState();
     if (shared.bill?.status === 'confirmed' && shared.bill?.sourceType === 'local') {
-      return { text: '已确认账单', tone: 'real' };
+      return shared.bill.demo ? { text: '示例场景', tone: 'demo' } : { text: '已确认账单', tone: 'real' };
     }
     if (bridge.hasRealState()) return importStatusText();
     if (state.route === 'rules' && pageMode('rules') === 'real') return { text: '规则任务', tone: 'real' };
@@ -497,6 +499,23 @@ import { renderRealProfile } from './realProfile.js';
   function realReportPage() {
     if (!isConfirmedLocal()) return realPendingPage('report');
     const bill = sharedState().bill;
+    if (bill.demo) {
+      const scenario = bill.demoScenario ?? {};
+      return `${pageHead({
+        code: 'STEP 02 / EXAMPLE REPORT',
+        title: scenario.headline || '示例报告',
+        intro: `<div class="report-meta">
+          <div class="report-account"><span>DEMO / 示例场景</span><span>${esc(scenario.title || '示例报告')}</span></div>
+          <dl>
+            <div><dt>数据</dt><dd>合成账单 + 示例行情</dd></div>
+            <div><dt>用途</dt><dd>演示不同报告状态</dd></div>
+            <div><dt>性质</dt><dd><span class="status-dot demo">示例 · 非真实</span></dd></div>
+          </dl>
+        </div>`,
+        right: '<span class="sample-tag">示例数据</span><a class="text-link" href="#/import">换个场景</a>',
+      })}
+      <div id="tm-real-report"></div>`;
+    }
     return `${pageHead({
       code: 'STEP 02 / REPORT',
       title: '同一把尺，<br>量出差距。',
@@ -515,11 +534,13 @@ import { renderRealProfile } from './realProfile.js';
 
   function realChatPage() {
     if (!isConfirmedLocal()) return realPendingPage('chat');
+    const bill = sharedState().bill;
+    const demo = bill.demo === true;
     return `${pageHead({
       code: 'STEP 03 / ASK',
       title: '问它为什么，<br>别问它买什么。',
-      intro: '<p>只复述当前已确认账单的已复核事实。数字在本机再校验；不预测、不荐股、不替你决定。</p><ul class="mini-rules"><li>真实账单</li><li>四项事实</li><li>失败即兜底</li></ul>',
-      right: '<span class="sample-tag">真实账单</span>',
+      intro: `<p>${demo ? '当前是示例账单，回答只复述这份示例的已复核结果。' : '只复述当前已确认账单的已复核事实。数字在本机再校验；不预测、不荐股、不替你决定。'}</p><ul class="mini-rules"><li>${demo ? '示例数据' : '真实账单'}</li><li>四项事实</li><li>失败即兜底</li></ul>`,
+      right: `<span class="sample-tag">${demo ? '示例数据' : '真实账单'}</span><a class="text-link" href="#/import">${demo ? '换个场景' : '换一份账单'}</a>`,
     })}
     <div id="tm-real-chat"></div>`;
   }
@@ -539,8 +560,11 @@ import { renderRealProfile } from './realProfile.js';
   /* ---------- home ---------- */
 
   function homePage() {
+    const sharedBill = sharedState().bill;
     const realBanner = isConfirmedLocal()
-      ? `<div class="container tm-real-home-banner"><strong>当前有已确认的本地账单。</strong><span>${esc(sharedState().bill.fileName || '本地账单')} · 报告、问答和助手都使用这笔账单。</span><a class="text-link" href="#/report">查看真实报告 →</a><a class="text-link" href="#/chat">去事实问答 →</a></div>`
+      ? (sharedBill.demo
+        ? `<div class="container tm-real-home-banner"><strong>当前是示例场景。</strong><span>${esc(sharedBill.demoScenario?.title || '示例报告')} · 合成账单与示例行情，仅用于演示。</span><a class="text-link" href="#/report">查看示例报告 →</a><a class="text-link" href="#/import">换个场景 →</a></div>`
+        : `<div class="container tm-real-home-banner"><strong>当前有已确认的本地账单。</strong><span>${esc(sharedBill.fileName || '本地账单')} · 报告、问答和助手都使用这笔账单。</span><a class="text-link" href="#/report">查看真实报告 →</a><a class="text-link" href="#/chat">去事实问答 →</a></div>`)
       : '';
     return `${realBanner}<div class="home">
       <section class="hero">
