@@ -1255,11 +1255,11 @@ function retireSameTemplate(ruleSet, template_id, by, at) {
 
 // 保存并启用：新哈希 → 新版本成为该模板唯一当前规则（有当前规则时记为“已改写”）；历史同哈希 → 恢复该版本；与当前相同 → 不写入
 // 会改变适用范围的替代须 confirmScopeChange；origin：自然语言来源（原文 + 用户对歧义项的选择），仅作记录展示，不进入哈希与判定
-export function contractSaveRecords(versions, { parsed, note, origin = null, confirmScopeChange = false } = {}) {
+export function contractSaveRecords(versions, { parsed, note, origin = null, confirmScopeChange = false, assistantFlowId = null } = {}) {
   const d = contractEditorState(versions, parsed);
   if (!d.canSave) return [];
   if (d.scope_change && d.scope_change.requires_ack && !confirmScopeChange) return [];
-  if (d.action === 'restore') return contractRestoreRecords(versions, { hash: parsed.hash, note, confirmScopeChange });
+  if (d.action === 'restore') return contractRestoreRecords(versions, { hash: parsed.hash, note, confirmScopeChange, assistantFlowId });
   const at = new Date().toISOString();
   const retired = retireSameTemplate(d.ruleSet, parsed.template_id, { v: d.next_version, hash: parsed.hash }, at);
   const rec = {
@@ -1267,6 +1267,7 @@ export function contractSaveRecords(versions, { parsed, note, origin = null, con
     v: d.next_version, status: d.current ? '已改写' : '已确认', from_v: d.current ? d.current.v : null,
     replaces_v: retired.map((r) => r.v),
   };
+  if (typeof assistantFlowId === 'string' && assistantFlowId) rec.assistant_flow_id = assistantFlowId;
   if (origin && typeof origin.text === 'string' && origin.text.trim()) {
     rec.origin = { kind: 'natural_language', text: origin.text.trim(), confirmations: { ...(origin.confirmations ?? {}) } };
   }
@@ -1274,7 +1275,7 @@ export function contractSaveRecords(versions, { parsed, note, origin = null, con
 }
 
 // 恢复历史规则为当前规则：追加一条“经恢复”的状态记录（版本号不变），同模板原当前规则经替代进入历史；范围有变化须 confirmScopeChange
-export function contractRestoreRecords(versions, { hash, note, confirmScopeChange = false } = {}) {
+export function contractRestoreRecords(versions, { hash, note, confirmScopeChange = false, assistantFlowId = null } = {}) {
   const ruleSet = contractRuleSet(versions);
   const rule = ruleSet.rules.find((r) => r.hash === hash);
   if (!rule || !rule.restorable) return [];
@@ -1282,6 +1283,7 @@ export function contractRestoreRecords(versions, { hash, note, confirmScopeChang
   if (scope_change && scope_change.requires_ack && !confirmScopeChange) return [];
   const at = new Date().toISOString();
   const rec = { ...recordBase(rule.latest, note), at, v: rule.v, status: rule.reenable_status, transition_from: rule.status, via: '恢复' };
+  if (typeof assistantFlowId === 'string' && assistantFlowId) rec.assistant_flow_id = assistantFlowId;
   return [rec, ...retireSameTemplate(ruleSet, rule.template_id, rule, at)];
 }
 

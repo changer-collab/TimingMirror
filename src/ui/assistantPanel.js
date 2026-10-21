@@ -18,6 +18,10 @@ function getDefaultClient() {
   return defaultClient;
 }
 
+export function getRuleAssistantClient() {
+  return getDefaultClient();
+}
+
 export function assistantDefaultOpen(width = 1440) {
   return Number.isFinite(width) ? width > 1024 : true;
 }
@@ -63,6 +67,28 @@ function ruleIdentity(rule) {
     fields: { ...rule.fields },
     hash: rule.hash,
     v: Number.isFinite(rule.v) ? rule.v : (Number.isFinite(rule.version) ? rule.version : null),
+    schema: typeof rule.schema === 'string' ? rule.schema : null,
+    scope: rule.scope && rule.scope.kind === 'symbol'
+      ? { kind: 'symbol', symbol: rule.scope.symbol }
+      : { kind: 'all' },
+  };
+}
+
+function scopeDraftOf(rule) {
+  return rule && rule.scope && rule.scope.kind === 'symbol'
+    ? { kind: 'symbol', symbol: rule.scope.symbol }
+    : { kind: 'all', symbol: '' };
+}
+
+function explanationReset(extra = {}) {
+  return {
+    resultExplanation: null,
+    resultExplanationAttempt: null,
+    resultExplanationPending: false,
+    resultExplanationRequestId: null,
+    resultExplanationKey: null,
+    resultExplanationNotice: null,
+    ...extra,
   };
 }
 
@@ -88,7 +114,9 @@ function scrollToSimulation() {
 
 export function createAssistantController({ client, state, set, go, scrollSimulation = scrollToSimulation }) {
   let seq = 0;
+  let explainSeq = 0;
   const nextRequestId = () => `assistant-req-${++seq}`;
+  const nextExplainRequestId = () => `assistant-explain-${++explainSeq}`;
 
   function patch(extra) {
     const next = { ...state.assistant, ...extra };
@@ -109,6 +137,12 @@ export function createAssistantController({ client, state, set, go, scrollSimula
     if (!q || state.assistant.pending) return;
     const context = contextKey(state);
     const requestId = nextRequestId();
+    const previousMeta = {
+      contextKey: state.assistant.contextKey,
+      dataContextKey: state.assistant.dataContextKey,
+      versionsBaselineCount: state.assistant.versionsBaselineCount,
+      versionsBaselineHashes: [...(state.assistant.versionsBaselineHashes ?? [])],
+    };
     patch({
       pending: true,
       requestId,
@@ -116,17 +150,10 @@ export function createAssistantController({ client, state, set, go, scrollSimula
       dataContextKey: dataContextKey(state),
       versionsBaselineCount: state.contracts.versions.length,
       versionsBaselineHashes: state.contracts.versions.map((v) => v.hash).filter(Boolean),
-      semanticConfirmation: null,
-      currentRule: null,
-      ruleDrift: null,
-      simulation: null,
-      consistency: null,
-      ruleStateKey: null,
-      simulationKey: null,
-      pendingConfirmationFlowId: null,
       input: '',
       error: null,
       staleNotice: null,
+      lastAttempt: null,
       messages: [...state.assistant.messages, { role: 'user', text: q }],
     });
     let result;
@@ -138,12 +165,18 @@ export function createAssistantController({ client, state, set, go, scrollSimula
       });
     } catch {
       if (state.assistant.requestId !== requestId) return;
-      patch({ pending: false, requestId: null, error: { code: 'E_ASSISTANT_UNEXPECTED', message: '助手链路出现未预期错误' } });
+      patch({
+        ...previousMeta,
+        pending: false,
+        requestId: null,
+        error: { code: 'E_ASSISTANT_UNEXPECTED', message: '助手链路出现未预期错误' },
+        lastAttempt: { status: 'failed', code: 'E_ASSISTANT_UNEXPECTED', message: '助手链路出现未预期错误' },
+      });
       return;
     }
     if (state.assistant.requestId !== requestId || contextKey(state) !== context) {
       if (state.assistant.requestId === requestId) {
-        patch({ pending: false, requestId: null, staleNotice: '上下文已变化，旧回复已丢弃（审计记录保留）' });
+        patch({ ...previousMeta, pending: false, requestId: null, staleNotice: '上下文已变化，旧回复已丢弃（审计记录保留）' });
       }
       return;
     }
@@ -155,26 +188,57 @@ export function createAssistantController({ client, state, set, go, scrollSimula
         kind: 'draft',
         text: 'AI 已生成规则建议；保存后才会生效。',
       });
-    } else {
-      messages.push({
-        role: 'assistant',
-        kind: 'notice',
-        text: result.message || '本次没有生成规则建议。',
+      patch({
+        pending: false,
+        requestId: null,
+        flowId: flow.flow_id,
+        stage: flow.status,
+        draft: flow.draft,
+        plan: flow.plan,
+        trace: flow.trace,
+        explanation: flow.explanation,
+        modelCalls: flow.model_calls,
+        budgetMax: flow.budget_max,
+        outbound: flow.outbound,
+        semanticConfirmation: null,
+        currentRule: null,
+        ruleDrift: null,
+        simulation: null,
+        simulationAttempt: null,
+        currentSimulationResultId: null,
+        currentSimulationStatus: null,
+        consistency: null,
+        consistencyAttempt: null,
+        ruleStateKey: null,
+        simulationKey: null,
+        pendingConfirmationFlowId: null,
+        lastAttempt: null,
+        error: null,
+        ...explanationReset(),
+        messages,
       });
+      return;
     }
+    messages.push({
+      role: 'assistant',
+      kind: 'notice',
+      text: result.message || '本次没有生成规则建议。',
+    });
     patch({
+      ...previousMeta,
       pending: false,
       requestId: null,
-      flowId: flow.flow_id,
-      stage: flow.status,
-      draft: flow.draft,
-      plan: flow.plan,
-      trace: flow.trace,
-      explanation: flow.explanation,
-      modelCalls: flow.model_calls,
-      budgetMax: flow.budget_max,
-      outbound: flow.outbound,
       error: result.ok ? null : { code: result.code, message: result.message },
+      lastAttempt: {
+        status: flow.status ?? 'failed',
+        code: result.code ?? null,
+        message: result.message ?? '本次没有生成规则建议。',
+        flowId: flow.flow_id ?? null,
+        modelCalls: flow.model_calls ?? 0,
+        budgetMax: flow.budget_max ?? 0,
+        outbound: flow.outbound === true,
+        trace: flow.trace ?? null,
+      },
       messages,
     });
   }
@@ -184,11 +248,13 @@ export function createAssistantController({ client, state, set, go, scrollSimula
     if (!draft) return patch({ error: { code: 'E_ASSISTANT_NO_DRAFT', message: '当前没有可确认的规则草案' } });
     set({
       contracts: {
-        modal: { mode: 'add', targetHash: null },
+        modal: { mode: 'add', targetHash: null, assistantFlowId: draft.flow_id },
         draft: {
           template_id: draft.template_id,
           fields: Object.fromEntries(Object.entries(draft.fields).map(([k, v]) => [k, String(v)])),
           note: '来自 AI 规则理解草案；可在规则页修改后确认',
+          scope: scopeDraftOf(draft),
+          assistantFlowId: draft.flow_id,
         },
       },
       assistant: {
@@ -236,9 +302,15 @@ export function createAssistantController({ client, state, set, go, scrollSimula
           note: current
             ? (current.latest_note ?? '')
             : '当前无同类型生效规则；取消不会修改已有记录，保存后会重新启用。',
+          scope: scopeDraftOf(base),
         },
       },
-      assistant: { ...state.assistant, mobileView: false, error: null },
+      assistant: {
+        ...state.assistant,
+        mobileView: false,
+        pendingConfirmationFlowId: null,
+        error: null,
+      },
     });
     go('contract');
   }
@@ -263,7 +335,9 @@ export function createAssistantController({ client, state, set, go, scrollSimula
       ? state.assistant.versionsBaselineCount
       : currentCount;
     const added = currentCount > baselineCount ? state.contracts.versions.slice(baselineCount) : [];
-    const latestSaved = added.find((v) => v && v.schema === 'contract-v1'
+    const latestSaved = added.find((v) => v
+      && (v.schema === 'contract-v1' || v.schema === 'contract-v2')
+      && v.assistant_flow_id === flowId
       && typeof v.hash === 'string' && typeof v.template_id === 'string');
     if (latestSaved && state.assistant.pendingConfirmationFlowId === flowId
       && latestSaved.hash !== state.assistant.semanticConfirmation?.saved_rule?.hash) {
@@ -287,9 +361,14 @@ export function createAssistantController({ client, state, set, go, scrollSimula
         versionsBaselineHashes: state.contracts.versions.map((v) => v.hash).filter(Boolean),
         ruleStateKey: `${savedHash}|${savedCurrent ? savedCurrent.hash : 'removed'}`,
         simulation: null,
+        simulationAttempt: null,
+        currentSimulationResultId: null,
+        currentSimulationStatus: null,
         simulationKey: null,
         consistency: null,
+        consistencyAttempt: null,
         error: null,
+        ...explanationReset(),
       });
       return;
     }
@@ -319,11 +398,17 @@ export function createAssistantController({ client, state, set, go, scrollSimula
           currentRule: changed.flow.current_rule,
           ruleDrift: changed.flow.rule_drift,
           simulation: changed.flow.simulation,
+          simulationAttempt: changed.flow.simulationAttempt,
+          currentSimulationResultId: changed.flow.latest_simulation_result_id ?? null,
+          currentSimulationStatus: changed.flow.latest_simulation_status ?? null,
           consistency: changed.flow.consistency,
+          consistencyAttempt: changed.flow.consistencyAttempt,
           explanation: changed.flow.explanation,
           trace: changed.flow.trace,
           ruleStateKey,
+          simulationKey: null,
           error: null,
+          ...explanationReset(),
         });
       }
     }
@@ -338,24 +423,56 @@ export function createAssistantController({ client, state, set, go, scrollSimula
       return;
     }
     const matching = sim.results.filter((r) => r && r.rule && r.rule.hash === effectiveRule.hash);
-    if (matching.length === 0) {
-      if (Object.keys(noticePatch).length) patch(noticePatch);
-      return;
-    }
     const symbol = state.contracts.sim.symbol ?? sim.symbol;
     const date = state.contracts.sim.date ?? sim.requested_date;
+    const context = {
+      symbol: symbol || null,
+      date: date || null,
+      market_source_id: sim.marketSourceId ?? null,
+      data_snapshot_id: state.bill?.contextId ?? null,
+    };
+    if (matching.length === 0) {
+      const attemptKey = JSON.stringify({
+        hash: effectiveRule.hash,
+        rule_state: state.assistant.ruleStateKey ?? null,
+        status: 'not_matched',
+        symbol: context.symbol,
+        date: context.date,
+      });
+      if (state.assistant.simulationKey !== attemptKey) {
+        patch({
+          ...noticePatch,
+          simulationAttempt: {
+            status: 'not_executed',
+            ok: false,
+            rule_hash: effectiveRule.hash,
+            rule_scope: effectiveRule.scope ?? { kind: 'all' },
+            context,
+            summary: null,
+            error: { code: 'E_SIMULATION_RULE_NOT_FOUND', message: '模拟结果不包含当前规则；本次未执行' },
+          },
+          explanation: '本次模拟结果不包含当前规则；未接收为本次结果。',
+          currentSimulationResultId: null,
+          currentSimulationStatus: 'failed',
+          simulationKey: attemptKey,
+          error: null,
+          ...explanationReset(),
+        });
+      } else if (Object.keys(noticePatch).length) {
+        patch(noticePatch);
+      }
+      return;
+    }
     if (!symbol || !date) {
       if (Object.keys(noticePatch).length) patch(noticePatch);
       return;
     }
-    const summary = { triggered: 0, not_triggered: 0, missing_data: 0, error: 0 };
-    for (const r of matching) summary[r.ok ? r.verdict : 'error'] += 1;
-    const context = {
-      symbol,
-      date,
-      market_source_id: sim.marketSourceId ?? null,
-      data_snapshot_id: state.bill?.contextId ?? null,
-    };
+    const outcomeKey = matching.map((r) => [
+      r.ok === true ? '1' : '0',
+      r.display_verdict ?? r.verdict ?? 'error',
+      r.code ?? '',
+      r.effective_date ?? r.date_mapping?.effective_date ?? '',
+    ].join(':')).join('|');
     const simKey = JSON.stringify({
       hash: effectiveRule.hash,
       rule_state: state.assistant.ruleStateKey ?? null,
@@ -363,16 +480,57 @@ export function createAssistantController({ client, state, set, go, scrollSimula
       date,
       source: context.market_source_id,
       snapshot: context.data_snapshot_id,
-      summary,
+      run: state.contracts.sim?.runId ?? null,
+      outcome: outcomeKey,
     });
     if (state.assistant.simulationKey === simKey) {
       if (Object.keys(noticePatch).length) patch(noticePatch);
       return;
     }
-    const filtered = { ok: sim.ok, symbol, requested_date: date, marketSourceId: sim.marketSourceId ?? null, summary, results: matching };
-    const recorded = client.recordSimulation({ flowId, simulation: filtered, source: 'rule_page', context });
+    const recorded = client.recordSimulation({
+      flowId,
+      simulation: { ...sim, results: matching },
+      source: 'rule_page',
+      context,
+    });
     if (!recorded.ok) {
-      patch({ ...noticePatch, error: { code: recorded.code, message: recorded.message } });
+      patch({
+        ...noticePatch,
+        error: { code: recorded.code, message: recorded.message },
+        simulationAttempt: {
+          status: 'not_executed',
+          ok: false,
+          rule_hash: effectiveRule.hash,
+          rule_scope: effectiveRule.scope ?? { kind: 'all' },
+          context,
+          summary: null,
+          error: { code: recorded.code, message: recorded.message },
+        },
+        currentSimulationResultId: recorded.flow?.latest_simulation_result_id ?? null,
+        currentSimulationStatus: recorded.flow?.latest_simulation_status ?? 'failed',
+        simulationKey: simKey,
+        ...explanationReset(),
+      });
+      return;
+    }
+    if (recorded.status === 'simulation_failed') {
+      patch({
+        ...noticePatch,
+        stage: recorded.flow.status,
+        currentRule: recorded.flow.current_rule,
+        ruleDrift: recorded.flow.rule_drift,
+        simulation: recorded.flow.simulation,
+        simulationAttempt: recorded.flow.simulationAttempt,
+        currentSimulationResultId: recorded.flow.latest_simulation_result_id ?? null,
+        currentSimulationStatus: recorded.flow.latest_simulation_status ?? 'failed',
+        explanation: recorded.flow.explanation,
+        consistency: recorded.flow.consistency,
+        consistencyAttempt: recorded.flow.consistencyAttempt,
+        trace: client.getTrace ? client.getTrace(flowId) : recorded.flow.trace,
+        simulationKey: simKey,
+        error: null,
+        ...explanationReset(),
+      });
       return;
     }
     const executionRule = {
@@ -380,6 +538,7 @@ export function createAssistantController({ client, state, set, go, scrollSimula
       fields: effectiveRule.fields,
       hash: effectiveRule.hash,
       v: effectiveRule.version ?? effectiveRule.v ?? null,
+      scope: effectiveRule.scope ?? { kind: 'all' },
     };
     const consistency = client.checkConsistency({ flowId, executionRule });
     const status = consistency.consistency?.status;
@@ -394,11 +553,146 @@ export function createAssistantController({ client, state, set, go, scrollSimula
       currentRule: recorded.flow.current_rule,
       ruleDrift: recorded.flow.rule_drift,
       simulation: recorded.flow.simulation,
+      simulationAttempt: null,
+      currentSimulationResultId: recorded.flow.latest_simulation_result_id ?? recorded.flow.simulation?.result_id ?? null,
+      currentSimulationStatus: recorded.flow.latest_simulation_status ?? 'completed',
       explanation: recorded.flow.explanation,
       consistency: consistency.consistency,
+      consistencyAttempt: recorded.flow.consistencyAttempt ?? null,
       trace: client.getTrace ? client.getTrace(flowId) : recorded.flow.trace,
       simulationKey: simKey,
       error: consistency.ok ? null : { code: consistency.code, message },
+      ...explanationReset(),
+    });
+  }
+
+  function explanationEligibility() {
+    if (!state.assistant.flowId) {
+      return { ok: false, code: 'E_ASSISTANT_NO_FLOW', message: '当前没有规则任务', remaining: 0 };
+    }
+    if (state.assistant.marketNotice) {
+      return { ok: false, code: 'E_ASSISTANT_MARKET_NOTICE', message: '行情暂不可用，不能解释本次结果', remaining: 0 };
+    }
+    if (typeof client.getExplanationEligibility !== 'function') {
+      return { ok: false, code: 'E_ASSISTANT_EXPLANATION_UNAVAILABLE', message: '结果解释未配置', remaining: 0 };
+    }
+    return client.getExplanationEligibility(state.assistant.flowId);
+  }
+
+  async function explainResult() {
+    if (state.assistant.resultExplanationPending) return;
+    const flowId = state.assistant.flowId;
+    if (!flowId) return;
+    const eligibility = explanationEligibility();
+    if (!eligibility.ok) {
+      patch({
+        error: null,
+        resultExplanationNotice: eligibility.message ?? '当前不能解释本次结果',
+      });
+      return;
+    }
+    const requestId = nextExplainRequestId();
+    const route = state.route;
+    const dataKey = dataContextKey(state);
+    const simulationKey = state.assistant.simulationKey;
+    const resultId = state.assistant.currentSimulationResultId;
+    const identity = ruleIdentity(state.assistant.currentRule ?? state.assistant.semanticConfirmation?.saved_rule);
+    if (!identity || !resultId) return;
+    patch({
+      error: null,
+      resultExplanation: null,
+      resultExplanationAttempt: null,
+      resultExplanationKey: null,
+      resultExplanationPending: true,
+      resultExplanationRequestId: requestId,
+      resultExplanationNotice: null,
+    });
+    let result;
+    try {
+      result = await client.explainSimulationResult({ flowId, requestId });
+    } catch {
+      if (state.assistant.resultExplanationRequestId !== requestId) return;
+      patch({
+        resultExplanationPending: false,
+        resultExplanationRequestId: null,
+        resultExplanationAttempt: { status: 'failed', code: 'E_ASSISTANT_EXPLANATION_UNEXPECTED', message: '解释链路出现未预期错误' },
+        resultExplanationNotice: '解释链路出现未预期错误；仅保留本地摘要',
+      });
+      return;
+    }
+    if (state.assistant.resultExplanationRequestId !== requestId) return;
+    const flowState = result.flow ?? null;
+    const basePatch = flowState ? {
+      modelCalls: flowState.model_calls,
+      budgetMax: flowState.budget_max,
+      trace: flowState.trace,
+      outbound: flowState.outbound,
+    } : {};
+    if (state.assistant.flowId !== flowId
+      || state.route !== route
+      || dataContextKey(state) !== dataKey
+      || state.assistant.currentSimulationResultId !== resultId
+      || state.assistant.simulationKey !== simulationKey) {
+      patch({
+        ...basePatch,
+        resultExplanationPending: false,
+        resultExplanationRequestId: null,
+        resultExplanationNotice: '页面、规则或结果已变化，旧解释已丢弃',
+      });
+      return;
+    }
+    const currentIdentity = ruleIdentity(state.assistant.currentRule ?? state.assistant.semanticConfirmation?.saved_rule);
+    if (!currentIdentity || currentIdentity.hash !== identity.hash
+      || currentIdentity.v !== identity.v
+      || JSON.stringify(currentIdentity.scope) !== JSON.stringify(identity.scope)) {
+      patch({
+        ...basePatch,
+        resultExplanationPending: false,
+        resultExplanationRequestId: null,
+        resultExplanationNotice: '规则版本已变化，旧解释已丢弃',
+      });
+      return;
+    }
+    if (!result.ok) {
+      patch({
+        ...basePatch,
+        resultExplanationPending: false,
+        resultExplanationRequestId: null,
+        resultExplanationAttempt: flowState?.result_explanation_attempt ?? {
+          status: 'failed',
+          code: result.code,
+          message: result.message,
+        },
+        resultExplanationNotice: result.message ?? '解释未完成；仅保留本地摘要',
+        error: null,
+      });
+      return;
+    }
+    const binding = result.explanation?.binding;
+    if (!binding
+      || binding.flow_id !== flowId
+      || binding.request_id !== requestId
+      || binding.rule_hash !== identity.hash
+      || binding.rule_version !== identity.v
+      || binding.simulation_result_id !== resultId
+      || JSON.stringify(binding.scope) !== JSON.stringify(identity.scope)) {
+      patch({
+        ...basePatch,
+        resultExplanationPending: false,
+        resultExplanationRequestId: null,
+        resultExplanationNotice: '解释绑定与当前规则/结果不一致，已丢弃',
+      });
+      return;
+    }
+    patch({
+      ...basePatch,
+      resultExplanation: result.explanation,
+      resultExplanationAttempt: null,
+      resultExplanationPending: false,
+      resultExplanationRequestId: null,
+      resultExplanationKey: `${flowId}|${identity.hash}|${identity.v}|${resultId}`,
+      resultExplanationNotice: null,
+      error: null,
     });
   }
 
@@ -410,6 +704,8 @@ export function createAssistantController({ client, state, set, go, scrollSimula
     goSimulation,
     returnToRuleEdit,
     syncFromState,
+    explanationEligibility,
+    explainResult,
   });
 }
 
@@ -467,12 +763,105 @@ function nextActionButtons(controller, state) {
 function detectionText(consistency) {
   if (!consistency) return null;
   if (consistency.status === 'mismatch') {
-    return '模拟使用的规则与你保存的规则不一致，结果已阻断。';
+    return '一致性阻断：执行规则与保存规则的模板、字段或范围不一致。';
   }
-  if (consistency.status !== 'consistent') return '核对尚未完成。';
+  if (consistency.status !== 'consistent') return '一致性核对未完成。';
   return consistency.semantic_confirmation_covers_rule === false
-    ? '已核对：模拟对应当前生效规则；此前保存的规则不覆盖这次修改。'
-    : '已核对：模拟使用的就是你当前保存的规则。';
+    ? '一致性核对：执行规则对应当前生效规则；原语义确认不覆盖这次修改。'
+    : '一致性核对：执行规则与当前保存规则一致。';
+}
+
+function simulationContextText(simulation) {
+  const context = simulation?.context ?? {};
+  const effective = Array.isArray(simulation?.results)
+    ? simulation.results.find((r) => r.effective_date)?.effective_date ?? null
+    : null;
+  const base = `${textOf(context.symbol)} · ${textOf(context.date)}`;
+  return effective && effective !== context.date ? `${base}（实际使用交易日 ${effective}）` : base;
+}
+
+function simulationCounts(simulation) {
+  const s = simulation?.summary ?? {};
+  return `触发 ${s.triggered ?? 0} · 未触发 ${s.not_triggered ?? 0} · 不适用 ${s.not_applicable ?? 0} · 数据不足 ${s.missing_data ?? 0} · 无法判定 ${s.error ?? 0}`;
+}
+
+function simulationDetailNodes(simulation) {
+  const results = Array.isArray(simulation?.results) ? simulation.results : [];
+  return results
+    .filter((r) => r && (r.code || r.message || r.display_verdict || r.verdict))
+    .map((r) => el('div', { class: 'muted small' }, [
+      [
+        r.display_verdict ?? r.verdict ?? (r.ok ? 'completed' : 'error'),
+        r.code ? `（${r.code}）` : '',
+        r.message ? ` · ${r.message}` : '',
+      ].join(''),
+    ]));
+}
+
+function explanationMatches(state) {
+  const explanation = state.assistant.resultExplanation;
+  const simulation = state.assistant.simulation;
+  const rule = ruleIdentity(state.assistant.currentRule ?? state.assistant.semanticConfirmation?.saved_rule);
+  if (!explanation || !simulation || !rule || !explanation.binding) return false;
+  return explanation.binding.flow_id === state.assistant.flowId
+    && explanation.binding.rule_hash === rule.hash
+    && explanation.binding.rule_version === rule.v
+    && explanation.binding.simulation_result_id === simulation.result_id
+    && JSON.stringify(explanation.binding.scope) === JSON.stringify(rule.scope);
+}
+
+function explanationBlock(controller, state, simulation, attempt) {
+  if (!simulation && !attempt && !state.assistant.resultExplanation) return null;
+  const eligibility = controller.explanationEligibility();
+  const blockedByMarket = !!state.assistant.marketNotice;
+  const canExplain = eligibility.ok && !blockedByMarket;
+  const pending = state.assistant.resultExplanationPending;
+  const valid = explanationMatches(state);
+  const remaining = eligibility.remaining ?? Math.max(0, (state.assistant.budgetMax ?? 2) - (state.assistant.modelCalls ?? 0));
+  const buttonText = pending
+    ? '解释生成中…'
+    : canExplain
+      ? `让 AI 解释本次结果（剩余 ${remaining} 次）`
+      : 'AI 解释不可用';
+  const nodes = [
+    el('div', { class: 'assistant-draft-head' }, ['AI 结果解释（可选）']),
+    el('div', { class: 'muted small' }, [
+      '只有本次模拟执行成功且为命中/未命中时可用；不适用、数据不足、失败或无真实行情时只保留本地摘要。',
+    ]),
+  ];
+  if (!valid) {
+    nodes.push(el('div', { class: 'row assistant-actions' }, [
+      el('button', {
+        class: 'btn small', 'data-role': 'assistant-explain',
+        disabled: (!canExplain || pending) ? '' : null,
+        onclick: () => controller.explainResult(),
+      }, [buttonText]),
+    ]));
+    if (!canExplain && !pending) {
+      nodes.push(el('div', { class: 'muted small' }, [
+        blockedByMarket ? '行情暂不可用，不能解释本次结果' : (eligibility.message ?? '当前不能解释本次结果'),
+      ]));
+    }
+  } else {
+    nodes.push(el('div', { class: 'assistant-confirmed' }, [
+      el('div', { class: 'muted small' }, ['AI 解释（模型）· 仅限本次规则与模拟事实']),
+      el('div', { class: 'assistant-explanation' }, [state.assistant.resultExplanation.answer_text]),
+      el('div', { class: 'muted small' }, ['不改变语义确认或一致性；不是独立复核。']),
+    ]));
+  }
+  if (state.assistant.resultExplanationAttempt) {
+    const failed = state.assistant.resultExplanationAttempt;
+    nodes.push(el('div', { class: 'assistant-check bad' }, [
+      failed.status === 'stale' ? '旧 AI 解释已失效' : 'AI 解释未生成',
+      failed.code ? `（${failed.code}）` : '',
+      failed.message ? ` · ${failed.message}` : '',
+      el('div', { class: 'muted small' }, ['本地摘要仍然有效；未生成模型解释。']),
+    ]));
+  }
+  if (state.assistant.resultExplanationNotice) {
+    nodes.push(el('div', { class: 'assistant-check' }, [state.assistant.resultExplanationNotice]));
+  }
+  return el('div', { class: 'assistant-draft' }, nodes);
 }
 
 function draftCard(controller, state) {
@@ -483,13 +872,25 @@ function draftCard(controller, state) {
   const currentRule = state.assistant.currentRule;
   const drift = state.assistant.ruleDrift;
   const sim = state.assistant.simulation;
+  const attempt = state.assistant.simulationAttempt;
   const simStale = sim?.stale === true;
   const consistency = state.assistant.consistency;
   const removed = drift?.status === 'removed';
+  const attemptFailed = attempt?.status === 'failed';
+  const attemptNotRun = attempt?.status === 'not_executed';
+  const simChip = attemptFailed
+    ? chip('本次模拟：失败', 'warn')
+    : attemptNotRun
+      ? chip('本次模拟：未执行', 'warn')
+      : simStale
+        ? chip('模拟：需要重新执行', 'warn')
+        : sim
+          ? chip('模拟：执行完成', 'ok')
+          : chip('模拟：未执行', 'mode');
   const statusChips = [
     chip(semantic ? (drift ? `此前保存：v${textOf(finalRule?.version)}` : `已保存：v${textOf(finalRule?.version)}`) : '尚未保存', semantic ? 'ok' : 'mode'),
     drift && currentRule ? chip(`当前生效：v${textOf(currentRule.version)}`, 'warn') : null,
-    chip(sim ? (simStale ? '模拟：需要重新执行' : '模拟：已获得') : '模拟：未执行', sim && !simStale ? 'ok' : (simStale ? 'warn' : 'mode')),
+    simChip,
   ];
   const card = el('div', { class: 'assistant-draft' }, [
     el('div', { class: 'assistant-draft-head' }, [
@@ -518,10 +919,27 @@ function draftCard(controller, state) {
     ]) : null,
     simStale ? el('div', { class: 'assistant-check bad' }, [
       '此前模拟结果已失效：它对应的是旧规则，当前规则需要重新模拟。',
+      sim ? el('div', { class: 'muted small' }, [`此前结果：${simulationContextText(sim)} · ${simulationCounts(sim)}`]) : null,
+    ]) : attemptFailed || attemptNotRun ? el('div', { class: 'assistant-sim' }, [
+      el('div', { class: 'assistant-check bad' }, [
+        attemptFailed ? '本次模拟执行失败' : '本次模拟未执行',
+        attempt.error?.code ? `（${attempt.error.code}）` : '',
+        attempt.error?.message ? ` · ${attempt.error.message}` : '',
+        attempt.context?.date ? el('div', { class: 'muted small' }, [`本次对象：${simulationContextText(attempt)}`]) : null,
+        attempt.summary ? el('div', { class: 'muted small' }, [simulationCounts(attempt)]) : null,
+        ...simulationDetailNodes(attempt),
+      ]),
+      sim ? el('div', { class: 'assistant-check ok' }, [
+        el('div', { class: 'muted small' }, [`上次有效结果：${simulationContextText(sim)}`]),
+        el('div', {}, [simulationCounts(sim)]),
+        ...simulationDetailNodes(sim),
+        el('div', { class: 'muted small' }, ['仅对应其原上下文，不能冒充本次结果。']),
+      ]) : null,
     ]) : sim ? el('div', { class: 'assistant-sim' }, [
-      el('div', { class: 'muted small' }, [`${textOf(sim.context?.symbol)} · ${textOf(sim.context?.date)}`]),
-      el('div', {}, [`触发 ${sim.summary.triggered} · 未触发 ${sim.summary.not_triggered} · 数据不足 ${sim.summary.missing_data} · 错误 ${sim.summary.error}`]),
-      el('div', { class: 'muted small' }, [`对应当前规则 v${textOf(sim.rule_version)}`]),
+      el('div', { class: 'muted small' }, [`本次模拟：${simulationContextText(sim)}`]),
+      el('div', {}, [simulationCounts(sim)]),
+      el('div', { class: 'muted small' }, [`对应规则 v${textOf(sim.rule_version)} · 执行完成`]),
+      ...simulationDetailNodes(sim),
       sim.semantic_confirmation_covers_rule === false
         ? el('div', { class: 'muted small' }, ['这次模拟对应当前生效规则；此前保存的记录不覆盖这次修改。'])
         : null,
@@ -532,10 +950,18 @@ function draftCard(controller, state) {
           ? '尚未模拟；到规则页点击测试后，助手会自动接收结果，不会自动发起。'
           : '历史模拟需要先确认本地账单。',
     ]),
-    consistency && !simStale ? el('div', { class: `assistant-check ${consistency.status === 'mismatch' ? 'bad' : 'ok'}` }, [
-      detectionText(consistency),
-      el('div', { class: 'muted small' }, ['未做独立复核。']),
-    ]) : null,
+    attemptFailed || attemptNotRun
+      ? el('div', { class: 'assistant-check' }, [
+        detectionText(consistency)
+          ? `历史一致性（仅对应上次结果）：${detectionText(consistency)}`
+          : '本次一致性未运行：本次模拟未执行成功。',
+        el('div', { class: 'muted small' }, ['一致性只核对规则/输入，不代表模拟成功或独立复核。']),
+      ])
+      : consistency && !simStale ? el('div', { class: `assistant-check ${consistency.status === 'mismatch' ? 'bad' : 'ok'}` }, [
+        detectionText(consistency),
+        el('div', { class: 'muted small' }, ['一致性只核对规则/输入，不代表模拟成功，也不是独立复核。']),
+      ]) : null,
+    explanationBlock(controller, state, sim, attempt),
     nextActionButtons(controller, state),
     semantic ? el('details', { class: 'assistant-tech' }, [
       el('summary', {}, ['查看 AI 原始建议']),
@@ -560,8 +986,10 @@ function technicalDetails(state) {
   const current = a.currentRule;
   const plan = a.plan;
   const sim = a.simulation;
+  const attempt = a.simulationAttempt;
   const consistency = a.consistency;
-  if (!a.flowId && !a.draft) return null;
+  const last = a.lastAttempt;
+  if (!a.flowId && !a.draft && !last) return null;
   const requestIds = trace?.messages?.[0]?.request_ids ?? [];
   const lines = [
     techLine('任务编号', a.flowId ?? '未生成'),
@@ -573,10 +1001,23 @@ function technicalDetails(state) {
     techLine('保存规则哈希', saved ? `${saved.hash}（v${saved.version ?? '—'}）` : '—'),
     techLine('当前规则哈希', current ? `${current.hash}（v${current.version ?? '—'}）` : '—'),
     techLine('模拟执行规则', sim?.rule_hash ? `${sim.rule_hash}（v${sim.rule_version ?? '—'}）` : '—'),
+    techLine('模拟状态', sim ? `${sim.status ?? 'completed'}${sim.stale ? '（已失效）' : ''}` : '未执行'),
+    techLine('本次模拟尝试', attempt ? `${attempt.status}${attempt.error?.code ? ` · ${attempt.error.code}` : ''}` : '无'),
     techLine('模拟失效', sim?.stale ? `是（${sim.stale_reason ?? '规则变化'}）` : '否'),
     techLine('核对状态', consistency
       ? `${consistency.status} · ${consistency.binding ?? '无绑定'} · 覆盖=${consistency.semantic_confirmation_covers_rule} · 独立复核=${consistency.independent_review}`
       : '未运行'),
+    techLine('结果解释', a.resultExplanation
+      ? `ok · ${a.resultExplanation.binding?.simulation_result_id ?? '—'}`
+      : (a.resultExplanationAttempt
+        ? `${a.resultExplanationAttempt.status} · ${a.resultExplanationAttempt.code ?? '—'}`
+        : '未生成')),
+    techLine('结果解释绑定', a.resultExplanation?.binding
+      ? `${a.resultExplanation.binding.rule_hash} · v${a.resultExplanation.binding.rule_version} · ${a.resultExplanation.binding.simulation_result_id}`
+      : '—'),
+    techLine('上次请求', last
+      ? `${last.status ?? '—'} · ${last.code ?? '—'} · ${last.modelCalls ?? 0}/${last.budgetMax ?? 2}`
+      : '无'),
     techLine('trace', trace ? trace.messages.map((m) => m.type).join(' → ') : '未生成'),
   ];
   if (a.error?.code) lines.push(techLine('错误码', a.error.code));

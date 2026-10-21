@@ -13,7 +13,9 @@ const FIXED_TRADES = [
 
 export function createLocalFakeImportModel() {
   let visionCalls = 0;
+  let explanationCalls = 0;
   const failVisionOnce = process.env.TM_FAKE_VISION_FAIL_ONCE === '1';
+  const failExplanationOnce = process.env.TM_FAKE_EXPLAIN_FAIL_ONCE === '1';
   const delayMs = Math.max(0, Number(process.env.TM_FAKE_DELAY_MS) || 0);
   const wait = () => (delayMs > 0 ? new Promise((resolve) => setTimeout(resolve, delayMs)) : Promise.resolve());
   return Object.freeze({
@@ -51,6 +53,25 @@ export function createLocalFakeImportModel() {
       }
       const fields = templateId === 'no_buy_back_within' ? { days: 3 } : { threshold_pct: 5 };
       return { rawText: JSON.stringify({ intent: 'contract_setup', confidence: 0.9, template_id: templateId, fields, clarify: null, unsupported: null }) };
+    },
+    async resultExplanation({ flow_id, request_id, rule, simulation }) {
+      await wait();
+      explanationCalls += 1;
+      console.log(`[dev-fake] result-explanation flow=${flow_id ?? '—'} request=${request_id ?? '—'} rule=${rule?.template_id ?? '—'}`);
+      if (failExplanationOnce && explanationCalls === 1) return { rawText: 'not-json' };
+      const summary = simulation?.summary ?? {};
+      const triggered = simulation?.results?.every?.((r) => r.display_verdict === 'triggered') === true;
+      const outcome = triggered ? '命中' : '未命中';
+      const effective = simulation?.effective_date && simulation.effective_date !== simulation.requested_date
+        ? `（实际使用交易日 ${simulation.effective_date}）`
+        : '';
+      return {
+        rawText: JSON.stringify({
+          answer_text: `本次模拟执行完成：${simulation?.symbol ?? '—'} 在 ${simulation?.requested_date ?? '—'}${effective}${outcome}；`
+            + `触发 ${summary.triggered ?? 0} 条、未触发 ${summary.not_triggered ?? 0} 条、`
+            + `不适用 ${summary.not_applicable ?? 0} 条、数据不足 ${summary.missing_data ?? 0} 条、错误 ${summary.error ?? 0} 条。`,
+        }),
+      };
     },
     async restate({ facts }) {
       await wait();

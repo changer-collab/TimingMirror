@@ -7,6 +7,7 @@
 //       不发送原始 CSV/成交行/账户信息；预算、重试与超时均在本模块内计数。
 import { hashQuestion } from './planner.js';
 import { CONTRACT_TEMPLATES, parseContract } from '../engine/contractMatch.js';
+import { parseRuleSpec } from '../engine/ruleSpec.js';
 import { exportTraceJsonl } from './traceAudit.js';
 
 export const RULE_ASSISTANT_STAGE = 'draft_rule';
@@ -30,7 +31,16 @@ export const RULE_ASSISTANT_CODES = Object.freeze({
   NOT_CONFIRMED: 'W_RULE_ASSISTANT_NOT_CONFIRMED',
   NOT_EXECUTED: 'W_RULE_ASSISTANT_NOT_EXECUTED',
   CONSISTENCY_MISMATCH: 'E_RULE_ASSISTANT_CONSISTENCY_MISMATCH',
+  RESULT_EXPLANATION_NOT_READY: 'W_RULE_ASSISTANT_RESULT_EXPLANATION_NOT_READY',
+  RESULT_EXPLANATION_BUDGET: 'W_RULE_ASSISTANT_RESULT_EXPLANATION_BUDGET',
+  RESULT_EXPLANATION_RESPONSE: 'E_RULE_ASSISTANT_RESULT_EXPLANATION_RESPONSE',
+  RESULT_EXPLANATION_STALE: 'W_RULE_ASSISTANT_RESULT_EXPLANATION_STALE',
 });
+
+export const RESULT_EXPLANATION_STAGE = 'result_explanation';
+export const RESULT_EXPLANATION_MAX_ANSWER_CHARS = 1000;
+const RESULT_EXPLANATION_OUTCOMES = new Set(['triggered', 'not_triggered']);
+const RESULT_EXPLANATION_UNSAFE_RE = /(https?:\/\/|www\.|\.csv\b|\.xlsx?\b|\.pdf\b|成交明细|原始账单|账户|银行卡|身份证|手机号|组合|总收益|买入建议|卖出建议|预测|荐股)/i;
 
 const LOCAL_BLOCKED_PATTERNS = Object.freeze([
   /(csv|原始账单|成交明细|交易记录|账户号|银行卡|身份证|手机号|api[_ -]?key|apikey|token|密码|凭据|credential|authorization)/i,
@@ -97,6 +107,18 @@ function sameFields(a, b) {
   return keys.size === Object.keys(left).length
     && keys.size === Object.keys(right).length
     && [...keys].every((key) => toNumber(left[key]) === toNumber(right[key]));
+}
+
+function scopeOf(value) {
+  return value && value.kind === 'symbol'
+    ? { kind: 'symbol', symbol: value.symbol }
+    : { kind: 'all' };
+}
+
+function sameScope(a, b) {
+  const left = scopeOf(a);
+  const right = scopeOf(b);
+  return left.kind === right.kind && (left.kind !== 'symbol' || left.symbol === right.symbol);
 }
 
 export function validateRuleIntentResponse(rawText) {
@@ -181,21 +203,63 @@ function planForDraft(question, draft) {
   };
 }
 
+function canonicalOutcome(r) {
+  if (!r || r.ok !== true) return 'error';
+  const raw = typeof r.display_verdict === 'string'
+    ? r.display_verdict
+    : (typeof r.verdict === 'string' ? r.verdict : 'error');
+  return ['triggered', 'not_triggered', 'not_applicable', 'missing_data', 'error'].includes(raw)
+    ? raw
+    : 'error';
+}
+
+function canonicalSimulation(simulation, ruleHash = null) {
+  const all = Array.isArray(simulation?.results) ? simulation.results : [];
+  const ruleHashOf = (r) => (r && r.rule && typeof r.rule.hash === 'string'
+    ? r.rule.hash
+    : (r && typeof r.rule_hash === 'string' ? r.rule_hash : null));
+  const matching = ruleHash
+    ? all.filter((r) => ruleHashOf(r) === ruleHash)
+    : all;
+  const results = matching.map((r) => ({
+    ok: r && r.ok === true,
+    executed: r && r.ok === true,
+    outcome: canonicalOutcome(r),
+    verdict: r && typeof r.verdict === 'string' ? r.verdict : null,
+    display_verdict: canonicalOutcome(r),
+    code: r && typeof r.code === 'string' ? r.code : null,
+    message: r && typeof r.message === 'string' ? r.message : '',
+    requested_date: r && typeof r.requested_date === 'string' ? r.requested_date : null,
+    effective_date: r && r.date_mapping && typeof r.date_mapping.effective_date === 'string'
+      ? r.date_mapping.effective_date
+      : (r && r.change && typeof r.change.effective_date === 'string' ? r.change.effective_date : null),
+    rule_hash: ruleHashOf(r),
+    template_id: r && r.rule && typeof r.rule.template_id === 'string'
+      ? r.rule.template_id
+      : (r && typeof r.template_id === 'string' ? r.template_id : null),
+  }));
+  const summary = { triggered: 0, not_triggered: 0, not_applicable: 0, missing_data: 0, error: 0 };
+  for (const r of results) summary[r.outcome] += 1;
+  const execution_status = results.length > 0 && results.every((r) => r.executed) ? 'completed' : 'failed';
+  const explainable = execution_status === 'completed'
+    && results.length > 0
+    && results.every((r) => RESULT_EXPLANATION_OUTCOMES.has(r.outcome));
+  const outcomes = [...new Set(results.map((r) => r.outcome))];
+  const outcome = outcomes.length === 1 ? outcomes[0] : (outcomes.length === 0 ? 'error' : 'mixed');
+  return { execution_status, status: execution_status, outcome, summary, results, explainable };
+}
+
 function summarizeSimulation(simulation) {
   if (!isObject(simulation)) return null;
-  const results = Array.isArray(simulation.results) ? simulation.results.map((r) => ({
-    ok: r && r.ok === true,
-    verdict: r && typeof r.verdict === 'string' ? r.verdict : null,
-    rule_hash: r && r.rule && typeof r.rule.hash === 'string' ? r.rule.hash : null,
-    template_id: r && r.rule && typeof r.rule.template_id === 'string' ? r.rule.template_id : null,
-  })) : [];
-  const summary = isObject(simulation.summary) ? {
-    triggered: simulation.summary.triggered ?? 0,
-    not_triggered: simulation.summary.not_triggered ?? 0,
-    missing_data: simulation.summary.missing_data ?? 0,
-    error: simulation.summary.error ?? 0,
-  } : { triggered: 0, not_triggered: 0, missing_data: 0, error: 0 };
-  return { ok: simulation.ok === true, summary, results };
+  const canonical = canonicalSimulation(simulation);
+  return {
+    ok: canonical.execution_status === 'completed',
+    status: canonical.execution_status,
+    outcome: canonical.outcome,
+    summary: canonical.summary,
+    results: canonical.results,
+    explainable: canonical.explainable,
+  };
 }
 
 function normalizeSavedRule(raw, label = '规则') {
@@ -203,7 +267,7 @@ function normalizeSavedRule(raw, label = '规则') {
     || !isObject(raw.fields) || typeof raw.hash !== 'string') {
     return failure(RULE_ASSISTANT_CODES.INPUT_INVALID, `${label}缺少 template_id/fields/hash`);
   }
-  const parsed = parseContract({ template_id: raw.template_id, fields: raw.fields });
+  const parsed = parseRuleSpec({ template_id: raw.template_id, fields: raw.fields, scope: raw.scope });
   if (!parsed.supported) {
     return failure(RULE_ASSISTANT_CODES.INPUT_INVALID, parsed.message ?? `${label}无法被引擎解析`);
   }
@@ -218,6 +282,9 @@ function normalizeSavedRule(raw, label = '规则') {
       text: parsed.text,
       hash: parsed.hash,
       version: Number.isFinite(raw.v) ? raw.v : (Number.isFinite(raw.version) ? raw.version : null),
+      schema: parsed.schema,
+      scope: { ...parsed.scope },
+      scope_text: parsed.scope_text,
     },
   };
 }
@@ -225,11 +292,24 @@ function normalizeSavedRule(raw, label = '规则') {
 const ruleText = (rule) => String(rule?.text ?? '').replace(/。$/, '');
 const ruleVersion = (rule) => (rule?.version === null || rule?.version === undefined ? '' : `v${rule.version}`);
 
-function simulationLine(simulation) {
-  const s = simulation.summary;
-  const ctx = simulation.context;
-  const ctxText = ctx ? `模拟对象：${ctx.symbol} · ${ctx.date}。` : '';
-  return `${ctxText}本次模拟：触发 ${s.triggered} 条、未触发 ${s.not_triggered} 条、数据不足 ${s.missing_data} 条、错误 ${s.error} 条。`;
+function simulationLine(simulation, label = '本次模拟') {
+  const s = simulation.summary ?? {};
+  const ctx = simulation.context ?? {};
+  const effective = Array.isArray(simulation.results)
+    ? simulation.results.find((r) => r.effective_date)?.effective_date ?? null
+    : null;
+  const ctxText = ctx.symbol
+    ? `模拟对象：${ctx.symbol} · ${ctx.date}${effective && effective !== ctx.date ? `（实际使用交易日 ${effective}）` : ''}。`
+    : '';
+  const status = simulation.status === 'failed' ? '执行失败' : '执行完成';
+  return `${ctxText}${label}（${status}）：触发 ${s.triggered ?? 0} 条、未触发 ${s.not_triggered ?? 0} 条、不适用 ${s.not_applicable ?? 0} 条、数据不足 ${s.missing_data ?? 0} 条、错误 ${s.error ?? 0} 条。`;
+}
+
+function simulationAttemptLine(attempt) {
+  if (!attempt) return '';
+  const code = attempt.error?.code ? `（${attempt.error.code}）` : '';
+  const message = attempt.error?.message ?? '本次模拟未能完成判定';
+  return `本次模拟执行失败${code}：${message}。${attempt.context?.symbol ? `本次对象：${attempt.context.symbol} · ${attempt.context.date}。` : ''}`;
 }
 
 function localExplanation(flow) {
@@ -244,22 +324,33 @@ function localExplanation(flow) {
   const savedLine = `你保存的规则：${ruleText(saved)}${savedVersion ? `（${savedVersion}）` : ''}${semantic.draft_modified ? '（你在 AI 建议基础上修改后保存）' : ''}。`;
   const drift = flow.rule_drift;
   const simulation = flow.simulation;
+  const attempt = flow.simulationAttempt;
+  const attemptLine = simulationAttemptLine(attempt);
+  const historicalLine = attempt && simulation
+    ? `上次有效结果仅对应其原上下文，不能冒充本次结果：${simulationLine(simulation, '上次有效结果')}`
+    : '';
   if (drift) {
     if (drift.status === 'removed') {
-      return `${savedLine}当前规则已停用。${simulation ? '此前的模拟结果已失效，需要重新模拟。' : ''}未做独立复核。`;
+      return `${savedLine}当前规则已停用。${attemptLine}${historicalLine}${simulation && !attempt ? '此前的模拟结果已失效，需要重新模拟。' : ''}未做独立复核。`;
     }
     const current = flow.current_rule;
     const currentVersion = ruleVersion(current);
     const currentLine = current
       ? `当前生效规则：${ruleText(current)}${currentVersion ? `（${currentVersion}）` : ''}。`
       : '当前没有生效规则。';
+    if (attempt) {
+      return `${savedLine}${currentLine}${attemptLine}${historicalLine}当前规则需要重新模拟；未做独立复核。`;
+    }
     if (simulation && simulation.stale !== true) {
       return `${savedLine}${currentLine}${simulationLine(simulation)}这次模拟对应当前生效规则；此前保存的记录不覆盖这条新规则。未做独立复核。`;
     }
     if (simulation) {
-      return `${savedLine}${currentLine}此前的模拟结果已失效，需要重新模拟，不能作为当前规则的验证。未做独立复核。`;
+      return `${savedLine}${currentLine}此前的模拟结果已失效，需要重新模拟，不能作为当前规则的验证；原语义确认仍对应此前保存的规则，不覆盖当前规则。未做独立复核。`;
     }
     return `${savedLine}${currentLine}尚未执行历史模拟，需要重新模拟。未做独立复核。`;
+  }
+  if (attempt) {
+    return `${savedLine}${attemptLine}${historicalLine}${!simulation ? '尚未形成有效模拟结果。' : ''}未做独立复核，不能据此推断收益或因果。`;
   }
   if (!simulation) {
     return `${savedLine}历史模拟尚未执行：需要数据、标的和日期。未做独立复核。`;
@@ -318,11 +409,23 @@ function traceFor(flow) {
               source: flow.simulation.source,
               rule_hash: flow.simulation.rule_hash ?? null,
               rule_version: flow.simulation.rule_version ?? null,
+              rule_scope: flow.simulation.rule_scope ?? null,
+              simulation_status: flow.simulation.status ?? null,
               semantic_confirmation_covers_rule: flow.simulation.semantic_confirmation_covers_rule !== false,
               stale: flow.simulation.stale === true,
               context: { ...flow.simulation.context },
               summary: { ...flow.simulation.summary },
+              results: Array.isArray(flow.simulation.results) ? flow.simulation.results.map((r) => ({ ...r })) : [],
             } : {}),
+            simulation_attempt: flow.simulationAttempt ? {
+              status: flow.simulationAttempt.status,
+              ok: flow.simulationAttempt.ok === true,
+              rule_hash: flow.simulationAttempt.rule_hash ?? null,
+              rule_scope: flow.simulationAttempt.rule_scope ?? null,
+              context: flow.simulationAttempt.context ? { ...flow.simulationAttempt.context } : null,
+              summary: flow.simulationAttempt.summary ? { ...flow.simulationAttempt.summary } : null,
+              error: flow.simulationAttempt.error ? { ...flow.simulationAttempt.error } : null,
+            } : null,
           },
         ],
       },
@@ -332,6 +435,26 @@ function traceFor(flow) {
         review: { available: false, reason: 'independent_review_not_run' },
         semantic_confirmation: flow.semantic_confirmation ?? { status: 'pending' },
         consistency_check: flow.consistency ?? { status: 'not_run', independent_review: false },
+        consistency_attempt: flow.consistencyAttempt ?? null,
+        result_explanation: flow.result_explanation
+          ? {
+            status: flow.result_explanation.status,
+            stage: RESULT_EXPLANATION_STAGE,
+            request_id: flow.result_explanation.request_id,
+            attempt: flow.result_explanation.attempt ?? null,
+            binding: flow.result_explanation.binding ? { ...flow.result_explanation.binding } : null,
+            answer_text: flow.result_explanation.answer_text,
+          }
+          : (flow.result_explanation_attempt
+            ? {
+              status: flow.result_explanation_attempt.status,
+              stage: RESULT_EXPLANATION_STAGE,
+              request_id: flow.result_explanation_attempt.request_id ?? null,
+              code: flow.result_explanation_attempt.code ?? null,
+              message: flow.result_explanation_attempt.message ?? null,
+              binding: flow.result_explanation_attempt.binding ? { ...flow.result_explanation_attempt.binding } : null,
+            }
+            : null),
         current_rule: flow.current_rule ?? null,
         rule_drift: flow.rule_drift ?? null,
         final: {
@@ -375,6 +498,114 @@ function invokeWithTimeout(fn, request, timeoutMs) {
   });
 }
 
+function explanationEligibility(flow) {
+  if (!flow) return failure(RULE_ASSISTANT_CODES.INPUT_INVALID, 'flowId 不存在');
+  if (!flow.semantic_confirmation) {
+    return failure(RULE_ASSISTANT_CODES.NOT_CONFIRMED, '尚未保存规则，不能解释模拟结果');
+  }
+  if (flow.rule_drift) {
+    return failure(RULE_ASSISTANT_CODES.RESULT_EXPLANATION_STALE, '规则已变化，旧模拟/旧解释不能解释');
+  }
+  const simulation = flow.simulation;
+  if (!simulation) {
+    return failure(RULE_ASSISTANT_CODES.RESULT_EXPLANATION_NOT_READY, '本次尚未有成功的模拟结果');
+  }
+  if (simulation.stale === true) {
+    return failure(RULE_ASSISTANT_CODES.RESULT_EXPLANATION_STALE, '本次模拟结果已失效，请重新模拟');
+  }
+  if (flow.latest_simulation_status !== 'completed'
+    || flow.latest_simulation_result_id !== simulation.result_id) {
+    return failure(RULE_ASSISTANT_CODES.RESULT_EXPLANATION_NOT_READY, '最新一次模拟没有成功完成');
+  }
+  const canonical = canonicalSimulation({ results: simulation.results }, simulation.rule_hash);
+  if (canonical.execution_status !== 'completed' || !canonical.explainable || canonical.results.length === 0) {
+    return failure(RULE_ASSISTANT_CODES.RESULT_EXPLANATION_NOT_READY, '仅命中或未命中的成功模拟允许解释');
+  }
+  if (!canonical.results.every((r) => RESULT_EXPLANATION_OUTCOMES.has(r.outcome))) {
+    return failure(RULE_ASSISTANT_CODES.RESULT_EXPLANATION_NOT_READY, '不适用或数据不足的结果只提供本地摘要');
+  }
+  if (!simulation.context || !isSymbol(simulation.context.symbol) || !isDate(simulation.context.date)) {
+    return failure(RULE_ASSISTANT_CODES.RESULT_EXPLANATION_NOT_READY, '模拟上下文缺少标的或日期');
+  }
+  if (simulation.context.market_source_id !== 'dynamic-tushare') {
+    return failure(RULE_ASSISTANT_CODES.RESULT_EXPLANATION_NOT_READY, '缺少真实行情依据，不能解释');
+  }
+  const rule = flow.current_rule ?? flow.semantic_confirmation.saved_rule;
+  if (!rule || !Number.isFinite(rule.version)
+    || simulation.rule_hash !== rule.hash
+    || simulation.rule_version !== rule.version
+    || !sameScope(simulation.rule_scope, rule.scope)) {
+    return failure(RULE_ASSISTANT_CODES.RESULT_EXPLANATION_STALE, '模拟不对应当前规则版本');
+  }
+  return { ok: true, rule, simulation, canonical };
+}
+
+function buildResultExplanationRequest(flow, rule, simulation, requestId) {
+  const canonical = canonicalSimulation({ results: simulation.results }, simulation.rule_hash);
+  const effective = canonical.results.find((r) => r.effective_date)?.effective_date ?? null;
+  return {
+    stage: RESULT_EXPLANATION_STAGE,
+    flow_id: flow.flow_id,
+    request_id: requestId,
+    rule: {
+      template_id: rule.template_id,
+      fields: { ...rule.fields },
+      scope: scopeOf(rule.scope),
+      version: rule.version,
+      hash: rule.hash,
+    },
+    simulation: {
+      result_id: simulation.result_id,
+      status: 'completed',
+      symbol: simulation.context.symbol,
+      requested_date: simulation.context.date,
+      effective_date: effective,
+      summary: { ...canonical.summary },
+      results: canonical.results.map((r) => ({
+        verdict: r.outcome,
+        display_verdict: r.outcome,
+        code: r.code,
+        message: r.message,
+        requested_date: r.requested_date ?? simulation.context.date,
+        effective_date: r.effective_date ?? null,
+      })),
+    },
+  };
+}
+
+function validateResultExplanationResponse(rawText, expected) {
+  if (typeof rawText !== 'string') {
+    return failure(RULE_ASSISTANT_CODES.RESULT_EXPLANATION_RESPONSE, '解释响应不是字符串');
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch {
+    return failure(RULE_ASSISTANT_CODES.RESULT_EXPLANATION_RESPONSE, '解释响应不是合法 JSON');
+  }
+  if (!isObject(parsed) || Object.keys(parsed).some((k) => !['answer_text', 'binding'].includes(k))) {
+    return failure(RULE_ASSISTANT_CODES.RESULT_EXPLANATION_RESPONSE, '解释响应字段非法');
+  }
+  if (typeof parsed.answer_text !== 'string' || parsed.answer_text.trim() === ''
+    || parsed.answer_text.length > RESULT_EXPLANATION_MAX_ANSWER_CHARS) {
+    return failure(RULE_ASSISTANT_CODES.RESULT_EXPLANATION_RESPONSE, '解释正文为空或过长');
+  }
+  if (RESULT_EXPLANATION_UNSAFE_RE.test(parsed.answer_text)) {
+    return failure(RULE_ASSISTANT_CODES.RESULT_EXPLANATION_RESPONSE, '解释包含越界内容，已丢弃');
+  }
+  const binding = parsed.binding;
+  if (!isObject(binding)
+    || binding.flow_id !== expected.flow_id
+    || binding.request_id !== expected.request_id
+    || binding.rule_version !== expected.rule_version
+    || binding.rule_hash !== expected.rule_hash
+    || binding.simulation_result_id !== expected.simulation_result_id
+    || JSON.stringify(binding.scope) !== JSON.stringify(expected.scope)) {
+    return failure(RULE_ASSISTANT_CODES.RESULT_EXPLANATION_STALE, '解释绑定与当前规则/结果不一致，已丢弃');
+  }
+  return { ok: true, answer_text: parsed.answer_text.trim(), binding };
+}
+
 export function createRuleAssistant({
   transport,
   timeoutMs = RULE_ASSISTANT_TIMEOUT_MS,
@@ -389,6 +620,7 @@ export function createRuleAssistant({
 
   const flows = new Map();
   let seq = 0;
+  let simSeq = 0;
 
   function nextRequestId(flowId, attempt) {
     return `req-${flowId}-${attempt}`;
@@ -435,8 +667,14 @@ export function createRuleAssistant({
       current_rule: null,
       rule_drift: null,
       simulation: null,
+      simulationAttempt: null,
+      latest_simulation_result_id: null,
+      latest_simulation_status: null,
+      result_explanation: null,
+      result_explanation_attempt: null,
       semantic_confirmation: null,
       consistency: null,
+      consistencyAttempt: null,
       explanation: '',
       created_at: now(),
       ended_at: null,
@@ -494,6 +732,71 @@ export function createRuleAssistant({
     return flow ? clone(flow) : null;
   }
 
+  function beginExternalFlow({ stage = 'rule_nl' } = {}) {
+    const flowId = `flow-${String(++seq).padStart(3, '0')}-${hashQuestion(`external:${stage}:${seq}`).slice(0, 6)}`;
+    const flow = {
+      flow_id: flowId,
+      question_hash: hashQuestion(`external:${stage}`),
+      context_summary: { object_type: 'rule' },
+      status: 'external',
+      code: null,
+      message: null,
+      gate: 'local_accepted',
+      outbound: false,
+      model_calls: 0,
+      budget_max: maxModelCalls,
+      requests: [],
+      draft: null,
+      plan: null,
+      current_rule: null,
+      rule_drift: null,
+      simulation: null,
+      simulationAttempt: null,
+      latest_simulation_result_id: null,
+      latest_simulation_status: null,
+      result_explanation: null,
+      result_explanation_attempt: null,
+      semantic_confirmation: null,
+      consistency: null,
+      consistencyAttempt: null,
+      explanation: '',
+      external_stage: typeof stage === 'string' && stage ? stage : 'rule_nl',
+      created_at: now(),
+      ended_at: null,
+    };
+    flows.set(flowId, flow);
+    return clone(flow);
+  }
+
+  function recordExternalModelCall({
+    flowId,
+    stage = 'rule_nl',
+    requestId = null,
+    latencyMs = null,
+    status = 'ok',
+    code = null,
+  } = {}) {
+    const flow = flows.get(flowId);
+    if (!flow) return failure(RULE_ASSISTANT_CODES.INPUT_INVALID, 'flowId 不存在');
+    if (flow.model_calls >= flow.budget_max) {
+      return failure(RULE_ASSISTANT_CODES.BUDGET_EXHAUSTED, '模型请求预算已用尽；不再发送规则理解请求');
+    }
+    flow.model_calls += 1;
+    flow.outbound = true;
+    flow.requests.push({
+      request_id: typeof requestId === 'string' && requestId
+        ? requestId
+        : `ext-${flowId}-${flow.model_calls}`,
+      attempt: flow.model_calls,
+      stage: typeof stage === 'string' && stage ? stage : 'rule_nl',
+      latency_ms: Number.isFinite(latencyMs) ? latencyMs : null,
+      status: status === 'ok' ? 'ok' : 'failed',
+      code: status === 'ok' ? null : (typeof code === 'string' ? code : null),
+    });
+    flow.trace = traceFor(flow);
+    return { ok: true, flow: clone(flow), remaining: Math.max(0, flow.budget_max - flow.model_calls) };
+  }
+
   function recordSemanticConfirmation({ flowId, savedRule } = {}) {
     const flow = flows.get(flowId);
     if (!flow) return failure(RULE_ASSISTANT_CODES.INPUT_INVALID, 'flowId 不存在');
@@ -502,9 +805,11 @@ export function createRuleAssistant({
     if (!normalized.ok) return normalized;
     const finalRule = normalized.rule;
     const draft = flow.draft;
+    const draftScope = scopeOf(draft.scope);
     const modified = draft.template_id !== finalRule.template_id
       || draft.hash !== finalRule.hash
-      || !sameFields(draft.fields, finalRule.fields);
+      || !sameFields(draft.fields, finalRule.fields)
+      || !sameScope(draftScope, finalRule.scope);
     flow.semantic_confirmation = {
       status: 'user_confirmed',
       source: 'rule_page_save',
@@ -513,6 +818,7 @@ export function createRuleAssistant({
         fields: { ...draft.fields },
         text: draft.text,
         hash: draft.hash,
+        scope: draftScope,
       },
       saved_rule: finalRule,
       draft_modified: modified,
@@ -532,7 +838,13 @@ export function createRuleAssistant({
     flow.rule_drift = null;
     flow.status = 'confirmed';
     flow.simulation = null;
+    flow.simulationAttempt = null;
+    flow.latest_simulation_result_id = null;
+    flow.latest_simulation_status = null;
+    flow.result_explanation = null;
+    flow.result_explanation_attempt = null;
     flow.consistency = null;
+    flow.consistencyAttempt = null;
     flow.ended_at = null;
     flow.explanation = localExplanation(flow);
     flow.trace = traceFor(flow);
@@ -554,7 +866,8 @@ export function createRuleAssistant({
     }
     const same = !!current && current.template_id === confirmed.template_id
       && current.hash === confirmed.hash
-      && sameFields(current.fields, confirmed.fields);
+      && sameFields(current.fields, confirmed.fields)
+      && sameScope(current.scope, confirmed.scope);
     flow.current_rule = current;
     flow.rule_drift = same ? null : current ? {
       status: 'changed',
@@ -573,17 +886,41 @@ export function createRuleAssistant({
     };
     if (flow.simulation) {
       const simulationHash = flow.simulation.rule_hash ?? null;
-      const stale = simulationHash !== (current ? current.hash : null);
+      const stale = simulationHash !== (current ? current.hash : null)
+        || !sameScope(flow.simulation.rule_scope, current ? current.scope : null);
       flow.simulation = {
         ...flow.simulation,
         stale,
         stale_reason: stale ? 'saved_rule_changed' : null,
       };
     }
+    if (flow.simulationAttempt) {
+      flow.simulationAttempt = {
+        ...flow.simulationAttempt,
+        stale: true,
+        stale_reason: 'saved_rule_changed',
+      };
+    }
     if (flow.consistency) {
       flow.consistency = flow.rule_drift
         ? { ...flow.consistency, stale: true, stale_reason: 'saved_rule_changed' }
         : { ...flow.consistency, stale: false, stale_reason: null };
+    }
+    if (flow.consistencyAttempt) {
+      flow.consistencyAttempt = {
+        ...flow.consistencyAttempt,
+        stale: true,
+        stale_reason: 'saved_rule_changed',
+      };
+    }
+    if (flow.rule_drift) {
+      flow.result_explanation = null;
+      flow.result_explanation_attempt = {
+        status: 'stale',
+        code: RULE_ASSISTANT_CODES.RESULT_EXPLANATION_STALE,
+        message: '规则已变化，旧解释失效',
+        stale_reason: 'saved_rule_changed',
+      };
     }
     if (!flow.ended_at) flow.ended_at = now();
     flow.explanation = localExplanation(flow);
@@ -617,31 +954,83 @@ export function createRuleAssistant({
     if (!binding) {
       return failure(RULE_ASSISTANT_CODES.NOT_CONFIRMED, '当前没有生效的已保存规则；不记录历史模拟');
     }
-    const matching = Array.isArray(simulation.results)
-      ? simulation.results.filter((r) => r && r.rule && r.rule.hash === binding.hash)
-      : [];
-    if (matching.length === 0) {
-      return failure(RULE_ASSISTANT_CODES.CONSISTENCY_MISMATCH, '模拟结果不包含当前生效的已保存规则');
+    const canonical = canonicalSimulation(simulation, binding.hash);
+    if (canonical.results.length === 0) {
+      return failure(RULE_ASSISTANT_CODES.NOT_EXECUTED, '模拟结果不包含当前生效的已保存规则；本次未接收为结果');
     }
-    const summary = { triggered: 0, not_triggered: 0, missing_data: 0, error: 0 };
-    for (const r of matching) summary[r.ok ? r.verdict : 'error'] += 1;
-    const filtered = { ok: simulation.ok === true, summary, results: matching };
-    flow.simulation = {
-      ...summarizeSimulation(filtered),
+    const completed = canonical.execution_status === 'completed';
+    const resultContext = {
+      symbol: context.symbol,
+      date: context.date,
+      market_source_id: isShortString(context.market_source_id) ? context.market_source_id : null,
+      data_snapshot_id: isShortString(context.data_snapshot_id) ? context.data_snapshot_id : null,
+    };
+    const contentHash = hashQuestion(JSON.stringify({
       rule_hash: binding.hash,
       rule_version: binding.version ?? null,
+      rule_scope: binding.scope ?? { kind: 'all' },
+      context: resultContext,
+      execution_status: canonical.execution_status,
+      summary: canonical.summary,
+      results: canonical.results.map((r) => ({
+        outcome: r.outcome,
+        code: r.code,
+        message: r.message,
+        requested_date: r.requested_date,
+        effective_date: r.effective_date,
+      })),
+    }));
+    const resultId = `sim-${flow.flow_id}-${String(++simSeq).padStart(3, '0')}-${contentHash.slice(0, 8)}`;
+    const record = {
+      ok: completed,
+      status: completed ? 'completed' : 'failed',
+      execution_status: canonical.execution_status,
+      outcome: canonical.outcome,
+      explainable: canonical.explainable,
+      result_id: resultId,
+      result_hash: contentHash,
+      summary: canonical.summary,
+      results: canonical.results,
+      rule_hash: binding.hash,
+      rule_version: binding.version ?? null,
+      rule_scope: binding.scope ? { ...binding.scope } : { kind: 'all' },
       semantic_confirmation_covers_rule: !flow.rule_drift
         && binding.hash === flow.semantic_confirmation.saved_rule.hash,
       stale: false,
       stale_reason: null,
       source: typeof source === 'string' ? source : 'unknown',
-      context: {
-        symbol: context.symbol,
-        date: context.date,
-        market_source_id: isShortString(context.market_source_id) ? context.market_source_id : null,
-        data_snapshot_id: isShortString(context.data_snapshot_id) ? context.data_snapshot_id : null,
+      context: resultContext,
+      error: completed ? null : {
+        code: 'E_RULE_ASSISTANT_SIMULATION_FAILED',
+        message: '本次模拟存在未能判定的规则；见逐项结果',
       },
     };
+    flow.latest_simulation_result_id = resultId;
+    flow.latest_simulation_status = completed ? 'completed' : 'failed';
+    flow.result_explanation = null;
+    flow.result_explanation_attempt = null;
+    if (!completed) {
+      flow.simulationAttempt = record;
+      if (flow.consistency) {
+        flow.consistencyAttempt = {
+          status: 'not_executed',
+          kind: 'consistency_check',
+          independent_review: false,
+          reason: 'simulation_failed',
+          mismatches: [],
+          note: '本次模拟执行失败，未进行一致性核对。',
+        };
+      }
+      flow.status = 'simulation_failed';
+      if (!flow.ended_at) flow.ended_at = now();
+      flow.explanation = localExplanation(flow);
+      flow.trace = traceFor(flow);
+      return { ok: true, status: 'simulation_failed', attempt: clone(record), flow: clone(flow) };
+    }
+    flow.simulation = record;
+    flow.simulationAttempt = null;
+    flow.consistency = null;
+    flow.consistencyAttempt = null;
     flow.status = 'simulated';
     if (flow.plan) {
       flow.plan.status = 'executed';
@@ -652,7 +1041,119 @@ export function createRuleAssistant({
     if (!flow.ended_at) flow.ended_at = now();
     flow.explanation = localExplanation(flow);
     flow.trace = traceFor(flow);
-    return { ok: true, flow: clone(flow) };
+    return { ok: true, status: 'simulated', simulation: clone(record), flow: clone(flow) };
+  }
+
+  function getExplanationEligibility(flowId) {
+    const flow = flows.get(flowId);
+    const remaining = flow ? Math.max(0, flow.budget_max - flow.model_calls) : 0;
+    const eligibility = explanationEligibility(flow);
+    if (!eligibility.ok) {
+      return failure(eligibility.code, eligibility.message, { remaining, flow: flow ? clone(flow) : null });
+    }
+    if (flow.result_explanation?.status === 'ok') {
+      return failure(RULE_ASSISTANT_CODES.RESULT_EXPLANATION_NOT_READY, '本次结果已有解释', { remaining, flow: clone(flow) });
+    }
+    if (typeof transport.resultExplanation !== 'function') {
+      return failure(RULE_ASSISTANT_CODES.MODEL_UNAVAILABLE, '结果解释接口未配置', { remaining, flow: clone(flow) });
+    }
+    if (remaining <= 0) {
+      return failure(RULE_ASSISTANT_CODES.RESULT_EXPLANATION_BUDGET, '模型请求预算已用尽（2/2）', { remaining, flow: clone(flow) });
+    }
+    return { ok: true, remaining, rule: eligibility.rule, simulation: eligibility.simulation, flow: clone(flow) };
+  }
+
+  async function explainSimulationResult({ flowId, requestId = null } = {}) {
+    const flow = flows.get(flowId);
+    const eligibility = explanationEligibility(flow);
+    if (!eligibility.ok) {
+      return failure(eligibility.code, eligibility.message, { flow: flow ? clone(flow) : null });
+    }
+    if (flow.model_calls >= flow.budget_max) {
+      return failure(RULE_ASSISTANT_CODES.RESULT_EXPLANATION_BUDGET, '模型请求预算已用尽（2/2）', { flow: clone(flow) });
+    }
+    if (typeof transport.resultExplanation !== 'function') {
+      return failure(RULE_ASSISTANT_CODES.MODEL_UNAVAILABLE, '结果解释接口未配置', { flow: clone(flow) });
+    }
+    const rid = typeof requestId === 'string' && requestId
+      ? requestId
+      : `explain-${flow.flow_id}-${flow.model_calls + 1}`;
+    const payload = buildResultExplanationRequest(flow, eligibility.rule, eligibility.simulation, rid);
+    const expected = {
+      flow_id: flow.flow_id,
+      request_id: rid,
+      rule_version: eligibility.rule.version,
+      rule_hash: eligibility.rule.hash,
+      scope: scopeOf(eligibility.rule.scope),
+      simulation_result_id: eligibility.simulation.result_id,
+    };
+    flow.model_calls += 1;
+    flow.outbound = true;
+    flow.result_explanation = null;
+    flow.result_explanation_attempt = null;
+    const requestRecord = {
+      request_id: rid,
+      attempt: flow.model_calls,
+      stage: RESULT_EXPLANATION_STAGE,
+      latency_ms: null,
+      status: 'pending',
+      code: null,
+    };
+    flow.requests.push(requestRecord);
+    flow.trace = traceFor(flow);
+    const call = await invokeWithTimeout(transport.resultExplanation, payload, timeoutMs);
+    requestRecord.latency_ms = call.latencyMs ?? null;
+    if (!call.ok) {
+      requestRecord.status = 'failed';
+      requestRecord.code = call.code;
+      flow.result_explanation_attempt = {
+        status: 'failed',
+        stage: RESULT_EXPLANATION_STAGE,
+        code: call.code,
+        message: call.code === RULE_ASSISTANT_CODES.MODEL_TIMEOUT
+          ? '解释请求超时；仅保留本地摘要'
+          : '解释请求不可用；仅保留本地摘要',
+        request_id: rid,
+        attempt: requestRecord.attempt,
+        ...expected,
+        binding: expected,
+        created_at: now(),
+      };
+      flow.trace = traceFor(flow);
+      return failure(call.code, flow.result_explanation_attempt.message, { flow: clone(flow) });
+    }
+    const checked = validateResultExplanationResponse(call.response && call.response.rawText, expected);
+    if (!checked.ok) {
+      requestRecord.status = 'failed';
+      requestRecord.code = checked.code;
+      flow.result_explanation_attempt = {
+        status: checked.code === RULE_ASSISTANT_CODES.RESULT_EXPLANATION_STALE ? 'stale' : 'failed',
+        stage: RESULT_EXPLANATION_STAGE,
+        code: checked.code,
+        message: checked.message,
+        request_id: rid,
+        attempt: requestRecord.attempt,
+        ...expected,
+        binding: expected,
+        created_at: now(),
+      };
+      flow.trace = traceFor(flow);
+      return failure(checked.code, checked.message, { flow: clone(flow) });
+    }
+    requestRecord.status = 'ok';
+    requestRecord.code = null;
+    flow.result_explanation = {
+      status: 'ok',
+      stage: RESULT_EXPLANATION_STAGE,
+      answer_text: checked.answer_text,
+      binding: checked.binding,
+      request_id: rid,
+      attempt: requestRecord.attempt,
+      created_at: now(),
+    };
+    flow.result_explanation_attempt = null;
+    flow.trace = traceFor(flow);
+    return { ok: true, explanation: clone(flow.result_explanation), flow: clone(flow) };
   }
 
   function checkConsistency({ flowId, executionRule } = {}) {
@@ -677,6 +1178,7 @@ export function createRuleAssistant({
     const baseline = flow.current_rule ?? confirmed;
     const mismatches = [];
     if (executionRule.template_id !== baseline.template_id) mismatches.push('template_id 不一致');
+    if (!sameScope(executionRule.scope, baseline.scope)) mismatches.push('scope 不一致');
     const keys = new Set([...Object.keys(baseline.fields ?? {}), ...Object.keys(executionRule.fields ?? {})]);
     for (const key of keys) {
       if (toNumber(baseline.fields?.[key]) !== toNumber(executionRule.fields?.[key])) mismatches.push(`fields.${key} 不一致`);
@@ -692,8 +1194,9 @@ export function createRuleAssistant({
       semantic_confirmation_covers_rule: !flow.rule_drift && baseline.hash === confirmed.hash,
       independent_review: false,
       mismatches,
-      note: '同输入重跑、版本/哈希一致仅为一致性检查，不是独立复核，也不证明用户原表达语义正确。',
+      note: '一致性只核对本次执行规则与保存规则的模板、字段、范围与哈希，不代表模拟执行成功，也不是独立复核，不证明用户原表达语义正确。',
     };
+    flow.consistencyAttempt = null;
     flow.trace = traceFor(flow);
     return {
       ok,
@@ -710,8 +1213,10 @@ export function createRuleAssistant({
     const a = summarizeSimulation(first);
     const b = summarizeSimulation(rerun);
     const mismatches = [];
-    for (const key of ['triggered', 'not_triggered', 'missing_data', 'error']) {
-      if (a.summary[key] !== b.summary[key]) mismatches.push(`summary.${key} 不一致`);
+    for (const key of ['triggered', 'not_triggered', 'missing_data', 'not_applicable', 'error']) {
+      const left = first.summary && Number.isFinite(Number(first.summary[key])) ? Number(first.summary[key]) : a.summary[key];
+      const right = rerun.summary && Number.isFinite(Number(rerun.summary[key])) ? Number(rerun.summary[key]) : b.summary[key];
+      if (left !== right) mismatches.push(`summary.${key} 不一致`);
     }
     if (a.results.length !== b.results.length) mismatches.push('结果条数不一致');
     const n = Math.min(a.results.length, b.results.length);
@@ -741,12 +1246,16 @@ export function createRuleAssistant({
 
   return Object.freeze({
     startFlow,
+    beginExternalFlow,
+    recordExternalModelCall,
     getFlow,
     recordSemanticConfirmation,
     recordRuleState,
     recordSimulation,
     checkConsistency,
     checkSimulationRerun,
+    getExplanationEligibility,
+    explainSimulationResult,
     getTrace,
     exportTrace,
   });

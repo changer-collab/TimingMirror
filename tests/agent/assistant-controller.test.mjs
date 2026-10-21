@@ -15,6 +15,7 @@ import {
 import { defaultAssistant } from '../../src/state.js';
 import * as adapter from '../../src/demo/adapter.js';
 import { parseContract } from '../../src/engine/contractMatch.js';
+import { parseRuleSpec } from '../../src/engine/ruleSpec.js';
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -102,6 +103,7 @@ function makeSet(state) {
     schema: 'contract-v1', hash: edited.hash, v: 1,
     template_id: 'no_buy_on_surge', fields: { threshold_pct: 3 }, text: edited.text,
     status: 'confirmed', note: '', at: '2026-10-20T00:00:00.000Z',
+    assistant_flow_id: state.assistant.flowId,
   }];
   controller.syncFromState();
   check('控制器：保存成功后自动记录最终确认规则，支持用户修改草案', state.assistant.semanticConfirmation?.status === 'user_confirmed'
@@ -177,6 +179,7 @@ function makeSet(state) {
     schema: 'contract-v1', hash: parsed.hash, v: 1,
     template_id: 'no_buy_back_within', fields: { days: 3 }, text: parsed.text,
     status: 'confirmed', note: '', at: '2026-10-20T00:00:00.000Z',
+    assistant_flow_id: state.assistant.flowId,
   }];
   controller.syncFromState();
   check('第二模板：保存后自动确认，draft_rule/saved_rule 对应且未修改', state.assistant.semanticConfirmation?.saved_rule.template_id === 'no_buy_back_within'
@@ -214,6 +217,7 @@ function makeSet(state) {
     schema: 'contract-v1', hash: v1Parsed.hash, v: 1,
     template_id: 'no_buy_on_surge', fields: { threshold_pct: 3 }, text: v1Parsed.text,
     status: '已确认', note: '', at: '2026-10-20T00:00:00.000Z',
+    assistant_flow_id: state.assistant.flowId,
   }];
   controller.syncFromState();
   state.contracts.sim = {
@@ -396,6 +400,277 @@ function makeSet(state) {
     && state.assistant.outbound === false
     && transport.calls.length === 0
     && state.assistant.error?.code === 'W_RULE_ASSISTANT_LOCAL_BLOCKED', JSON.stringify(state.assistant));
+}
+
+/* —— 限定股票：保存、模拟、返回调整 —— */
+{
+  const state = makeState();
+  const set = makeSet(state);
+  const client = createRuleAssistant({ transport: fakeTransport(), timeoutMs: 1000 });
+  const controller = createAssistantController({ client, state, set, go: () => {}, scrollSimulation: () => {} });
+  await controller.submit(QUESTION);
+  controller.confirmInContract();
+  const scoped = parseRuleSpec({ template_id: 'no_buy_on_surge', fields: { threshold_pct: 3 }, scope: { kind: 'symbol', symbol: '600519' } });
+  state.contracts.versions = [
+    ...state.contracts.versions,
+    ...adapter.contractSaveRecords(state.contracts.versions, {
+      parsed: scoped,
+      note: '',
+      assistantFlowId: state.assistant.flowId,
+    }),
+  ];
+  controller.syncFromState();
+  check('限定股票：保存后助手识别 contract-v2 当前版本',
+    state.assistant.semanticConfirmation?.saved_rule.scope.symbol === '600519'
+    && state.assistant.currentRule?.scope.symbol === '600519'
+    && state.assistant.error === null,
+  JSON.stringify({ semantic: state.assistant.semanticConfirmation?.saved_rule, current: state.assistant.currentRule }));
+
+  state.contracts.sim = {
+    symbol: '600519', date: '2024-09-27',
+    result: {
+      symbol: '600519', requested_date: '2024-09-27', marketSourceId: 'synthetic-fixture',
+      results: [{ ok: true, verdict: 'triggered', display_verdict: 'triggered', rule: { hash: scoped.hash, template_id: scoped.template_id } }],
+    },
+  };
+  controller.syncFromState();
+  check('限定股票：模拟按当前版本绑定并执行完成',
+    state.assistant.simulation?.status === 'completed'
+    && state.assistant.simulation?.rule_scope?.symbol === '600519'
+    && state.assistant.simulation?.summary.triggered === 1
+    && state.assistant.consistency?.status === 'consistent',
+  JSON.stringify({ sim: state.assistant.simulation, consistency: state.assistant.consistency }));
+
+  const next = parseRuleSpec({ template_id: 'no_buy_on_surge', fields: { threshold_pct: 4 }, scope: { kind: 'symbol', symbol: '600519' } });
+  state.contracts.versions = [
+    ...state.contracts.versions,
+    ...adapter.contractSaveRecords(state.contracts.versions, { parsed: next, note: '返回调整' }),
+  ];
+  state.contracts.sim = { symbol: '600519', date: '2024-09-27', result: null, running: false };
+  controller.syncFromState();
+  check('限定股票：返回调整后旧模拟与一致性失效，原语义确认仍指向 v1',
+    state.assistant.ruleDrift?.status === 'changed'
+    && state.assistant.currentRule?.hash === next.hash
+    && state.assistant.semanticConfirmation?.saved_rule.hash === scoped.hash
+    && state.assistant.simulation?.stale === true
+    && state.assistant.consistency?.stale === true,
+  JSON.stringify({ drift: state.assistant.ruleDrift, sim: state.assistant.simulation, semantic: state.assistant.semanticConfirmation?.saved_rule }));
+}
+
+/* —— 保存归属：取消助手弹窗后，无关保存不被认领 —— */
+{
+  const state = makeState();
+  const set = makeSet(state);
+  const client = createRuleAssistant({ transport: fakeTransport(), timeoutMs: 1000 });
+  const controller = createAssistantController({ client, state, set, go: () => {}, scrollSimulation: () => {} });
+  await controller.submit(QUESTION);
+  controller.confirmInContract();
+  const other = parseContract({ template_id: 'no_buy_back_within', fields: { days: 2 } });
+  state.contracts.modal = null;
+  state.contracts.draft = null;
+  state.contracts.versions = [
+    ...state.contracts.versions,
+    ...adapter.contractSaveRecords(state.contracts.versions, { parsed: other, note: '' }),
+  ];
+  controller.syncFromState();
+  check('保存归属：没有 assistant_flow_id 的无关保存不会被助手认领',
+    state.assistant.semanticConfirmation === null
+    && state.assistant.pendingConfirmationFlowId === state.assistant.flowId,
+  JSON.stringify({ semantic: state.assistant.semanticConfirmation, pending: state.assistant.pendingConfirmationFlowId }));
+}
+
+/* —— 模拟接收：失败/不适用与本次/历史区分 —— */
+{
+  const state = makeState();
+  const set = makeSet(state);
+  const client = createRuleAssistant({ transport: fakeTransport(), timeoutMs: 1000 });
+  const controller = createAssistantController({ client, state, set, go: () => {}, scrollSimulation: () => {} });
+  await controller.submit(QUESTION);
+  controller.confirmInContract();
+  const saved = parseContract({ template_id: 'no_buy_on_surge', fields: { threshold_pct: 5 } });
+  state.contracts.versions = [
+    ...state.contracts.versions,
+    ...adapter.contractSaveRecords(state.contracts.versions, { parsed: saved, note: '', assistantFlowId: state.assistant.flowId }),
+  ];
+  controller.syncFromState();
+  state.contracts.sim = {
+    symbol: '600519', date: '2024-09-27',
+    result: {
+      symbol: '600519', requested_date: '2024-09-27', marketSourceId: 'synthetic-fixture',
+      results: [{ ok: false, verdict: null, display_verdict: 'error', code: 'E_MARKET_SOURCE', message: '行情不可用', rule: { hash: saved.hash, template_id: saved.template_id } }],
+    },
+  };
+  controller.syncFromState();
+  check('模拟失败：以逐项 ok 判失败，本次尝试单独展示，不冒充有效结果',
+    state.assistant.simulation === null
+    && state.assistant.simulationAttempt?.status === 'failed'
+    && state.assistant.simulationAttempt?.error?.code === 'E_RULE_ASSISTANT_SIMULATION_FAILED'
+    && state.assistant.error === null,
+  JSON.stringify({ attempt: state.assistant.simulationAttempt, sim: state.assistant.simulation }));
+
+  state.contracts.sim = {
+    symbol: '600519', date: '2024-09-27',
+    result: {
+      symbol: '600519', requested_date: '2024-09-27', marketSourceId: 'synthetic-fixture',
+      results: [{ ok: true, verdict: 'not_applicable', display_verdict: 'not_applicable', code: 'I_RULE_ACTION_NOT_APPLICABLE', message: '本次是卖出情境', rule: { hash: saved.hash, template_id: saved.template_id } }],
+    },
+  };
+  controller.syncFromState();
+  check('模拟不适用：执行完成并保留不适用计数，不要求命中',
+    state.assistant.simulation?.status === 'completed'
+    && state.assistant.simulation?.summary.not_applicable === 1
+    && state.assistant.simulationAttempt === null
+    && state.assistant.consistency?.status === 'consistent',
+  JSON.stringify({ sim: state.assistant.simulation, consistency: state.assistant.consistency }));
+}
+
+/* —— 任务连续性：新请求失败不清掉已保存规则与历史依据 —— */
+{
+  const state = makeState();
+  const set = makeSet(state);
+  let calls = 0;
+  const transport = {
+    async ruleIntent() {
+      calls += 1;
+      if (calls === 1) return { rawText: DRAFT_BODY };
+      throw new Error('offline');
+    },
+  };
+  const client = createRuleAssistant({ transport, timeoutMs: 1000 });
+  const controller = createAssistantController({ client, state, set, go: () => {}, scrollSimulation: () => {} });
+  await controller.submit(QUESTION);
+  controller.confirmInContract();
+  const saved = parseContract({ template_id: 'no_buy_on_surge', fields: { threshold_pct: 5 } });
+  state.contracts.versions = [
+    ...state.contracts.versions,
+    ...adapter.contractSaveRecords(state.contracts.versions, { parsed: saved, note: '', assistantFlowId: state.assistant.flowId }),
+  ];
+  controller.syncFromState();
+  const oldFlow = state.assistant.flowId;
+  const oldHash = state.assistant.semanticConfirmation?.saved_rule?.hash;
+  const oldDataContext = state.assistant.dataContextKey;
+  state.bill.contextId = 'bill-2';
+  await controller.submit('卖出后 3 个交易日内不追回同一只票。');
+  check('新请求失败：保留原 flow/草案/已保存规则/数据上下文，失败作为 lastAttempt',
+    state.assistant.flowId === oldFlow
+    && state.assistant.draft?.template_id === 'no_buy_on_surge'
+    && state.assistant.semanticConfirmation?.saved_rule?.hash === oldHash
+    && state.assistant.dataContextKey === oldDataContext
+    && state.assistant.pending === false
+    && state.assistant.lastAttempt?.status === 'unavailable'
+    && state.assistant.error?.code === 'W_RULE_ASSISTANT_MODEL_UNAVAILABLE'
+    && calls === 2,
+  JSON.stringify({ flow: state.assistant.flowId, draft: state.assistant.draft?.template_id, semantic: state.assistant.semanticConfirmation?.saved_rule, data: state.assistant.dataContextKey, last: state.assistant.lastAttempt, error: state.assistant.error }));
+}
+
+/* —— 结果解释：仅主动点击、绑定当前结果、迟到丢弃 —— */
+{
+  const explanationCalls = [];
+  const transport = {
+    async ruleIntent() { return { rawText: DRAFT_BODY }; },
+    async resultExplanation(payload) {
+      explanationCalls.push(payload);
+      const binding = {
+        flow_id: payload.flow_id,
+        request_id: payload.request_id,
+        rule_version: payload.rule.version,
+        rule_hash: payload.rule.hash,
+        scope: payload.rule.scope,
+        simulation_result_id: payload.simulation.result_id,
+      };
+      return { rawText: JSON.stringify({ answer_text: '本次模拟执行完成，结果为 triggered。', binding }) };
+    },
+  };
+  const state = makeState();
+  const set = makeSet(state);
+  const client = createRuleAssistant({ transport, timeoutMs: 1000 });
+  const controller = createAssistantController({ client, state, set, go: () => {}, scrollSimulation: () => {} });
+  await controller.submit(QUESTION);
+  controller.confirmInContract();
+  const saved = parseContract({ template_id: 'no_buy_on_surge', fields: { threshold_pct: 5 } });
+  state.contracts.versions = [
+    ...state.contracts.versions,
+    ...adapter.contractSaveRecords(state.contracts.versions, { parsed: saved, note: '', assistantFlowId: state.assistant.flowId }),
+  ];
+  controller.syncFromState();
+  state.contracts.sim = {
+    symbol: '600519', date: '2024-10-01',
+    result: {
+      symbol: '600519', requested_date: '2024-10-01', marketSourceId: 'dynamic-tushare',
+      results: [{ ok: true, verdict: 'triggered', display_verdict: 'triggered', code: null, message: '命中', rule: { hash: saved.hash, template_id: saved.template_id } }],
+    },
+  };
+  controller.syncFromState();
+  check('结果解释：自动接收不调用解释模型', explanationCalls.length === 0
+    && state.assistant.resultExplanation === null
+    && state.assistant.currentSimulationStatus === 'completed',
+  JSON.stringify({ calls: explanationCalls.length, state: state.assistant }));
+
+  await controller.explainResult();
+  const review = state.assistant.trace?.messages?.find((m) => m.type === 'review_result');
+  check('结果解释：用户点击后调用一次并绑定当前 result_id；不改语义确认',
+    explanationCalls.length === 1
+    && state.assistant.resultExplanation?.answer_text.includes('triggered')
+    && state.assistant.resultExplanation?.binding.simulation_result_id === state.assistant.currentSimulationResultId
+    && state.assistant.resultExplanation?.binding.rule_hash === saved.hash
+    && state.assistant.modelCalls === 2
+    && state.assistant.semanticConfirmation?.saved_rule.hash === saved.hash
+    && review?.result_explanation?.stage === 'result_explanation'
+    && review?.consistency_check?.independent_review === false,
+  JSON.stringify({ explanation: state.assistant.resultExplanation, review, calls: explanationCalls.length }));
+
+  const oldResultId = state.assistant.currentSimulationResultId;
+  state.contracts.sim = {
+    symbol: '600519', date: '2024-10-01',
+    result: {
+      symbol: '600519', requested_date: '2024-10-01', marketSourceId: 'dynamic-tushare',
+      results: [{ ok: true, verdict: 'not_triggered', display_verdict: 'not_triggered', code: null, message: '未命中', rule: { hash: saved.hash, template_id: saved.template_id } }],
+    },
+  };
+  controller.syncFromState();
+  check('结果解释：重新模拟后旧解释失效且 result_id 改变',
+    state.assistant.resultExplanation === null
+    && state.assistant.currentSimulationResultId !== oldResultId
+    && state.assistant.currentSimulationStatus === 'completed',
+  JSON.stringify({ old: oldResultId, now: state.assistant.currentSimulationResultId, exp: state.assistant.resultExplanation }));
+}
+
+/* —— 结果解释：迟到响应按 flow/route/result 丢弃 —— */
+{
+  let resolveExplain;
+  const client = {
+    async startFlow() { return { ok: true, flow: { flow_id: 'flow-late', draft: { template_id: 'no_buy_on_surge', fields: { threshold_pct: 5 }, text: 'x', hash: 'h' }, model_calls: 1, budget_max: 2, outbound: true } }; },
+    getExplanationEligibility() { return { ok: true, remaining: 1 }; },
+    explainSimulationResult() { return new Promise((resolve) => { resolveExplain = resolve; }); },
+    getFlow() { return null; },
+    recordSemanticConfirmation() { return { ok: false }; },
+    recordSimulation() { return { ok: false }; },
+    checkConsistency() { return { ok: false, consistency: { status: 'not_run' } }; },
+    getTrace() { return null; },
+  };
+  const state = makeState();
+  state.assistant.flowId = 'flow-late';
+  state.assistant.currentSimulationResultId = 'sim-late';
+  state.assistant.currentSimulationStatus = 'completed';
+  state.assistant.simulation = { result_id: 'sim-late', status: 'completed', rule_hash: 'h', rule_version: 1, rule_scope: { kind: 'all' }, context: { symbol: '600519', date: '2024-10-01', market_source_id: 'dynamic-tushare' }, summary: { triggered: 1, not_triggered: 0, not_applicable: 0, missing_data: 0, error: 0 }, results: [], explainable: true };
+  state.assistant.currentRule = { template_id: 'no_buy_on_surge', fields: { threshold_pct: 5 }, hash: 'h', v: 1, scope: { kind: 'all' } };
+  state.assistant.semanticConfirmation = { status: 'user_confirmed', saved_rule: state.assistant.currentRule };
+  state.assistant.simulationKey = 'sim-key';
+  const set = makeSet(state);
+  const controller = createAssistantController({ client, state, set, go: () => {}, scrollSimulation: () => {} });
+  const pending = controller.explainResult();
+  state.route = 'home';
+  resolveExplain({
+    ok: true,
+    explanation: { answer_text: '迟到的解释', binding: { flow_id: 'flow-late', request_id: state.assistant.resultExplanationRequestId, rule_hash: 'h', rule_version: 1, scope: { kind: 'all' }, simulation_result_id: 'sim-late' } },
+    flow: { model_calls: 2, budget_max: 2, trace: null, outbound: true },
+  });
+  await pending;
+  check('结果解释：切页后的迟到响应不覆盖当前状态',
+    state.assistant.resultExplanation === null
+    && state.assistant.resultExplanationPending === false
+    && state.assistant.resultExplanationNotice?.includes('丢弃'),
+  JSON.stringify({ exp: state.assistant.resultExplanation, notice: state.assistant.resultExplanationNotice }));
 }
 
 const failed = results.filter((r) => !r.ok);
