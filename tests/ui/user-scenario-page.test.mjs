@@ -12,6 +12,8 @@ const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const app = readFileSync(join(ROOT, 'prototype/user-frontend/app.js'), 'utf8');
 const bridge = readFileSync(join(ROOT, 'prototype/user-frontend/realBridge.js'), 'utf8');
 const contract = readFileSync(join(ROOT, 'src/ui/views/contractView.js'), 'utf8');
+const reviewView = readFileSync(join(ROOT, 'src/ui/views/scenarioReviewView.js'), 'utf8');
+const reviewEngine = readFileSync(join(ROOT, 'src/engine/tradeReview.js'), 'utf8');
 const assistant = readFileSync(join(ROOT, 'src/ui/assistantPanel.js'), 'utf8');
 const css = readFileSync(join(ROOT, 'prototype/user-frontend/real-views.css'), 'utf8');
 const styles = readFileSync(join(ROOT, 'prototype/user-frontend/styles.css'), 'utf8');
@@ -50,10 +52,17 @@ check('入口：规则页卡片不再重复测试按钮',
   !/href="#\/scenario"/.test(contract));
 check('页面：scenario 有独立标题/返回规则管理链接',
   /title: '历史情境测试'/.test(scenarioPage) && /href="#\/me"/.test(scenarioPage));
-check('规则页：默认不渲染 sim-section，scenario 才构建测试区',
-  /const scenarioOnly = section === 'scenario'/.test(contract)
-  && /if \(!scenarioOnly\) page\.append\(currentBox\)/.test(contract)
-  && /if \(scenarioOnly\) \{\s*page\.append\(buildSimulation\(\)\)/.test(contract));
+check('规则页：scenario 委托到操作复盘视图，不再渲染假设测试区',
+  /if \(section === 'scenario'\) \{\s*renderScenarioReview\(root, ctx\);\s*return;/.test(contract)
+  && /export function renderScenarioReview/.test(reviewView));
+check('操作复盘：页面按真实操作聚合，展示汇总/习惯/时间线/口径',
+  /按账单里的每一笔真实操作/.test(app)
+  && /const review = context\.review/.test(reviewView)
+  && /tr-headline/.test(reviewView) && /tr-stats/.test(reviewView)
+  && /画像同时看到/.test(reviewView) && /数据与口径/.test(reviewView));
+check('操作复盘：不再出现“假如买入/假如卖出”表单',
+  !/假如买入|假如卖出|sim-symbol|sim-date/.test(reviewView)
+  && /function buildTradeReview/.test(reviewEngine));
 check('桥接：mountScenarioView 使用 scenario-only 渲染',
   /export function mountScenarioView/.test(bridge) && /section: 'scenario'/.test(bridge)
   && /route === 'me' \|\| route === 'scenario' \? 'contract' : route/.test(bridge));

@@ -2,6 +2,7 @@
 // 边界：当前 / 历史划分、版本状态机、解析与判定全部由 adapter 提供（adapter 内部调用引擎）；本页只渲染返回的文本与 display。
 import { el, chip } from '../components.js';
 import * as adapter from '../../demo/adapter.js';
+import { renderScenarioReview } from './scenarioReviewView.js';
 import { saveContractsDemo, defaultContracts } from '../../state.js';
 import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../../agent/httpTransport.js';
 import { createRuleFallback, pickScenarioForJudgment, ruleSetHash } from '../../agent/ruleFallback.js';
@@ -217,6 +218,10 @@ function ruleDetail(rule) {
 }
 
 export function renderContract(root, ctx, { section = 'rules' } = {}) {
+  if (section === 'scenario') {
+    renderScenarioReview(root, ctx);
+    return;
+  }
   const { state, set } = ctx;
   const scenarioOnly = section === 'scenario';
   state.contracts = { ...defaultContracts(), ...state.contracts };

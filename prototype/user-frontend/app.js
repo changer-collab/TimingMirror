@@ -583,10 +583,10 @@ import { renderRealProfile } from './realProfile.js';
   function scenarioPage() {
     return `${confirmedBillBanner()}
     ${pageHead({
-      code: 'RULES / SCENARIO',
+      code: 'RULES / REVIEW',
       title: '历史情境测试',
-      intro: `<p>用当前生效的规则逐条判定一个历史情境；历史规则不参与，自定义规则按现有边界处理。行情来源、范围和缺价情况会如实标注。</p>`,
-      right: '<span class="sample-tag">历史复盘</span><a class="text-link" href="#/me">返回规则管理</a>',
+      intro: `<p>按账单里的每一笔真实操作，逐笔对照当前规则。画像只描述交易习惯，不参与判定。</p>`,
+      right: '<span class="sample-tag">按真实操作复盘</span><a class="text-link" href="#/me">返回规则管理</a>',
     })}
     <div class="container page-body tm-scenario-page">
       <div id="tm-real-scenario"></div>
