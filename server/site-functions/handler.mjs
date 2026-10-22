@@ -1,5 +1,5 @@
 // 站点 Edge Function 的 HTTP handler（Web Request/Response；可注入 fake transport）。
-// 路由由平台挂在 /functions/v1/app 下；这里按 /api/llm/intent、/api/llm/restate、/api/llm/rule、/api/llm/rule-intent、/api/llm/behavior-analysis、/api/llm/import-recover、/api/llm/import-vision 与 /api/market/snapshot 后缀分派。
+// 路由由平台挂在 /functions/v1/app 下；这里按 /api/llm/intent、/api/llm/restate、/api/llm/rule、/api/llm/rule-intent、/api/llm/behavior-analysis、/api/llm/result-explanation、/api/llm/scenario-judgment、/api/llm/import-recover、/api/llm/import-vision 与 /api/market/snapshot 后缀分派。
 // 不记录 question/facts/text/rawText/行情请求，不返回上游原始错误或 token。
 import { projectFacts } from './validation.mjs';
 import { DYNAMIC_CACHE_ARTIFACT, MARKET_MAX_RANGE_DAYS, MARKET_MAX_SYMBOLS, isMarketDate } from './market.mjs';
@@ -32,6 +32,11 @@ import {
   buildAiBehaviorAnalysis,
 } from './behaviorAnalysis.mjs';
 import { buildBehaviorFallback } from './behaviorFallback.mjs';
+import {
+  SCENARIO_JUDGMENT_CODES,
+  normalizeScenarioJudgmentRequest,
+  validateScenarioJudgmentResponse,
+} from './scenarioJudgment.mjs';
 
 export const SITE_FUNCTION_CODES = Object.freeze({
   NOT_FOUND: 'E_FUNCTION_NOT_FOUND',
@@ -56,6 +61,8 @@ export const SITE_FUNCTION_CODES = Object.freeze({
   IMPORT_VISION_RESPONSE: IMPORT_VISION_CODES.RESPONSE,
   RESULT_EXPLANATION_REQUEST_INVALID: RESULT_EXPLANATION_CODES.REQUEST_INVALID,
   RESULT_EXPLANATION_RESPONSE: RESULT_EXPLANATION_CODES.RESPONSE,
+  SCENARIO_JUDGMENT_REQUEST_INVALID: SCENARIO_JUDGMENT_CODES.REQUEST_INVALID,
+  SCENARIO_JUDGMENT_RESPONSE: SCENARIO_JUDGMENT_CODES.RESPONSE,
   MARKET_NOT_CONFIGURED: 'E_MARKET_NOT_CONFIGURED',
   MARKET_REQUEST_INVALID: 'E_MARKET_REQUEST_INVALID',
   MARKET_SYMBOL_UNKNOWN: 'E_MARKET_SYMBOL_UNKNOWN',
@@ -88,6 +95,8 @@ const MESSAGES = Object.freeze({
   [SITE_FUNCTION_CODES.IMPORT_VISION_RESPONSE]: '图片识别响应未通过服务端校验',
   [SITE_FUNCTION_CODES.RESULT_EXPLANATION_REQUEST_INVALID]: '结果解释请求未通过服务端校验',
   [SITE_FUNCTION_CODES.RESULT_EXPLANATION_RESPONSE]: '结果解释响应未通过服务端校验',
+  [SITE_FUNCTION_CODES.SCENARIO_JUDGMENT_REQUEST_INVALID]: '情景判断请求未通过服务端校验',
+  [SITE_FUNCTION_CODES.SCENARIO_JUDGMENT_RESPONSE]: '情景判断响应未通过服务端校验',
   [SITE_FUNCTION_CODES.MARKET_NOT_CONFIGURED]: '行情未启用：服务端尚未配置 TUSHARE_TOKEN',
   [SITE_FUNCTION_CODES.MARKET_REQUEST_INVALID]: '行情请求未通过服务端校验',
   [SITE_FUNCTION_CODES.MARKET_SYMBOL_UNKNOWN]: '行情标的未在股票列表中找到（请核对 6 位 A 股代码）',
@@ -271,19 +280,21 @@ export function createHandler({
         ? 'behaviorAnalysis'
         : path.endsWith('/api/llm/result-explanation')
           ? 'resultExplanation'
-          : path.endsWith('/api/llm/import-recover')
-            ? 'importRecover'
-            : path.endsWith('/api/llm/import-vision')
-              ? 'importVision'
-              : path.endsWith('/api/llm/intent')
-                ? 'intent'
-                : path.endsWith('/api/llm/restate')
-                  ? 'restate'
-                  : path.endsWith('/api/llm/rule')
-                    ? 'rule'
-                    : path.endsWith('/api/market/snapshot')
-                      ? 'market'
-                      : null;
+          : path.endsWith('/api/llm/scenario-judgment')
+            ? 'scenarioJudgment'
+            : path.endsWith('/api/llm/import-recover')
+              ? 'importRecover'
+              : path.endsWith('/api/llm/import-vision')
+                ? 'importVision'
+                : path.endsWith('/api/llm/intent')
+                  ? 'intent'
+                  : path.endsWith('/api/llm/restate')
+                    ? 'restate'
+                    : path.endsWith('/api/llm/rule')
+                      ? 'rule'
+                      : path.endsWith('/api/market/snapshot')
+                        ? 'market'
+                        : null;
     if (stage === null) return errorResponse(404, SITE_FUNCTION_CODES.NOT_FOUND);
     if (request.method !== 'POST') {
       return errorResponse(405, SITE_FUNCTION_CODES.METHOD, { Allow: 'POST' });
@@ -387,6 +398,27 @@ export function createHandler({
       };
       return jsonResponse(200, {
         rawText: JSON.stringify({ answer_text: checked.answer_text, binding }),
+      });
+    }
+    if (stage === 'scenarioJudgment') {
+      const validated = normalizeScenarioJudgmentRequest(body);
+      if (!validated.ok) return errorResponse(400, validated.code);
+      const result = await callTransport(transport, 'scenarioJudgment', validated.request);
+      if (!result.ok) return errorResponse(result.status, result.code);
+      const checked = validateScenarioJudgmentResponse(result.rawText);
+      if (!checked.ok) return errorResponse(502, SITE_FUNCTION_CODES.SCENARIO_JUDGMENT_RESPONSE);
+      const binding = {
+        flow_id: validated.request.flow_id,
+        request_id: validated.request.request_id,
+        scenario_id: validated.request.scenario_id,
+        rule_set_hash: validated.request.rule_set_hash,
+      };
+      return jsonResponse(200, {
+        rawText: JSON.stringify({
+          judgment: checked.judgment,
+          answer_text: checked.answer_text,
+          binding,
+        }),
       });
     }
     if (stage === 'importRecover') {

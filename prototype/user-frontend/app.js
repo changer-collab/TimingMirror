@@ -389,6 +389,7 @@ import { renderRealProfile } from './realProfile.js';
     return bridge.hasRealState()
       || bridge.isDemoSelected()
       || (shared.assistant?.messages?.length ?? 0) > 0
+      || (shared.assistant?.qaMessages?.length ?? 0) > 0
       || !!shared.assistant?.draft
       || (state.chat?.messages?.length ?? 0) > 0
       || state.bill?.status !== 'idle';

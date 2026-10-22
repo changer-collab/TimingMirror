@@ -468,3 +468,48 @@
   .rp-habit-grid > div { padding: 14px 16px; }
   .rp-habit-grid strong { font-size: 28px; }
 }
+
+/* 事实级来源展开（核对数据） */
+.rp-provenance-list {
+  display: grid;
+  gap: 6px;
+  padding: 4px 16px 10px;
+}
+
+.rp-fact-detail {
+  border-top: 1px dashed var(--line-soft);
+  padding-top: 6px;
+  color: var(--gray);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.rp-fact-detail summary {
+  cursor: pointer;
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.rp-fact-detail p { margin: 5px 0 0; }
+.rp-fact-detail strong { color: var(--ink-soft); font-weight: 500; }
+
+.rp-fact-steps {
+  margin-top: 6px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line-soft);
+}
+
+.rp-fact-steps summary { font-size: 10.5px; }
+.rp-fact-steps ol { margin: 5px 0 0 16px; padding: 0; }
+.rp-fact-steps li { margin: 3px 0; }
+
+.rp-more-sources {
+  margin-top: 5px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line-soft);
+}
+
+.rp-more-sources summary { cursor: pointer; color: var(--ink-soft); font-size: 10.5px; }
+.rp-more-sources ul { margin: 5px 0 0 16px; padding: 0; }
+.rp-more-sources li { margin: 2px 0; }
