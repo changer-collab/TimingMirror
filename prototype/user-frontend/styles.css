@@ -1865,64 +1865,6 @@ a.view-option:hover {
    IMPORT
    ========================================================= */
 
-.stepper {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin-bottom: 22px;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-}
-
-.stepper .step {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  padding: 13px 18px;
-  font-size: 11px;
-  color: var(--faint);
-}
-
-.stepper .step:first-child {
-  padding-left: 0;
-}
-
-.stepper .step + .step {
-  border-left: 1px solid var(--line-soft);
-}
-
-.stepper .step b {
-  display: grid;
-  place-content: center;
-  width: 23px;
-  height: 23px;
-  border: 1px solid var(--line);
-  border-radius: 50%;
-  font-family: var(--font-mono);
-  font-size: 8px;
-  font-weight: 500;
-  color: var(--faint);
-}
-
-.stepper .step.is-done b {
-  border-color: transparent;
-  background: rgba(21, 25, 28, 0.12);
-  color: var(--ink);
-}
-
-.stepper .step.is-active {
-  color: var(--ink);
-}
-
-.stepper .step.is-active b {
-  border-color: var(--ink);
-  background: var(--ink);
-  color: #f2f5f5;
-}
-
-.stepper .step.is-active span {
-  font-weight: 500;
-}
-
 .import-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
@@ -4703,26 +4645,6 @@ table.ledger tr.is-missing {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .stepper {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .stepper .step {
-    padding: 11px 10px;
-    font-size: 9.5px;
-    gap: 8px;
-  }
-
-  .stepper .step:first-child {
-    padding-left: 0;
-  }
-
-  .stepper .step b {
-    width: 20px;
-    height: 20px;
-    font-size: 7px;
-  }
-
   .bill-actions {
     flex-direction: column;
     align-items: flex-start;
@@ -4946,22 +4868,6 @@ table.ledger tr.is-missing {
   .report-body {
     padding-top: 26px;
     padding-bottom: 70px;
-  }
-
-  .stepper .step span {
-    display: inline;
-    font-size: 9px;
-    line-height: 1.4;
-  }
-
-  .stepper .step {
-    justify-content: flex-start;
-    gap: 6px;
-    padding: 10px 8px;
-  }
-
-  .stepper .step:first-child {
-    padding-left: 0;
   }
 
   .upload-card,
