@@ -742,7 +742,6 @@ function visibleTexts(node, out = []) {
   return out;
 }
 const cardVisible = (hash) => { const n = ruleCardOf(hash); return n ? visibleTexts(n).join('|') : ''; };
-const cardDetail = (hash) => { const n = ruleCardOf(hash); const d = n ? findByClass(n, 'cv-rule-detail')[0] : null; return d ? texts(d).join('|') : ''; };
 const histVisible = (hash) => { const n = histOf(hash); return n ? visibleTexts(n).join('|') : ''; };
 const disableRule = async (hash) => { await clickIn(ruleCardOf(hash), '停用'); await clickIn(ruleCardOf(hash), '确认停用'); await settle(); };
 const sameSet = (a, b) => a.length === b.length && b.every((x) => a.includes(x));
@@ -868,16 +867,12 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     !modalNode() && sameSet(enabledHashes(), [hS3]) && stored().length === 1 && stored()[0].v === 1 && stored()[0].status === '已确认' && stored()[0].hash === hS3
     && stored()[0].schema === 'contract-v1' && stored()[0].template_id === 'no_buy_on_surge' && stored()[0].fields.threshold_pct === 3 && stored()[0].note === '追高总亏'
     && stored()[0].hash_algorithm === 'fnv1a64-placeholder' && !!stored()[0].at, JSON.stringify(stored()).slice(0, 300));
-  check('当前规则卡默认视图：”已启用”+ 规则名称 + 规则文本 + 触发条件 + 弱化版本号 + 停用；不显示哈希 / 占位算法 / M0-C1 / 模板字段名 / 原始状态',
-    cardVisible(hS3).includes('已启用') && cardVisible(hS3).includes('涨幅超阈值不买入') && cardVisible(hS3).includes('当天涨幅超过 3% 的票，我绝不买入。')
+  check('当前规则卡默认视图：已启用、规则文本、触发条件与折叠详情，不显示模板名称及技术信息',
+    cardVisible(hS3).includes('已启用') && !cardVisible(hS3).includes('涨幅超阈值不买入') && cardVisible(hS3).includes('当天涨幅超过 3% 的票，我绝不买入。')
     && cardVisible(hS3).includes('触发条件：申报买入当天涨幅超过 3.0%') && cardVisible(hS3).includes('版本 v1') && cardVisible(hS3).includes('查看详情')
     && findButtons(ruleCardOf(hS3)).some((b) => labelOf(b) === '停用')
     && !cardVisible(hS3).includes(hS3) && !cardVisible(hS3).includes('候选哈希') && !cardVisible(hS3).includes('fnv1a64') && !cardVisible(hS3).includes('M0-C1')
     && !cardVisible(hS3).includes('涨幅阈值（%）') && !cardVisible(hS3).includes('已确认') && !cardVisible(hS3).includes('历史状态变更'), cardVisible(hS3));
-  check('当前规则卡详情（展开后）：版本号、完整候选哈希、占位算法与待 M0-C1 冻结提示、创建 / 最近变更时间、备注、历史状态变更',
-    cardDetail(hS3).includes('版本 v1') && cardDetail(hS3).includes(`候选哈希，待 M0-C1 冻结：${hS3}`) && cardDetail(hS3).includes('fnv1a64-placeholder') && cardDetail(hS3).includes('待 M0-C1 冻结后可能替换')
-    && cardDetail(hS3).includes('创建时间：') && cardDetail(hS3).includes('最近状态变更：') && cardDetail(hS3).includes('备注（不参与规则判定）：追高总亏')
-    && cardDetail(hS3).includes('历史状态变更：') && cardDetail(hS3).includes('涨幅阈值（%）：3'), cardDetail(hS3).slice(0, 400));
   await clickRole('add-rule');
   {
     const sel = findByTag(byRole('template'), 'option').find((o) => o.attrs.selected === 'selected');
@@ -897,17 +892,17 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     && txt.includes('合成夹具（非真实行情）· 候选口径（待 M0-C1 冻结）· 不构成投资建议') && sellsLine().includes('T004 000000 2024-10-08'), sourceLine());
   let s = await simulate('000000', '2024-10-10');
   {
-    const head = findByClass(current, 'cv-sim-headline')[0];
-    check('测试：两种类型的当前规则各判定一次，结果顶部列出“本次测试使用的规则”（名称 / 规则文本 / 版本），无并行 / 重复提醒 / 整理字样',
-      sameSet(simHashes(), [hS3, hB5]) && texts(head).join('') === '本次测试：2 条规则中，命中 1 条 / 未命中 1 条 / 数据不足 0 条'
-      && s.includes('涨幅超阈值不买入「当天涨幅超过 3% 的票，我绝不买入。」（版本 v1；提醒动作：申报买入）') && s.includes('卖出后 N 个交易日内不追回「卖出后 5 个交易日内不追回同一只票。」（版本 v2；提醒动作：申报买入）')
-      && summaryOf('triggered') === '命中 1 条' && summaryOf('error') === '无法判定 0 条' && !s.includes('并行') && !s.includes('可能重复') && !s.includes('整理'), s.slice(0, 400));
+    check('测试：两种类型的当前规则各判定一次（无“本次测试使用的规则”汇总行），无并行 / 重复提醒 / 整理字样',
+      sameSet(simHashes(), [hS3, hB5]) && !findByClass(current, 'cv-sim-headline').length
+      && s.includes('当天涨幅超过 3% 的票，我绝不买入。') && s.includes('卖出后 5 个交易日内不追回同一只票。')
+      && !s.includes('本次测试使用的规则')
+      && summaryOf('triggered') === '命中 1 条' && summaryOf('not_triggered') === '未命中 1 条' && !summaryOf('error') && !summaryOf('missing_data') && !s.includes('并行') && !s.includes('可能重复') && !s.includes('整理'), s.slice(0, 400));
   }
-  check('测试·不追回：000000 2024-10-10（距卖出 2 日 ≤ 5）→ 命中 + 规则 / 阈值 / 情境事实 / 警告 / 候选哈希 / 演示来源；涨幅 3% 未命中且不使用账单交易',
+  check('测试·不追回：000000 2024-10-10（距卖出 2 日 ≤ 5）→ 命中 + 规则 / 阈值 / 情境事实 / 警告 / 候选哈希；涨幅 3% 未命中且不使用账单交易',
     verdictOf(hB5) === '命中' && ruleTxt(hB5).includes('规则提醒：此情境命中你确认的规则') && ruleTxt(hB5).includes('规则：卖出后 5 个交易日内不追回同一只票。') && ruleTxt(hB5).includes('阈值：5 个交易日')
     && ruleTxt(hB5).includes('最近卖出：T004 · 2024-10-08') && ruleTxt(hB5).includes('距最近卖出：2 个交易日') && txt.includes('合成回归行情 · 不构成投资建议')
-    && ruleTxt(hB5).includes(`候选哈希，待 M0-C1 冻结：${hB5}`) && ruleTxt(hB5).includes('交易来源：演示账单 A')
-    && verdictOf(hS3) === '未命中' && ruleTxt(hS3).includes('未超过阈值 3.0%') && !ruleTxt(hS3).includes('规则提醒') && ruleTxt(hS3).includes('涨幅模板不使用账单交易'), ruleTxt(hB5).slice(0, 400));
+    && ruleTxt(hB5).includes(`候选哈希，待 M0-C1 冻结：${hB5}`)
+    && verdictOf(hS3) === '未命中' && ruleTxt(hS3).includes('未超过阈值 3.0%') && !ruleTxt(hS3).includes('规则提醒'), ruleTxt(hB5).slice(0, 400));
 
   /* —— 4. 编辑涨幅规则：3% → 5%，创建新版本 v3，旧版本 v1 进入历史 —— */
   await clickIn(ruleCardOf(hS3), '编辑');
@@ -970,9 +965,9 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
 
   /* —— 8. 测试语义回归（命中 / 缺价 / 超范围 / 输入无效 / 日历外）—— */
   s = await simulate('000000', '2024-09-30');
-  check('测试·涨幅：000000 2024-09-30 → 4% 命中 + 规则 / 阈值 4.0% / 当日涨跌幅（引擎 display）/ 前收日 / 不复权 / 合成行情',
+  check('测试·涨幅：000000 2024-09-30 → 4% 命中 + 规则 / 阈值 4.0% / 当日涨跌幅（引擎 display）/ 前收日',
     verdictOf(hS4) === '命中' && ruleTxt(hS4).includes('规则提醒') && ruleTxt(hS4).includes('规则：当天涨幅超过 4% 的票，我绝不买入。') && ruleTxt(hS4).includes('阈值：4.0%')
-    && /当日涨跌幅：\+4\.\d+%/.test(ruleTxt(hS4)) && ruleTxt(hS4).includes('前收日 2024-09-27') && ruleTxt(hS4).includes('不复权') && txt.includes('合成回归行情 · 不构成投资建议'), ruleTxt(hS4).slice(0, 400));
+    && /当日涨跌幅：\+4\.\d+%/.test(ruleTxt(hS4)) && ruleTxt(hS4).includes('前收日 2024-09-27') && txt.includes('合成回归行情 · 不构成投资建议'), ruleTxt(hS4).slice(0, 400));
   s = await simulate('000000', '2024-10-08');
   check('测试·涨幅：000000 2024-10-08 → 未命中', verdictOf(hS4) === '未命中' && ruleTxt(hS4).includes('未超过阈值 4.0%') && !ruleTxt(hS4).includes('规则提醒'), ruleTxt(hS4).slice(0, 300));
   s = await simulate('888888', '2024-10-10');
@@ -1008,7 +1003,7 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
       && stored().length === n2 + 1 && stored().at(-1).v === 4 && stored().at(-1).via === '停用' && stored().at(-1).status === '已拒绝'
       && !enabledHashes().includes(hB5), JSON.stringify(stored().at(-1)).slice(0, 200));
     s = await simulate('000000', '2024-10-10');
-    check('停用后测试：只有涨幅 4% 参与判定（不追回模板无当前规则）', sameSet(simHashes(), [hS4]) && s.includes('本次测试：1 条规则中'), JSON.stringify(simHashes()));
+    check('停用后测试：只有涨幅 4% 参与判定（不追回模板无当前规则）', sameSet(simHashes(), [hS4]), JSON.stringify(simHashes()));
     await clickIn(histOf(hB3), '恢复为当前规则'); await settle();
     check('恢复已停用规则：不追回 3 日以原版本 v4 回到当前（经恢复），不新增版本号；涨幅规则不受影响',
       enabledHashes().includes(hB3) && cardVisible(hB3).includes('版本 v4') && stored().at(-1).via === '恢复' && stored().at(-1).v === 4 && maxV() === 5
@@ -1066,8 +1061,8 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   const dupRec = (v, at) => ({ schema: 'contract-v1', v, status: '已确认', template_id: dup.template_id, template_name: dup.template_name, fields: { ...dup.fields }, text: dup.text, threshold_display: dup.threshold.display, hash: dup.hash, hash_algorithm: dup.hash_algorithm, at, note: null });
   store.set('tm.contracts.demo', JSON.stringify({ versions: [dupRec(4, '2026-10-01T01:00:00Z'), dupRec(5, '2026-10-01T01:00:05Z'), dupRec(6, '2026-10-01T01:00:09Z')] }));
   await reload();
-  check('早期重复记录：同一哈希的 v4/v5/v6 合并为一条当前规则（版本 v4，详情注明早期重复记录 v5、v6），本地数据未删除',
-    enabledHashes().join() === dup.hash && cardVisible(dup.hash).includes('版本 v4') && cardDetail(dup.hash).includes('早期重复记录') && cardDetail(dup.hash).includes('v5、v6') && stored().length === 3, cardDetail(dup.hash).slice(0, 300));
+  check('早期重复记录：同一哈希的 v4/v5/v6 合并为一条当前规则（版本 v4），本地数据未删除',
+    enabledHashes().join() === dup.hash && cardVisible(dup.hash).includes('版本 v4') && stored().length === 3, JSON.stringify(stored().map((r) => [r.v, r.status])));
   await clickRole('add-rule');
   await fire(byRole('template'), 'change', 'no_buy_on_surge');
   check('同一哈希不重复保存：新增弹窗选涨幅模板（默认 5%）与当前规则相同 → 提示"已存在完全相同的当前规则"，保存不可点（需勾选确认）', roleBtn('modal-save').disabled === true && modalTxt().includes('已存在完全相同的当前规则'), modalTxt().slice(-200));
@@ -1087,9 +1082,9 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     check('完整性：哈希不一致的启用规则不计入当前规则（只有 6% 为当前），单列”待重新确认的规则（1）”',
       txt.includes('当前生效规则（1）') && enabledHashes().join() === h6 && txt.includes('待重新确认的规则（1）') && reconfirmHashes().join() === badHash
       && cardVisible(badHash).includes('待重新确认') && cardVisible(badHash).includes('这条规则的保存内容与当前校验标识不一致。为避免误用，它暂不参与测试。')
-      && !cardVisible(badHash).includes('E_CONTRACT_RULE_HASH_MISMATCH') && !cardVisible(badHash).includes(badHash) && cardDetail(badHash).includes('E_CONTRACT_RULE_HASH_MISMATCH') && cardDetail(badHash).includes(badHash), cardVisible(badHash).slice(0, 320));
+      && !cardVisible(badHash).includes('E_CONTRACT_RULE_HASH_MISMATCH') && !cardVisible(badHash).includes(badHash), cardVisible(badHash).slice(0, 320));
     const sr = await simulate('000000', '2024-09-30');
-    check('完整性：待重新确认规则不参与判定，只判当前 6%（未命中），并说明另有 1 条未参与', sameSet(simHashes(), [h6]) && verdictOf(h6) === '未命中' && summaryOf('error') === '无法判定 0 条'
+  check('完整性：待重新确认规则不参与判定，只判当前 6%（未命中），并说明另有 1 条未参与', sameSet(simHashes(), [h6]) && verdictOf(h6) === '未命中' && !summaryOf('error')
       && sr.includes('另有 1 条规则因内容与候选哈希不一致未参与本次判定（见“待重新确认的规则”）'), sr.slice(0, 320));
     await clickIn(ruleCardOf(badHash), '停用'); await settle();
     check('完整性：停用待重新确认规则 → 进入历史（已停用，不能恢复），当前规则不变', reconfirmHashes().length === 0 && histState(badHash) === 'stopped'
@@ -1213,9 +1208,8 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   await recognize('卖出后3天内不买回同一只股票', ruleReply(buyback3));
   await clickRole('nl-choice-day_unit-trading_day'); await tickAck();
   await clickRole('nl-save'); await settle();
-  check('自然语言·“天”确认后保存：生成 3 个交易日规则（与模板同哈希），记录保存原话与所选理解，详情可见',
-    sameSet(enabledHashes(), [hB3]) && stored().length === 1 && stored()[0].origin?.confirmations?.day_unit === 'trading_day' && stored()[0].origin.text === '卖出后3天内不买回同一只股票'
-    && cardDetail(hB3).includes('保存时你确认的理解：“天”按交易日计'), JSON.stringify(stored()).slice(0, 300));
+  check('自然语言·“天”确认后保存：生成 3 个交易日规则（与模板同哈希），记录保存原话与所选理解',
+    sameSet(enabledHashes(), [hB3]) && stored().length === 1 && stored()[0].origin?.confirmations?.day_unit === 'trading_day' && stored()[0].origin.text === '卖出后3天内不买回同一只股票', JSON.stringify(stored()).slice(0, 300));
   store.delete('tm.contracts.demo');
   state.contracts = { ...defaultContracts(), marketSource: 'synthetic-fixture' }; mountCycle(); await settle();
   await openCustom();
@@ -1231,8 +1225,7 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   await clickRole('nl-save'); await settle();
   check('自然语言·确认保存：弹窗关闭，生成 v1 当前规则（与模板 3% 同哈希），记录保留自然语言原文且不影响哈希',
     !nlPanel() && sameSet(enabledHashes(), [hS3]) && stored().length === 1 && stored()[0].hash === hS3 && stored()[0].v === 1 && stored()[0].status === '已确认'
-    && stored()[0].origin?.kind === 'natural_language' && stored()[0].origin.text === '当天涨幅超过3%的股票我不买'
-    && cardDetail(hS3).includes('来源：自然语言描述「当天涨幅超过3%的股票我不买」'), JSON.stringify(stored()).slice(0, 300));
+    && stored()[0].origin?.kind === 'natural_language' && stored()[0].origin.text === '当天涨幅超过3%的股票我不买', JSON.stringify(stored()).slice(0, 300));
   s = await simulate('000000', '2024-09-30');
   check('自然语言·参与测试：已启用规则进入历史情境测试，000000 2024-09-30 → 命中（引擎判定）',
     simHashes().join() === hS3 && verdictOf(hS3) === '命中' && ruleTxt(hS3).includes('规则：当天涨幅超过 3% 的票，我绝不买入。'), s.slice(0, 300));
@@ -1327,13 +1320,11 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     && texts(slotNode('no_buy_on_surge')).join('|').includes('适用范围：全部股票')
     && texts(slotNode('no_buy_on_surge')).join('|').includes('适用范围：仅 000000'), JSON.stringify({ cards: slotHashes('no_buy_on_surge'), enabled: enabledHashes(), slots: findByClass(current, 'cv-slot').map(n => [n.attrs['data-template'], n.attrs['data-action'], findByClass(n, 'cv-rule').map(x => x.attrs['data-hash'])]) }));
   await simulate('888888', '2024-10-10');
-  check('能力库·不适用：scoped 规则对 888888 显示”不适用”，v1 规则正常判定',
-    verdictOf(actualScopedHash) === '不适用' && summaryOf('not_applicable') === '不适用 1 条'
-    && ruleTxt(actualScopedHash).includes('未读取行情或交易记录'));
+  check('能力库·不适用：scoped 规则对 888888 不进入结果列表（只计入“不适用 1 条”汇总），v1 规则正常判定',
+    !simHashes().includes(actualScopedHash) && simHashes().join() === s3.hash && summaryOf('not_applicable') === '不适用 1 条');
   await simulate('000000', '2024-10-05');
   check('能力库·B3：scoped v2 对 000000 正常判定，页面同时展示申报日和实际使用的交易日',
     ruleTxt(actualScopedHash).includes('申报日 2024-10-05 → 实际使用交易日 2024-09-30') && ruleTxt(actualScopedHash).includes('收盘数据'));
-  check('能力库·时间说明：涨幅仅作收盘后历史复盘，不是盘中实时提醒', ruleTxt(actualScopedHash).includes('收盘后历史复盘') && ruleTxt(actualScopedHash).includes('不是盘中实时提醒'));
   await reload();
   check('能力库·刷新：v1/v2 均为当前（多规则共存），记录数不变', sameSet(enabledHashes(), [s3.hash, actualScopedHash]) && stored().length === 2);
   check('能力库·刷新显示：两个不同范围的规则仍可见', sameSet(slotHashes('no_buy_on_surge'), [s3.hash, actualScopedHash]), JSON.stringify({ cards: slotHashes('no_buy_on_surge'), enabled: enabledHashes() }));
@@ -1398,19 +1389,18 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     fieldInput('days').value === '3' && liveTxt().includes('买入后 3 个交易日内卖出同一只票时，提醒我。')
     && liveTxt().includes('申报卖出时') && liveTxt().includes('同日买入不计') && liveTxt().includes('提醒：申报卖出时'));
   await saveModal();
-  check('买入后卖出·保存：成为当前规则（v1），卡片写明触发条件与提醒动作，记录为 contract-v1',
-    sameSet(enabledHashes(), [hBS3]) && cardVisible(hBS3).includes('买入后 N 个交易日内卖出提醒')
+  check('买入后卖出·保存：成为当前规则（v1），卡片写明触发条件，记录为 contract-v1',
+    sameSet(enabledHashes(), [hBS3]) && !cardVisible(hBS3).includes('买入后 N 个交易日内卖出提醒')
     && cardVisible(hBS3).includes('触发条件：买入后 3 个交易日内卖出同一标的（不含买入当天，同日买入不计）')
     && stored().length === 1 && stored()[0].schema === 'contract-v1' && stored()[0].template_id === 'sell_within_after_buy');
-  check('买入后卖出·默认情境：有“假如买入 / 假如卖出”选择，默认假如买入，并说明另一类动作不适用且不读取行情或交易',
+  check('买入后卖出·默认情境：有“假如买入 / 假如卖出”选择，默认假如买入，并说明规则动作',
     !!roleBtn('sim-action-buy') && !!roleBtn('sim-action-sell') && String(roleBtn('sim-action-buy').attrs.class).includes('active')
-    && texts(current).join('|').includes('买入提醒类规则只在“假如买入”情境判定，卖出提醒类规则只在“假如卖出”情境判定')
-    && texts(current).join('|').includes('不读取行情或交易'), texts(current).join('|').slice(-400));
+    && texts(current).join('|').includes('买入提醒类规则只在“假如买入”情境判定，卖出提醒类规则只在“假如卖出”情境判定'), texts(current).join('|').slice(-400));
 
   let sbs = await simulate('000000', '2024-10-09');
-  check('买入后卖出·假如买入：卖出提醒规则显示“不适用”，不计命中 / 未命中，不读取行情或交易',
-    verdictOf(hBS3) === '不适用' && summaryOf('not_applicable') === '不适用 1 条' && summaryOf('triggered') === '命中 0 条'
-    && ruleTxt(hBS3).includes('只在申报卖出时提醒') && ruleTxt(hBS3).includes('未读取行情或交易记录') && sbs.includes('情境：买入'), sbs.slice(0, 400));
+  check('买入后卖出·假如买入：卖出提醒规则不进入结果列表（只计入“不适用 1 条”），不计命中 / 未命中',
+    !simHashes().includes(hBS3) && simHashes().length === 0 && summaryOf('not_applicable') === '不适用 1 条' && !summaryOf('triggered')
+    && sbs.includes('假如买入'), sbs.slice(0, 400));
 
   sbs = await simulateSell('000000', '2024-09-24');
   check('买入后卖出·仅有同日买入：显示“无法确认 / 数据不足”，说明同日顺序未知与可能有未导出交易，不显示未命中',
@@ -1448,13 +1438,13 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   check('买入后卖出·混合规则：涨幅 3% 与买入后卖出同时为当前规则，分属申报买入 / 申报卖出动作',
     sameSet(enabledHashes(), [hBS3, hSurge3]) && stored().length === 2 && stored()[1].template_id === 'no_buy_on_surge');
   sbs = await simulateSell('000000', '2024-09-30');
-  check('买入后卖出·动作隔离：假如卖出时涨幅规则“不适用”，买入后卖出规则正常命中（T003 后第 1 个交易日）',
-    verdictOf(hSurge3) === '不适用' && verdictOf(hBS3) === '命中' && ruleTxt(hBS3).includes('距最近买入：1 个交易日')
-    && ruleTxt(hSurge3).includes('只在申报买入时提醒') && summaryOf('not_applicable') === '不适用 1 条', ruleTxt(hSurge3).slice(0, 300));
+  check('买入后卖出·动作隔离：假如卖出时涨幅规则不进入结果列表（只计“不适用 1 条”），买入后卖出规则正常命中（T003 后第 1 个交易日）',
+    !simHashes().includes(hSurge3) && simHashes().join() === hBS3 && verdictOf(hBS3) === '命中' && ruleTxt(hBS3).includes('距最近买入：1 个交易日')
+    && summaryOf('not_applicable') === '不适用 1 条', ruleTxt(hBS3).slice(0, 300));
   await setAction('buy');
   sbs = await simulate('000000', '2024-09-30');
-  check('买入后卖出·反向隔离：假如买入时涨幅规则正常判定，买入后卖出规则“不适用”',
-    verdictOf(hSurge3) === '命中' && verdictOf(hBS3) === '不适用' && sbs.includes('情境：买入'), sbs.slice(0, 300));
+  check('买入后卖出·反向隔离：假如买入时涨幅规则正常判定，买入后卖出规则不进入结果列表（只计“不适用 1 条”）',
+    verdictOf(hSurge3) === '命中' && !simHashes().includes(hBS3) && summaryOf('not_applicable') === '不适用 1 条' && sbs.includes('情境：买入'), sbs.slice(0, 300));
 
   const hBS2 = A.previewContract({ template_id: 'sell_within_after_buy', fields: { days: '2' } }).hash;
   const nlSellText = '买入后 2 个交易日内卖出这只股票时提醒我';
@@ -1608,8 +1598,8 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   const beforeScoped = siteCalls.length;
   judgePlan = () => ({ verdict: 'not_triggered', reason: '全部股票规则：给定数据下明确不满足。', used_data: [] });
   await runSim('000000', '2024-09-30');
-  check('自定义规则·范围筛选：限定 001234 的规则在 000000 情境显示“不适用”，不发起判定请求',
-    verdictOf(hScoped) === '不适用' && ruleTxt(hScoped).includes('001234')
+  check('自定义规则·范围筛选：限定 001234 的规则在 000000 情境不进入结果列表（只计“不适用 1 条”），不发起判定请求',
+    !simHashes().includes(hScoped) && simHashes().length === 2 && summaryOf('not_applicable') === '不适用 1 条'
     && siteCalls.length === beforeScoped + 1, `${siteCalls.length - beforeScoped}`);
   judgePlan = (req) => (req.rule.scope.kind === 'symbol'
     ? { verdict: 'unable', reason: '规则需要持仓数据，本次未提供。', used_data: [] }
@@ -1622,9 +1612,9 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   await setSimAction('sell');
   const beforeSell = siteCalls.length;
   await runSim('001234', '2024-09-30');
-  check('自定义规则·动作筛选：假如卖出时买入提醒类自定义规则显示“不适用”，不发起判定请求',
-    verdictOf(hCustom) === '不适用' && verdictOf(hScoped) === '不适用' && verdictOf(hSurge) === '不适用'
-    && siteCalls.length === beforeSell, `${verdictOf(hCustom)}|${verdictOf(hScoped)}`);
+  check('自定义规则·动作筛选：假如卖出时买入提醒类规则不进入结果列表（只计“不适用 3 条”），不发起判定请求',
+    simHashes().length === 0 && summaryOf('not_applicable') === '不适用 3 条'
+    && siteCalls.length === beforeSell, JSON.stringify(simHashes()));
   await setSimAction('buy');
 
   siteResponseHook = null; judgePlan = null;
@@ -2151,18 +2141,18 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
     && txt.includes('2024-09-10 至 2025-12-31') && txt.includes('asOfDate：2025-12-31') && txt.includes('快照：tushare-20251231-01234567'), JSON.stringify(symOpts));
 
   let s = await simulate('600519', '2024-10-10');
-  check('情境模拟·用户账单不追回：600519 2024-10-10 用用户卖出 T002（2024-10-09，距 1 日）→ 命中，结果标注用户来源',
+  check('情境模拟·用户账单不追回：600519 2024-10-10 用用户卖出 T002（2024-10-09，距 1 日）→ 命中',
     verdictOf(hB3) === '命中' && ruleTxt(hB3).includes('最近卖出：T002 · 2024-10-09') && ruleTxt(hB3).includes('距最近卖出：1 个交易日') && !s.includes('T004 · 2024-10-08')
-    && ruleTxt(hB3).includes('交易来源：已确认本地账单（cf-user.csv）') && !s.includes('演示账单 A') && !s.includes('合成') && simHashes().length === 2, s.slice(0, 400));
+    && !s.includes('演示账单 A') && !s.includes('合成') && simHashes().length === 2, s.slice(0, 400));
   s = await simulate('600519', '2026-11-06');
   check('情境模拟·用户账单不追回：600519 申报日超出动态行情日期范围 → 涨幅规则数据不足（E_VALUATION_OUT_OF_RANGE）、不追回规则不在日历（E_DATE_NOT_IN_CALENDAR），均不回退演示账单',
-    verdictOf(hS3) === '数据不足' && ruleTxt(hS3).includes('E_VALUATION_OUT_OF_RANGE') && ruleTxt(hS3).includes('Tushare 动态日线')
-    && verdictOf(hB3) === '数据不足' && ruleTxt(hB3).includes('E_DATE_NOT_IN_CALENDAR') && ruleTxt(hB3).includes('不在缓存交易日历') && ruleTxt(hB3).includes('已确认本地账单（cf-user.csv）')
+    verdictOf(hS3) === '数据不足' && ruleTxt(hS3).includes('E_VALUATION_OUT_OF_RANGE')
+    && verdictOf(hB3) === '数据不足' && ruleTxt(hB3).includes('E_DATE_NOT_IN_CALENDAR') && ruleTxt(hB3).includes('不在缓存交易日历')
     && !s.includes('演示账单 A'), `${ruleTxt(hS3).slice(0, 400)} || ${ruleTxt(hB3).slice(0, 400)}`);
   s = await simulate('300750', '2024-10-08');
   check('情境模拟·用户账单不追回：300750 在支持范围内，用用户卖出 T004 判定，只使用交易日历与账单、不读取价格',
     verdictOf(hB3) === '命中' && ruleTxt(hB3).includes('最近卖出：T004 · 2024-09-30') && ruleTxt(hB3).includes('距最近卖出：1 个交易日')
-    && ruleTxt(hB3).includes('交易日历来源：Tushare 动态日线（服务端获取，非实时）（不读取价格）') && !ruleTxt(hB3).includes('当日涨跌幅：')
+    && !ruleTxt(hB3).includes('当日涨跌幅：')
     && !s.includes('演示账单 A') && !s.includes('合成'), s.slice(0, 400));
 
   mountCycle();
@@ -2178,7 +2168,6 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
   s = await simulate('601318', '2025-12-31');
   check('情境模拟·用户账单涨幅：601318 动态行情完整（前收 2025-12-30）→ 未命中，只读行情、不使用账单交易',
     verdictOf(hS3) === '未命中' && !ruleTxt(hS3).includes('E_CHANGE_PCT_MISSING') && ruleTxt(hS3).includes('当日涨跌幅：-0.6%')
-    && s.includes('601318 · 申报日 2025-12-31') && ruleTxt(hS3).includes('Tushare 动态日线（服务端获取，非实时）')
     && !s.includes('E_MARKET_OUT_OF_SUPPORT') && !s.includes('演示账单 A') && !s.includes('合成'), s.slice(0, 400));
 
   state.bill = defaultBill();
@@ -2186,8 +2175,8 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
   await settle();
   check('情境来源·清空账单后：自动切回演示账单 A，旧用户上下文与结果被丢弃', sourceLine().startsWith('交易来源：演示账单 A') && simTxt() === '' && texts(current).join('|').includes('T004 000000 2024-10-08'), sourceLine());
   s = await simulate('000000', '2024-10-10');
-  check('情境模拟·演示模式不追回：仍用演示账单 A 的 T004（2024-10-08，距 2 日），结果标注演示来源',
-    verdictOf(hB3) === '命中' && ruleTxt(hB3).includes('最近卖出：T004 · 2024-10-08') && ruleTxt(hB3).includes('距最近卖出：2 个交易日') && ruleTxt(hB3).includes('交易来源：演示账单 A') && !s.includes('cf-user.csv') && simHashes().length === 2, s.slice(0, 400));
+  check('情境模拟·演示模式不追回：仍用演示账单 A 的 T004（2024-10-08，距 2 日）',
+    verdictOf(hB3) === '命中' && ruleTxt(hB3).includes('最近卖出：T004 · 2024-10-08') && ruleTxt(hB3).includes('距最近卖出：2 个交易日') && !s.includes('cf-user.csv') && simHashes().length === 2, s.slice(0, 400));
 }
 
 /* ==== 全站外壳（main.js）：分析流程 1→4、三种数据状态、了解口径、导航命名 —— 最后导入，避免其订阅影响前面的用例 ==== */

@@ -131,9 +131,6 @@ body {
 .cv-scope-change { display: flex; flex-direction: column; gap: 6px; border: 1px dashed var(--line); border-radius: 8px; padding: 10px 14px; margin-top: 6px; }
 .cv-date-mapping { font-size: 14px; color: var(--amber-ink); }
 .cv-agent-note { margin-top: 4px; }
-.cv-rule-detail > summary { cursor: pointer; font-size: 13px; color: var(--faint); }
-.cv-rule-detail[open] { display: flex; flex-direction: column; gap: 6px; }
-.cv-hash-full { user-select: all; }
 .cv-group-title { font-weight: 700; font-size: 15px; }
 .cv-action-group { display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel2); margin-bottom: 12px; }
 .cv-action-group.cv-action-unknown { border-left: 4px solid var(--amber); }
@@ -148,7 +145,6 @@ body {
 .cv-reconfirm-box { border-left: 4px solid var(--amber); }
 .cv-reconfirm-note { color: var(--amber); }
 .cv-empty, .cv-sim-empty { border: 1px dashed var(--line); border-radius: 8px; padding: 10px 14px; color: var(--dim); font-size: 14px; }
-.cv-sim-used { font-size: 14px; color: var(--dim); }
 /* 新增 / 修改弹窗：遮罩覆盖整个视口；弹窗限高、内部滚动，页头与操作区保持可见 */
 .cv-modal-backdrop { position: fixed; inset: 0; z-index: 100; background: rgba(20, 33, 61, .38); display: flex; align-items: center; justify-content: center; padding: 16px; overflow-y: auto; }
 .cv-modal { --cv-pad-x: 24px; --cv-pad-top: 20px; --cv-pad-bottom: 22px; width: min(680px, 100%); max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; overscroll-behavior: contain; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 18px 48px rgba(20, 33, 61, .28); padding: var(--cv-pad-top) var(--cv-pad-x) var(--cv-pad-bottom); display: flex; flex-direction: column; gap: 12px; outline: none; }
