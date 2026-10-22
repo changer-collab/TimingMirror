@@ -1947,8 +1947,8 @@ a.view-option:hover {
   place-items: center;
   padding: 18px;
   border-radius: inherit;
-  background: var(--ink);
-  color: #f4f7f7;
+  background: var(--sheet-2);
+  color: var(--ink);
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
@@ -1967,8 +1967,9 @@ a.view-option:hover {
   gap: 6px;
   width: 100%;
   padding: 26px 20px;
-  border: 1px dashed rgba(244, 247, 247, 0.46);
+  border: 1px dashed rgba(21, 25, 28, 0.32);
   border-radius: 8px;
+  background: rgba(255, 255, 255, 0.42);
   text-align: center;
 }
 
@@ -1978,7 +1979,7 @@ a.view-option:hover {
   width: 40px;
   height: 40px;
   margin-bottom: 4px;
-  border: 1px solid rgba(244, 247, 247, 0.5);
+  border: 1px solid rgba(21, 25, 28, 0.34);
   border-radius: 50%;
   font-family: var(--font-serif);
   font-size: 22px;
@@ -1995,7 +1996,7 @@ a.view-option:hover {
   font-family: var(--font-mono);
   font-size: 9.5px;
   letter-spacing: 0.1em;
-  color: #c3cbcd;
+  color: var(--gray);
 }
 
 .upload-note {
@@ -2003,6 +2004,115 @@ a.view-option:hover {
   font-size: 12px;
   line-height: 1.8;
   color: var(--gray);
+}
+
+/* 导入反馈：解析中 / 成功 / 失败都留在左侧导入区，不打断下方结果 */
+.tm-import-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  margin-top: 18px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--ink);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: rgba(249, 251, 250, 0.86);
+}
+
+.tm-import-status.is-loading {
+  background: rgba(234, 239, 237, 0.52);
+}
+
+.tm-import-status.is-error {
+  border-left-color: var(--loss);
+  background: var(--loss-soft);
+}
+
+.tm-import-status-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tm-import-status-body strong {
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.tm-import-status-body span {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--gray);
+  overflow-wrap: anywhere;
+}
+
+.tm-import-status.is-error .tm-import-status-body strong {
+  color: var(--loss);
+}
+
+.tm-import-status-mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--ink);
+}
+
+.tm-import-status-mark.is-error {
+  border-color: var(--loss);
+  color: var(--loss);
+}
+
+.tm-import-spinner {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin-top: 3px;
+  border: 1.5px solid var(--line);
+  border-top-color: var(--ink);
+  border-radius: 50%;
+  animation: tm-import-spin 0.8s linear infinite;
+}
+
+@keyframes tm-import-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tm-import-status-action {
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+.dropzone.is-busy,
+.dropzone.is-busy:hover {
+  border-color: var(--line);
+  background: rgba(234, 239, 237, 0.54);
+  cursor: progress;
+}
+
+.dropzone-spinner {
+  width: 24px;
+  height: 24px;
+  margin: 0 0 12px;
+  border-width: 2px;
+}
+
+.upload-card > .tm-import-status--top {
+  margin: 0 0 16px;
 }
 
 .sample-card {
@@ -2220,6 +2330,32 @@ a.view-option:hover {
 .bill {
   margin-top: 22px;
   padding: 24px;
+}
+
+#bill {
+  scroll-margin-top: 18px;
+}
+
+#bill-title.is-just-imported {
+  display: inline-block;
+  animation: tm-import-title-flash 1.7s ease-out 1;
+}
+
+@keyframes tm-import-title-flash {
+  0% {
+    background-color: rgba(21, 25, 28, 0.18);
+    box-shadow: 0 0 0 6px rgba(21, 25, 28, 0.18);
+  }
+
+  62% {
+    background-color: rgba(21, 25, 28, 0.08);
+    box-shadow: 0 0 0 6px rgba(21, 25, 28, 0.08);
+  }
+
+  100% {
+    background-color: transparent;
+    box-shadow: 0 0 0 6px transparent;
+  }
 }
 
 .bill-head {
@@ -5016,6 +5152,23 @@ table.ledger tr.is-missing {
     font-size: 20px;
   }
 
+  .tm-import-status {
+    flex-wrap: wrap;
+    padding: 12px;
+  }
+
+  .tm-import-status-body {
+    flex-basis: calc(100% - 30px);
+  }
+
+  .tm-import-status-action {
+    width: 100%;
+  }
+
+  #bill {
+    scroll-margin-top: calc(var(--topbar-h) + 16px);
+  }
+
   .sample-card h2 {
     font-size: 22px;
   }
@@ -5469,5 +5622,10 @@ table.ledger tr.is-missing {
     opacity: 1;
     transform: none;
     animation: none;
+  }
+
+  #bill-title.is-just-imported {
+    background: rgba(21, 25, 28, 0.1);
+    box-shadow: 0 0 0 6px rgba(21, 25, 28, 0.1);
   }
 }

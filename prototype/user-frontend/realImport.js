@@ -30,6 +30,119 @@ const SOURCE_LABEL = Object.freeze({ csv: 'CSV', tsv: 'TSV', xlsx: 'Excel', pdf:
 
 let pdfSource = null;
 let sourceSeq = 0;
+const MIN_PARSE_FEEDBACK_MS = 450;
+let importFeedback = null;
+let importWatch = null;
+let importFlashTimer = null;
+
+function parsingInFlight(state, rec) {
+  return state?.bill?.status === 'loading' || rec?.status === 'reading';
+}
+
+function stopImportWatch() {
+  if (!importWatch) return;
+  importWatch.cleanup?.();
+  importWatch = null;
+}
+
+function beginImportFeedback(sourceId, { sourceKind = '', fileName = '' } = {}) {
+  stopImportWatch();
+  const pasted = sourceKind === 'text';
+  const subject = pasted ? '粘贴的内容' : (fileName || '账单文件');
+  importFeedback = {
+    sourceId,
+    phase: 'loading',
+    context: pasted ? 'paste' : 'top',
+    title: '正在解析账单',
+    detail: pasted ? `正在本机读取与校验${subject}，请稍候…` : `正在本机读取与校验：${subject}，请稍候…`,
+    showJump: false,
+    autoScrollPending: false,
+  };
+  const watch = { sourceId, interacted: false, startedAt: Date.now(), cleanup: null };
+  const mark = () => { watch.interacted = true; };
+  const events = ['pointerdown', 'wheel', 'touchstart', 'keydown'];
+  if (typeof document !== 'undefined') {
+    events.forEach((name) => document.addEventListener(name, mark, { capture: true, passive: true }));
+    watch.cleanup = () => events.forEach((name) => document.removeEventListener(name, mark, { capture: true }));
+  }
+  importWatch = watch;
+  return watch;
+}
+
+async function holdMinimumParseFeedback(sourceId) {
+  if (importWatch?.sourceId !== sourceId) return;
+  const remaining = MIN_PARSE_FEEDBACK_MS - (Date.now() - importWatch.startedAt);
+  if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
+}
+
+function finishImportFeedback(sourceId, next) {
+  stopImportWatch();
+  if (importFeedback?.sourceId !== sourceId) return;
+  importFeedback = { ...importFeedback, ...next, sourceId, autoScrollPending: next.autoScrollPending === true };
+}
+
+function showImportError(title, detail, sourceId = null, context = 'top') {
+  stopImportWatch();
+  importFeedback = { sourceId, phase: 'error', context, title, detail, showJump: false, autoScrollPending: false };
+}
+
+function clearImportFeedback() {
+  stopImportWatch();
+  importFeedback = null;
+}
+
+function feedbackFor(rec, busy) {
+  if (busy) {
+    if (importFeedback?.phase === 'loading') return importFeedback;
+    return { phase: 'loading', context: 'top', title: '正在解析账单', detail: '正在本机读取与校验，请稍候…', showJump: false };
+  }
+  if (!importFeedback) return null;
+  if (importFeedback.sourceId && rec?.sourceId && importFeedback.sourceId !== rec.sourceId) return null;
+  return importFeedback;
+}
+
+function importFeedbackHTML(rec, busy, placement) {
+  const fb = feedbackFor(rec, busy);
+  if (!fb || fb.context !== placement) return '';
+  const loading = fb.phase === 'loading';
+  const marker = loading
+    ? '<span class="tm-import-spinner" aria-hidden="true"></span>'
+    : `<span class="tm-import-status-mark${fb.phase === 'error' ? ' is-error' : ''}" aria-hidden="true">${fb.phase === 'error' ? '!' : '✓'}</span>`;
+  const attrs = fb.phase === 'error'
+    ? 'role="alert" aria-atomic="true"'
+    : 'role="status" aria-live="polite" aria-atomic="true"';
+  return `<div class="tm-import-status is-${esc(fb.phase)} tm-import-status--${esc(placement)}" ${attrs}>
+    ${marker}
+    <div class="tm-import-status-body">
+      <strong>${esc(fb.title)}</strong>
+      <span>${esc(fb.detail)}</span>
+    </div>
+    ${fb.showJump ? '<button class="btn btn-outline btn-sm tm-import-status-action" type="button" data-action="view-import-result">查看导入结果</button>' : ''}
+  </div>`;
+}
+
+function prefersReducedMotion() {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function highlightImportTable(host) {
+  const title = host.querySelector('#bill-title');
+  if (!title) return;
+  title.classList.remove('is-just-imported');
+  void title.offsetWidth;
+  title.classList.add('is-just-imported');
+  clearTimeout(importFlashTimer);
+  importFlashTimer = setTimeout(() => title.classList.remove('is-just-imported'), 1800);
+}
+
+function revealImportResult(host) {
+  const panel = host.querySelector('#bill');
+  if (!panel) return false;
+  panel.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' });
+  highlightImportTable(host);
+  return true;
+}
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
@@ -148,10 +261,13 @@ function pageHeadHTML() {
 
 function uploadCardHTML(state, rec) {
   const bill = state.bill ?? {};
-  const reading = bill.status === 'loading' || rec.status === 'reading';
-  const dropInner = reading
-    ? `<span class="dropzone-mark" aria-hidden="true">…</span>
-       <h2>正在本机读取…</h2>
+  const parsing = parsingInFlight(state, rec);
+  const pasted = importFeedback?.context === 'paste' || rec.sourceKind === 'text';
+  const textParsing = parsing && pasted;
+  const fileParsing = parsing && !pasted;
+  const dropInner = fileParsing
+    ? `<span class="tm-import-spinner dropzone-spinner" aria-hidden="true"></span>
+       <h2>正在解析账单</h2>
        <p>${esc(rec.fileName || bill.fileName || '账单文件')}</p>
        <p class="dropzone-foot mono">READING LOCALLY · 不会上传</p>`
     : `<span class="dropzone-mark" aria-hidden="true">+</span>
@@ -160,9 +276,10 @@ function uploadCardHTML(state, rec) {
        <div class="dropzone-actions"><span class="btn btn-outline">选择账单文件</span></div>
        <p class="dropzone-foot mono">CSV / TSV · XLSX · PDF · 截图 · 只在本机读取</p>`;
   const pasteValue = rec.sourceKind === 'text' ? esc(rec.content) : '';
-  return `<section class="panel upload-card" aria-label="选择账单文件">
+  return `<section class="panel upload-card${fileParsing ? ' is-busy' : ''}" aria-label="选择账单文件" aria-busy="${fileParsing ? 'true' : 'false'}">
     <div class="panel-head"><span>01 / 本地文件</span><span class="lock-note">原始文件不上传</span></div>
-    <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="选择或拖入账单文件" ${reading ? 'aria-disabled="true"' : ''}>
+    ${importFeedbackHTML(rec, fileParsing, 'top')}
+    <div class="dropzone${fileParsing ? ' is-busy' : ''}" id="dropzone" role="button" tabindex="0" aria-label="选择或拖入账单文件" ${parsing ? 'aria-disabled="true"' : ''}>
       ${dropInner}
       <div class="dropzone-overlay" aria-hidden="true">
         <div class="dropzone-overlay-inner">
@@ -172,20 +289,21 @@ function uploadCardHTML(state, rec) {
         </div>
       </div>
     </div>
-    <input type="file" id="file-input" accept="${FILE_ACCEPT}" multiple hidden>
+    <input type="file" id="file-input" accept="${FILE_ACCEPT}" multiple hidden ${parsing ? 'disabled' : ''}>
     <p class="upload-note">支持 CSV / TSV、Excel（第一个工作表）、文本型 PDF、扫描 PDF 与截图；费用、税费可选，缺失会按 0 标注。原始文件只在本机读取。</p>
-    <div class="tm-paste" id="tm-paste-panel">
+    <div class="tm-paste${textParsing ? ' is-busy' : ''}" id="tm-paste-panel" ${textParsing ? 'aria-busy="true"' : ''}>
       <div class="tm-paste-head">
         <label class="tm-paste-label" for="tm-paste-input">粘贴账单文字</label>
         <span class="tm-paste-kicker">LOCAL / 常规解析优先</span>
       </div>
       <p class="tm-paste-help" id="tm-paste-help">支持粘贴 CSV、表格文字或账单片段；解析在本机完成，失败时内容会保留。</p>
-      <textarea id="tm-paste-input" rows="4" aria-describedby="tm-paste-help" placeholder="支持粘贴 CSV、表格文字或账单片段">${pasteValue}</textarea>
+      <textarea id="tm-paste-input" rows="4" aria-describedby="tm-paste-help" placeholder="支持粘贴 CSV、表格文字或账单片段" ${parsing ? 'disabled' : ''}>${pasteValue}</textarea>
       <div class="tm-paste-actions">
-        <button class="btn btn-outline btn-sm" type="button" data-action="parse-paste">解析文字</button>
+        <button class="btn btn-outline btn-sm" type="button" data-action="parse-paste" ${parsing ? 'disabled' : ''}>${textParsing ? '解析中…' : '解析文字'}</button>
         <span class="tm-paste-shortcut">Ctrl / ⌘ + Enter</span>
       </div>
     </div>
+    ${importFeedbackHTML(rec, textParsing, 'paste')}
   </section>`;
 }
 
@@ -529,7 +647,8 @@ export function renderRealImport(host, ctx) {
 
   const drop = host.querySelector('#dropzone');
   const input = host.querySelector('#file-input');
-  const openPicker = () => input?.click();
+  const busyNow = () => parsingInFlight(ctx.state, ctx.state.importRecovery);
+  const openPicker = () => { if (!busyNow()) input?.click(); };
   drop?.addEventListener('click', openPicker);
   drop?.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPicker(); } });
   const hasFiles = (e) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
@@ -538,12 +657,17 @@ export function renderRealImport(host, ctx) {
   drop?.addEventListener('dragenter', (e) => {
     if (!hasFiles(e)) return;
     e.preventDefault();
+    if (busyNow()) return;
     dragDepth += 1;
     setDrag(true);
   });
   drop?.addEventListener('dragover', (e) => {
     if (!hasFiles(e)) return;
     e.preventDefault();
+    if (busyNow()) {
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'none';
+      return;
+    }
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
     setDrag(true);
   });
@@ -556,13 +680,18 @@ export function renderRealImport(host, ctx) {
     e.preventDefault();
     dragDepth = 0;
     setDrag(false);
+    if (busyNow()) return;
     handleFiles(ctx, [...(e.dataTransfer?.files ?? [])]);
   });
-  input?.addEventListener('change', (e) => handleFiles(ctx, [...(e.target.files ?? [])]));
+  input?.addEventListener('change', (e) => {
+    if (busyNow()) return;
+    handleFiles(ctx, [...(e.target.files ?? [])]);
+  });
   const pasteInput = host.querySelector('#tm-paste-input');
   pasteInput?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
+      if (busyNow()) return;
       handlePaste(ctx, pasteInput.value);
     }
   });
@@ -572,6 +701,8 @@ export function renderRealImport(host, ctx) {
       const action = button.getAttribute('data-action');
       if (action === 'parse-paste') {
         handlePaste(ctx, host.querySelector('#tm-paste-input')?.value ?? '');
+      } else if (action === 'view-import-result') {
+        revealImportResult(host);
       } else if (action === 'download-scenario') {
         downloadScenarioCsv(REPORT_SCENARIOS.find((item) => item.id === button.getAttribute('data-scenario')), button);
       } else if (action === 'ai-text') {
@@ -585,6 +716,7 @@ export function renderRealImport(host, ctx) {
       } else if (action === 'confirm') {
         finalizeConfirmedBill({ state, set: ctx.set, go: ctx.go, client: ctx.importRecovery });
       } else if (action === 'return-draft') {
+        clearImportFeedback();
         ctx.set({ bill: freshBill({ contextId: state.bill.contextId, status: 'none', sourceType: 'local', fileName: state.bill.fileName, fileSize: state.bill.fileSize }), importRecovery: { ...state.importRecovery, status: 'draft' } });
       } else if (action === 'add-row') {
         if (!state.importRecovery?.draft) return;
@@ -623,16 +755,24 @@ export function renderRealImport(host, ctx) {
       ctx.set({ importRecovery: { ...state.importRecovery, draft } });
     });
   });
+
+  if (importFeedback?.phase === 'success' && importFeedback.autoScrollPending) {
+    importFeedback.autoScrollPending = false;
+    requestAnimationFrame(() => revealImportResult(host));
+  }
 }
 
 async function handleFiles(ctx, files) {
   const { state, set } = ctx;
   if (!files.length) return;
+  if (parsingInFlight(state, state.importRecovery)) return;
   if (files.length > 1 && !files.every((f) => detectSourceKind(f.name, f.type) === IMPORT_SOURCE_KINDS.IMAGE)) {
+    showImportError('无法一次导入多个文件', '一次只能选择一个账单文件；多选仅支持截图。');
     set({ importRecovery: { ...defaultImportRecovery(), error: { code: 'E_IMPORT_MULTI_FILE', message: '一次只能选择一个账单文件；多选仅支持截图。' } } });
     return;
   }
   if (files.every((f) => detectSourceKind(f.name, f.type) === IMPORT_SOURCE_KINDS.IMAGE)) {
+    clearImportFeedback();
     await openImages(ctx, files);
     return;
   }
@@ -644,9 +784,11 @@ async function handleFiles(ctx, files) {
   const base = recoveryBase({ sourceId, sourceKind: kind, fileName: file.name, fileSize: file.size, content: '', session, status: 'reading' });
   pdfSource = null;
   if (kind === IMPORT_SOURCE_KINDS.UNSUPPORTED) {
+    showImportError('暂不支持这种文件类型', '请使用 CSV、TSV、Excel、文本型 PDF 或截图后重试。', sourceId);
     set({ bill: freshBill({ contextId, status: 'none', sourceType: 'local', fileName: file.name, fileSize: file.size }), chat: defaultChat(contextId), importRecovery: { ...base, status: 'unsupported', error: { code: 'W_IMPORT_SOURCE_UNSUPPORTED', message: '暂不支持这种文件类型；请使用 CSV、TSV、Excel、文本型 PDF 或截图' } } });
     return;
   }
+  beginImportFeedback(sourceId, { sourceKind: kind, fileName: file.name });
   set({ bill: freshBill({ contextId, status: 'loading', sourceType: 'local', fileName: file.name, fileSize: file.size }), chat: defaultChat(contextId), importRecovery: base });
   try {
     if (kind === IMPORT_SOURCE_KINDS.PDF) {
@@ -654,6 +796,7 @@ async function handleFiles(ctx, files) {
       pdfSource = { bytes, fileName: file.name, fileSize: file.size };
       const extracted = await extractSource({ kind, bytes });
       if (!extracted.ok || !String(extracted.text ?? '').trim()) {
+        clearImportFeedback();
         await openPdf(ctx, { bytes, fileName: file.name, fileSize: file.size, contextId });
         return;
       }
@@ -664,6 +807,7 @@ async function handleFiles(ctx, files) {
       const bytes = await readBuffer(file);
       const extracted = await extractSource({ kind, bytes });
       if (!extracted.ok) {
+        showImportError('Excel 文本提取失败', extracted.message || '无法提取 Excel 文本；可另存为 CSV 后重试。', sourceId);
         set({ bill: freshBill({ contextId, status: 'none', sourceType: 'local', fileName: file.name, fileSize: file.size }), importRecovery: { ...base, status: 'unsupported', error: { code: 'W_IMPORT_SOURCE_UNSUPPORTED', message: extracted.message || '无法提取 Excel 文本' } } });
         return;
       }
@@ -673,6 +817,7 @@ async function handleFiles(ctx, files) {
     const text = await readText(file);
     await applySource(ctx, { sourceId, contextId, sourceKind: kind, content: text, fileName: file.name, fileSize: file.size });
   } catch (error) {
+    showImportError('没有读取成功', error.message || '文件读取失败，请重试。', sourceId);
     set({ bill: freshBill({ contextId, status: 'error', sourceType: 'local', fileName: file.name, fileSize: file.size, error: error.message }), importRecovery: { ...base, status: 'error', error: { code: 'E_IMPORT_READ', message: error.message } } });
   }
 }
@@ -689,6 +834,17 @@ async function applySource(ctx, { sourceId, contextId, sourceKind, content, tabl
     const table = localDraftTable(localDraft);
     const scenario = matchReportScenario({ fileName, table });
     const bill = await demo.loadUserBillFromTable(table, fileName, { method: 'manual', scenario });
+    await holdMinimumParseFeedback(sourceId);
+    const autoScroll = importWatch?.sourceId === sourceId && importWatch.interacted !== true;
+    const count = Array.isArray(bill.trades) ? bill.trades.length : 0;
+    const subject = sourceKind === 'text' ? '粘贴的文字' : fileName;
+    finishImportFeedback(sourceId, {
+      phase: 'success',
+      title: `导入成功，已识别 ${count} 条数据`,
+      detail: `${subject} 已在本机完成解析；确认前不会离开浏览器。`,
+      showJump: !autoScroll,
+      autoScrollPending: autoScroll,
+    });
     set({
       bill: freshBill({ contextId, status: 'loaded', sourceType: 'local', fileName, fileSize, ...loadedBillFields(bill), importMethod: 'manual' }),
       chat: defaultChat(contextId),
@@ -699,6 +855,16 @@ async function applySource(ctx, { sourceId, contextId, sourceKind, content, tabl
   const hasRows = Array.isArray(localDraft.rows) && localDraft.rows.length > 0;
   const normalized = localDraft.headerOk ? localDraftTable(localDraft) : parsed;
   const errors = normalized?.header?.length ? [{ code: 'E_LOCAL_INCOMPLETE', message: '常规解析不完整，请补全字段或让 AI 整理' }] : [{ code: 'E_HEADER_MISSING', message: '未识别到标准表头（日期、标的、方向、价格、数量）' }];
+  await holdMinimumParseFeedback(sourceId);
+  finishImportFeedback(sourceId, {
+    phase: 'error',
+    title: hasRows ? '没有直接导入成功' : '没有解析出可导入的数据',
+    detail: hasRows
+      ? `已整理 ${localDraft.rows.length} 行草稿，但仍有字段需要补全；可在下方逐行修改，或让 AI 整理。`
+      : (localDraft.headerOk ? '账单里有表头，但没有可导入的交易行；请检查后重试。' : '未识别到标准表头（日期、标的、方向、价格、数量）；请检查格式后重试。'),
+    showJump: false,
+    autoScrollPending: false,
+  });
   set({
     bill: freshBill({ contextId, status: 'invalid', sourceType: 'local', fileName, fileSize, blocked: true, errors, sourceNote: `来源：${fileName}（本机解析未完成；未生成正式账单）` }),
     chat: defaultChat(contextId),
@@ -708,16 +874,24 @@ async function applySource(ctx, { sourceId, contextId, sourceKind, content, tabl
 
 async function handlePaste(ctx, pasted) {
   const { state, set } = ctx;
+  if (parsingInFlight(state, state.importRecovery)) return;
   const content = String(pasted ?? state.importRecovery?.content ?? '');
   if (!content.trim()) {
+    showImportError('没有可解析的内容', '请先粘贴账单文字，再解析。', null, 'paste');
     set({ importRecovery: { ...(state.importRecovery ?? defaultImportRecovery()), error: { code: 'E_IMPORT_EMPTY_TEXT', message: '请先粘贴账单文字' } } });
     return;
   }
   const contextId = createBillContextId();
   const sourceId = ++sourceSeq;
   const base = recoveryBase({ sourceId, sourceKind: 'text', fileName: '粘贴文字', fileSize: content.length, content, session: sessionInfo(ctx), status: 'reading' });
+  beginImportFeedback(sourceId, { sourceKind: 'text', fileName: '粘贴文字' });
   set({ bill: freshBill({ contextId, status: 'loading', sourceType: 'local', fileName: '粘贴文字', fileSize: content.length }), chat: defaultChat(contextId), importRecovery: base });
-  await applySource(ctx, { sourceId, contextId, sourceKind: 'text', content, fileName: '粘贴文字', fileSize: content.length });
+  try {
+    await applySource(ctx, { sourceId, contextId, sourceKind: 'text', content, fileName: '粘贴文字', fileSize: content.length });
+  } catch (error) {
+    showImportError('没有读取成功', error.message || '解析文字时出现错误，请重试。', sourceId, 'paste');
+    set({ bill: freshBill({ contextId, status: 'error', sourceType: 'local', fileName: '粘贴文字', fileSize: content.length, error: error.message }), importRecovery: { ...base, status: 'error', error: { code: 'E_IMPORT_PARSE', message: error.message || '解析文字时出现错误' } } });
+  }
 }
 
 async function aiRecover(ctx) {
@@ -726,6 +900,7 @@ async function aiRecover(ctx) {
   if (!rec || rec.pending || rec.budgetExhausted) return;
   const content = String(rec.content ?? '');
   if (!content.trim()) return;
+  clearImportFeedback();
   const sourceId = rec.sourceId;
   const localDraft = rec.localDraft ?? (parseDelimitedText(content)?.header?.length ? buildLocalDraft(parseDelimitedText(content), rec.fileName || '粘贴文字') : null);
   set({ importRecovery: { ...rec, pending: true, error: null, validationErrors: [] } });
@@ -812,6 +987,7 @@ async function aiVision(ctx) {
   const vision = rec.vision;
   const checked = validateVisionInput({ images: vision?.images ?? [], sourceKind: vision?.kind });
   if (!checked.ok) return;
+  clearImportFeedback();
   const sourceId = rec.sourceId;
   set({ importRecovery: { ...rec, pending: true, error: null } });
   try {
@@ -836,6 +1012,7 @@ async function validateDraft(ctx) {
   const { state, set } = ctx;
   const rec = state.importRecovery;
   if (!rec?.draft) return;
+  clearImportFeedback();
   const sourceFile = rec.fileName || '粘贴文字';
   const draft = { ...rec.draft, rows: rec.draft.rows.map((row) => refreshRowStatus(row, sourceFile)) };
   const checked = draftToNormalized(draft, sourceFile);
