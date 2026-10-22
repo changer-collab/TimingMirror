@@ -1868,15 +1868,19 @@ a.view-option:hover {
 .import-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
-  gap: 18px;
+  gap: 20px;
   align-items: stretch;
 }
 
 .upload-card {
+  display: flex;
+  flex-direction: column;
   padding: 22px 24px 24px;
 }
 
 .dropzone {
+  position: relative;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1892,7 +1896,8 @@ a.view-option:hover {
 }
 
 .dropzone:hover,
-.dropzone.is-over {
+.dropzone.is-over,
+.dropzone:focus-visible {
   border-color: var(--ink);
   background: rgba(255, 255, 255, 0.88);
 }
@@ -1933,6 +1938,64 @@ a.view-option:hover {
   font-size: 9.5px;
   letter-spacing: 0.1em;
   color: var(--gray);
+}
+
+.dropzone-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  border-radius: inherit;
+  background: var(--ink);
+  color: #f4f7f7;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+}
+
+.dropzone.is-over .dropzone-overlay {
+  opacity: 1;
+  visibility: visible;
+}
+
+.dropzone-overlay-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 26px 20px;
+  border: 1px dashed rgba(244, 247, 247, 0.46);
+  border-radius: 8px;
+  text-align: center;
+}
+
+.dropzone-overlay-mark {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 4px;
+  border: 1px solid rgba(244, 247, 247, 0.5);
+  border-radius: 50%;
+  font-family: var(--font-serif);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.dropzone-overlay-title {
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 500;
+}
+
+.dropzone-overlay-sub {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  color: #c3cbcd;
 }
 
 .upload-note {
@@ -1979,14 +2042,56 @@ a.view-option:hover {
 }
 
 .scenario-card {
+  /* 行高由左栏决定：height:0 不参与撑高，min-height:100% 再铺满等高区域 */
+  height: 0;
+  min-height: 100%;
+  overflow: hidden;
   background: linear-gradient(165deg, #ffffff 0%, #f2f6f4 100%);
+}
+
+.scenario-card > :not(.scenario-list) {
+  flex: 0 0 auto;
 }
 
 .scenario-list {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 8px;
+  min-height: 0;
   margin: 14px 0;
+  padding: 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-gutter: stable;
+}
+
+.scenario-list:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.scenario-list::-webkit-scrollbar {
+  width: 10px;
+}
+
+.scenario-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scenario-list::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: var(--line-strong);
+  background-clip: content-box;
+}
+
+.scenario-list:hover::-webkit-scrollbar-thumb {
+  background: var(--gray);
+  background-clip: content-box;
 }
 
 .scenario-item {
@@ -1995,6 +2100,7 @@ a.view-option:hover {
   justify-content: space-between;
   gap: 12px;
   width: 100%;
+  min-width: 0;
   padding: 11px 13px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -2003,13 +2109,20 @@ a.view-option:hover {
   font-family: var(--font-sans);
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.2s ease, background-color 0.2s ease, transform 0.2s ease;
+  transition: border-color 0.2s ease, background-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .scenario-item:hover {
   border-color: var(--line-strong);
   background: #f3f7f5;
   transform: translateY(-1px);
+}
+
+.scenario-item:focus-visible {
+  border-color: var(--ink);
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--ink);
+  background: #f3f7f5;
 }
 
 .scenario-item:disabled {
@@ -2022,6 +2135,7 @@ a.view-option:hover {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  min-width: 0;
 }
 
 .scenario-title {
@@ -2029,6 +2143,7 @@ a.view-option:hover {
   font-size: 15.5px;
   font-weight: 600;
   line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .scenario-tag {
@@ -2049,6 +2164,10 @@ a.view-option:hover {
 }
 
 .scenario-item:hover .scenario-download {
+  border-color: var(--ink);
+}
+
+.scenario-item:focus-visible .scenario-download {
   border-color: var(--ink);
 }
 
@@ -4643,6 +4762,18 @@ table.ledger tr.is-missing {
 
   .import-grid {
     grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .scenario-card {
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .scenario-list {
+    flex: 0 1 auto;
+    max-height: clamp(220px, 40vh, 360px);
   }
 
   .bill-actions {

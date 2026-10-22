@@ -28,7 +28,6 @@ import { REPORT_SCENARIOS, matchReportScenario } from '../../src/demo/reportScen
 const FILE_ACCEPT = '.csv,.tsv,.xlsx,.pdf,.txt,.png,.jpg,.jpeg,.webp,text/csv,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/*';
 const SOURCE_LABEL = Object.freeze({ csv: 'CSV', tsv: 'TSV', xlsx: 'Excel', pdf: 'PDF', text: '粘贴文字', image: '截图', unsupported: '文件' });
 
-const ui = { pasteOpen: false };
 let pdfSource = null;
 let sourceSeq = 0;
 
@@ -160,21 +159,32 @@ function uploadCardHTML(state, rec) {
        <p>或 <span class="text-link">选择文件</span>。CSV / TSV 第一行为表头，UTF-8 编码。</p>
        <div class="dropzone-actions"><span class="btn btn-outline">选择账单文件</span></div>
        <p class="dropzone-foot mono">CSV / TSV · XLSX · PDF · 截图 · 只在本机读取</p>`;
-  const pasteOpen = ui.pasteOpen;
-  const pasteValue = pasteOpen && rec.sourceKind === 'text' ? esc(rec.content) : '';
+  const pasteValue = rec.sourceKind === 'text' ? esc(rec.content) : '';
   return `<section class="panel upload-card" aria-label="选择账单文件">
     <div class="panel-head"><span>01 / 本地文件</span><span class="lock-note">原始文件不上传</span></div>
     <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="选择或拖入账单文件" ${reading ? 'aria-disabled="true"' : ''}>
       ${dropInner}
+      <div class="dropzone-overlay" aria-hidden="true">
+        <div class="dropzone-overlay-inner">
+          <span class="dropzone-overlay-mark">↓</span>
+          <strong class="dropzone-overlay-title">松开即可读取账单</strong>
+          <span class="dropzone-overlay-sub">CSV / TSV · XLSX · PDF · 截图 · 只在本机读取</span>
+        </div>
+      </div>
     </div>
     <input type="file" id="file-input" accept="${FILE_ACCEPT}" multiple hidden>
     <p class="upload-note">支持 CSV / TSV、Excel（第一个工作表）、文本型 PDF、扫描 PDF 与截图；费用、税费可选，缺失会按 0 标注。原始文件只在本机读取。</p>
-    <div class="tm-paste-entry">
-      <button class="text-link tm-paste-toggle" type="button" data-action="toggle-paste" aria-expanded="${pasteOpen}">粘贴文字</button>
-    </div>
-    <div class="tm-paste" id="tm-paste-panel" ${pasteOpen ? '' : 'hidden'}>
-      <textarea id="tm-paste-input" rows="4" placeholder="粘贴 CSV、表格文字或账单片段">${pasteValue}</textarea>
-      <button class="btn btn-outline btn-sm" type="button" data-action="parse-paste">解析文字</button>
+    <div class="tm-paste" id="tm-paste-panel">
+      <div class="tm-paste-head">
+        <label class="tm-paste-label" for="tm-paste-input">粘贴账单文字</label>
+        <span class="tm-paste-kicker">LOCAL / 常规解析优先</span>
+      </div>
+      <p class="tm-paste-help" id="tm-paste-help">支持粘贴 CSV、表格文字或账单片段；解析在本机完成，失败时内容会保留。</p>
+      <textarea id="tm-paste-input" rows="4" aria-describedby="tm-paste-help" placeholder="支持粘贴 CSV、表格文字或账单片段">${pasteValue}</textarea>
+      <div class="tm-paste-actions">
+        <button class="btn btn-outline btn-sm" type="button" data-action="parse-paste">解析文字</button>
+        <span class="tm-paste-shortcut">Ctrl / ⌘ + Enter</span>
+      </div>
     </div>
   </section>`;
 }
@@ -191,8 +201,8 @@ function sampleCardHTML() {
     <span class="sample-stamp">DEMO / ${REPORT_SCENARIOS.length} 个场景</span>
     <h2>没有账单？<br>下载示例再上传。</h2>
     <p>下载任一场景的 CSV，拖回左侧导入，就能看到对应报告。含无模式、低样本等边界场景。</p>
-    <div class="scenario-list">${items}</div>
-    <p class="fine" data-role="scenario-hint">示例 CSV 只含合成交易，不是真实账户。</p>
+    <div class="scenario-list" role="group" aria-label="示例场景列表" tabindex="0">${items}</div>
+    <p class="fine" data-role="scenario-hint" role="status">示例 CSV 只含合成交易，不是真实账户。</p>
   </aside>`;
 }
 
@@ -522,28 +532,45 @@ export function renderRealImport(host, ctx) {
   const openPicker = () => input?.click();
   drop?.addEventListener('click', openPicker);
   drop?.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPicker(); } });
-  drop?.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('is-over'); });
-  drop?.addEventListener('dragleave', () => drop.classList.remove('is-over'));
-  drop?.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('is-over'); handleFiles(ctx, [...(e.dataTransfer?.files ?? [])]); });
+  const hasFiles = (e) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
+  let dragDepth = 0;
+  const setDrag = (on) => drop?.classList.toggle('is-over', on);
+  drop?.addEventListener('dragenter', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth += 1;
+    setDrag(true);
+  });
+  drop?.addEventListener('dragover', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    setDrag(true);
+  });
+  drop?.addEventListener('dragleave', (e) => {
+    if (!hasFiles(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) setDrag(false);
+  });
+  drop?.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dragDepth = 0;
+    setDrag(false);
+    handleFiles(ctx, [...(e.dataTransfer?.files ?? [])]);
+  });
   input?.addEventListener('change', (e) => handleFiles(ctx, [...(e.target.files ?? [])]));
-  if (ui.pasteOpen) {
-    const ta = host.querySelector('#tm-paste-input');
-    ta?.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        handlePaste(ctx, ta.value);
-      }
-    });
-  }
+  const pasteInput = host.querySelector('#tm-paste-input');
+  pasteInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      handlePaste(ctx, pasteInput.value);
+    }
+  });
 
   host.querySelectorAll('[data-action]').forEach((button) => {
     button.addEventListener('click', () => {
       const action = button.getAttribute('data-action');
-      if (action === 'toggle-paste') {
-        ui.pasteOpen = !ui.pasteOpen;
-        renderRealImport(host, ctx);
-        if (ui.pasteOpen) host.querySelector('#tm-paste-input')?.focus();
-      } else if (action === 'parse-paste') {
+      if (action === 'parse-paste') {
         handlePaste(ctx, host.querySelector('#tm-paste-input')?.value ?? '');
       } else if (action === 'download-scenario') {
         downloadScenarioCsv(REPORT_SCENARIOS.find((item) => item.id === button.getAttribute('data-scenario')), button);
