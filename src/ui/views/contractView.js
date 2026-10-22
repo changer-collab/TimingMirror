@@ -2,6 +2,7 @@
 // 边界：当前 / 历史划分、版本状态机、解析与判定全部由 adapter 提供（adapter 内部调用引擎）；本页只渲染返回的文本与 display。
 import { el, chip } from '../components.js';
 import * as adapter from '../../demo/adapter.js';
+import { renderScenarioReview } from './scenarioReviewView.js';
 import { saveContractsDemo, defaultContracts } from '../../state.js';
 import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../../agent/httpTransport.js';
 import { createRuleFallback, pickScenarioForJudgment, ruleSetHash } from '../../agent/ruleFallback.js';
@@ -31,7 +32,7 @@ const CUSTOM_DISCLOSURE = '这条自定义规则参与测试时，会把规则�
 const CUSTOM_USED_DATA_LABEL = Object.freeze({ change_pct: '当日涨跌幅', buys: '买入日期', sells: '卖出日期', calendar: '交易日历' });
 const INTRO = '设置在历史情境测试中用于提醒自己的交易规则。规则仅用于提醒，不会自动交易或阻止交易。';
 const PRIVACY = '规则仅保存在当前浏览器；不会自动交易，也不会改变分析报告结论。';
-const AGENT_NOTE = '对话页会读取已生效规则来回答规则状态、避免重复推荐候选，但还不能按“限定股票代码”等范围判断；规则不会自动交易，也不会改变分析报告结论；历史情境测试仍在本页进行。';
+const AGENT_NOTE = '对话页会读取已生效规则来回答规则状态、避免重复推荐候选，但还不能按“限定股票代码”等范围判断；规则不会自动交易，也不会改变分析报告结论；历史情境测试已独立到单独页面。';
 const CURRENT_NOTE = '不同类型或不同股票范围的规则可以同时生效；同一类型、同一范围只保留一条当前规则，保存新参数后旧规则进入历史规则。';
 const REPLACE_NOTE = '保存后，新规则会立即生效；当前同类型规则会进入历史记录，不再参与测试。';
 const STOP_NOTE = '停用后，该规则进入历史规则，不再参与之后的历史情境测试；可随时恢复为当前规则。';
@@ -216,8 +217,13 @@ function ruleDetail(rule) {
   ]);
 }
 
-export function renderContract(root, ctx) {
+export function renderContract(root, ctx, { section = 'rules' } = {}) {
+  if (section === 'scenario') {
+    renderScenarioReview(root, ctx);
+    return;
+  }
   const { state, set } = ctx;
+  const scenarioOnly = section === 'scenario';
   state.contracts = { ...defaultContracts(), ...state.contracts };
   const c = state.contracts;
   const templates = adapter.contractTemplates();
@@ -256,7 +262,7 @@ export function renderContract(root, ctx) {
   const page = el('div', { class: 'stack cv-page' });
 
   /* —— 页头 —— */
-  page.append(el('div', { class: 'card cv-head' }, [
+  if (!scenarioOnly) page.append(el('div', { class: 'card cv-head' }, [
     el('div', { class: 'cv-head-main' }, [
       el('h2', { class: 'cv-title' }, ['交易规则']),
       el('div', { class: 'cv-intro' }, [INTRO]),
@@ -409,10 +415,10 @@ export function renderContract(root, ctx) {
     currentBox.replaceChildren(...nodes);
   }
   paintCurrent();
-  page.append(currentBox);
+  if (!scenarioOnly) page.append(currentBox);
 
   /* —— 待重新确认（异常）：不计入当前规则、不参与测试 —— */
-  if (ruleSet.needsReconfirm.length) {
+  if (!scenarioOnly && ruleSet.needsReconfirm.length) {
     page.append(el('div', { class: 'card cv-reconfirm-box' }, [
       el('div', { class: 'cv-group-title' }, [`待重新确认的规则（${ruleSet.needsReconfirm.length}）`]),
       el('div', { class: 'muted small' }, ['以下规则不计入当前生效规则，也不参与历史情境测试。']),
@@ -466,7 +472,7 @@ export function renderContract(root, ctx) {
     el('div', { class: 'cv-hist-reason' }, ['未经规则引擎解析：不参与测试，不能恢复。']),
   ]);
   const histCount = ruleSet.history.length + ruleSet.legacy.length;
-  page.append(el('details', { class: 'card cv-history', 'data-role': 'history', open: c.restorePending ? '' : null }, [
+  if (!scenarioOnly) page.append(el('details', { class: 'card cv-history', 'data-role': 'history', open: c.restorePending ? '' : null }, [
     el('summary', {}, [`历史规则（${histCount}）`]),
     el('div', { class: 'muted small' }, [HISTORY_NOTE]),
     histCount ? null : el('div', { class: 'muted small' }, ['暂无历史规则。']),
@@ -475,6 +481,10 @@ export function renderContract(root, ctx) {
   ]));
 
   /* —— 历史情境测试：所有当前规则逐条判定；交易来源由 adapter 按账单状态决定 —— */
+  let simBtn = null;
+  let simResultBox = null;
+
+  function buildSimulation() {
   const current = ruleSet.current;
   const hasBuyback = current.some((r) => r.kind === 'sell_buyback_window');
   const hasBuySell = current.some((r) => r.kind === 'buy_sell_window');
@@ -484,8 +494,7 @@ export function renderContract(root, ctx) {
   const demoSimulationAllowed = ctx.allowDemoSimulation !== false;
   const marketSource = localBill ? adapter.DEFAULT_MARKET_SOURCE : (c.marketSource === 'synthetic-fixture' ? 'synthetic-fixture' : adapter.DEFAULT_MARKET_SOURCE);
   const sim = el('div', { class: 'card', 'data-role': 'sim-section' });
-  const simResultBox = el('div', { class: 'cv-sim-out' });
-  let simBtn = null;
+  simResultBox = el('div', { class: 'cv-sim-out' });
   if (!localBill && !demoSimulationAllowed) {
     sim.append(el('div', { class: 'section-title' }, ['历史情境测试']));
     sim.append(el('div', { class: 'cv-sim-empty' }, [
@@ -656,18 +665,22 @@ export function renderContract(root, ctx) {
   }
   sim.append(simResultBox);
   if (c.simContext && !c.simContext.error && c.simContext.ledger) sim.append(ledgerCard(c.simContext.ledger));
-  page.insertBefore(sim, currentBox);
+  return sim;
+  }
 
   function paintSim() {
     if (simBtn) simBtn.disabled = !!c.sim.running;
     simResultBox.replaceChildren(...(c.sim.result ? [simBatch(c.sim.result, c.sim.fallback)] : []));
   }
-  paintSim();
+  if (scenarioOnly) {
+    page.append(buildSimulation());
+    paintSim();
+  }
 
   /* —— 新增 / 修改弹窗：背景不可操作；Esc / 关闭 / 取消均不写记录 —— */
-  const backdrop = c.modal ? renderModal() : null;
-  closeActiveModal = c.modal ? closeEditor : null;
-  if (c.modal) {
+  const backdrop = !scenarioOnly && c.modal ? renderModal() : null;
+  closeActiveModal = !scenarioOnly && c.modal ? closeEditor : null;
+  if (!scenarioOnly && c.modal) {
     bindEsc();
     page.setAttribute('inert', '');
     page.setAttribute('aria-hidden', 'true');

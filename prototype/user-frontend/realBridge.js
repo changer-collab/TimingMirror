@@ -161,7 +161,7 @@ export function go(route) {
 }
 
 function scrollToSimulation() {
-  const host = document.getElementById('tm-real-rules');
+  const host = document.getElementById('tm-real-scenario') ?? document.getElementById('tm-real-rules');
   const node = host?.shadowRoot?.querySelector?.('[data-role="sim-section"]');
   if (node && typeof node.scrollIntoView === 'function') {
     node.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -205,7 +205,6 @@ const ctx = {
   ruleAssistantClient: getRuleAssistantClient(),
   assistantTitle: 'AI 助手',
   assistantSubtitle: '当前页面与已发布报告',
-  assistantShowFactLink: true,
   globalAssistant: true,
   qaDeps: {
     getReportBundle: (bill) => getRealReportBundle(bill),
@@ -241,7 +240,7 @@ export function getCtx() { return ctx; }
 
 export function setRoute(route) {
   currentRoute = route;
-  shared.route = route === 'me' ? 'contract' : route;
+  shared.route = route === 'me' || route === 'scenario' ? 'contract' : route;
   if (route !== 'me') setRuleModal(null);
 }
 
@@ -380,6 +379,11 @@ export function mountImportView(host) {
 export function mountContractView(host) {
   if (!host) return;
   renderInShadow(host, renderContract);
+}
+
+export function mountScenarioView(host) {
+  if (!host) return;
+  renderInShadow(host, (root, ctx) => renderContract(root, ctx, { section: 'scenario' }));
 }
 
 export function renderAssistant() {

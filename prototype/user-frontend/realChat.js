@@ -192,35 +192,6 @@ function emptyHTML() {
   return '<p class="tm-qa-empty">还没有提问。示例问法只是入口，不是全部。</p>';
 }
 
-function contextHTML(state, ctx) {
-  const bill = state.bill ?? {};
-  const isDemo = bill.demo === true;
-  const fileName = isDemo
-    ? (bill.demoScenario?.title || bill.fileName || '示例账单')
-    : (bill.fileName || '已确认本地账单');
-  let reportStatus = '报告按需读取';
-  try {
-    const bundle = ctx.qaDeps?.getReportBundle?.(bill);
-    if (bundle?.review) {
-      reportStatus = bundle.review.portfolio_published === true ? '已发布' : '组合未发布';
-    }
-  } catch { /* 缓存读取失败时按需读取 */ }
-  const versions = Array.isArray(state.contracts?.versions) ? state.contracts.versions : [];
-  let active = 0;
-  try { active = ctx.qaDeps?.ruleStateOf?.(versions)?.active_count ?? 0; } catch { active = 0; }
-  return `<div class="tm-qa-context">
-    <span class="tm-qa-context-tag">${isDemo ? '示例账单' : '已确认本地账单'}</span>
-    <span class="tm-qa-context-item">${esc(fileName)}</span>
-    <span class="tm-qa-context-sep" aria-hidden="true">·</span>
-    <span class="tm-qa-context-item">报告 ${esc(reportStatus)}</span>
-    <span class="tm-qa-context-sep" aria-hidden="true">·</span>
-    <span class="tm-qa-context-item">规则 v${versions.length} · 生效 ${active} 条</span>
-    <span class="tm-qa-context-sep" aria-hidden="true">·</span>
-    <span class="tm-qa-context-item">原始 CSV 仅本机</span>
-    <a class="tm-qa-context-link" href="#/import">${isDemo ? '换个场景' : '换一份账单'}</a>
-  </div>`;
-}
-
 function headHTML(hasEntries, isDemo) {
   return `<header class="tm-qa-head">
     <div class="tm-qa-head-top">
@@ -288,7 +259,6 @@ export function renderRealChat(host, ctx) {
     : emptyHTML();
 
   host.innerHTML = `<div class="tm-qa-page">
-    ${contextHTML(state, ctx)}
     <div class="tm-qa-inner">
       <div class="tm-qa-scroll" data-role="qa-scroll">
         ${headHTML(entries.length > 0 || pending, isDemo)}

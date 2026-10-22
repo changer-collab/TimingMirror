@@ -4800,7 +4800,7 @@ table.ledger tr.is-missing {
     bottom: 0;
     z-index: 80;
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(6, 1fr);
     padding-bottom: env(safe-area-inset-bottom, 0);
     border-top: 1px solid var(--line);
     background: rgba(244, 246, 246, 0.95);

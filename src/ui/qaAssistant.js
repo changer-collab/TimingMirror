@@ -477,7 +477,7 @@ export async function sendText(ctx, raw) {
   }
   if (state.route === 'contract') {
     appendLocal(ctx, text, localNotice(
-      '当前是规则页。新增或修改规则请使用下方“让 AI 理解”输入框；账单问题请点上方芯片，或到报告页自由提问。',
+      '当前是规则页。新增、修改或保存规则请在规则工作区操作；账单问题请点上方芯片，或到报告页自由提问。',
       '页面提示',
       'W_QA_RULE_PAGE',
     ), contextId);
@@ -578,7 +578,7 @@ export function renderQaAssistant(ctx) {
   });
   root.append(form);
   root.append(el('p', { class: 'qa-fine' }, [
-    '本地问题不请求模型；只有点击「组合表现」或报告/规则页自由提问才会请求在线复述。原始账单不上传。',
+    '本地问题不请求模型；只有点击「组合表现」或在报告/问答页自由提问才会请求在线复述。原始账单不上传。',
   ]));
   return root;
 }

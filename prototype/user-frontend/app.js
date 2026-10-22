@@ -93,13 +93,14 @@ import { renderRealProfile } from './realProfile.js';
     evidence: false,
   };
 
-  const ROUTES = ['home', 'import', 'report', 'chat', 'me'];
+  const ROUTES = ['home', 'import', 'report', 'chat', 'scenario', 'me'];
   const ROUTE_ALIASES = { rules: 'me', contract: 'me' };
   const TITLES = {
     home: '择时镜子 TimingMirror · 把交易照见成证据',
     import: '导入账单 · 择时镜子',
     report: '报告 · 择时镜子',
     chat: '问镜子 · 择时镜子',
+    scenario: '历史情境测试 · 择时镜子',
     me: '个人中心 · 择时镜子',
   };
 
@@ -256,6 +257,7 @@ import { renderRealProfile } from './realProfile.js';
         ${navLink('import', '导入')}
         ${navLink('report', '报告')}
         ${navLink('chat', '问答')}
+        ${navLink('scenario', '历史情境测试')}
       </nav>
       <div class="topbar-right">
         <nav class="view-switch" aria-label="界面视图">
@@ -277,11 +279,13 @@ import { renderRealProfile } from './realProfile.js';
       ['import', '导入'],
       ['report', '报告'],
       ['chat', '问答'],
+      ['scenario', '测试'],
       ['me', '我的'],
     ];
     mobileNavEl.innerHTML = mobile.map(([route, label]) => {
       const current = state.route === route ? ' aria-current="page"' : '';
-      return `<a href="#/${route}"${current}>${label}</a>`;
+      const aria = route === 'scenario' ? ' aria-label="历史情境测试"' : '';
+      return `<a href="#/${route}"${current}${aria}>${label}</a>`;
     }).join('');
 
     const footerNote = statusInfo.tone === 'real'
@@ -304,6 +308,7 @@ import { renderRealProfile } from './realProfile.js';
               <li><a href="#/import">导入账单</a></li>
               <li><a href="#/report" data-demo-link data-demo-route="report">示例报告</a></li>
               <li><a href="#/chat">问镜子</a></li>
+              <li><a href="#/scenario">历史情境测试</a></li>
               <li><a href="#/me">个人中心</a></li>
             </ul>
           </div>
@@ -378,6 +383,35 @@ import { renderRealProfile } from './realProfile.js';
     if (bridge.hasRealState()) return importStatusText();
     if (bridge.isDemoSelected()) return { text: '示例模式', tone: 'demo' };
     return { text: '空状态', tone: 'empty' };
+  }
+
+  function confirmedBillBanner() {
+    const bill = sharedState().bill ?? {};
+    if (state.route === 'me' || bill.status !== 'confirmed' || bill.sourceType !== 'local') return '';
+    const demo = !!bill.demo;
+    const name = demo ? (bill.demoScenario?.title || '示例场景') : (bill.fileName || '本地账单');
+    const fileLabel = bill.fileName && bill.fileName !== name ? ` · ${esc(bill.fileName)}` : '';
+    const links = [];
+    if (state.route !== 'report') {
+      links.push(`<a class="text-link" href="#/report">${demo ? '查看示例报告' : '查看报告'} →</a>`);
+    }
+    if (state.route !== 'chat') {
+      links.push(`<a class="text-link" href="#/chat">${demo ? '去示例问答' : '去事实问答'} →</a>`);
+    }
+    if (!demo && state.route !== 'scenario') {
+      links.push('<a class="text-link" href="#/scenario">历史情境测试 →</a>');
+    }
+    links.push(`<a class="text-link" href="#/import">${demo ? '换个场景' : '更换账单'} →</a>`);
+    const summary = demo
+      ? `${esc(name)}${fileLabel} · 合成账单与示例行情，仅用于演示。`
+      : `${esc(name)} · 报告、问答和规则测试都使用这笔账单。`;
+    return `<div class="container tm-bill-banner" role="status">
+      <div class="tm-bill-banner-main">
+        <strong>${demo ? '当前是示例场景' : '当前有已确认的本地账单'}</strong>
+        <span>${summary}</span>
+      </div>
+      <div class="tm-bill-banner-links">${links.join('')}</div>
+    </div>`;
   }
 
   function modeChipText() {
@@ -530,16 +564,32 @@ import { renderRealProfile } from './realProfile.js';
       <section class="tm-workspace-head">
         <p class="mono-label">MY MIRROR / 个人中心</p>
         <h1>画像与规则</h1>
-        <p class="muted">画像只从已复核账单派生；规则保存在当前浏览器，历史情境测试在规则工作区最上方。</p>
+        <p class="muted">画像只从已复核账单派生；规则保存在当前浏览器，历史情境测试已独立为单独页面。</p>
       </section>
       <div id="tm-real-profile"></div>
       <section class="tm-me-rules" aria-label="规则工作区">
         <div class="tm-me-rules-head">
-          <p class="mono-label">RULES WORKSPACE / 规则工作区</p>
-          <p class="muted">保存、停用与版本记录都由你确认；不会自动交易。</p>
+          <div>
+            <p class="mono-label">RULES WORKSPACE / 规则工作区</p>
+            <p class="muted">保存、停用与版本记录都由你确认；不会自动交易。</p>
+          </div>
+          <a class="text-link" href="#/scenario">打开历史情境测试 →</a>
         </div>
         <div id="tm-real-rules"></div>
       </section>
+    </div>`;
+  }
+
+  function scenarioPage() {
+    return `${confirmedBillBanner()}
+    ${pageHead({
+      code: 'RULES / REVIEW',
+      title: '历史情境测试',
+      intro: `<p>按账单里的每一笔真实操作，逐笔对照当前规则。画像只描述交易习惯，不参与判定。</p>`,
+      right: '<span class="sample-tag">按真实操作复盘</span><a class="text-link" href="#/me">返回规则管理</a>',
+    })}
+    <div class="container page-body tm-scenario-page">
+      <div id="tm-real-scenario"></div>
     </div>`;
   }
 
@@ -846,7 +896,7 @@ import { renderRealProfile } from './realProfile.js';
   }
 
   function importPage() {
-    return '<div id="tm-real-import"></div>';
+    return `${confirmedBillBanner()}<div id="tm-real-import"></div>`;
   }
 
   /* ---------- report ---------- */
@@ -970,14 +1020,14 @@ import { renderRealProfile } from './realProfile.js';
 
   function reportPage() {
     const mode = pageMode('report');
-    if (mode === 'real') return realReportPage();
+    if (mode === 'real') return `${confirmedBillBanner()}${realReportPage()}`;
     if (mode === 'empty') return emptyStatePage('report');
     const chart = buildChart();
     const localNotice = (state.bill.source === 'local' && (state.bill.confirmed || state.bill.status === 'loaded'))
       ? `<div class="notice" role="status"><div>你导入的「${esc(state.bill.fileName)}」已通过本机基础校验（${state.bill.trades.length} 笔交易）。本原型尚未接入计算引擎，<strong>报告数字仍为示例数据</strong>，这里只演示从导入、核对到报告的完整流程。</div></div>`
       : '';
 
-    return `${pageHead({
+    return `${confirmedBillBanner()}${pageHead({
       code: 'STEP 02 / REPORT',
       title: '同一把尺，<br>量出差距。',
       intro: `<div class="report-meta">
@@ -1275,7 +1325,7 @@ import { renderRealProfile } from './realProfile.js';
 
   function chatPage() {
     const mode = pageMode('chat');
-    if (mode === 'real') return realChatPage();
+    if (mode === 'real') return `${confirmedBillBanner()}${realChatPage()}`;
     if (mode === 'empty') return emptyStatePage('chat');
     const messages = state.chat.messages.map(messageHTML).join('');
     const typing = state.chat.pending
@@ -1287,7 +1337,7 @@ import { renderRealProfile } from './realProfile.js';
       return `<button type="button" data-question="${esc(q)}"${online ? ' class="is-online" title="调用站点后端复述，数字仍在本机核对"' : ''}${state.chat.pending ? ' disabled' : ''}>${esc(q)}</button>`;
     }).join('');
 
-    return `${pageHead({
+    return `${confirmedBillBanner()}${pageHead({
       code: 'STEP 03 / ASK',
       title: '问它为什么，<br>别问它买什么。',
       intro: `<p>镜子只复述这份账单里的事实，并把每个回答的来处摆出来。它不预测涨跌，不推荐标的，也不替你做决定。</p>
@@ -1967,6 +2017,7 @@ import { renderRealProfile } from './realProfile.js';
     else if (state.route === 'import') html = importPage();
     else if (state.route === 'report') html = reportPage();
     else if (state.route === 'chat') html = chatPage();
+    else if (state.route === 'scenario') html = scenarioPage();
     else if (state.route === 'me') html = mePage();
     app.innerHTML = html;
 
@@ -1985,6 +2036,9 @@ import { renderRealProfile } from './realProfile.js';
     if (state.route === 'me') {
       renderRealProfile(document.getElementById('tm-real-profile'), bridge.getCtx());
       bridge.mountContractView(document.getElementById('tm-real-rules'));
+    }
+    if (state.route === 'scenario') {
+      bridge.mountScenarioView(document.getElementById('tm-real-scenario'));
     }
 
     bridge.bindAssistantToggle();
