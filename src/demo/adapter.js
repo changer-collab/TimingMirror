@@ -21,6 +21,7 @@ import { runReview } from '../agent/reviewPipeline.js';
 import { replaceSell } from '../engine/counterfactual.js';
 import { buildDragDecomposition } from '../engine/decompose.js';
 import { buildPatternList } from '../engine/behavior.js';
+import { buildBehaviorFactsRequest } from '../engine/behaviorFacts.js';
 import { buildReturnWaterfall } from '../engine/waterfall.js';
 import { computeStockSelf } from '../engine/stockSelf.js';
 import { computePGR } from '../engine/pgr.js';
@@ -810,7 +811,8 @@ function buildUserInsights({ stage, trades, closes, review }) {
      status('ok'|'partial'|'blocked'|'error'), blocked, warnings[], errors[],
      valuation, marketRange, snapshot, prices, blockedSymbols[], poolBlocked,
      review, factsByScope{}, provenance, labels,
-     insights: { portfolio, behavior, stock_self, pgr, review_summary } } */
+     insights: { portfolio, behavior, stock_self, pgr, review_summary },
+     behaviorFacts: null | { protocol, events[], buy_windows[] } } */
 export async function loadUserBillReport(bill) {
   const demo = bill?.demo === true && bill?.marketSource === 'demo-frozen';
   const out = {
@@ -838,6 +840,7 @@ export async function loadUserBillReport(bill) {
     provenance: null,
     labels: RESULT_LABELS,
     insights: emptyUserInsights('账单未确认：补充分析不生成'),
+    behaviorFacts: null,
   };
   if (!bill || bill.status !== 'confirmed' || bill.sourceType !== 'local' || bill.blocked || !Array.isArray(bill.trades) || bill.trades.length === 0) {
     out.status = 'blocked';
@@ -899,6 +902,16 @@ export async function loadUserBillReport(bill) {
   } catch (e) {
     out.insights = emptyUserInsights(`补充分析生成失败：${String(e && e.message ? e.message : e)}`);
     out.insights.review_summary = reviewSummaryOf(review);
+  }
+  try {
+    const facts = buildBehaviorFactsRequest({
+      trades,
+      behavior: out.insights?.behavior?.data ?? null,
+      tradingDays: stage.market.tradingDays,
+    });
+    out.behaviorFacts = facts.ok ? facts.request : null;
+  } catch {
+    out.behaviorFacts = null;
   }
   return out;
 }

@@ -1,5 +1,30 @@
 // 仅本地开发使用的假模型：不联网、不读取凭据，返回固定草案或受控错误。
 // 只在 scripts/serve.mjs 中注入；不进入站点 Function，也不参与线上部署。
+import { BEHAVIOR_CANDIDATE } from '../server/site-functions/behaviorAnalysis.mjs';
+
+function behaviorFakeObservation(facts) {
+  const events = Array.isArray(facts?.events) ? facts.events : [];
+  const observations = [];
+  for (let i = 0; i < events.length; i += 1) {
+    if (events[i].side !== 'sell') continue;
+    for (let j = i + 1; j < events.length; j += 1) {
+      const gap = events[j].day_offset - events[i].day_offset;
+      if (events[j].side === 'buy' && events[j].asset_key === events[i].asset_key && gap > 0 && gap <= 2) {
+        observations.push({ observation_id: 'sell_rebuy_within_2d', text: '卖出后两个交易日内又买回同一标的。', evidence_event_indexes: [i, j] });
+        i = events.length;
+        break;
+      }
+    }
+  }
+  if ((facts?.trading?.sell_after_buy_count ?? 0) >= 4) {
+    observations.push({
+      observation_id: 'overtrading',
+      text: '往返次数较多，但暂无可执行模板。',
+      evidence_event_indexes: events.map((_, index) => index).slice(0, 8),
+    });
+  }
+  return observations;
+}
 const FIXED_TRADES = [
   {
     date: '2024-09-24', symbol: '600519', side: '买入', price: '100.00', quantity: '100',
@@ -42,6 +67,32 @@ export function createLocalFakeImportModel() {
         fee: '5.00', tax: '0.00', confidence: 0.9, issues: [],
       }));
       return { rawText: JSON.stringify({ trades, unresolved: [] }) };
+    },
+    async behaviorAnalysis({ facts }) {
+      await wait();
+      const pattern = facts?.pattern ?? {};
+      const observations = behaviorFakeObservation(facts);
+      const comment = pattern.status === '成立'
+        ? `发现 ${pattern.sample_n} 笔在短期上涨后买入。`
+        : pattern.status === '证据不足'
+          ? '可评估样本不足，暂不下结论。'
+          : '未发现达到最小重复数的追高模式。';
+      return {
+        rawText: JSON.stringify({
+          patterns: [{
+            pattern_id: pattern.pattern_id,
+            status: pattern.status,
+            sample_n: pattern.sample_n,
+            evaluated_n: pattern.evaluated_n,
+            evidence_event_indexes: [...(pattern.evidence_event_indexes ?? [])],
+            comment,
+          }],
+          observations,
+          rule_candidates: pattern.status === '成立'
+            ? [{ candidate_id: BEHAVIOR_CANDIDATE.candidate_id, template_id: BEHAVIOR_CANDIDATE.template_id }]
+            : [],
+        }),
+      };
     },
     async ruleIntent({ allowed_templates }) {
       await wait();

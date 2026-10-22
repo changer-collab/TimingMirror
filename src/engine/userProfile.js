@@ -9,6 +9,13 @@ export const PROFILE_VERSION = 1;
 export const RULE_CANDIDATE_VERSION = 'candidate-1';
 export const CHASE_CANDIDATE_ID = 'rc:no_buy_on_surge:chase_high_buy';
 
+const BEHAVIOR_ANALYSIS_SOURCES = Object.freeze(['ai', 'backend_rules']);
+const PROFILE_OBSERVATION_IDS = Object.freeze(['sell_rebuy_within_2d', 'overtrading']);
+const PROFILE_OBSERVATION_LABELS = Object.freeze({
+  sell_rebuy_within_2d: '卖出后两日内买回',
+  overtrading: '交易频率偏高',
+});
+
 export function stableHash(input) {
   let h = 0x811c9dc5;
   const str = String(input);
@@ -117,6 +124,60 @@ function reviewSummary(review) {
   };
 }
 
+// 只保留结构化字段：AI 评论、观察原话、成交与资产均不进入画像。
+export function behaviorAnalysisSummary(analysis) {
+  if (!analysis || !BEHAVIOR_ANALYSIS_SOURCES.includes(analysis.source)) return null;
+  const pattern = analysis.pattern;
+  if (!pattern || typeof pattern.pattern_id !== 'string') return null;
+  const seen = new Set();
+  const observations = [];
+  for (const item of Array.isArray(analysis.observations) ? analysis.observations : []) {
+    const id = item?.observation_id;
+    if (!PROFILE_OBSERVATION_IDS.includes(id) || seen.has(id)) continue;
+    seen.add(id);
+    observations.push({
+      observation_id: id,
+      evidence_count: Array.isArray(item.evidence_event_indexes) ? item.evidence_event_indexes.length : 0,
+    });
+  }
+  return {
+    source: analysis.source,
+    fallback_reason: analysis.source === 'backend_rules' && typeof analysis.fallback_reason === 'string'
+      ? analysis.fallback_reason
+      : null,
+    pattern: {
+      pattern_id: pattern.pattern_id,
+      status: typeof pattern.status === 'string' ? pattern.status : null,
+      sample_n: Number.isFinite(pattern.sample_n) ? pattern.sample_n : null,
+      evaluated_n: Number.isFinite(pattern.evaluated_n) ? pattern.evaluated_n : null,
+      evidence_count: Array.isArray(pattern.evidence_event_indexes) ? pattern.evidence_event_indexes.length : 0,
+    },
+    observations,
+    rule_candidate_ids: Array.isArray(analysis.rule_candidates)
+      ? analysis.rule_candidates.map((candidate) => candidate?.candidate_id).filter((id) => typeof id === 'string')
+      : [],
+  };
+}
+
+function behaviorAnalysisRow(summary) {
+  if (!summary) return null;
+  const count = summary.observations.length;
+  const value = summary.source === 'ai'
+    ? (count ? `AI 补充 ${count} 项观察` : 'AI 未补充观察')
+    : '规则引擎兜底';
+  const note = summary.source === 'ai'
+    ? (count
+      ? `${summary.observations.map((o) => PROFILE_OBSERVATION_LABELS[o.observation_id]).join('、')}；只存结构化结果`
+      : '模型未补充观察；模式仍以本地证据为准')
+    : '模型不可用时的本地兜底；不计入观察次数';
+  return {
+    key: 'behavior_analysis',
+    label: '行为洞察',
+    value,
+    note,
+  };
+}
+
 function ruleSummary(ruleState) {
   const state = ruleState && typeof ruleState === 'object' ? ruleState : {};
   const activeTemplates = Array.isArray(state.active_templates) ? state.active_templates : [];
@@ -133,7 +194,7 @@ function dimensionRows(snapshot) {
   const behavior = snapshot.behavior?.patterns?.[0] ?? null;
   const rules = snapshot.rules;
   const pgr = snapshot.pgr;
-  return [
+  const rows = [
     {
       key: 'activity',
       label: '交易样貌',
@@ -152,6 +213,10 @@ function dimensionRows(snapshot) {
       value: behavior ? `${behavior.name}：${behavior.status}` : '行为发现未运行',
       note: behavior ? `命中 ${behavior.sample_n} 笔 / 已评估 ${behavior.evaluated_n} 笔 / 最小样本 ${behavior.min_samples}` : '没有可评估的行为证据',
     },
+  ];
+  const analysisRow = behaviorAnalysisRow(snapshot.behavior_analysis);
+  if (analysisRow) rows.push(analysisRow);
+  rows.push(
     {
       key: 'disposition',
       label: '卖出倾向',
@@ -164,7 +229,8 @@ function dimensionRows(snapshot) {
       value: `当前 ${rules.active_count} 条 / 版本 ${rules.version_count} 条`,
       note: '规则由你确认或改写后生效；画像只记录，不替你定规矩',
     },
-  ];
+  );
+  return rows;
 }
 
 export function buildProfileSnapshot({
@@ -175,6 +241,7 @@ export function buildProfileSnapshot({
   review = null,
   trades = [],
   ruleState = null,
+  behaviorAnalysis = null,
   at = new Date().toISOString(),
 } = {}) {
   const bill = tradeSummary(trades);
@@ -185,6 +252,7 @@ export function buildProfileSnapshot({
     bill,
     outcome: outcomeSummary(report),
     behavior: behaviorSummary(behavior),
+    behavior_analysis: behaviorAnalysisSummary(behaviorAnalysis),
     stock_self: stockSelfSummary(stockSelf),
     pgr: pgrSummary(pgr),
     review: reviewSummary(review),
@@ -284,6 +352,30 @@ export function withRuleState(profile, ruleState, { at = new Date().toISOString(
       : d)),
   };
   return { ...base, updated_at: at, latest };
+}
+
+// 行为分析只同步结构化结果：不新增报告观察次数，也不保存 AI 原话。
+export function withBehaviorAnalysis(profile, analysis, { key = null, at = new Date().toISOString() } = {}) {
+  const base = profile && profile.version === PROFILE_VERSION ? profile : emptyProfile();
+  if (!base.latest) return base;
+  if (key && base.latest.profile_key !== key) return base;
+  const summary = behaviorAnalysisSummary(analysis);
+  if (!summary) return base;
+  if (base.latest.behavior_analysis
+    && JSON.stringify(base.latest.behavior_analysis) === JSON.stringify(summary)) return base;
+  const row = behaviorAnalysisRow(summary);
+  const dimensions = [...(base.latest.dimensions ?? [])];
+  const index = dimensions.findIndex((d) => d.key === row.key);
+  if (index >= 0) dimensions[index] = row;
+  else {
+    const behaviorIndex = dimensions.findIndex((d) => d.key === 'behavior');
+    dimensions.splice(behaviorIndex >= 0 ? behaviorIndex + 1 : dimensions.length, 0, row);
+  }
+  return {
+    ...base,
+    updated_at: at,
+    latest: { ...base.latest, behavior_analysis: summary, dimensions },
+  };
 }
 
 export function withCandidateEvent(profile, candidateId, status, { at = new Date().toISOString() } = {}) {

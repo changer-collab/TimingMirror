@@ -4,8 +4,13 @@ import { loadUserBillReport } from '../../src/demo/adapter.js';
 import { fmtMoney } from '../../src/engine/display.js';
 import { renderGhostChart } from '../../src/ui/components/ghostChart.js';
 import { buildRuleCandidates } from '../../src/engine/userProfile.js';
-import { recordReportObservation, ruleStateOf } from './profileStore.js';
-import { openRuleCandidate } from './ruleCandidates.js';
+import { recordReportObservation, ruleStateOf, syncBehaviorAnalysis } from './profileStore.js';
+import { openRuleCandidateInAssistant } from './ruleCandidates.js';
+import {
+  behaviorAnalysisKey,
+  behaviorFallbackText,
+  requestBehaviorAnalysis,
+} from './behaviorAnalysis.js';
 
 const cache = new Map();
 const EMPTY_RULE_STATE = Object.freeze({ active_templates: [], active_count: 0, version_count: 0 });
@@ -257,12 +262,106 @@ function behaviorSection(vis) {
   return `<section class="report-section rp-insight">
     ${sectionHead('一个值得注意的买入习惯', '只描述这笔账单')}
     <div class="rp-card rp-behavior">
-      <div class="rp-behavior-top"><span class="rp-badge loss">出现 ${esc(pattern.sample_n)} 次</span><strong>${esc(pattern.name)}</strong></div>
+      <div class="rp-behavior-top"><span class="rp-badge loss">出现 ${esc(pattern.sample_n)} 次</span><strong>${esc(pattern.name)}</strong><span class="rp-badge mode" data-role="behavior-source">本地规则引擎</span></div>
       <p class="rp-behavior-lead">${lead}</p>
+      <p class="rp-behavior-comment" data-role="behavior-comment" hidden></p>
       <ul class="rp-evidence rp-evidence-grid">${evidence.map((e) => `<li><span>${esc(e.trade_date)}</span><span>${esc(e.symbol)}</span><strong>${esc(e.display?.rise ?? '—')}</strong></li>`).join('')}</ul>
       <p class="rp-caption">按候选阈值识别，仅描述当前账单。</p>
     </div>
   </section>`;
+}
+
+function analysisCard(analysis, vis) {
+  const tag = vis.candidate ? '不影响规则候选' : '暂无可执行规则';
+  const observations = analysis.observations.map((item) => `<li class="rp-analysis-item">
+    <p>${esc(item.text)}</p>
+    <small>基于 ${esc(item.evidence_event_indexes.length)} 笔交易</small>
+  </li>`).join('');
+  return `<div class="rp-card rp-analysis">
+    <div class="rp-analysis-head"><span class="rp-badge ai">AI 观察</span><span class="rp-analysis-tag">${esc(tag)}</span></div>
+    ${!vis.behavior && analysis.pattern.comment ? `<p class="rp-analysis-text">${esc(analysis.pattern.comment)}</p>` : ''}
+    ${observations ? `<ul class="rp-analysis-list">${observations}</ul>` : ''}
+  </div>`;
+}
+
+function analysisUnavailableNote() {
+  return '<p class="rp-analysis-note">在线观察暂不可用。<button class="rp-link-btn" type="button" data-retry-behavior>重试</button></p>';
+}
+
+function hydrateBehaviorAnalysis(host, { bill, bundle, vis, profileKey = null }) {
+  const slot = host.querySelector('[data-role="behavior-analysis"]');
+  if (!slot) return;
+  const facts = bundle.behaviorFacts;
+  const localPattern = vis.pattern;
+  if (!facts || !localPattern) return;
+  const sourceEl = host.querySelector('[data-role="behavior-source"]');
+  const commentEl = host.querySelector('[data-role="behavior-comment"]');
+  const request = {
+    key: behaviorAnalysisKey({ bill, bundle }),
+    facts,
+    localPattern,
+  };
+
+  const apply = (result) => {
+    if (!slot.isConnected) return;
+    if (!result.ok) {
+      if (vis.behavior) {
+        slot.innerHTML = analysisUnavailableNote();
+        bindRetry();
+      }
+      return;
+    }
+    const analysis = result.analysis;
+    if (profileKey) {
+      try { syncBehaviorAnalysis(analysis, { profileKey }); } catch { /* 画像同步失败不影响报告 */ }
+    }
+    if (analysis.source === 'ai') {
+      if (sourceEl) {
+        sourceEl.textContent = 'AI 观察';
+        sourceEl.className = 'rp-badge ai';
+        sourceEl.removeAttribute('title');
+      }
+      if (commentEl && analysis.pattern.comment) {
+        commentEl.textContent = analysis.pattern.comment;
+        commentEl.hidden = false;
+      }
+      const hasObservation = analysis.observations.length > 0;
+      if (hasObservation || (!vis.behavior && analysis.pattern.comment)) {
+        slot.innerHTML = analysisCard(analysis, vis);
+      } else {
+        slot.replaceChildren();
+      }
+      return;
+    }
+    if (sourceEl) {
+      sourceEl.textContent = '规则引擎兜底';
+      sourceEl.className = 'rp-badge fallback';
+      sourceEl.title = behaviorFallbackText(analysis.fallback_reason);
+    }
+    slot.replaceChildren();
+  };
+
+  const bindRetry = () => {
+    const button = slot.querySelector('[data-retry-behavior]');
+    if (!button) return;
+    button.addEventListener('click', async () => {
+      if (button.disabled) return;
+      button.disabled = true;
+      button.textContent = '重试中…';
+      try {
+        apply(await requestBehaviorAnalysis({ ...request, force: true }));
+      } catch {
+        button.disabled = false;
+        button.textContent = '重试';
+      }
+    });
+  };
+
+  requestBehaviorAnalysis(request).then(apply).catch(() => {
+    if (!slot.isConnected || !vis.behavior) return;
+    slot.innerHTML = analysisUnavailableNote();
+    bindRetry();
+  });
 }
 
 function ratioPct(value) {
@@ -301,8 +400,8 @@ function candidateSection(candidate) {
       <p class="rp-candidate-text">“${esc(candidate.text)}”</p>
       <p class="rp-note">${esc(candidate.reason)}</p>
       <div class="rp-actions">
-        <button class="btn btn-primary" type="button" data-open-candidate>用这个阈值打开规则编辑</button>
-        <span class="rp-caption">候选不会自动生效。</span>
+        <button class="btn btn-primary" type="button" data-open-candidate>用这条建规则</button>
+        <span class="rp-caption">会打开助手并带入证据；候选不会自动生效。</span>
       </div>
     </div>
   </section>`;
@@ -339,9 +438,12 @@ function renderBundle(host, bundle, ctx, bill) {
 
   const insights = bundle.insights ?? {};
   let profile = null;
+  let profileKey = null;
   if (!demo) {
     try {
-      profile = recordReportObservation({ bundle, bill, ruleState: ruleStateOf(ctx?.state?.contracts?.versions) }).profile;
+      const observation = recordReportObservation({ bundle, bill, ruleState: ruleStateOf(ctx?.state?.contracts?.versions) });
+      profile = observation.profile;
+      profileKey = observation.snapshot?.profile_key ?? null;
     } catch { /* 画像记录失败不阻断报告 */ }
   }
   let candidatePack = null;
@@ -367,6 +469,7 @@ function renderBundle(host, bundle, ctx, bill) {
     ${vis.waterfall ? waterfallSection(bundle) : ''}
     ${vis.attribution ? attributionSection(bundle) : ''}
     ${vis.behavior ? behaviorSection(vis) : ''}
+    <div class="rp-analysis-slot" data-role="behavior-analysis"></div>
     ${vis.pgr ? pgrSection(vis.pgrData) : ''}
     ${vis.candidate ? candidateSection(vis.candidateData) : ''}
     ${vis.basis ? basisSection(bundle, demo) : ''}
@@ -376,6 +479,7 @@ function renderBundle(host, bundle, ctx, bill) {
 
   mountGhostChart(host, bundle);
   bindCandidateButton(host, ctx, vis.candidateData);
+  hydrateBehaviorAnalysis(host, { bill, bundle, vis, profileKey });
 }
 
 function counterfactualSummary(cf) {
@@ -410,7 +514,7 @@ function mountGhostChart(host, bundle) {
 function bindCandidateButton(host, ctx, candidate) {
   const button = host.querySelector('[data-open-candidate]');
   if (!button || !candidate || !ctx) return;
-  button.addEventListener('click', () => { openRuleCandidate(ctx, candidate); });
+  button.addEventListener('click', () => { openRuleCandidateInAssistant(ctx, candidate); });
 }
 
 function renderError(host, message) {

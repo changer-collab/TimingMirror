@@ -1,4 +1,4 @@
-// 规则页顶部：本地用户画像 + 规则候选（非 Agent）。
+// 个人中心顶部：本地用户画像 + 规则候选（非 Agent）。
 // 画像只从已复核报告、行为发现与规则使用记录派生；只存本地、不含成交明细或文件名。
 import { buildRuleCandidates } from '../../src/engine/userProfile.js';
 import { loadRealReport, getRealReportBundle } from './realReport.js';
@@ -208,6 +208,10 @@ export function renderRealProfile(host, ctx) {
   const bill = ctx?.state?.bill;
   if (!bill || bill.status !== 'confirmed' || bill.sourceType !== 'local') {
     host.innerHTML = emptyState();
+    return;
+  }
+  if (bill.demo === true) {
+    host.innerHTML = emptyState('示例场景只用于演示，不写入画像；导入并确认自己的账单后才会开始记录。');
     return;
   }
   const cached = getRealReportBundle(bill);

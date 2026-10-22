@@ -49,7 +49,7 @@
 - **03 损耗归因**：按标的聚合 + 逐笔卖出明细（数量、卖出价、估值收盘、损耗、占比）；展示序不等于因果结论。
 - **04 行为发现**：三态（成立 / 不成立 / 证据不足）、样本数、已评估数、最小样本、判定口径、成交证据、阈值来源与 caveat。
 - **05 PGR / PLR**：实现盈亏与纸面盈亏计数、PGR/PLR/DE、参考均值与候选口径说明。
-- **06 规则候选**：由当前账单追高证据生成；可用时“用这个阈值打开规则编辑”，已有同类规则时引导查看，已忽略时引导到规则页恢复。
+- **06 规则候选**：由当前账单追高证据生成；可用时“用这条建规则”（先进入助手并带入证据，见 §10.4），已有同类规则时引导查看，已忽略时引导到规则页恢复。
 - **07 已发布事实**：按范围折叠展示事实、展示值、公式 ID；顶部来源 chips 保留账单、行情来源、截止日、估值日与复核状态。
 - 第四卡改为独立的“标的自身涨幅（候选）”，不再重复“买入不动”；覆盖不足或部分缺价时明确不发布组合值。
 
@@ -94,7 +94,7 @@
 - 写入 modal / draft / 导航到规则页，**不自动保存**；
 - 打开前记录 `opened` 事件。
 
-规则页顶部新增画像与候选区；报告页 CTA 与规则页 CTA 都进入同一个既有契约流程。保存、停用、版本记录仍由 `contractView` 负责，行为不变。
+规则页顶部新增画像与候选区；报告页 CTA 先进入助手预填并带入证据，规则页 CTA 直接进入同一个既有契约流程。保存、停用、版本记录仍由 `contractView` 负责，行为不变。
 
 ### 1.5 测试
 
@@ -159,7 +159,7 @@ node tests/import-recovery.test.mjs → 45/45
    - 行为发现“追高买入”成立 2/2，证据窗口涨幅 +12.0% / +10.8%；
    - PGR 0.00 / PLR 1.00 / DE -1.00；
    - 出现“可建立规则”的候选。
-3. 点击“用这个阈值打开规则编辑”：进入规则页，契约弹窗预填“涨幅超阈值不买入”，阈值 10，文本为“当天涨幅超过 10% 的票，我绝不买入。”；未自动保存。
+3. 点击“用这个阈值打开规则编辑”（该 CTA 后续改为“用这条建规则”，先进入助手，见 §10.4）：进入规则页，契约弹窗预填“涨幅超阈值不买入”，阈值 10，文本为“当天涨幅超过 10% 的票，我绝不买入。”；未自动保存。
 4. 用户保存后：画像规则维度变为“当前 1 条 / 版本 1 条”；候选变为“已有同类规则”；历史情境测试展示支持标的（300750、600519、601318、000000）与日期范围 2024-09-23 至 2024-10-11。
 5. 停用当前规则：候选回到“可建立规则”，出现“打开模板确认 / 忽略这条候选”。
 6. 忽略候选：显示“已忽略”与“恢复候选”；恢复后重新回到“可建立规则”。
@@ -212,7 +212,7 @@ Agent 相关（按约定未动，留给组长）：
 
 - `buildRuleCandidates(...)`：给定行为发现、规则状态与画像，返回候选及证据；
 - `recordCandidateEvent(...)` / `loadProfile()`：画像与候选状态；
-- 报告页 CTA 已可直接调用 `openRuleCandidate(ctx, candidate)`，Agent 后续只需生成/引用同样的候选结构。
+- 报告页 CTA 现调用 `openRuleCandidateInAssistant(ctx, candidate)`（进助手预填、不保存）；规则页候选仍可直接调用 `openRuleCandidate(ctx, candidate)`。Agent 后续只需生成/引用同样的候选结构。
 
 ---
 
@@ -383,3 +383,140 @@ node tests/waterfall.test.mjs → 8/8
 - 提交：`d243bf2 feat: 精简报告展示并改为上传示例场景`；
 - 已推送分支并创建 PR #43：https://github.com/changer-collab/TimingMirror/pull/43
 - 未合并、未发布站点；合并与发布需另行确认。
+
+---
+
+## 10. 追加：行为分析 AI 兜底、8 场景与常驻助手六项微调（`feat/behavior-ai-fallback-2026-10-21`）
+
+> 日期：2026-10-22
+> 基线：`origin/main` `c52c103`；本分支含报告 UX 的 `d243bf2`、`1e04924` 两个提交
+> 范围：报告行为分析、示例场景、规则工作区迁移、常驻助手；未修改 `src/agent/`，未提交任何凭证、原始 CSV 或账户数据。
+
+### 10.1 行为分析：AI 先解释，服务端确定性兜底
+
+新增链路：
+
+- 前端编排 `prototype/user-frontend/behaviorAnalysis.js`：构造脱敏事实、请求站点、校验返回并缓存成功结果；失败不阻断本地报告。
+- 事实协议 `src/engine/behaviorFacts.js`：`behavior-facts-v1`，只含 `side`、`asset_key`（A1/A2…）、`day_offset`（相对天数）与 `buy_windows`；不含日期、代码、价格、数量、文件名或 CSV 行。
+- 服务端 `server/site-functions/behaviorAnalysis.mjs`：根据事实重算行为三态、样本数、证据索引与规范化候选；AI 只补 80 字内短评论和两类观察（`sell_rebuy_within_2d`、`overtrading`）。
+- 服务端强校验：AI 返回的模式 ID/状态/样本数/证据索引/候选必须与本地重算一致，文本不得含 6 位代码、买卖建议、收益承诺、URL 或换行；否则整条 AI 结果作废。
+- 兜底 `server/site-functions/behaviorFallback.mjs`：`source: 'backend_rules'`，只复述引擎事实与规范化候选，`comment: null`、`observations: []`，不补 AI 观察、不推断新模板。
+
+兜底触发条件：模型未配置、transport 不支持、模型不可用/超时、响应不是 JSON、schema 不符、事实不一致、内容未通过安全检查、候选不一致。接口始终返回 200 + `analysis`，UI 以“规则引擎兜底”标签与 `fallback_reason` 明示，不把兜底结果伪装成 AI。
+
+报告显示边界：
+
+- 行为卡只在 `status === '成立'` 且有样本时渲染；不成立/证据不足不进入用户视图，也不显示内部状态词。
+- 规则候选只在 `available` 时渲染；`active`、`dismissed`、`not_recommended` 不进入报告。
+- AI 观察只作为补充说明，不改变本地复核事实与候选；报告 CTA 只使用本地候选，不在前端凭 AI 文本生成规则。
+- 真实已发布报告的派生观察写入本地画像；AI 观察通过 `syncBehaviorAnalysis` 合并；示例场景（`demo`）不记录画像，避免演示数据污染。
+
+### 10.2 八个示例场景与 AI 盲区
+
+在原有 4 个场景上新增 4 个，导入页共 8 张下载卡；全部走“下载 CSV → 上传 → 本地解析 → 逐行核对 → 确认”的用户路径，并与冻结行情绑定。
+
+| 场景 | 报告应显示 | 要验证的 AI 盲区 |
+|---|---|---|
+| `chase` 追高止损 | 行为成立、规则候选可见 | AI 不得扩大或改写确定性引擎识别的命中笔数 |
+| `early` 卖得太早 | 只显示卖出后继续上涨的代价；无行为卡/候选 | AI 不得把趋势卖出包装成“追高”模式 |
+| `stop` 及时止损 | 显示相对一直持有少亏；无行为卡/候选 | 只有一笔可评估买入，AI 不得据此下重复模式结论 |
+| `hold` 一直持有 | 无卖出 → 仅保留差额卡与核对数据 | AI 不得虚构择时损失或规则候选 |
+| `no_pattern` 无明显模式 | “没有模式，也是一种结果”；无候选 | AI 不得把普通交易描述成习惯 |
+| `low_sample` 样本不足 | “只有一次，先别下结论”；无候选 | AI 不得把 n=1 说成稳定行为 |
+| `sell_rebuy` 卖后追回 | 引擎不识别；AI 可观察“卖后 2 个交易日内追回”，无候选 | 不能因 AI 观察生成不存在的模板 |
+| `overtrading` 频繁交易 | 可观察频率偏高，但无模板/候选 | AI 不得编造规则模板或买卖指令 |
+
+### 10.3 规则工作区迁移到个人中心
+
+- 导航与头像入口统一到 `#/me`；旧深链 `#/rules`、`#/contract` 用 `replace` 规范化到个人中心，避免返回键在两处来回跳。
+- 规则页与连续画像同页：个人中心承载画像、候选、规则版本、历史情境测试。
+- 契约弹窗渲染在 `#tm-real-rules` 的 shadow root 内；助手“前往编辑规则”跨路由后，外壳会检测该弹窗并在 `[0, 100, 300]ms` 重试聚焦，避免路由二次渲染把焦点丢到 `<body>`。
+- 报告页候选 CTA 改为 `openRuleCandidateInAssistant(ctx, candidate)`：先进入助手并带入证据；规则页候选仍直接调用 `openRuleCandidate(ctx, candidate)`。两条路径都不自动保存。
+
+### 10.4 常驻助手六项微调
+
+| 项目 | 实现 | 验证 |
+|---|---|---|
+| 1. 响应式宽度 | ≥1280 桌面网格（助手 360px 在流内）；1024–1279 右侧抽屉（`min(440px, 92vw)`）+ 遮罩；<1024 全屏覆盖；<1280 主区 `inert` | 实测 1440：主区 1080 + 助手 360，重叠 0；1280：920 + 360，重叠 0；1100：抽屉 440，遮罩 1100×900；900：全屏、顶栏/移动导航隐藏；390：无横向溢出 |
+| 2. 草稿生命周期 | 草稿存于共享状态，切页/关闭保留；关闭不保存；按钮显示未保存圆点与 `aria-label`；可“丢弃草案”；`submit` 防重复，重试不追加第二条用户消息 | `#/report → #/me` 切换后草稿仍在；重试只用 1 条用户消息；40/40 控制器测试覆盖 |
+| 3. 规则描述生成状态 | 请求中：`aria-busy=true`、按钮“理解中…”、`role=status`“正在请求规则理解，不会自动保存”；失败：`role=alert` + 错误码 + “重试 / 改用手动模板”；生成文本不自动保存，进入模板后可改字段与备注 | 浏览器注入 pending/error 状态验证；失败重试成功且无重复消息；手动模板打开“新增交易规则”并预填 |
+| 4. 报告 CTA 联动 | 报告按钮“用这条建规则”；打开助手并载入 `origin: behavior_candidate` 草案、证据与候选元数据；预填不调用 AI；下一步“前往编辑规则”打开预填模板 | 角色草案文本“当天涨幅超过 10% 的票，我绝不买入。”；打开助手时模型调用 0；编辑弹窗阈值 10，焦点落在 `rule-modal` |
+| 5. 可访问性 | 移动覆盖层 `role=dialog` + `aria-modal` + 标题；焦点陷阱；Esc 关闭；遮罩点击关闭；主区 `inert`；消息 `role=log` + `aria-live=polite`；关闭后焦点回到来源按钮；缩放时只更新外壳、不重渲染面板 | Tab 在对话框内循环；Esc/遮罩关闭后焦点回到 CTA 或开关；移除 `aria-hidden` 后 Chrome 的 “Blocked aria-hidden…” 警告消失；900→390 缩放后焦点仍在助手内 |
+| 6. 回归 | 8 个场景逐一上传、确认、渲染；记录请求、控制台与负载 | 8/8 场景每个仅 1 次 `behavior-analysis` 200；0 控制台 error/warn、0 未捕获异常、0 重复请求；请求体仅匿名化 `asset_key/day_offset`，无 CSV 表头/成交行 |
+
+### 10.5 验证
+
+```text
+npm run check   → exit 0；45 个汇总段合计 1879 项通过、0 失败
+npm run smoke   → 316/316 通过
+
+node tests/behavior-facts.test.mjs            → 55/55
+node tests/behavior-analysis-client.test.mjs  → 25/25
+node tests/server/behavior-analysis.test.mjs  → 30/30
+node tests/report-scenarios.test.mjs          → 71/71
+node tests/user-profile.test.mjs              → 45/45
+node tests/agent/assistant-controller.test.mjs → 40/40
+```
+
+浏览器手工验证：
+
+- 桌面 1440/1280：助手在右侧网格内，报告主内容不被覆盖；收起后主区恢复全宽。
+- 1100：右侧抽屉 + 遮罩；遮罩点击可关闭，主区 `inert` 正确移除。
+- 900/390：全屏助手；顶部与移动导航隐藏；Tab 循环、Esc 关闭、焦点回到开关。
+- 报告 CTA → 助手草案 → “前往编辑规则”：路由到 `#/me`，编辑弹窗阈值 10，焦点在弹窗内。
+- 8 场景回归：标题分别为“追高之后…”“卖早之后…”“止损之后…”“一直持有…”“没有模式…”“只有一次…”“卖了又追回…”“来回四次…”，仅 `chase` 出现候选；其余场景没有行为卡或候选。
+- 回归期间唯一的 HTTP 非 2xx 是未配置 `TUSHARE_TOKEN` 时打开规则页触发的行情快照 503；8 个报告场景本身未触发行情请求。
+
+### 10.6 已知限制
+
+- **真实账单画像依赖行情配置**：当前环境未配置 `TUSHARE_TOKEN`，真实账单无法生成已发布日期报告，因此不会记录真实账单画像；示例场景按设计排除在画像之外。配置 token 后仍需做一次真实账单端到端验证。
+- **规则页行情 503**：打开规则页时 `contractView` 会加载动态行情上下文；未配置 token 返回 `E_MARKET_NOT_CONFIGURED`（HTTP 503），浏览器控制台会显示一条资源错误。UI 明确阻断、不回退合成行情；这是环境配置问题，不是 JS 异常。
+- **模型验证范围**：本地使用 fake 模型跑通 AI/兜底/重试链路，未使用真实 DashScope 凭证；真实模型链路由服务端测试覆盖。
+- **AI 观察与候选仍是窄口径**：观察仅两类（卖后 2 日追回、频繁交易），候选仅“追高买入 → 涨幅不买入”模板；其余场景有意不出候选，避免编造模板。
+- **响应式验证方式**：1440/1280/1100/900/390 使用临时 iframe 视口夹具测量布局与焦点（夹具已删除）；未做真实移动设备与多浏览器测试。
+
+### 10.7 本轮变更文件
+
+新增：
+
+- `src/engine/behaviorFacts.js`
+- `prototype/user-frontend/behaviorAnalysis.js`
+- `server/site-functions/behaviorAnalysis.mjs`
+- `server/site-functions/behaviorFallback.mjs`
+- `tests/behavior-facts.test.mjs`
+- `tests/behavior-analysis-client.test.mjs`
+- `tests/server/behavior-analysis.test.mjs`
+
+修改：
+
+- `src/demo/adapter.js`
+- `src/demo/reportScenarios.js`
+- `src/engine/userProfile.js`
+- `src/ui/assistantPanel.js`
+- `src/ui/views/contractView.js`
+- `prototype/user-frontend/app.js`
+- `prototype/user-frontend/index.html`
+- `prototype/user-frontend/profileStore.js`
+- `prototype/user-frontend/realProfile.js`
+- `prototype/user-frontend/realBridge.js`
+- `prototype/user-frontend/realImport.js`
+- `prototype/user-frontend/realReport.js`
+- `prototype/user-frontend/real-insights.css`
+- `prototype/user-frontend/real-views.css`
+- `prototype/user-frontend/ruleCandidates.js`
+- `server/site-functions/dashscope.mjs`
+- `server/site-functions/handler.mjs`
+- `scripts/local-fake-import-model.mjs`
+- `scripts/serve.mjs`
+- `scripts/smoke-frontend.mjs`
+- `package.json`
+- `tests/agent/assistant-controller.test.mjs`
+- `tests/report-scenarios.test.mjs`
+- `tests/user-profile.test.mjs`
+
+未修改：`src/agent/`、任何凭证 / 原始 CSV / 账户数据。
+
+### 10.8 提交状态
+
+- 分支：`feat/behavior-ai-fallback-2026-10-21`，基于 `origin/main` `c52c103`，含前序报告 UX 提交；
+- 本轮改动尚未提交；提交、推送、合并与站点发布需另行确认。

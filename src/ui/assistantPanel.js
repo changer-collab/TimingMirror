@@ -5,7 +5,9 @@
 import { el, chip } from './components.js';
 import { createRuleAssistant } from '../agent/ruleAssistant.js';
 import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../agent/httpTransport.js';
-import { contractRuleSet } from '../demo/adapter.js';
+import { contractRuleSet, contractTemplates } from '../demo/adapter.js';
+
+const CANDIDATE_ORIGIN = 'behavior_candidate';
 
 let defaultClient = null;
 let controller = null;
@@ -132,7 +134,85 @@ export function createAssistantController({ client, state, set, go, scrollSimula
     patch({ mobileView: false });
   }
 
-  async function submit(question = state.assistant.input) {
+  function discardDraft() {
+    if (state.assistant.pending || !state.assistant.draft || state.assistant.semanticConfirmation) return;
+    patch({
+      draft: null,
+      flowId: null,
+      requestId: null,
+      stage: 'idle',
+      plan: null,
+      trace: null,
+      explanation: '',
+      pending: false,
+      input: '',
+      lastQuestion: null,
+      lastAttempt: null,
+      error: null,
+      staleNotice: null,
+      semanticConfirmation: null,
+      currentRule: null,
+      ruleDrift: null,
+      simulation: null,
+      simulationAttempt: null,
+      currentSimulationResultId: null,
+      currentSimulationStatus: null,
+      consistency: null,
+      consistencyAttempt: null,
+      pendingConfirmationFlowId: null,
+      ruleStateKey: null,
+      simulationKey: null,
+      contextKey: null,
+      dataContextKey: null,
+      versionsBaselineCount: null,
+      versionsBaselineHashes: [],
+      messages: [...state.assistant.messages, {
+        role: 'assistant',
+        kind: 'notice',
+        text: '草案已丢弃；没有保存或修改任何规则。',
+      }],
+      ...explanationReset(),
+    });
+  }
+
+  function retryLast() {
+    const q = state.assistant.lastQuestion
+      || [...(state.assistant.messages ?? [])].reverse().find((m) => m.role === 'user')?.text
+      || '';
+    if (!q || state.assistant.pending) return;
+    return submit(q, { retry: true });
+  }
+
+  function openManualTemplate() {
+    const templates = contractTemplates();
+    const draft = state.assistant.draft;
+    const tpl = templates.find((t) => t.template_id === draft?.template_id) ?? templates[0];
+    if (!tpl) return;
+    const fields = Object.fromEntries(tpl.fields.map((f) => [
+      f.key,
+      String(draft?.fields?.[f.key] ?? f.default),
+    ]));
+    set({
+      contracts: {
+        modal: { mode: 'add', targetHash: null },
+        draft: {
+          template_id: tpl.template_id,
+          fields,
+          note: '',
+          scope: scopeDraftOf(draft),
+        },
+        nl: null,
+      },
+      assistant: {
+        ...state.assistant,
+        mobileView: false,
+        error: null,
+      },
+    });
+    go('contract');
+  }
+
+  async function submit(question = state.assistant.input, { retry = false } = {}) {
     const q = String(question ?? '').trim();
     if (!q || state.assistant.pending) return;
     const context = contextKey(state);
@@ -151,10 +231,13 @@ export function createAssistantController({ client, state, set, go, scrollSimula
       versionsBaselineCount: state.contracts.versions.length,
       versionsBaselineHashes: state.contracts.versions.map((v) => v.hash).filter(Boolean),
       input: '',
+      lastQuestion: q,
       error: null,
       staleNotice: null,
       lastAttempt: null,
-      messages: [...state.assistant.messages, { role: 'user', text: q }],
+      messages: retry
+        ? [...state.assistant.messages]
+        : [...state.assistant.messages, { role: 'user', text: q }],
     });
     let result;
     try {
@@ -169,6 +252,7 @@ export function createAssistantController({ client, state, set, go, scrollSimula
         ...previousMeta,
         pending: false,
         requestId: null,
+        input: q,
         error: { code: 'E_ASSISTANT_UNEXPECTED', message: '助手链路出现未预期错误' },
         lastAttempt: { status: 'failed', code: 'E_ASSISTANT_UNEXPECTED', message: '助手链路出现未预期错误' },
       });
@@ -228,6 +312,7 @@ export function createAssistantController({ client, state, set, go, scrollSimula
       ...previousMeta,
       pending: false,
       requestId: null,
+      input: q,
       error: result.ok ? null : { code: result.code, message: result.message },
       lastAttempt: {
         status: flow.status ?? 'failed',
@@ -252,7 +337,9 @@ export function createAssistantController({ client, state, set, go, scrollSimula
         draft: {
           template_id: draft.template_id,
           fields: Object.fromEntries(Object.entries(draft.fields).map(([k, v]) => [k, String(v)])),
-          note: '来自 AI 规则理解草案；可在规则页修改后确认',
+          note: draft.origin === CANDIDATE_ORIGIN
+            ? '来自报告行为证据；可修改后确认'
+            : '来自 AI 规则理解草案；可在规则页修改后确认',
           scope: scopeDraftOf(draft),
           assistantFlowId: draft.flow_id,
         },
@@ -700,6 +787,9 @@ export function createAssistantController({ client, state, set, go, scrollSimula
     submit,
     toggleOpen,
     closeMobile,
+    discardDraft,
+    retryLast,
+    openManualTemplate,
     confirmInContract,
     goSimulation,
     returnToRuleEdit,
@@ -744,6 +834,10 @@ function nextActionButtons(controller, state) {
         class: 'btn primary small', 'data-role': 'assistant-next-edit',
         onclick: () => controller.confirmInContract(),
       }, ['前往编辑规则']));
+      buttons.push(el('button', {
+        class: 'btn small', 'data-role': 'assistant-discard',
+        onclick: () => controller.discardDraft(),
+      }, ['丢弃草案']));
     }
   } else {
     if (!marketNotice) {
@@ -867,6 +961,8 @@ function explanationBlock(controller, state, simulation, attempt) {
 function draftCard(controller, state) {
   const draft = state.assistant.draft;
   if (!draft) return null;
+  const fromCandidate = draft.origin === CANDIDATE_ORIGIN;
+  const evidence = Array.isArray(draft.evidence) ? draft.evidence.slice(0, 6) : [];
   const semantic = state.assistant.semanticConfirmation;
   const finalRule = semantic?.saved_rule ?? null;
   const currentRule = state.assistant.currentRule;
@@ -889,12 +985,17 @@ function draftCard(controller, state) {
           : chip('模拟：未执行', 'mode');
   const statusChips = [
     chip(semantic ? (drift ? `此前保存：v${textOf(finalRule?.version)}` : `已保存：v${textOf(finalRule?.version)}`) : '尚未保存', semantic ? 'ok' : 'mode'),
+    fromCandidate && !semantic ? chip('来源：报告行为证据', 'mode') : null,
     drift && currentRule ? chip(`当前生效：v${textOf(currentRule.version)}`, 'warn') : null,
     simChip,
   ];
-  const card = el('div', { class: 'assistant-draft' }, [
+  const card = el('div', {
+    class: 'assistant-draft',
+    'data-role': 'assistant-draft-card',
+    tabindex: '-1',
+  }, [
     el('div', { class: 'assistant-draft-head' }, [
-      removed ? '规则已停用' : drift ? '规则已更新' : semantic ? '你保存的规则' : 'AI 建议（尚未保存）',
+      removed ? '规则已停用' : drift ? '规则已更新' : semantic ? '你保存的规则' : fromCandidate ? '来自报告证据的建议（尚未保存）' : 'AI 建议（尚未保存）',
     ]),
     el('div', { class: 'assistant-status' }, statusChips),
     semantic ? el('div', { class: 'assistant-confirmed' }, [
@@ -905,8 +1006,20 @@ function draftCard(controller, state) {
       ]),
     ]) : el('div', { class: 'assistant-confirmed' }, [
       el('div', { class: 'assistant-rule-text' }, [draft.text]),
-      el('div', { class: 'muted small' }, ['这只是建议，保存后才会生效。']),
+      el('div', { class: 'muted small' }, [
+        fromCandidate
+          ? '来自本账单的行为证据，未调用 AI；可在下一步修改模板字段与备注。'
+          : '这只是建议，保存后才会生效。',
+      ]),
+      el('div', { class: 'muted small' }, ['草案会保留在助手中；关闭或切页不会保存。']),
     ]),
+    fromCandidate && !semantic && draft.basis ? el('div', { class: 'muted small' }, [draft.basis]) : null,
+    fromCandidate && !semantic && evidence.length ? el('details', { class: 'assistant-tech' }, [
+      el('summary', {}, [`查看证据（${evidence.length} 笔）`]),
+      el('div', { class: 'assistant-tech-body' }, evidence.map((e) => el('div', { class: 'assistant-tech-line' }, [
+        [e.trade_date, e.symbol, e.display?.rise ?? e.rise ?? '', e.line].filter(Boolean).join(' · '),
+      ]))),
+    ]) : null,
     drift ? el('div', { class: 'assistant-drift' }, [
       el('div', { class: 'assistant-draft-head' }, [removed ? '当前规则已停用' : '当前生效规则已变化']),
       currentRule
@@ -997,6 +1110,7 @@ function technicalDetails(state) {
     techLine('模型请求', `${a.modelCalls ?? 0}/${a.budgetMax ?? 2}`),
     techLine('是否出站', a.outbound ? '是' : '否'),
     techLine('计划', plan ? `${plan.plan_id} · ${plan.status}` : '未生成'),
+    techLine('草案来源', a.draft?.origin === CANDIDATE_ORIGIN ? '报告行为证据（确定性）' : (a.draft ? 'AI 规则理解' : '—')),
     techLine('草案哈希', a.draft?.hash ?? '—'),
     techLine('保存规则哈希', saved ? `${saved.hash}（v${saved.version ?? '—'}）` : '—'),
     techLine('当前规则哈希', current ? `${current.hash}（v${current.version ?? '—'}）` : '—'),
@@ -1056,10 +1170,13 @@ export function renderAssistantPanel(root, ctx) {
     ctx.go(route);
   };
   root.className = 'assistant-panel';
-  const card = el('div', { class: 'assistant-card' });
+  const card = el('div', {
+    class: 'assistant-card',
+    'aria-busy': state.assistant.pending ? 'true' : 'false',
+  });
   card.append(el('div', { class: 'assistant-head' }, [
     el('div', {}, [
-      el('strong', {}, [ctx.assistantTitle ?? 'AI 规则助手']),
+      el('strong', { id: 'assistant-panel-title' }, [ctx.assistantTitle ?? 'AI 规则助手']),
       el('div', { class: 'assistant-subtitle' }, [ctx.assistantSubtitle ?? '把规则说清楚；保存和模拟仍由你确认']),
     ]),
     el('div', { class: 'row' }, [
@@ -1094,34 +1211,49 @@ export function renderAssistantPanel(root, ctx) {
   }
 
   if (state.route === 'contract') {
-    const input = el('input', {
+    const input = el('textarea', {
       class: 'input assistant-input',
+      id: 'assistant-rule-input',
+      rows: '2',
+      maxlength: '240',
       placeholder: '例如：当天涨幅超过 5% 的票我绝不买入',
-      value: state.assistant.input,
-      disabled: state.assistant.pending ? 'disabled' : null,
+      'aria-describedby': 'assistant-rule-hint',
     });
+    input.value = state.assistant.input ?? '';
     input.addEventListener('input', (e) => { state.assistant.input = e.target.value; });
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') controller.submit(input.value); });
-    card.append(el('div', { class: 'assistant-input-row' }, [
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        controller.submit(input.value);
+      }
+    });
+    card.append(el('div', { class: 'assistant-input-field' }, [
+      el('label', { class: 'assistant-input-label', for: 'assistant-rule-input' }, ['描述你想设的规则']),
       input,
-      el('button', {
-        class: 'btn primary small',
-        disabled: state.assistant.pending ? 'disabled' : null,
-        onclick: () => controller.submit(input.value),
-      }, [state.assistant.pending ? '理解中…' : '让 AI 理解']),
+      el('div', { class: 'assistant-hint', id: 'assistant-rule-hint' }, [
+        'Enter 发送，Shift+Enter 换行；只支持两种规则。点击后才会发送问题与最小上下文。',
+      ]),
+      el('div', { class: 'assistant-input-row' }, [
+        el('button', {
+          class: 'btn primary small', 'data-role': 'assistant-submit',
+          disabled: state.assistant.pending ? 'disabled' : null,
+          onclick: () => controller.submit(input.value),
+        }, [state.assistant.pending ? '理解中…' : '让 AI 理解']),
+      ]),
     ]));
-    card.append(el('div', { class: 'assistant-hint' }, ['只支持两种规则；点击后才会发送问题与最小上下文。']));
     if (ctx.assistantShowFactLink) {
       card.append(el('button', { class: 'btn small', onclick: () => goBusiness('chat') }, ['前往事实问答']));
     }
   } else {
-    const note = state.route === 'report'
-      ? '当前是报告页；规则任务仍保留在这里。'
-      : state.route === 'chat'
-        ? '当前是事实问答；规则任务仍保留在这里。'
-        : state.route === 'home'
-          ? '首页不发起请求；可以继续导入账单或描述规则。'
-          : '导入页只显示当前任务；规则建议不要求已有账单。';
+    const note = state.assistant.draft
+      ? '草案已保留在助手中；切页或关闭助手不会保存，也不会丢失。'
+      : state.route === 'report'
+        ? '当前是报告页；规则任务仍保留在这里。'
+        : state.route === 'chat'
+          ? '当前是事实问答；规则任务仍保留在这里。'
+          : state.route === 'home'
+            ? '首页不发起请求；可以继续导入账单或描述规则。'
+            : '导入页只显示当前任务；规则建议不要求已有账单。';
     card.append(el('div', { class: 'assistant-hint' }, [note]));
     if (!state.assistant.draft) {
       card.append(el('button', { class: 'btn small', onclick: () => goBusiness('contract') }, ['前往交易规则']));
@@ -1132,15 +1264,42 @@ export function renderAssistantPanel(root, ctx) {
   }
 
   if (state.assistant.staleNotice) card.append(el('div', { class: 'assistant-drift' }, [state.assistant.staleNotice]));
-  if (state.assistant.error) card.append(el('div', { class: 'assistant-error' }, [
-    state.assistant.error.message ?? '操作未完成，请稍后重试。',
-  ]));
+  if (state.assistant.error) {
+    const last = state.assistant.lastAttempt;
+    const canRetry = !!state.assistant.lastQuestion
+      || (state.assistant.messages ?? []).some((m) => m.role === 'user');
+    card.append(el('div', { class: 'assistant-error', role: 'alert' }, [
+      el('div', {}, [state.assistant.error.message ?? '操作未完成，请稍后重试。']),
+      last?.code ? el('div', { class: 'muted small' }, [`${last.status ?? 'failed'} · ${last.code}`]) : null,
+      last ? el('div', { class: 'row assistant-actions' }, [
+        el('button', {
+          class: 'btn small', 'data-role': 'assistant-retry',
+          disabled: state.assistant.pending || !canRetry ? 'disabled' : null,
+          onclick: () => controller.retryLast(),
+        }, ['重试']),
+        el('button', {
+          class: 'btn small', 'data-role': 'assistant-manual',
+          onclick: () => controller.openManualTemplate(),
+        }, ['改用手动模板']),
+      ]) : null,
+    ]));
+  }
 
-  const messages = el('div', { class: 'assistant-messages' });
+  if (state.assistant.pending) {
+    card.append(el('div', { class: 'assistant-gen', role: 'status', 'aria-live': 'polite' }, [
+      '正在请求规则理解，不会自动保存。',
+    ]));
+  }
+
+  const messages = el('div', {
+    class: 'assistant-messages',
+    role: 'log',
+    'aria-live': 'polite',
+    'aria-label': '助手消息',
+  });
   for (const m of state.assistant.messages ?? []) {
     messages.append(el('div', { class: `assistant-msg ${m.role === 'user' ? 'user' : 'assistant'}` }, [m.text]));
   }
-  if (state.assistant.pending) messages.append(el('div', { class: 'assistant-msg assistant' }, ['正在请求规则理解……']));
   if (messages.children.length) card.append(messages);
 
   const draft = draftCard(controller, state);

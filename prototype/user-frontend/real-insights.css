@@ -192,7 +192,21 @@
 .rp-behavior-top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .rp-behavior-top strong { font-family: var(--font-serif); font-size: 19px; }
 .rp-behavior-lead { margin-top: 10px; color: var(--ink-soft); font-size: 13.5px; line-height: 1.8; }
+.rp-behavior-comment { margin-top: 10px; padding-left: 10px; border-left: 2px solid rgba(31, 79, 168, 0.38); color: var(--ink-soft); font-size: 13px; line-height: 1.75; }
 .rp-rule-line { margin-top: 10px; font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-soft); }
+
+.rp-analysis-slot:not(:empty) { margin-top: clamp(18px, 2vw, 24px); }
+.rp-analysis { padding: 16px 18px; border-style: solid; }
+.rp-analysis-head { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+.rp-analysis-tag { font-family: var(--font-mono); font-size: 11px; color: var(--gray); }
+.rp-analysis-text { margin-top: 8px; color: var(--ink-soft); font-size: 13.5px; line-height: 1.8; }
+.rp-analysis-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; }
+.rp-analysis-item { padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--sheet-2); }
+.rp-analysis-item p { color: var(--ink); font-size: 13px; line-height: 1.75; }
+.rp-analysis-item small { display: block; margin-top: 3px; color: var(--gray); font-size: 11.5px; }
+.rp-analysis-note { margin-top: 8px; color: var(--gray); font-size: 12px; line-height: 1.7; }
+.rp-link-btn { margin-left: 6px; padding: 0; border: 0; background: none; color: #1f4fa8; font: inherit; text-decoration: underline; cursor: pointer; }
+.rp-link-btn:disabled { color: var(--gray); cursor: default; }
 
 .rp-badge {
   display: inline-flex;
@@ -210,6 +224,8 @@
 .rp-badge.loss { border-color: rgba(176, 118, 31, 0.4); color: #8a5b14; background: rgba(176, 118, 31, 0.09); }
 .rp-badge.ok { border-color: rgba(47, 107, 51, 0.35); color: #2f6b33; background: rgba(47, 107, 51, 0.06); }
 .rp-badge.mode { border-color: var(--line); color: var(--gray); background: var(--sheet-2); }
+.rp-badge.ai { border-color: rgba(31, 79, 168, 0.35); color: #1f4fa8; background: rgba(31, 79, 168, 0.07); }
+.rp-badge.fallback { border-color: var(--line-strong); color: var(--ink-soft); background: var(--paper-3); }
 
 .rp-evidence { margin: 10px 0 0 18px; color: var(--ink-soft); font-size: 13px; line-height: 1.9; }
 .rp-evidence li + li { margin-top: 4px; }

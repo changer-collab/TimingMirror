@@ -22,6 +22,12 @@ function makeEl(tag) {
   node.getAttribute = function (k) { return this.attrs[k]; };
   node.addEventListener = function (type, fn) { (this.listeners[type] ??= []).push(fn); };
   node.append = function (...cs) { for (const c of cs) if (c != null) this.children.push(c); };
+  node.insertBefore = function (child, ref) {
+    const i = this.children.indexOf(ref);
+    if (i < 0) this.children.push(child);
+    else this.children.splice(i, 0, child);
+    return child;
+  };
   node.replaceChildren = function (...cs) { this.children = cs.filter((c) => c != null); };
   node.remove = function () { this.__removed = true; };
   node.focus = function () { globalThis.__focused = this; };
