@@ -232,14 +232,21 @@ function candidateNode(message, candidate, ctx) {
       el('strong', {}, [candidate.template_name]),
     ]),
     el('p', { class: 'rp-candidate-text' }, [candidate.text]),
-    el('p', { class: 'rp-note' }, [candidate.reason]),
-    el('p', { class: 'rp-note' }, [candidate.basis]),
   ]);
-  if (Array.isArray(candidate.evidence) && candidate.evidence.length) {
-    box.append(el('ul', { class: 'rp-evidence' }, candidate.evidence.map((e) => el('li', {}, [
-      el('span', { class: 'mono' }, [e.trade_id]),
-      ` · ${e.line}`,
-    ]))));
+  if (candidate.reason || candidate.basis || (Array.isArray(candidate.evidence) && candidate.evidence.length)) {
+    const details = [];
+    if (candidate.reason) details.push(el('p', { class: 'rp-note' }, [candidate.reason]));
+    if (candidate.basis) details.push(el('p', { class: 'rp-note' }, [candidate.basis]));
+    if (Array.isArray(candidate.evidence) && candidate.evidence.length) {
+      details.push(el('ul', { class: 'rp-evidence' }, candidate.evidence.map((e) => el('li', {}, [
+        el('span', { class: 'mono' }, [e.trade_id]),
+        ` · ${e.line}`,
+      ]))));
+    }
+    box.append(el('details', { class: 'qa-disclosure' }, [
+      el('summary', {}, ['规则说明与依据']),
+      el('div', { class: 'qa-disclosure-body' }, details),
+    ]));
   }
   box.append(el('p', { class: 'rp-caveat' }, [candidate.caveat]));
   if (candidate.status === 'available') {
@@ -276,7 +283,10 @@ function chipAnswerNode(message, ctx) {
     ]))));
   }
   if (Array.isArray(answer.evidence) && answer.evidence.length) {
-    box.append(el('ul', { class: 'qa-evidence' }, answer.evidence.map((line) => el('li', {}, [line]))));
+    box.append(el('details', { class: 'qa-disclosure' }, [
+      el('summary', {}, [`证据与来源（${answer.evidence.length} 条）`]),
+      el('ul', { class: 'qa-evidence' }, answer.evidence.map((line) => el('li', {}, [line]))),
+    ]));
   }
   const candidate = candidateStateOf(message, currentRuleStateKey(ctx.state));
   if (candidate.has) {

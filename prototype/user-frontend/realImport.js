@@ -147,20 +147,6 @@ function pageHeadHTML() {
   </section>`;
 }
 
-function stepperHTML(bill, rec) {
-  const confirmed = bill.status === 'confirmed';
-  const reviewing = bill.status === 'loaded' || bill.status === 'invalid'
-    || !!rec.draft || rec.sourceKind === 'image'
-    || (rec.sourceKind === 'pdf' && !!rec.vision);
-  const active = confirmed ? 3 : reviewing ? 2 : 1;
-  const cls = (n) => `step${n < active ? ' is-done' : ''}${n === active ? ' is-active' : ''}`;
-  return `<div class="stepper" aria-label="导入到报告的三个步骤">
-    <div class="${cls(1)}"><b>01</b><span>导入账单</span></div>
-    <div class="${cls(2)}"><b>02</b><span>逐行核对</span></div>
-    <div class="${cls(3)}"><b>03</b><span>生成报告</span></div>
-  </div>`;
-}
-
 function uploadCardHTML(state, rec) {
   const bill = state.bill ?? {};
   const reading = bill.status === 'loading' || rec.status === 'reading';
@@ -523,7 +509,6 @@ export function renderRealImport(host, ctx) {
   const hasDetails = hasSource && (String(rec.content ?? '').trim() || rec.trace || rec.draft);
   host.innerHTML = `${pageHeadHTML()}
     <div class="container page-body">
-      ${stepperHTML(bill, rec)}
       <div class="import-grid">
         ${uploadCardHTML(state, rec)}
         ${sampleCardHTML()}

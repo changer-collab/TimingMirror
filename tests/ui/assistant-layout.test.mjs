@@ -104,16 +104,70 @@ function shellState() {
   const fixedAt = css.indexOf('.tm-assistant {', mobileBlockAt);
   const fixedEnd = css.indexOf('}', fixedAt);
   const fixedRule = fixedAt >= 0 ? css.slice(fixedAt, fixedEnd) : '';
+  const desktopAt = css.indexOf('.tm-assistant {');
+  const desktopRule = desktopAt >= 0 ? css.slice(desktopAt, css.indexOf('}', desktopAt)) : '';
+  const panelAt = css.indexOf('.tm-assistant .assistant-panel {');
+  const panelRule = panelAt >= 0 ? css.slice(panelAt, css.indexOf('}', panelAt)) : '';
+  const messagesAt = css.indexOf('.tm-assistant .assistant-messages {');
+  const messagesRule = messagesAt >= 0 ? css.slice(messagesAt, css.indexOf('}', messagesAt)) : '';
+  const qaAt = css.indexOf('.tm-assistant .qa-assistant {');
+  const qaRule = qaAt >= 0 ? css.slice(qaAt, css.indexOf('}', qaAt)) : '';
+  const qaFocusAt = css.indexOf('.tm-assistant .qa-input:focus');
+  const qaFocusRule = qaFocusAt >= 0 ? css.slice(qaFocusAt, css.indexOf('}', qaFocusAt)) : '';
+  let qaFocusDepth = 0;
+  for (let i = 0; i < qaFocusAt; i += 1) {
+    if (css[i] === '{') qaFocusDepth += 1;
+    else if (css[i] === '}') qaFocusDepth -= 1;
+  }
   check('断点：JS 与 CSS 统一为 680（CSS 679.98 对齐严格小于）',
     /MOBILE_BREAKPOINT = 680/.test(bridge)
     && mobileBlockAt >= 0
     && !/@media \(max-width: 1279px\)/.test(css));
-  check('侧栏：桌面宽度限制在 320–400px',
-    /grid-template-columns:\s*minmax\(0, 1fr\) clamp\(320px, 25vw, 400px\)/.test(css));
+  check('侧栏：桌面宽度限制在 320–360px',
+    /grid-template-columns:\s*minmax\(0, 1fr\) clamp\(320px, 25vw, 360px\)/.test(css));
   check('全屏：position: fixed / inset: 0 只出现在移动断点规则内',
     fixedAt > mobileBlockAt
     && /position:\s*fixed/.test(fixedRule)
     && /inset:\s*0/.test(fixedRule));
+  check('桌面助手：固定视口高度、隐藏外层滚动',
+    /height:\s*calc\(100dvh - var\(--topbar-h\)\)/.test(desktopRule)
+    && /max-height:\s*calc\(100dvh - var\(--topbar-h\)\)/.test(desktopRule)
+    && /overflow:\s*hidden/.test(desktopRule)
+    && /display:\s*flex/.test(desktopRule));
+  check('助手面板：flex 高度链路、内部裁剪并预留水印安全区',
+    /display:\s*flex/.test(panelRule)
+    && /flex:\s*1 1 auto/.test(panelRule)
+    && /min-height:\s*0/.test(panelRule)
+    && /overflow:\s*hidden/.test(panelRule)
+    && /padding:\s*20px 18px 80px/.test(panelRule));
+  check('消息区：占据剩余高度并独立滚动',
+    /flex:\s*1 1 auto/.test(messagesRule)
+    && /min-height:\s*0/.test(messagesRule)
+    && /overflow-y:\s*auto/.test(messagesRule)
+    && /overscroll-behavior:\s*contain/.test(messagesRule));
+  check('问答容器：flex 子项可收缩且不撑破面板',
+    /display:\s*flex/.test(qaRule)
+    && /flex:\s*1 1 auto/.test(qaRule)
+    && /min-height:\s*0/.test(qaRule)
+    && /overflow:\s*hidden/.test(qaRule));
+  check('移动全屏：高度使用 100dvh 且不产生外层滚动',
+    /height:\s*100dvh/.test(fixedRule)
+    && /max-height:\s*100dvh/.test(fixedRule)
+    && /overflow:\s*hidden/.test(fixedRule));
+  check('输入框焦点：focus/focus-visible 使用内嵌焦点环',
+    qaFocusAt > 0
+    && qaFocusDepth === 0
+    && /\.tm-assistant \.qa-input:focus,/.test(qaFocusRule)
+    && /\.tm-assistant \.qa-input:focus-visible/.test(qaFocusRule)
+    && /outline:\s*2px solid var\(--ink\)/.test(qaFocusRule)
+    && /outline-offset:\s*-2px/.test(qaFocusRule)
+    && !/outline:\s*none/.test(qaFocusRule));
+  check('输入框焦点：不改变尺寸/内边距并保留圆角',
+    /border-radius:\s*var\(--radius-sm\)/.test(qaFocusRule)
+    && !/(?:^|[;{])\s*(?:width|height|min-width|min-height|max-width|max-height|padding|margin|border-width|font-size|line-height|transform)\s*:/.test(qaFocusRule));
+  check('侧栏左边界：桌面保留分隔线，移动全屏单独去除',
+    /border-left:\s*1px solid var\(--line\)/.test(desktopRule)
+    && /border-left:\s*0/.test(fixedRule));
 }
 
 /* —— 桌面开合与跨断点 —— */
