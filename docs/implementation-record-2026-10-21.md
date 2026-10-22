@@ -521,4 +521,4 @@ node tests/agent/assistant-controller.test.mjs → 40/40
 
 - 分支：`feat/behavior-ai-fallback-2026-10-21`，含前序报告 UX 提交；
 - 已合并 `origin/main`（#45 全局问答助手/情境判断/报告溯源、#46 680px 响应式断点），冲突按“保留双方功能”解决；合并后 `npm run check` 51 段 2001 项、`npm run smoke` 316/316、`tests/ui/assistant-layout.test.mjs` 17/17 通过；
-- 本轮改动提交并推送后创建 PR；不包含合并到 `main` 或站点发布，二者需另行确认。
+- 已推送分支并创建 PR：https://github.com/changer-collab/TimingMirror/pull/48 ；不包含合并到 `main` 或站点发布，二者需另行确认。
