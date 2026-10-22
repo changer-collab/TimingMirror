@@ -36,30 +36,6 @@ import { renderRealProfile } from './realProfile.js';
     ],
   };
 
-  const RULE_CANDIDATES = [
-    {
-      id: 'c1',
-      tag: '来自示例账单',
-      title: '持有少于 90 天，不在盘中临时卖出。',
-      threshold: '持有天数 < 90 天',
-      basis: '600519 持有 70 天后被卖出；若持有至估值日，差额为 ¥4,440（示例）。',
-    },
-    {
-      id: 'c2',
-      tag: '防守型模板',
-      title: '卖出后 3 个交易日内，不追回同一标的。',
-      threshold: '冷却期 = 3 个交易日',
-      basis: '避免在同一次波动里卖出又追回，放大交易成本与情绪。',
-    },
-    {
-      id: 'c3',
-      tag: '来自示例账单',
-      title: '单一标的仓位不超过总资产的 50%。',
-      threshold: '单一标的仓位 ≤ 50%',
-      basis: '601318 初始投入 ¥50,000，正好占总本金的 50%（示例）。',
-    },
-  ];
-
   const QA = [
     {
       id: 'q1',
@@ -117,14 +93,14 @@ import { renderRealProfile } from './realProfile.js';
     evidence: false,
   };
 
-  const RULE_KEY = 'tm.user-frontend.rules.v1';
-  const ROUTES = ['home', 'import', 'report', 'chat', 'rules'];
+  const ROUTES = ['home', 'import', 'report', 'chat', 'me'];
+  const ROUTE_ALIASES = { rules: 'me', contract: 'me' };
   const TITLES = {
     home: '择时镜子 TimingMirror · 把交易照见成证据',
     import: '导入账单 · 择时镜子',
     report: '报告 · 择时镜子',
     chat: '问镜子 · 择时镜子',
-    rules: '规则 · 择时镜子',
+    me: '个人中心 · 择时镜子',
   };
 
   const app = document.getElementById('app');
@@ -138,7 +114,6 @@ import { renderRealProfile } from './realProfile.js';
     route: 'home',
     bill: idleBill(),
     chat: { messages: [], pending: false, requestId: null },
-    rules: loadRuleState(),
     focusEvidence: false,
   };
 
@@ -190,19 +165,27 @@ import { renderRealProfile } from './realProfile.js';
     return `${(bytes / 1024).toFixed(1)} KB`;
   }
 
+  function rawRoute() {
+    return String(location.hash || '').replace(/^#\/?/, '').split('?')[0];
+  }
+
   function currentRoute() {
-    const raw = String(location.hash || '').replace(/^#\/?/, '').split('?')[0];
-    return ROUTES.includes(raw) ? raw : 'home';
+    const route = ROUTE_ALIASES[rawRoute()] ?? rawRoute();
+    return ROUTES.includes(route) ? route : 'home';
+  }
+
+  // 旧深链（#/rules、#/contract）统一落到个人中心；用 replace 避免返回键在两处来回跳。
+  function canonicalRouteHash() {
+    if (!ROUTE_ALIASES[rawRoute()]) return;
+    try {
+      history.replaceState(null, '', `${location.pathname}${location.search}#/me`);
+    } catch (err) {
+      /* file:// 或沙箱环境可能禁止改写历史记录，不影响本次渲染 */
+    }
   }
 
   function reduceMotion() {
     return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  }
-
-  function nowStamp() {
-    const d = new Date();
-    const p = (n) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
   }
 
   function scrollTop() {
@@ -273,7 +256,6 @@ import { renderRealProfile } from './realProfile.js';
         ${navLink('import', '导入')}
         ${navLink('report', '报告')}
         ${navLink('chat', '问答')}
-        ${navLink('rules', '规则')}
       </nav>
       <div class="topbar-right">
         <nav class="view-switch" aria-label="界面视图">
@@ -283,6 +265,10 @@ import { renderRealProfile } from './realProfile.js';
         <button id="assistant-toggle" class="tm-assistant-toggle" type="button" aria-controls="tm-assistant" aria-expanded="false">AI 助手</button>
         <span class="proto-chip tm-mode-chip ${statusInfo.tone}">${statusInfo.text}</span>
         <a class="btn btn-primary btn-sm" href="#/import">进入账本 <span class="arrow">→</span></a>
+        <a class="tm-avatar-link" href="#/me" aria-label="个人中心"${state.route === 'me' ? ' aria-current="page"' : ''} data-role="avatar-entry">
+          <span class="tm-avatar" aria-hidden="true">我</span>
+          <span class="tm-avatar-label">我的</span>
+        </a>
       </div>
     </div>`;
 
@@ -291,7 +277,7 @@ import { renderRealProfile } from './realProfile.js';
       ['import', '导入'],
       ['report', '报告'],
       ['chat', '问答'],
-      ['rules', '规则'],
+      ['me', '我的'],
     ];
     mobileNavEl.innerHTML = mobile.map(([route, label]) => {
       const current = state.route === route ? ' aria-current="page"' : '';
@@ -318,7 +304,7 @@ import { renderRealProfile } from './realProfile.js';
               <li><a href="#/import">导入账单</a></li>
               <li><a href="#/report" data-demo-link data-demo-route="report">示例报告</a></li>
               <li><a href="#/chat">问镜子</a></li>
-              <li><a href="#/rules">我的规则</a></li>
+              <li><a href="#/me">个人中心</a></li>
             </ul>
           </div>
           <div class="footer-col">
@@ -390,7 +376,6 @@ import { renderRealProfile } from './realProfile.js';
       return shared.bill.demo ? { text: '示例场景', tone: 'demo' } : { text: '已确认账单', tone: 'real' };
     }
     if (bridge.hasRealState()) return importStatusText();
-    if (state.route === 'rules' && pageMode('rules') === 'real') return { text: '规则任务', tone: 'real' };
     if (bridge.isDemoSelected()) return { text: '示例模式', tone: 'demo' };
     return { text: '空状态', tone: 'empty' };
   }
@@ -439,7 +424,7 @@ import { renderRealProfile } from './realProfile.js';
 
   function emptyStatePage(route) {
     const copy = route === 'report'
-      ? ['还没有可报告的真实账单。', '导入并确认账单后，这里只显示已复核的真实结果，不填充示例数字。']
+      ? ['还没有可报告的真实账单。', '导入并确认账单后，这里只显示已复核的真实结果，不填充示例数字。想先看效果，可在导入页下载示例 CSV 再上传。']
       : route === 'chat'
         ? ['还没有可问答的真实账单。', '导入并确认账单后，事实问答只复述这笔账单的已复核结果。']
         : ['还没有真实账单或规则任务。', '导入账单后可使用现有规则工作区；也可以直接使用右侧 AI 助手描述规则。'];
@@ -456,7 +441,9 @@ import { renderRealProfile } from './realProfile.js';
         <p class="muted">真实结果、事实问答和规则任务共用同一份已确认账单；示例视图需要你主动选择。</p>
         <div class="actions">
           <a class="btn btn-primary" href="#/import">导入账单 <span class="arrow">→</span></a>
-          <button class="btn btn-outline" type="button" data-demo-route="${route}">查看示例</button>
+          ${route === 'report'
+            ? '<a class="btn btn-outline" href="#/import">下载示例账单</a>'
+            : `<button class="btn btn-outline" type="button" data-demo-route="${route}">查看示例</button>`}
         </div>
       </section>
     </div>`;
@@ -546,15 +533,21 @@ import { renderRealProfile } from './realProfile.js';
     <div id="tm-real-chat"></div>`;
   }
 
-  function realRulesPage() {
-    return `<div class="container page-body">
+  function mePage() {
+    return `<div class="container page-body tm-me-page">
       <section class="tm-workspace-head">
-        <p class="mono-label">REAL RULES / 真实规则</p>
-        <h1>规则工作区</h1>
-        <p class="muted">画像与规则候选只从已复核账单派生；候选做模板预填，保存、模拟和版本记录仍由你确认后生效。没有账单时也可以保留右侧助手已产生的规则草案。</p>
+        <p class="mono-label">MY MIRROR / 个人中心</p>
+        <h1>画像与规则</h1>
+        <p class="muted">画像只从已复核账单派生；规则保存在当前浏览器，历史情境测试在规则工作区最上方。</p>
       </section>
       <div id="tm-real-profile"></div>
-      <div id="tm-real-rules"></div>
+      <section class="tm-me-rules" aria-label="规则工作区">
+        <div class="tm-me-rules-head">
+          <p class="mono-label">RULES WORKSPACE / 规则工作区</p>
+          <p class="muted">保存、停用与版本记录都由你确认；不会自动交易。</p>
+        </div>
+        <div id="tm-real-rules"></div>
+      </section>
     </div>`;
   }
 
@@ -1220,7 +1213,7 @@ import { renderRealProfile } from './realProfile.js';
         <p><strong>看懂差额之后，</strong>可以继续追问，也可以把下一笔写成规则。</p>
         <div class="actions">
           <a class="btn btn-outline" href="#/chat">问镜子为什么 <span class="arrow">→</span></a>
-          <a class="btn btn-primary" href="#/rules">写下一条规则 <span class="arrow">→</span></a>
+          <a class="btn btn-primary" href="#/me">写下一条规则 <span class="arrow">→</span></a>
         </div>
       </div>
     </div>`;
@@ -1429,198 +1422,6 @@ import { renderRealProfile } from './realProfile.js';
     }, 680);
   }
 
-  /* ---------- rules ---------- */
-
-  function freshRuleState() {
-    return {
-      candidates: RULE_CANDIDATES.map((c) => ({ ...c, status: 'open' })),
-      active: [],
-      log: [],
-    };
-  }
-
-  function loadRuleState() {
-    const fresh = freshRuleState();
-    try {
-      const raw = localStorage.getItem(RULE_KEY);
-      if (!raw) return fresh;
-      const data = JSON.parse(raw);
-      if (!data || !Array.isArray(data.candidates) || !Array.isArray(data.active) || !Array.isArray(data.log)) return fresh;
-      const valid = new Set(['open', 'confirmed', 'rejected']);
-      data.candidates.forEach((saved) => {
-        const target = fresh.candidates.find((c) => c.id === saved.id);
-        if (!target || !valid.has(saved.status)) return;
-        target.status = saved.status;
-        if (typeof saved.title === 'string') target.title = saved.title.slice(0, 60);
-        if (typeof saved.threshold === 'string') target.threshold = saved.threshold.slice(0, 40);
-      });
-      fresh.active = data.active
-        .filter((a) => a && RULE_CANDIDATES.some((c) => c.id === a.id) && typeof a.title === 'string')
-        .map((a) => ({
-          id: a.id,
-          title: a.title.slice(0, 60),
-          threshold: String(a.threshold || '').slice(0, 40),
-          state: a.state === 'paused' ? 'paused' : 'active',
-          version: Number.isFinite(a.version) ? a.version : 1,
-          updatedAt: typeof a.updatedAt === 'string' ? a.updatedAt : nowStamp(),
-        }));
-      fresh.log = data.log
-        .filter((l) => l && typeof l.title === 'string' && typeof l.action === 'string')
-        .slice(-30)
-        .map((l) => ({
-          title: l.title.slice(0, 60),
-          action: l.action.slice(0, 24),
-          at: typeof l.at === 'string' ? l.at : nowStamp(),
-          kind: ['confirm', 'edit', 'reject', 'pause'].includes(l.kind) ? l.kind : 'confirm',
-        }));
-      return fresh;
-    } catch (err) {
-      return fresh;
-    }
-  }
-
-  function persistRules() {
-    try {
-      localStorage.setItem(RULE_KEY, JSON.stringify(state.rules));
-    } catch (err) {
-      showToast('浏览器拒绝了本地存储，本次操作只在当前会话生效。');
-    }
-  }
-
-  function addRuleLog(title, action, kind) {
-    state.rules.log.push({ title, action, at: nowStamp(), kind });
-    if (state.rules.log.length > 30) state.rules.log = state.rules.log.slice(-30);
-  }
-
-  function renderRulesPage() {
-    const mode = pageMode('rules');
-    if (mode === 'real') return realRulesPage();
-    if (mode === 'empty') return emptyStatePage('rules');
-    const candidates = state.rules.candidates.filter((c) => c.status === 'open');
-    const active = state.rules.active;
-    const activeCount = active.filter((a) => a.state === 'active').length;
-    const logs = state.rules.log.slice().reverse();
-
-    const candidateHTML = candidates.length
-      ? candidates.map((c, index) => `<article class="rule-card">
-          <span class="rule-idx">${String(index + 1).padStart(2, '0')}</span>
-          <div class="rule-main">
-            <div class="rule-meta"><span class="rule-tag">${esc(c.tag)}</span><span class="cand-code">CANDIDATE / 待确认</span></div>
-            <h3>${esc(c.title)}</h3>
-            <p>${esc(c.basis)}</p>
-            <div class="rule-threshold"><span>触发条件</span><code>${esc(c.threshold)}</code></div>
-          </div>
-          <div class="rule-actions">
-            <button class="btn btn-primary" type="button" data-rule-confirm="${c.id}">确认</button>
-            <button class="btn btn-outline" type="button" data-rule-edit="${c.id}">改写</button>
-            <button class="btn btn-ghost" type="button" data-rule-reject="${c.id}">拒绝</button>
-          </div>
-        </article>`).join('')
-      : `<div class="rule-empty">3 条候选规则都已处理。已生效的规则在下方，操作记录保存在本机；清空记录可以重新演示。</div>`;
-
-    const activeHTML = active.length
-      ? active.map((a) => `<div class="active-rule">
-          <div class="active-rule-top">
-            <h3>${esc(a.title)}</h3>
-            <div class="ar-ops">
-              <button class="ar-op" type="button" data-rule-toggle="${a.id}">${a.state === 'active' ? '暂停' : '启用'}</button>
-            </div>
-          </div>
-          <div class="active-rule-meta">
-            <span class="rule-state${a.state === 'paused' ? ' paused' : ''}">${a.state === 'active' ? '生效中' : '已暂停'}</span>
-            <span>v${a.version}</span>
-            <span>${esc(a.threshold)}</span>
-            <span>${esc(a.updatedAt)}</span>
-          </div>
-        </div>`).join('')
-      : `<div class="active-empty">还没有生效的规则。确认或改写上方候选后，会在这里出现，并写入版本记录。</div>`;
-
-    const logHTML = logs.length
-      ? `<div class="log-wrap"><table class="log-table">
-          <thead><tr><th>规则</th><th>动作</th><th>时间</th></tr></thead>
-          <tbody>${logs.map((l) => `<tr>
-            <td class="rule-name">${esc(l.title)}</td>
-            <td class="log-action ${l.kind}">${esc(l.action)}</td>
-            <td>${esc(l.at)}</td>
-          </tr>`).join('')}</tbody>
-        </table></div>`
-      : `<div class="log-empty">还没有操作记录。确认、改写、暂停或拒绝一条规则后，这里会出现版本记录。</div>`;
-
-    return `${pageHead({
-      code: 'STEP 04 / RULES',
-      title: '把「下次别这样」，<br>写成一条规则。',
-      intro: `<p>规则不是系统给你的指令，而是你写给下一次自己的备忘。确认、改写或拒绝，都由你决定。</p>
-        <ul class="mini-rules"><li>候选由你筛选</li><li>只做提醒</li><li>不自动交易</li><li>只存本机</li></ul>`,
-      right: '<span class="sample-tag">原型 · 本机存储</span>',
-    })}
-    <div class="container page-body">
-      <div class="rules-banner">
-        <span class="rb-mark" aria-hidden="true">!</span>
-        <p><strong>只存在本机 · 不会自动交易。</strong> 原型把规则与版本记录保存在浏览器的 localStorage；换设备或清除浏览器数据后会消失。规则不是投资建议。</p>
-      </div>
-
-      <section class="rules-section" aria-labelledby="candidates-title">
-        <div class="rules-head"><h2 id="candidates-title">候选规则</h2><span>${candidates.length} 条待处理 · 来自示例</span></div>
-        <div class="rule-list">${candidateHTML}</div>
-      </section>
-
-      <div class="rules-bottom-grid">
-        <section class="rules-panel" aria-labelledby="active-title">
-          <div class="rules-panel-head"><b id="active-title">已生效的规则</b><span>${activeCount} 条生效 / ${active.length} 条记录</span></div>
-          <div class="active-list">${activeHTML}</div>
-        </section>
-        <section class="rules-panel" aria-labelledby="log-title">
-          <div class="rules-panel-head"><b id="log-title">版本记录</b><span>LOCAL ONLY</span></div>
-          ${logHTML}
-        </section>
-      </div>
-
-      <div class="rules-foot">
-        <span>规则只做自我提醒，不会连接券商，也不会下单。原型最多保留最近 30 条操作记录。</span>
-        <button type="button" id="reset-rules">清空本机记录</button>
-      </div>
-    </div>`;
-  }
-
-  function confirmRule(id) {
-    const c = state.rules.candidates.find((x) => x.id === id);
-    if (!c || c.status !== 'open') return;
-    c.status = 'confirmed';
-    state.rules.active.push({
-      id: c.id,
-      title: c.title,
-      threshold: c.threshold,
-      state: 'active',
-      version: 1,
-      updatedAt: nowStamp(),
-    });
-    addRuleLog(c.title, '确认 · v1', 'confirm');
-    persistRules();
-    render();
-    showToast('规则已生效 · v1（仅保存在本机）');
-  }
-
-  function rejectRule(id) {
-    const c = state.rules.candidates.find((x) => x.id === id);
-    if (!c || c.status !== 'open') return;
-    c.status = 'rejected';
-    addRuleLog(c.title, '拒绝 · 未生效', 'reject');
-    persistRules();
-    render();
-    showToast('已拒绝这条候选规则，不会生效。');
-  }
-
-  function toggleRule(id) {
-    const a = state.rules.active.find((x) => x.id === id);
-    if (!a) return;
-    a.state = a.state === 'active' ? 'paused' : 'active';
-    a.updatedAt = nowStamp();
-    addRuleLog(a.title, a.state === 'active' ? '启用' : '暂停', 'pause');
-    persistRules();
-    render();
-    showToast(a.state === 'active' ? '规则已启用（仅本机）。' : '规则已暂停，不会被提醒。');
-  }
-
   /* ---------- modal ---------- */
 
   function closeModal() {
@@ -1692,93 +1493,6 @@ import { renderRealProfile } from './realProfile.js';
 
     const firstField = modal.querySelector('input, textarea');
     (firstField || closeBtn).focus();
-  }
-
-  function openRuleEditor(id) {
-    const c = state.rules.candidates.find((x) => x.id === id && x.status === 'open');
-    if (!c) return;
-    const body = `<p>把候选规则改成你真正会执行的说法。保存后会立即生效，并写入 v1 版本记录。</p>
-      <form id="rule-edit-form" novalidate>
-        <div class="field">
-          <label for="rule-title-input">规则名称</label>
-          <input id="rule-title-input" name="title" type="text" maxlength="60" value="${esc(c.title)}" autocomplete="off">
-        </div>
-        <div class="field">
-          <label for="rule-threshold-input">触发条件</label>
-          <input id="rule-threshold-input" name="threshold" type="text" maxlength="40" value="${esc(c.threshold)}" autocomplete="off">
-          <p class="field-hint">例如：持有天数 &lt; 90 天、冷却期 = 3 个交易日。</p>
-        </div>
-        <p class="field-error" id="rule-edit-error" hidden></p>
-      </form>`;
-
-    showModal({
-      title: '改写这条规则',
-      subtitle: 'CANDIDATE / 改写后确认',
-      body,
-      actions: [
-        { label: '取消', className: 'btn-outline' },
-        {
-          label: '保存并生效',
-          className: 'btn-primary',
-          onClick: (modal) => {
-            const titleInput = modal.querySelector('#rule-title-input');
-            const thresholdInput = modal.querySelector('#rule-threshold-input');
-            const errorBox = modal.querySelector('#rule-edit-error');
-            const title = titleInput.value.trim();
-            const threshold = thresholdInput.value.trim();
-            if (title.length < 4) {
-              errorBox.textContent = '规则名称至少需要 4 个字，写清楚你下次要做什么。';
-              errorBox.hidden = false;
-              titleInput.focus();
-              return false;
-            }
-            if (threshold.length < 2) {
-              errorBox.textContent = '请写一个可执行的触发条件。';
-              errorBox.hidden = false;
-              thresholdInput.focus();
-              return false;
-            }
-            c.title = title.slice(0, 60);
-            c.threshold = threshold.slice(0, 40);
-            c.status = 'confirmed';
-            state.rules.active.push({
-              id: c.id,
-              title: c.title,
-              threshold: c.threshold,
-              state: 'active',
-              version: 1,
-              updatedAt: nowStamp(),
-            });
-            addRuleLog(c.title, '改写并确认 · v1', 'edit');
-            persistRules();
-            render();
-            showToast('规则已改写并生效 · v1（仅保存在本机）');
-            return true;
-          },
-        },
-      ],
-    });
-  }
-
-  function openResetRules() {
-    showModal({
-      title: '清空本机规则记录？',
-      subtitle: 'LOCAL STORAGE / 不可撤销',
-      body: '<p>这会删除浏览器里保存的规则、生效状态和全部版本记录，并恢复 3 条示例候选规则。此操作只影响本机，无法撤销。</p>',
-      actions: [
-        { label: '取消', className: 'btn-outline' },
-        {
-          label: '确认清空',
-          className: 'btn-ghost danger',
-          onClick: () => {
-            state.rules = freshRuleState();
-            persistRules();
-            render();
-            showToast('已清空本机规则记录，候选规则已恢复。');
-          },
-        },
-      ],
-    });
   }
 
   /* ---------- CSV import ---------- */
@@ -2237,23 +1951,6 @@ import { renderRealProfile } from './realProfile.js';
     }
   }
 
-  function bindRules() {
-    document.querySelectorAll('[data-rule-confirm]').forEach((btn) => {
-      btn.addEventListener('click', () => confirmRule(btn.getAttribute('data-rule-confirm')));
-    });
-    document.querySelectorAll('[data-rule-reject]').forEach((btn) => {
-      btn.addEventListener('click', () => rejectRule(btn.getAttribute('data-rule-reject')));
-    });
-    document.querySelectorAll('[data-rule-edit]').forEach((btn) => {
-      btn.addEventListener('click', () => openRuleEditor(btn.getAttribute('data-rule-edit')));
-    });
-    document.querySelectorAll('[data-rule-toggle]').forEach((btn) => {
-      btn.addEventListener('click', () => toggleRule(btn.getAttribute('data-rule-toggle')));
-    });
-    const reset = document.getElementById('reset-rules');
-    if (reset) reset.addEventListener('click', openResetRules);
-  }
-
   /* ---------- render ---------- */
 
   function onSharedChange(keys) {
@@ -2265,6 +1962,7 @@ import { renderRealProfile } from './realProfile.js';
   }
 
   function render() {
+    canonicalRouteHash();
     state.route = currentRoute();
     bridge.setRoute(state.route);
     const mode = pageMode();
@@ -2276,7 +1974,7 @@ import { renderRealProfile } from './realProfile.js';
     else if (state.route === 'import') html = importPage();
     else if (state.route === 'report') html = reportPage();
     else if (state.route === 'chat') html = chatPage();
-    else if (state.route === 'rules') html = renderRulesPage();
+    else if (state.route === 'me') html = mePage();
     app.innerHTML = html;
 
     if (state.route === 'home') animateCounters(app);
@@ -2291,8 +1989,7 @@ import { renderRealProfile } from './realProfile.js';
     if (state.route === 'chat' && mode === 'real' && isConfirmedLocal()) {
       renderRealChat(document.getElementById('tm-real-chat'), bridge.getCtx());
     }
-    if (state.route === 'rules' && mode === 'demo') bindRules();
-    if (state.route === 'rules' && mode === 'real') {
+    if (state.route === 'me') {
       renderRealProfile(document.getElementById('tm-real-profile'), bridge.getCtx());
       bridge.mountContractView(document.getElementById('tm-real-rules'));
     }

@@ -11,6 +11,7 @@ import { computePGR } from '../src/engine/pgr.js';
 import {
   PROFILE_VERSION, RULE_CANDIDATE_VERSION, CHASE_CANDIDATE_ID,
   emptyProfile, buildProfileSnapshot, mergeProfile, withCandidateEvent, withRuleState, buildRuleCandidates,
+  behaviorAnalysisSummary, withBehaviorAnalysis, buildBehaviorTags,
 } from '../src/engine/userProfile.js';
 
 const results = [];
@@ -94,11 +95,74 @@ const ruleState = { active_templates: [], active_count: 0, version_count: 0, act
   check('规则同步：无变化时原样返回', withRuleState(synced, { active_templates: ['no_buy_on_surge'], active_count: 1, version_count: 2 }) === synced, '');
 }
 
+/* ---- 行为分析入画像：只存结构化结果，不新增观察次数 ---- */
+{
+  const aiAnalysis = {
+    source: 'ai',
+    fallback_reason: null,
+    pattern: {
+      pattern_id: 'chase_high_buy',
+      status: '成立',
+      sample_n: 2,
+      evaluated_n: 2,
+      evidence_event_indexes: [0, 1],
+      comment: 'AI 原话不应进入画像',
+    },
+    observations: [
+      { observation_id: 'sell_rebuy_within_2d', text: 'AI 观察原话也不应进入画像', evidence_event_indexes: [1, 2] },
+      { observation_id: 'unknown_observation', text: '未知观察', evidence_event_indexes: [0, 1] },
+    ],
+    rule_candidates: [{ candidate_id: CHASE_CANDIDATE_ID, template_id: 'no_buy_on_surge' }],
+  };
+  const summary = behaviorAnalysisSummary(aiAnalysis);
+  const summaryText = JSON.stringify(summary);
+  check('行为分析摘要：来源/模式/观察计数与候选 ID', summary.source === 'ai' && summary.pattern.status === '成立'
+    && summary.observations.length === 1 && summary.observations[0].evidence_count === 2
+    && summary.rule_candidate_ids[0] === CHASE_CANDIDATE_ID, summaryText);
+  check('行为分析摘要：丢弃 AI 原话与未知观察', !summaryText.includes('AI 原话')
+    && !summaryText.includes('unknown_observation') && !summaryText.includes('comment') && !summaryText.includes('text'), summaryText);
+  check('行为分析摘要：非法来源不生成摘要', behaviorAnalysisSummary({ source: 'manual', pattern: { pattern_id: 'x' } }) === null, '');
+
+  const snap = buildProfileSnapshot({
+    report, behavior, stockSelf, pgr, review, trades, ruleState, behaviorAnalysis: aiAnalysis, at: '2026-10-21T00:00:00.000Z',
+  });
+  check('快照包含结构化行为分析', snap.behavior_analysis.source === 'ai' && snap.behavior_analysis.observations.length === 1, JSON.stringify(snap.behavior_analysis));
+  check('快照维度新增行为洞察（位于行为证据之后）', JSON.stringify(snap.dimensions.map((d) => d.key)) === JSON.stringify(['activity', 'outcome', 'behavior', 'behavior_analysis', 'disposition', 'rules']), JSON.stringify(snap.dimensions.map((d) => d.key)));
+  check('行为洞察维度：AI 观察计数与本地标签，不显示原话', snap.dimensions.find((d) => d.key === 'behavior_analysis').value === 'AI 补充 1 项观察'
+    && snap.dimensions.find((d) => d.key === 'behavior_analysis').note.includes('卖出后两日内买回'), JSON.stringify(snap.dimensions.find((d) => d.key === 'behavior_analysis')));
+
+  const profile = mergeProfile(emptyProfile(), buildProfileSnapshot({
+    report, behavior, stockSelf, pgr, review, trades, ruleState, at: '2026-10-21T00:00:00.000Z',
+  }), { at: '2026-10-21T00:00:00.000Z' });
+  const synced = withBehaviorAnalysis(profile, aiAnalysis, { key: profile.latest.profile_key, at: '2026-10-21T01:00:00.000Z' });
+  check('行为分析同步：观察次数不变、更新时间与 latest 维度更新', synced.observations === 1 && synced.updated_at === '2026-10-21T01:00:00.000Z'
+    && synced.latest.behavior_analysis.source === 'ai' && synced.latest.dimensions.some((d) => d.key === 'behavior_analysis'), JSON.stringify({ o: synced.observations, at: synced.updated_at }));
+  check('行为分析同步：相同结构化结果不重复写入', withBehaviorAnalysis(synced, aiAnalysis) === synced, '');
+  check('行为分析同步：账单键不匹配时拒绝写入', withBehaviorAnalysis(profile, aiAnalysis, { key: 'other-key' }) === profile, '');
+
+  const fallback = withBehaviorAnalysis(profile, {
+    source: 'backend_rules',
+    fallback_reason: 'model_timeout',
+    pattern: { pattern_id: 'chase_high_buy', status: '成立', sample_n: 2, evaluated_n: 2, evidence_event_indexes: [0, 1], comment: '' },
+    observations: [],
+    rule_candidates: [{ candidate_id: CHASE_CANDIDATE_ID, template_id: 'no_buy_on_surge' }],
+  });
+  const fallbackRow = fallback.latest.dimensions.find((d) => d.key === 'behavior_analysis');
+  check('兜底结果入画像：记录来源与原因，不伪造观察项', fallback.latest.behavior_analysis.source === 'backend_rules'
+    && fallback.latest.behavior_analysis.fallback_reason === 'model_timeout'
+    && fallback.latest.behavior_analysis.observations.length === 0
+    && fallbackRow.value === '规则引擎兜底' && fallbackRow.note.includes('本地兜底'), JSON.stringify(fallback.latest.behavior_analysis));
+  const emptyBase = emptyProfile();
+  check('行为分析同步：无画像时不凭空创建', withBehaviorAnalysis(emptyBase, aiAnalysis) === emptyBase, '');
+  const text = JSON.stringify(synced);
+  check('画像隐私边界：不含 AI 原话、观察原话或成交字段', !text.includes('AI 原话') && !text.includes('观察原话') && !text.includes('trade_id'), text.slice(0, 300));
+}
+
 /* ---- 规则候选：由行为证据映射到既有模板，须用户确认 ---- */
 {
   const { candidates, notes } = buildRuleCandidates({ behavior, ruleState, profile: null });
   const c = candidates[0];
-  check('候选版本与唯一候选 ID', RULE_CANDIDATE_VERSION === 'candidate-1' && c.candidate_id === CHASE_CANDIDATE_ID && c.version === RULE_CANDIDATE_VERSION, JSON.stringify({ id: c.candidate_id }));
+  check('候选版本与首个候选 ID', RULE_CANDIDATE_VERSION === 'candidate-2' && c.candidate_id === CHASE_CANDIDATE_ID && c.version === RULE_CANDIDATE_VERSION, JSON.stringify({ id: c.candidate_id }));
   check('候选：模板映射 no_buy_on_surge，阈值 = 10%', c.template_id === 'no_buy_on_surge' && c.threshold === 10 && c.fields.threshold_pct === '10' && c.text.includes('10%'), JSON.stringify({ t: c.template_id, th: c.threshold, text: c.text }));
   check('候选：可建立状态与证据引用', c.status === 'available' && c.source_pattern.status === '成立' && c.source_pattern.sample_n === 2 && c.evidence.length === 2 && c.evidence.every((e) => e.trade_id && e.line.includes('%')), JSON.stringify({ s: c.status, e: c.evidence }));
   check('候选：证据展示用 % 而非 pp', c.evidence.every((e) => !e.line.includes('pp')) && c.evidence[0].line.includes('+20.0%'), JSON.stringify(c.evidence.map((e) => e.line)));
@@ -119,6 +183,36 @@ const ruleState = { active_templates: [], active_count: 0, version_count: 0, act
   const nr = buildRuleCandidates({ behavior: insufficient, ruleState, profile: null }).candidates[0];
   check('证据不足：不推荐且理由引用最小样本', nr.status === 'not_recommended' && nr.reason.includes('证据不足') && nr.reason.includes('最小样本 2'), JSON.stringify({ s: nr.status, r: nr.reason }));
   check('无行为发现：不生成候选、不虚构模式', buildRuleCandidates({ behavior: null, ruleState }).candidates.length === 0, '');
+}
+
+/* ---- 多模式标签与多模板候选 ---- */
+{
+  const snap = buildProfileSnapshot({ report, behavior, stockSelf, pgr, review, trades, ruleState });
+  check('画像标签：仅成立的模式进入标签，证据写命中/已评估', snap.tags.length === 1 && snap.tags[0].tag_id === 'chase_high_buy'
+    && snap.tags[0].kind === 'behavior' && snap.tags[0].evidence === '命中 2 笔 / 已评估 2 笔', JSON.stringify(snap.tags));
+  check('画像标签：处置倾向按 DE 5 个百分点阈值派生', buildBehaviorTags({ behavior: null, pgr: { de: 0.08, display: { de: '+8.0pp' } } })[0]?.tag_id === 'disposition_gain'
+    && buildBehaviorTags({ behavior: null, pgr: { de: -0.06, display: { de: '-6.0pp' } } })[0]?.tag_id === 'disposition_loss'
+    && buildBehaviorTags({ behavior: null, pgr: { de: 0.01, display: { de: '+1.0pp' } } }).length === 0, '');
+  const merged = mergeProfile(emptyProfile(), snap);
+  check('画像历史：记录成立模式与标签 ID', merged.history[0].behavior_active_patterns[0] === 'chase_high_buy'
+    && merged.history[0].tag_ids[0] === 'chase_high_buy', JSON.stringify(merged.history[0]));
+
+  const rebuy = behavior.patterns.find((p) => p.pattern_id === 'sell_rebuy_within_2d');
+  const flip = behavior.patterns.find((p) => p.pattern_id === 'quick_flip');
+  const multi = {
+    ...behavior,
+    patterns: behavior.patterns.map((p) => (p.pattern_id === 'sell_rebuy_within_2d'
+      ? { ...rebuy, status: '成立', sample_n: 2, evaluated_n: 2, evidence: [{ trade_date: '2024-08-12', symbol: 'AAA', side: 'buy', side_label: '买入', prior_trade_id: 'X1', prior_trade_date: '2024-08-09', prior_side_label: '卖出', gap_days: 1, display: { gap_days: '1 个交易日' } }, { trade_date: '2024-08-14', symbol: 'AAA', side: 'buy', side_label: '买入', prior_trade_id: 'X2', prior_trade_date: '2024-08-13', prior_side_label: '卖出', gap_days: 1, display: { gap_days: '1 个交易日' } }] }
+      : p.pattern_id === 'quick_flip'
+        ? { ...flip, status: '成立', sample_n: 2, evaluated_n: 2, evidence: [{ trade_date: '2024-08-13', symbol: 'AAA', side: 'sell', side_label: '卖出', prior_trade_id: 'X3', prior_trade_date: '2024-08-12', prior_side_label: '买入', gap_days: 1, display: { gap_days: '1 个交易日' } }, { trade_date: '2024-08-14', symbol: 'AAA', side: 'sell', side_label: '卖出', prior_trade_id: 'X4', prior_trade_date: '2024-08-13', prior_side_label: '买入', gap_days: 1, display: { gap_days: '1 个交易日' } }] }
+        : p)),
+  };
+  const packs = buildRuleCandidates({ behavior: multi, ruleState, profile: null });
+  const rebuyCandidate = packs.candidates.find((c) => c.template_id === 'no_buy_back_within');
+  const flipCandidate = packs.candidates.find((c) => c.template_id === 'sell_within_after_buy');
+  check('多模板候选：卖后追回映射“不追回”，窗口沿用 2 个交易日', rebuyCandidate?.status === 'available' && rebuyCandidate.fields.days === '2' && rebuyCandidate.text.includes('2 个交易日'), JSON.stringify(rebuyCandidate));
+  check('多模板候选：快进快出映射“买入后卖出提醒”，只提醒不阻止', flipCandidate?.status === 'available' && flipCandidate.fields.days === '3' && flipCandidate.caveat.includes('只提醒'), JSON.stringify(flipCandidate));
+  check('多模板候选：各自挂证据与候选说明，不自动生效', packs.candidates.filter((c) => c.status === 'available').length === 3 && packs.notes.length === 2 && packs.notes[1].includes('不会自动生效'), JSON.stringify(packs.candidates.map((c) => c.candidate_id)));
 }
 
 let pass = 0;

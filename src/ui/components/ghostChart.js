@@ -84,6 +84,7 @@ function isolatedLabels(points, xs, ys) {
     ['actual', '实际'],
     ['ghost', '对照'],
     ['cf', '反事实'],
+    ['benchmark', '沪深300'],
   ];
   for (let i = 0; i < points.length; i++) {
     const isolated = keys.filter(([key]) => Number.isFinite(points[i][key])
@@ -165,7 +166,8 @@ export function renderGhostChart(root, cf) {
   const points = series.points;
   const n = points.length;
   const xs = (i) => xPos(i, n);
-  const extA = extent(points.flatMap((p) => [p.actual, p.ghost, p.cf]));
+  const hasBenchmark = points.some((p) => Number.isFinite(p.benchmark));
+  const extA = extent(points.flatMap((p) => [p.actual, p.ghost, p.cf, hasBenchmark ? p.benchmark : null]));
   const extC = extent(points.map((p) => p.close));
   const yA = (v) => yPos(v, extA, H1);
   const yC = (v) => yPos(v, extC, H2);
@@ -192,6 +194,7 @@ export function renderGhostChart(root, cf) {
     ['ghost', 'gc-line gc-line-ghost'],
     ['cf', 'gc-line gc-line-cf'],
   ];
+  if (hasBenchmark) lines1.push(['benchmark', 'gc-line gc-line-benchmark']);
   for (const [key, cls] of lines1) {
     const d = lineD(points, key, xs, yA);
     if (d) svg1.append(svgEl('path', { d, class: cls, fill: 'none' }));
@@ -238,10 +241,15 @@ export function renderGhostChart(root, cf) {
   wrap.append(tip);
 
   //  图例 
+  const benchmarkLabel = series.benchmark?.name ? `${series.benchmark.name}（同额）` : '沪深300（同额）';
+  const benchmarkLegend = hasBenchmark
+    ? [div('gc-legend-item', [spanSw('gc-sw gc-sw-benchmark'), textNode(benchmarkLabel)])]
+    : [];
   const legend = div('gc-legend', compact ? [
     div('gc-legend-item', [spanSw('gc-sw gc-sw-actual'), textNode('实际')]),
     div('gc-legend-item', [spanSw('gc-sw gc-sw-ghost'), textNode('一直持有')]),
     div('gc-legend-item', [spanSw('gc-sw gc-sw-cf'), textNode('假如没卖')]),
+    ...benchmarkLegend,
     div('gc-legend-item', [spanSw('gc-sw gc-sw-gap'), textNode('差额')]),
     div('gc-legend-item', [spanSw('gc-sw gc-sw-buy'), textNode('买')]),
     div('gc-legend-item', [spanSw('gc-sw gc-sw-sell'), textNode('卖')]),
@@ -249,6 +257,7 @@ export function renderGhostChart(root, cf) {
     div('gc-legend-item', [spanSw('gc-sw gc-sw-actual'), textNode('实际结果（你的操作）')]),
     div('gc-legend-item', [spanSw('gc-sw gc-sw-ghost'), textNode('买入后持有')]),
     div('gc-legend-item', [spanSw('gc-sw gc-sw-cf'), textNode('假如这笔卖出没发生')]),
+    ...benchmarkLegend,
     div('gc-legend-item', [spanSw('gc-sw gc-sw-gap'), textNode('差额：正值＝不卖可挽回；负值＝这笔卖出反而更好')]),
     div('gc-legend-item', [spanSw('gc-sw gc-sw-buy'), textNode('买入')]),
     div('gc-legend-item', [spanSw('gc-sw gc-sw-sell'), textNode('卖出')]),
@@ -266,8 +275,14 @@ export function renderGhostChart(root, cf) {
   const marketCaption = cf.marketSource && cf.marketSource.dynamic
     ? 'Tushare 动态日线（最新已收盘，服务端获取，非实时，草案口径）'
     : (cf.marketSource?.demo ? '合成行情 · 仅用于演示' : '合成行情 · 非真实行情（m0 合成夹具，草案口径）');
+  const benchmarkSource = series.benchmark?.source === 'tushare.index_daily'
+    ? 'Tushare index_daily'
+    : (series.benchmark?.source ?? '指数日线');
+  const benchmarkCaption = hasBenchmark ? `；${benchmarkLabel}按同一买入本金折算（${benchmarkSource}）` : '';
   wrap.append(div('gc-caption', [
-    textNode(compact ? `${marketCaption}；只替换所选卖出，其余成交不变。` : `${marketCaption}：仅替换所选卖出笔，其余成交不变；不构成投资建议`),
+    textNode(compact
+      ? `${marketCaption}；只替换所选卖出，其余成交不变${benchmarkCaption}。`
+      : `${marketCaption}：仅替换所选卖出笔，其余成交不变${benchmarkCaption}；不构成投资建议`),
   ]));
 
   //  十字线：上下面板同步 
@@ -292,6 +307,7 @@ export function renderGhostChart(root, cf) {
       div('gc-tip-row', [textNode(`实际 ${fmtValue(p.actual)}`)]),
       div('gc-tip-row', [textNode(`对照 ${fmtValue(p.ghost)}`)]),
       div('gc-tip-row', [textNode(`反事实 ${fmtValue(p.cf)}`)]),
+      ...(hasBenchmark ? [div('gc-tip-row', [textNode(`${benchmarkLabel} ${fmtValue(p.benchmark)}`)])] : []),
       div('gc-tip-row', [textNode(`缺口 ${fmtValue(p.gap)}`)]),
       div('gc-tip-row', [textNode(`收盘价 ${fmtClose(p.close)}`)]),
     );

@@ -187,10 +187,10 @@ function sampleCardHTML() {
     </span>
     <span class="scenario-download">下载 CSV ↓</span>
   </button>`).join('');
-  return `<aside class="sample-card scenario-card" aria-label="示例场景">
-    <span class="sample-stamp">DEMO / 4 个场景</span>
+  return `<aside class="sample-card scenario-card" id="tm-sample-scenarios" aria-label="示例场景">
+    <span class="sample-stamp">DEMO / ${REPORT_SCENARIOS.length} 个场景</span>
     <h2>没有账单？<br>下载示例再上传。</h2>
-    <p>下载任一场景的 CSV，拖回左侧导入，就能看到对应报告。示例行情会随文件自动匹配。</p>
+    <p>下载任一场景的 CSV，拖回左侧导入，就能看到对应报告。含无模式、低样本等边界场景。</p>
     <div class="scenario-list">${items}</div>
     <p class="fine" data-role="scenario-hint">示例 CSV 只含合成交易，不是真实账户。</p>
   </aside>`;

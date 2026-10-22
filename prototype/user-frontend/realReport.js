@@ -4,8 +4,13 @@ import { loadUserBillReport } from '../../src/demo/adapter.js';
 import { fmtMoney } from '../../src/engine/display.js';
 import { renderGhostChart } from '../../src/ui/components/ghostChart.js';
 import { buildRuleCandidates } from '../../src/engine/userProfile.js';
-import { recordReportObservation, ruleStateOf } from './profileStore.js';
-import { openRuleCandidate } from './ruleCandidates.js';
+import { recordReportObservation, ruleStateOf, syncBehaviorAnalysis } from './profileStore.js';
+import { openRuleCandidateInAssistant } from './ruleCandidates.js';
+import {
+  behaviorAnalysisKey,
+  behaviorFallbackText,
+  requestBehaviorAnalysis,
+} from './behaviorAnalysis.js';
 
 const cache = new Map();
 const EMPTY_RULE_STATE = Object.freeze({ active_templates: [], active_count: 0, version_count: 0 });
@@ -100,10 +105,14 @@ export function reportVisibility({ bundle = null, insights = null, candidatePack
   const portfolio = source.portfolio ?? {};
   const cfs = Array.isArray(portfolio.counterfactuals) ? portfolio.counterfactuals : [];
   const items = Array.isArray(portfolio.decomposition?.items) ? portfolio.decomposition.items : [];
-  const pattern = source.behavior?.data?.patterns?.[0] ?? null;
+  const allPatterns = Array.isArray(source.behavior?.data?.patterns) ? source.behavior.data.patterns : [];
+  const patterns = allPatterns.filter((p) => p?.status === '成立' && (p.sample_n ?? 0) > 0);
+  // 保持追高卡片作为 AI 观察的锚点；其余模式只在成立时进入报告。
+  const pattern = allPatterns.find((p) => p.pattern_id === 'chase_high_buy') ?? allPatterns[0] ?? null;
   const pgr = source.pgr?.data ?? null;
   const counts = pgr?.counts ?? {};
-  const candidate = candidatePack?.candidates?.[0] ?? null;
+  const candidates = (Array.isArray(candidatePack?.candidates) ? candidatePack.candidates : []).filter((c) => c?.status === 'available');
+  const candidate = candidates[0] ?? null;
   const pgrReady = !!pgr && pgr.ok !== false
     && (counts.realized?.total ?? 0) >= 3
     && (counts.paper?.total ?? 0) >= 2
@@ -112,14 +121,16 @@ export function reportVisibility({ bundle = null, insights = null, candidatePack
     ghost: portfolio.available === true && cfs.length > 0,
     waterfall: portfolio.available === true && !!portfolio.waterfall && items.length > 0,
     attribution: portfolio.available === true && portfolio.decomposition?.blocked !== true && items.length > 0,
-    behavior: pattern?.status === '成立' && (pattern.sample_n ?? 0) > 0,
+    behavior: patterns.length > 0,
     pgr: pgrReady,
-    candidate: candidate?.status === 'available',
+    candidate: candidates.length > 0,
     stockSelf: source.stock_self?.available === true && items.length > 0,
     basis: (bundle?.review?.published_facts ?? []).some((fact) => (fact.scope || 'portfolio') === 'portfolio'),
     hasSells: items.length > 0,
+    patterns,
     pattern,
     pgrData: pgr,
+    candidates,
     candidateData: candidate,
   };
 }
@@ -192,10 +203,14 @@ function ghostSection(bundle) {
   const errorNote = errors.length
     ? `<details class="rp-details"><summary>${errors.length} 笔对照暂不可用</summary><ul class="rp-evidence">${errors.slice(0, 6).map((e) => `<li>${esc(e.symbol || '')} ${esc(e.message)}</li>`).join('')}</ul></details>`
     : '';
+  const hasBenchmark = list.some((cf) => cf.series?.benchmark?.available !== false && cf.series?.benchmark);
   return `<section class="report-section rp-insight">
-    ${sectionHead('这笔卖出，如果没发生', '只替换一笔，其余成交不变')}
+    ${sectionHead('这笔卖出，如果没发生', hasBenchmark ? '只替换一笔，其余成交不变 · 含沪深300同额对照' : '只替换一笔，其余成交不变')}
     <div class="rp-card">
-      <label class="rp-control"><span>选择一笔卖出</span><select class="rp-select" data-role="cf-select">${options}</select></label>
+      <div class="rp-control-pair">
+        <label class="rp-control"><span>选择一笔卖出</span><select class="rp-select" data-role="cf-select">${options}</select></label>
+        <label class="rp-control"><span>持有到</span><select class="rp-select rp-select-sm" data-role="cf-date"></select></label>
+      </div>
       <p class="rp-cf-summary" data-role="cf-summary"></p>
       <div class="rp-chart" data-role="ghost-chart"></div>
       ${errorNote}
@@ -274,62 +289,139 @@ function attributionSection(bundle) {
   </section>`;
 }
 
+function patternLead(pattern) {
+  if (pattern.pattern_id === 'chase_high_buy') {
+    return `买入前 ${esc(pattern.rule?.window?.replace('买入日前 ', '') || '5 个交易日')}涨幅 ≥ ${esc(pattern.rule?.threshold_display || '10.0%')} 的买入，出现了 ${esc(pattern.sample_n)} 次。`;
+  }
+  if (pattern.pattern_id === 'sell_rebuy_within_2d') {
+    return `卖出后 ${esc(pattern.rule?.threshold_display || '2 个交易日')}内又买回同一只标的，出现了 ${esc(pattern.sample_n)} 次。`;
+  }
+  if (pattern.pattern_id === 'quick_flip') {
+    return `买入后 ${esc(pattern.rule?.threshold_display || '3 个交易日')}内卖出同一只标的，出现了 ${esc(pattern.sample_n)} 次。`;
+  }
+  if (pattern.pattern_id === 'overtrading') {
+    return `完成 ${esc(pattern.sample_n)} 次买入后卖出往返，达到高频候选阈值 ${esc(pattern.min_samples)} 次。`;
+  }
+  return `「${esc(pattern.name)}」出现了 ${esc(pattern.sample_n)} 次。`;
+}
+
+function behaviorPatternRow(pattern, primary) {
+  const evidence = Array.isArray(pattern.evidence) ? pattern.evidence.slice(0, 4) : [];
+  const sourceBadge = primary && pattern.pattern_id === 'chase_high_buy'
+    ? '<span class="rp-badge mode" data-role="behavior-source">本地规则引擎</span>'
+    : '';
+  const comment = primary && pattern.pattern_id === 'chase_high_buy'
+    ? '<p class="rp-behavior-comment" data-role="behavior-comment" hidden></p>'
+    : '';
+  return `<div class="rp-behavior-row" data-pattern="${esc(pattern.pattern_id)}">
+    <div class="rp-behavior-top"><span class="rp-badge loss">出现 ${esc(pattern.sample_n)} 次</span><strong>${esc(pattern.name)}</strong>${sourceBadge}</div>
+    <p class="rp-behavior-lead">${patternLead(pattern)}</p>
+    ${comment}
+    <ul class="rp-evidence rp-evidence-grid">${evidence.map((e) => `<li><span>${esc(e.trade_date)}</span><span>${esc(e.symbol)}</span><strong>${esc(e.display?.rise ?? e.display?.gap_days ?? '—')}</strong></li>`).join('')}</ul>
+  </div>`;
+}
+
 function behaviorSection(vis) {
-  const pattern = vis.pattern;
-  const evidence = Array.isArray(pattern.evidence) ? pattern.evidence.slice(0, 6) : [];
-  const lead = `买入前 ${esc(pattern.rule?.window?.replace('买入日前 ', '') || '5 个交易日')}涨幅 ≥ ${esc(pattern.rule?.threshold_display || '10.0%')} 的买入，出现了 ${esc(pattern.sample_n)} 次。`;
   return `<section class="report-section rp-insight">
-    ${sectionHead('一个值得注意的买入习惯', '只描述这笔账单')}
+    ${sectionHead('重复出现的行为', '只描述这笔账单')}
     <div class="rp-card rp-behavior">
-      <div class="rp-behavior-top"><span class="rp-badge loss">出现 ${esc(pattern.sample_n)} 次</span><strong>${esc(pattern.name)}</strong></div>
-      <p class="rp-behavior-lead">${lead}</p>
-      <ul class="rp-evidence rp-evidence-grid">${evidence.map((e) => `<li><span>${esc(e.trade_date)}</span><span>${esc(e.symbol)}</span><strong>${esc(e.display?.rise ?? '—')}</strong></li>`).join('')}</ul>
+      ${vis.patterns.map((pattern, index) => behaviorPatternRow(pattern, index === 0)).join('')}
       <p class="rp-caption">按候选阈值识别，仅描述当前账单。</p>
     </div>
   </section>`;
 }
 
-function ratioPct(value) {
-  return Number.isFinite(value) ? `${(value * 100).toFixed(0)}%` : '—';
+function analysisCard(analysis, vis) {
+  const tag = vis.candidate ? '不影响规则候选' : '暂无可执行规则';
+  const observations = analysis.observations.map((item) => `<li class="rp-analysis-item">
+    <p>${esc(item.text)}</p>
+    <small>基于 ${esc(item.evidence_event_indexes.length)} 笔交易</small>
+  </li>`).join('');
+  return `<div class="rp-card rp-analysis">
+    <div class="rp-analysis-head"><span class="rp-badge ai">AI 观察</span><span class="rp-analysis-tag">${esc(tag)}</span></div>
+    ${!vis.behavior && analysis.pattern.comment ? `<p class="rp-analysis-text">${esc(analysis.pattern.comment)}</p>` : ''}
+    ${observations ? `<ul class="rp-analysis-list">${observations}</ul>` : ''}
+  </div>`;
 }
 
-function pgrSection(data) {
-  let conclusion = '样本还不够，暂不比较两边。';
-  if (data.pgr !== null && data.plr !== null) {
-    const de = data.de ?? (data.pgr - data.plr);
-    conclusion = de <= -0.05
-      ? '亏损的持仓更容易被卖出。'
-      : de >= 0.05 ? '盈利的持仓更容易被卖出。' : '两边卖出的倾向接近。';
-  } else if (data.pgr !== null) {
-    conclusion = '样本里没有亏损卖出，暂时只看到盈利时的卖出比例。';
-  } else if (data.plr !== null) {
-    conclusion = '样本里没有盈利卖出，暂时只看到亏损时的卖出比例。';
-  }
-  const counts = data.counts ?? {};
-  return `<section class="report-section rp-insight">
-    ${sectionHead('卖出习惯', `卖出 ${counts.realized?.total ?? '—'} 笔 · 持仓 ${counts.paper?.total ?? '—'} 只`)}
-    <div class="rp-card rp-habit">
-      <div class="rp-habit-grid">
-        <div><span>盈利时卖出</span><strong>${esc(ratioPct(data.pgr))}</strong></div>
-        <div><span>亏损时卖出</span><strong>${esc(ratioPct(data.plr))}</strong></div>
-      </div>
-      <p class="rp-habit-line">${esc(conclusion)}</p>
-    </div>
-  </section>`;
+function analysisUnavailableNote() {
+  return '<p class="rp-analysis-note">在线观察暂不可用。<button class="rp-link-btn" type="button" data-retry-behavior>重试</button></p>';
 }
 
-function candidateSection(candidate) {
-  return `<section class="report-section rp-insight">
-    ${sectionHead('要不要设一条规则？', '保存前由你确认或改写')}
-    <div class="rp-card rp-candidate">
-      <p class="rp-candidate-text">“${esc(candidate.text)}”</p>
-      <p class="rp-note">${esc(candidate.reason)}</p>
-      <div class="rp-actions">
-        <button class="btn btn-primary" type="button" data-open-candidate>用这个阈值打开规则编辑</button>
-        <span class="rp-caption">候选不会自动生效。</span>
-      </div>
-    </div>
-  </section>`;
+function hydrateBehaviorAnalysis(host, { bill, bundle, vis, profileKey = null }) {
+  const slot = host.querySelector('[data-role="behavior-analysis"]');
+  if (!slot) return;
+  const facts = bundle.behaviorFacts;
+  const localPattern = vis.pattern;
+  if (!facts || !localPattern) return;
+  const sourceEl = host.querySelector('[data-role="behavior-source"]');
+  const commentEl = host.querySelector('[data-role="behavior-comment"]');
+  const request = {
+    key: behaviorAnalysisKey({ bill, bundle }),
+    facts,
+    localPattern,
+  };
+
+  const apply = (result) => {
+    if (!slot.isConnected) return;
+    if (!result.ok) {
+      if (vis.behavior) {
+        slot.innerHTML = analysisUnavailableNote();
+        bindRetry();
+      }
+      return;
+    }
+    const analysis = result.analysis;
+    if (profileKey) {
+      try { syncBehaviorAnalysis(analysis, { profileKey }); } catch { /* 画像同步失败不影响报告 */ }
+    }
+    if (analysis.source === 'ai') {
+      if (sourceEl) {
+        sourceEl.textContent = 'AI 观察';
+        sourceEl.className = 'rp-badge ai';
+        sourceEl.removeAttribute('title');
+      }
+      if (commentEl && analysis.pattern.comment) {
+        commentEl.textContent = analysis.pattern.comment;
+        commentEl.hidden = false;
+      }
+      const hasObservation = analysis.observations.length > 0;
+      if (hasObservation || (!vis.behavior && analysis.pattern.comment)) {
+        slot.innerHTML = analysisCard(analysis, vis);
+      } else {
+        slot.replaceChildren();
+      }
+      return;
+    }
+    if (sourceEl) {
+      sourceEl.textContent = '规则引擎兜底';
+      sourceEl.className = 'rp-badge fallback';
+      sourceEl.title = behaviorFallbackText(analysis.fallback_reason);
+    }
+    slot.replaceChildren();
+  };
+
+  const bindRetry = () => {
+    const button = slot.querySelector('[data-retry-behavior]');
+    if (!button) return;
+    button.addEventListener('click', async () => {
+      if (button.disabled) return;
+      button.disabled = true;
+      button.textContent = '重试中…';
+      try {
+        apply(await requestBehaviorAnalysis({ ...request, force: true }));
+      } catch {
+        button.disabled = false;
+        button.textContent = '重试';
+      }
+    });
+  };
+
+  requestBehaviorAnalysis(request).then(apply).catch(() => {
+    if (!slot.isConnected || !vis.behavior) return;
+    slot.innerHTML = analysisUnavailableNote();
+    bindRetry();
+  });
 }
 
 function sourceLineText(ref) {
@@ -367,6 +459,52 @@ export function factDetail(fact, bundle) {
   </details>`;
 }
 
+function ratioPct(value) {
+  return Number.isFinite(value) ? `${(value * 100).toFixed(0)}%` : '—';
+}
+
+function pgrSection(data) {
+  let conclusion = '样本还不够，暂不比较两边。';
+  if (data.pgr !== null && data.plr !== null) {
+    const de = data.de ?? (data.pgr - data.plr);
+    conclusion = de <= -0.05
+      ? '亏损的持仓更容易被卖出。'
+      : de >= 0.05 ? '盈利的持仓更容易被卖出。' : '两边卖出的倾向接近。';
+  } else if (data.pgr !== null) {
+    conclusion = '样本里没有亏损卖出，暂时只看到盈利时的卖出比例。';
+  } else if (data.plr !== null) {
+    conclusion = '样本里没有盈利卖出，暂时只看到亏损时的卖出比例。';
+  }
+  const counts = data.counts ?? {};
+  return `<section class="report-section rp-insight">
+    ${sectionHead('卖出习惯', `卖出 ${counts.realized?.total ?? '—'} 笔 · 持仓 ${counts.paper?.total ?? '—'} 只`)}
+    <div class="rp-card rp-habit">
+      <div class="rp-habit-grid">
+        <div><span>盈利时卖出</span><strong>${esc(ratioPct(data.pgr))}</strong></div>
+        <div><span>亏损时卖出</span><strong>${esc(ratioPct(data.plr))}</strong></div>
+      </div>
+      <p class="rp-habit-line">${esc(conclusion)}</p>
+    </div>
+  </section>`;
+}
+
+function candidateSection(candidates) {
+  return `<section class="report-section rp-insight">
+    ${sectionHead('要不要设一条规则？', '保存前由你确认或改写')}
+    <div class="rp-card rp-candidate">
+      ${candidates.map((candidate) => `<div class="rp-candidate-row" data-candidate-id="${esc(candidate.candidate_id)}">
+        <div class="rp-candidate-top"><span class="rp-badge mode">${esc(candidate.template_name)}</span></div>
+        <p class="rp-candidate-text">“${esc(candidate.text)}”</p>
+        <p class="rp-note">${esc(candidate.reason)}</p>
+        <div class="rp-actions">
+          <button class="btn btn-primary" type="button" data-open-candidate="${esc(candidate.candidate_id)}">用这条建规则</button>
+        </div>
+      </div>`).join('')}
+      <p class="rp-caption">会打开助手并带入证据；候选不会自动生效。</p>
+    </div>
+  </section>`;
+}
+
 function basisSection(bundle, demo) {
   const published = (bundle.review?.published_facts ?? []).filter((fact) => (fact.scope || 'portfolio') === 'portfolio');
   const facts = published.filter((fact) => FACT_LABELS[fact.key]);
@@ -387,7 +525,7 @@ function footnote(vis) {
   return `<footer class="rp-footnote">
     <p>这是一次事后对照，不预测未来，也不构成投资建议。</p>
     ${supplemental ? '<p>补充图表和规则候选为候选口径，不进入已复核事实。</p>' : ''}
-    ${vis.candidate ? '' : '<p>想把下一次的决定写成规则？<a href="#/rules">去规则页看看现有模板</a>。</p>'}
+    ${vis.candidate ? '' : '<p>想把下一次的决定写成规则？<a href="#/me">去个人中心看看现有模板</a>。</p>'}
   </footer>`;
 }
 
@@ -402,9 +540,12 @@ function renderBundle(host, bundle, ctx, bill) {
 
   const insights = bundle.insights ?? {};
   let profile = null;
+  let profileKey = null;
   if (!demo) {
     try {
-      profile = recordReportObservation({ bundle, bill, ruleState: ruleStateOf(ctx?.state?.contracts?.versions) }).profile;
+      const observation = recordReportObservation({ bundle, bill, ruleState: ruleStateOf(ctx?.state?.contracts?.versions) });
+      profile = observation.profile;
+      profileKey = observation.snapshot?.profile_key ?? null;
     } catch { /* 画像记录失败不阻断报告 */ }
   }
   let candidatePack = null;
@@ -430,50 +571,85 @@ function renderBundle(host, bundle, ctx, bill) {
     ${vis.waterfall ? waterfallSection(bundle) : ''}
     ${vis.attribution ? attributionSection(bundle) : ''}
     ${vis.behavior ? behaviorSection(vis) : ''}
+    <div class="rp-analysis-slot" data-role="behavior-analysis"></div>
     ${vis.pgr ? pgrSection(vis.pgrData) : ''}
-    ${vis.candidate ? candidateSection(vis.candidateData) : ''}
+    ${vis.candidate ? candidateSection(vis.candidates) : ''}
     ${vis.basis ? basisSection(bundle, demo) : ''}
     ${warningNote}
     ${footnote(vis)}
   </div>`;
 
   mountGhostChart(host, bundle);
-  bindCandidateButton(host, ctx, vis.candidateData);
+  bindCandidateButtons(host, ctx, vis.candidates);
+  hydrateBehaviorAnalysis(host, { bill, bundle, vis, profileKey });
 }
 
-function counterfactualSummary(cf) {
-  const recovered = cf?.replace?.recoveredMoney;
-  if (!Number.isFinite(recovered)) return '';
-  if (recovered > 0) return `不卖这笔，会多拿 ${moneyOf(recovered)}。`;
-  if (recovered < 0) return `不卖这笔，会少拿 ${moneyOf(-recovered)}。`;
-  return '不卖这笔，结果不变。';
+// 反事实沙盒：复用 replaceSell 序列中逐日的 cf − actual；不引入新的价格假设。
+function sandboxText(point) {
+  if (!point || !Number.isFinite(point.cf) || !Number.isFinite(point.actual)) {
+    return `${point?.date ?? '该日'}缺价：不估算差额。`;
+  }
+  const gap = point.cf - point.actual;
+  if (Math.abs(gap) < 0.005) return `不卖这笔，到 ${point.date} 结果不变。`;
+  return gap > 0
+    ? `不卖这笔，到 ${point.date} 会多拿 ${moneyOf(gap)}。`
+    : `不卖这笔，到 ${point.date} 会少拿 ${moneyOf(-gap)}。`;
+}
+
+function sandboxDates(cf) {
+  const sellDate = cf?.replace?.replaced?.trade_date ?? cf?.series?.points?.[0]?.date ?? '';
+  return (Array.isArray(cf?.series?.points) ? cf.series.points : [])
+    .filter((p) => p.date >= sellDate && Number.isFinite(p.cf) && Number.isFinite(p.actual))
+    .map((p) => p.date);
 }
 
 function mountGhostChart(host, bundle) {
   const chartHost = host.querySelector('[data-role="ghost-chart"]');
   const select = host.querySelector('[data-role="cf-select"]');
+  const dateSelect = host.querySelector('[data-role="cf-date"]');
   const summary = host.querySelector('[data-role="cf-summary"]');
   const list = orderedCounterfactuals(bundle.insights?.portfolio?.counterfactuals);
   if (!chartHost || !list.length) return;
+  let chartApi = null;
+  let activeCf = list[0];
   const draw = (index) => {
     const cf = list[index] ?? list[0];
+    activeCf = cf;
     chartHost.replaceChildren();
-    renderGhostChart(chartHost, {
+    chartApi = renderGhostChart(chartHost, {
       series: cf.series,
       markers: cf.markers,
       marketSource: { ...(bundle.marketSource ?? {}), dynamic: bundle.marketSource?.id === 'dynamic-tushare' },
       compact: true,
     });
-    if (summary) summary.textContent = counterfactualSummary(cf);
+    const dates = sandboxDates(cf);
+    if (dateSelect) {
+      dateSelect.innerHTML = dates.map((d) => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
+      dateSelect.value = dates[dates.length - 1] ?? '';
+    }
+    const point = cf.series.points[cf.series.points.length - 1] ?? null;
+    if (summary) summary.textContent = sandboxText(point);
+    if (chartApi && point) chartApi.setIndex(cf.series.points.indexOf(point));
   };
   draw(0);
   if (select) select.addEventListener('change', () => draw(Number(select.value)));
+  if (dateSelect) {
+    dateSelect.addEventListener('change', () => {
+      const i = activeCf.series.points.findIndex((p) => p.date === dateSelect.value);
+      if (i < 0) return;
+      if (summary) summary.textContent = sandboxText(activeCf.series.points[i]);
+      if (chartApi) chartApi.setIndex(i);
+    });
+  }
 }
 
-function bindCandidateButton(host, ctx, candidate) {
-  const button = host.querySelector('[data-open-candidate]');
-  if (!button || !candidate || !ctx) return;
-  button.addEventListener('click', () => { openRuleCandidate(ctx, candidate); });
+function bindCandidateButtons(host, ctx, candidates) {
+  host.querySelectorAll('[data-open-candidate]').forEach((button) => {
+    const id = button.getAttribute('data-open-candidate');
+    const candidate = candidates.find((c) => c.candidate_id === id);
+    if (!button || !candidate || !ctx) return;
+    button.addEventListener('click', () => { openRuleCandidateInAssistant(ctx, candidate); });
+  });
 }
 
 function renderError(host, message) {

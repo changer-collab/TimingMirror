@@ -55,12 +55,12 @@ const CSV_A = [
 
 /* ---- 配置与定义表（F-5.1：集中配置＋版本＋候选标注） ---- */
 {
-  check('配置：版本 = candidate-1 且 source 标注候选占位（PRD 未到位）', PATTERN_CONFIG.version === 'candidate-1' && PATTERN_CONFIG.source.includes('候选') && PATTERN_CONFIG.source.includes('PRD'), PATTERN_CONFIG.source);
+  check('配置：版本 = candidate-2 且 source 标注候选占位（PRD 未到位）', PATTERN_CONFIG.version === 'candidate-2' && PATTERN_CONFIG.source.includes('候选') && PATTERN_CONFIG.source.includes('PRD'), PATTERN_CONFIG.source);
   const p = PATTERN_CONFIG.patterns.chase_high_buy;
   check('配置：追高买入参数（回看 5 个交易日 / 阈值 10% / 最小样本 2 / 买入侧）', p.name === '追高买入' && p.side === 'buy' && p.lookback_days === 5 && p.rise_threshold === 0.1 && p.min_samples === 2, JSON.stringify(p));
   check('配置：对象已冻结（防运行时改参）', Object.isFrozen(PATTERN_CONFIG) && Object.isFrozen(PATTERN_CONFIG.patterns) && Object.isFrozen(p), '');
   const defs = listPatternDefinitions();
-  check('定义表：方法说明可列出模式（id/名/参数）与版本', defs.config_version === 'candidate-1' && defs.patterns.length === 1 && defs.patterns[0].pattern_id === 'chase_high_buy', JSON.stringify(defs));
+  check('定义表：方法说明可列出模式（id/名/参数）与版本', defs.config_version === 'candidate-2' && defs.patterns.length === 4 && defs.patterns[0].pattern_id === 'chase_high_buy' && defs.patterns.map((x) => x.pattern_id).join(',') === 'chase_high_buy,sell_rebuy_within_2d,quick_flip,overtrading', JSON.stringify(defs));
 }
 
 /* ---- 场景 A：成立（n=3）＋窗口边界＋证据路径 ---- */
@@ -68,16 +68,16 @@ const CSV_A = [
   const norm = normalize(CSV_A, 'scenario-a.csv');
   check('场景A：标准化通过（7 条交易，无错误）', !norm.blocked && norm.trades.length === 7, JSON.stringify(norm.errors));
   const list = buildPatternList({ trades: norm.trades, market: marketA() });
-  check('场景A：清单 config_version/config_source 与 notes 声明 F-10.4/F-10.6', list.config_version === 'candidate-1' && list.notes.length === 4 && list.notes.some((s) => s.includes('F-10.6')) && list.notes.some((s) => s.includes('F-10.4')), JSON.stringify(list.notes));
+  check('场景A：清单 config_version/config_source 与 notes 声明 F-10.4/F-10.6', list.config_version === 'candidate-2' && list.notes.length === 4 && list.notes.some((s) => s.includes('F-10.6')) && list.notes.some((s) => s.includes('F-10.4')), JSON.stringify(list.notes));
   check('场景A：notes 声明三态语义（T1-14 不利结论照实）', list.notes.some((s) => s.includes('成立/不成立/证据不足') && s.includes('T1-14')), JSON.stringify(list.notes));
   check('场景A：scope 计数（7 笔 = 6 买 + 1 卖）', list.scope.trade_count === 7 && list.scope.buy_count === 6 && list.scope.sell_count === 1, JSON.stringify(list.scope));
 
   const card = list.patterns[0];
   check('场景A：卡字段（模式名/实现状态/状态/样本数/最小样本）', card.pattern_id === 'chase_high_buy' && card.name === '追高买入' && card.implemented === true && card.status === '成立' && card.sample_n === 3 && card.min_samples === 2, JSON.stringify({ s: card.status, n: card.sample_n }));
   check('场景A：evaluated_n = 命中 3 + 未命中 1 = 4（观测充分性可见）', card.evaluated_n === 4, card.evaluated_n);
-  check('场景A：hypotheses 视图（OUTPUT02/T1-14）：statement 含阈值/最小重复数，n/evaluated_n/证据 ID/检验方式齐备', list.hypotheses.length === 1 && list.hypotheses[0].hypothesis_id === 'chase_high_buy' && list.hypotheses[0].statement.includes('追高买入') && list.hypotheses[0].statement.includes('10.0%') && list.hypotheses[0].status === '成立' && list.hypotheses[0].n === 3 && list.hypotheses[0].evaluated_n === 4 && list.hypotheses[0].check_method.includes('情境切分') && eqArr(list.hypotheses[0].evidence_ids, ['T004', 'T001', 'T002']), JSON.stringify(list.hypotheses[0]));
+  check('场景A：hypotheses 视图（OUTPUT02/T1-14）：statement 含阈值/最小重复数，n/evaluated_n/证据 ID/检验方式齐备', list.hypotheses.length === 4 && list.hypotheses[0].hypothesis_id === 'chase_high_buy' && list.hypotheses[0].statement.includes('追高买入') && list.hypotheses[0].statement.includes('10.0%') && list.hypotheses[0].status === '成立' && list.hypotheses[0].n === 3 && list.hypotheses[0].evaluated_n === 4 && list.hypotheses[0].check_method.includes('情境切分') && eqArr(list.hypotheses[0].evidence_ids, ['T004', 'T001', 'T002']), JSON.stringify(list.hypotheses[0]));
   check('场景A：阈值与检验方式（规则展示 1 位小数；comparator ≥）', card.rule.window === '买入日前 5 个交易日' && card.rule.comparator === '≥' && card.rule.threshold === 0.1 && card.rule.threshold_display === '10.0%' && card.check_method.includes('情境切分'), JSON.stringify(card.rule));
-  check('场景A：threshold_meta 记录配置版本与候选来源', card.threshold_meta.config_version === 'candidate-1' && card.threshold_meta.source.includes('候选'), JSON.stringify(card.threshold_meta));
+  check('场景A：threshold_meta 记录配置版本与候选来源', card.threshold_meta.config_version === 'candidate-2' && card.threshold_meta.source.includes('候选'), JSON.stringify(card.threshold_meta));
   check('场景A：结论含“不宣称阈值普适”（F-5.1）', card.conclusion.includes('不宣称阈值'), card.conclusion);
 
   check('场景A：证据成交 ID 有序（按日期） = [T004, T001, T002]', eqArr(card.evidence.map((e) => e.trade_id), ['T004', 'T001', 'T002']), JSON.stringify(card.evidence.map((e) => e.trade_id)));
@@ -155,6 +155,44 @@ const CSV_A = [
   check('参数化：lookback=3 时 T001 窗口端点 08-06 缺价 → 未评估（窗口平移不改语义）', card.unevaluated.some((u) => u.trade_id === 'T001' && u.code === BEHAVIOR_CODES.PRICE_MISSING), JSON.stringify(card.unevaluated));
   check('参数化：lookback=3 下已评估 4 ≥ 2、n=1 < 2 → 状态“不成立”（三态随参数联动）', card.evaluated_n === 4 && card.status === '不成立', JSON.stringify({ ev: card.evaluated_n, s: card.status }));
   check('参数化：卡内 threshold_meta 记录覆盖版本（test-override）', card.threshold_meta.config_version === 'test-override', card.threshold_meta.config_version);
+}
+
+/* ---- 新增模式：卖后追回 / 买入后快卖 / 交易频率（只读方向、日期、数量，不读价格） ---- */
+{
+  const CAL_N = ['2024-09-02', '2024-09-03', '2024-09-04', '2024-09-05', '2024-09-06', '2024-09-09', '2024-09-10', '2024-09-11', '2024-09-12', '2024-09-13', '2024-09-16', '2024-09-17', '2024-09-18', '2024-09-19'];
+  const marketN = () => createMarketCache({
+    tradingDays: CAL_N,
+    range: { start: CAL_N[0], end: CAL_N[CAL_N.length - 1] },
+    symbols: { '000000': { bars: CAL_N.map((date) => ({ date, close: 100 })) } },
+  });
+  const rows = [
+    ['N1', '2024-09-02', 'buy'], ['N2', '2024-09-05', 'sell'],
+    ['N3', '2024-09-06', 'buy'], ['N4', '2024-09-10', 'sell'],
+    ['N5', '2024-09-11', 'buy'], ['N6', '2024-09-12', 'sell'],
+    ['N7', '2024-09-13', 'buy'], ['N8', '2024-09-16', 'sell'],
+  ].map(([id, date, side]) => ({ trade_id: id, trade_date: date, symbol: '000000', side, price: 100, quantity: 100 }));
+  const list = buildPatternList({ trades: rows, market: marketN() });
+  const byId = (id) => list.patterns.find((p) => p.pattern_id === id);
+  const rebuy = byId('sell_rebuy_within_2d');
+  const flip = byId('quick_flip');
+  const freq = byId('overtrading');
+  check('新增模式：四条候选模式均返回，追高仍为首卡', list.patterns.length === 4 && list.patterns[0].pattern_id === 'chase_high_buy' && list.hypotheses.length === 4, JSON.stringify(list.patterns.map((p) => p.pattern_id)));
+  check('卖后两日内买回：3 次命中（N3/N5/N7）→ 成立，证据带前一笔卖出与间隔', rebuy.status === '成立' && rebuy.sample_n === 3
+    && eqArr(rebuy.evidence.map((e) => e.trade_id), ['N3', 'N5', 'N7']) && rebuy.evidence[0].prior_trade_id === 'N2' && rebuy.evidence[0].gap_days === 1, JSON.stringify({ s: rebuy.status, n: rebuy.sample_n }));
+  check('买入后三日内卖出：4 次命中（含端点 3 个交易日）→ 成立', flip.status === '成立' && flip.sample_n === 4
+    && flip.evidence[0].gap_days === 3 && flip.evidence[0].trade_id === 'N2', JSON.stringify({ s: flip.status, n: flip.sample_n, g: flip.evidence[0]?.gap_days }));
+  check('交易频率：4 次完整往返 → 成立，样本按先进先出配对', freq.status === '成立' && freq.sample_n === 4 && freq.evaluated_n === 4
+    && freq.evidence.every((e) => e.matched_quantity === 100 && Array.isArray(e.buy_trade_ids)), JSON.stringify({ s: freq.status, n: freq.sample_n }));
+  check('新模式的 hypothesis 同步三态与最小样本', list.hypotheses.find((h) => h.hypothesis_id === 'overtrading')?.status === '成立'
+    && list.hypotheses.find((h) => h.hypothesis_id === 'sell_rebuy_within_2d')?.n === 3, JSON.stringify(list.hypotheses.map((h) => [h.hypothesis_id, h.status, h.n])));
+
+  const sameDay = [
+    { trade_id: 'S1', trade_date: '2024-09-02', symbol: '000000', side: 'buy', price: 100, quantity: 100 },
+    { trade_id: 'S2', trade_date: '2024-09-02', symbol: '000000', side: 'sell', price: 100, quantity: 100 },
+  ];
+  const sameList = buildPatternList({ trades: sameDay, market: marketN() });
+  const sameFlip = sameList.patterns.find((p) => p.pattern_id === 'quick_flip');
+  check('同日买卖：先后顺序未知，不配为“买入后卖出”样本', sameFlip.unevaluated.some((u) => u.code === BEHAVIOR_CODES.SAME_DAY_ORDER_UNKNOWN) && sameFlip.sample_n === 0, JSON.stringify(sameFlip.unevaluated));
 }
 
 /* ---- 边界与入参校验 ---- */

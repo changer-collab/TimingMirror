@@ -32,13 +32,24 @@ function makeButton() {
     textContent: '',
     hidden: false,
     attrs: {},
+    classList: makeClassList(),
     setAttribute(k, v) { this.attrs[k] = String(v); },
     getAttribute(k) { return this.attrs[k]; },
+    removeAttribute(k) { delete this.attrs[k]; },
   };
 }
 
 const shell = { classList: makeClassList() };
-const aside = { hidden: true };
+const aside = {
+  hidden: true,
+  attrs: {},
+  setAttribute(k, v) { this.attrs[k] = String(v); },
+  getAttribute(k) { return this.attrs[k]; },
+  removeAttribute(k) { delete this.attrs[k]; },
+  querySelector() { return null; },
+  contains() { return false; },
+  focus() {},
+};
 const button = makeButton();
 const body = { classList: makeClassList() };
 const byId = {
@@ -48,9 +59,12 @@ const byId = {
 };
 
 globalThis.window = { innerWidth: 1440 };
+globalThis.HTMLElement = class {};
 globalThis.document = {
   getElementById: (id) => byId[id] ?? null,
+  addEventListener() {},
   body,
+  activeElement: null,
   createElement: () => ({ style: {}, textContent: '', append() {} }),
   head: { append() {} },
 };

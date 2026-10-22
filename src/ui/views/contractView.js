@@ -31,6 +31,54 @@ const STOP_NOTE = '停用后，该规则进入历史规则，不再参与之后�
 const RECONFIRM_NOTE = '这条规则的保存内容与当前校验标识不一致。为避免误用，它暂不参与测试。请核对后用“新增规则”重新保存，或停用该规则。';
 const EMPTY_NOTE = '暂无当前生效的规则，测试时不会产生规则提醒。点击“新增规则”开始设置。';
 
+function ledgerEventRow(e) {
+  const kind = e.outcome === 'violated' ? 'warn' : e.outcome === 'compliant' ? 'ok' : 'mode';
+  return el('div', { class: 'cv-ledger-event', 'data-outcome': e.outcome }, [
+    el('span', { class: 'cv-ledger-date' }, [safe(e.at)]),
+    el('span', { class: 'cv-ledger-sym' }, [`${safe(e.symbol)} · ${safe(e.side_label)}`]),
+    chip(e.outcome_label, kind),
+    el('span', { class: 'cv-ledger-msg' }, [safe(e.message)]),
+  ]);
+}
+
+function ledgerCard(ledger) {
+  const s = ledger.summary;
+  const box = el('div', { class: 'cv-ledger', 'data-role': 'rule-ledger' }, [
+    el('div', { class: 'cv-ledger-head' }, [
+      el('div', { class: 'section-title' }, ['守约账本']),
+      el('span', { class: 'muted small' }, [`按当前生效规则复核账单中的 ${safe(ledger.trades_n)} 笔交易${ledger.as_of ? `（截至 ${safe(ledger.as_of)}）` : ''}`]),
+    ]),
+    el('div', { class: 'cv-ledger-stats' }, [
+      chip(`复核 ${s.reviewed_n} 笔`, 'mode'),
+      chip(`违反 ${s.violated_n} 笔`, s.violated_n ? 'warn' : 'mode'),
+      chip(`已提醒 ${s.warned_n} 笔`, 'mode'),
+      chip(`数据不足 ${s.missing_n} 笔`, 'mode'),
+    ]),
+  ]);
+  if (!ledger.rules.length) {
+    box.append(el('div', { class: 'muted small' }, ['暂无当前生效规则：账本没有可复核的规则。']));
+  } else {
+    box.append(el('div', { class: 'cv-ledger-rules' }, ledger.rules.map((r) => el('div', { class: 'cv-ledger-row', 'data-hash': r.hash }, [
+      el('div', { class: 'cv-ledger-row-head' }, [
+        el('span', { class: 'cv-ledger-name' }, [safe(r.template_name)]),
+        chip(r.enforcement_label, r.enforcement === 'remind' ? 'mode' : 'warn'),
+        el('span', { class: 'muted small' }, [safe(r.scope_text)]),
+      ]),
+      el('div', { class: 'cv-ledger-status' }, [safe(r.status_text)]),
+      r.missing_codes.length ? el('div', { class: 'muted small' }, [`数据不足原因：${r.missing_codes.map((c) => `${c.code}×${c.n}`).join('、')}`]) : null,
+    ]))));
+  }
+  if (ledger.events.length) {
+    box.append(el('div', { class: 'cv-ledger-subtitle' }, ['最近事件']));
+    box.append(el('div', { class: 'cv-ledger-events' }, ledger.events.map(ledgerEventRow)));
+  }
+  box.append(el('details', { class: 'cv-tech-note' }, [
+    el('summary', {}, ['账本口径']),
+    ...ledger.notes.map((n) => el('div', { class: 'muted small' }, [n])),
+  ]));
+  return box;
+}
+
 let fallbackClient = null;
 function getFallbackClient() {
   if (!fallbackClient) {
@@ -155,9 +203,12 @@ function ruleDetail(rule) {
     el('div', { class: 'muted small cv-hash cv-hash-full' }, [`${adapter.CONTRACT_HASH_NOTE}：${rule.hash}`]),
     el('div', { class: 'muted small' }, [`哈希算法：${safe(rule.hash_algorithm)}（候选占位算法，待 M0-C1 冻结后可能替换）`]),
     el('div', { class: 'muted small' }, [`创建时间：${fmtAt(rule.records[0].at)} · 最近状态变更：${fmtAt(rule.latest.at)}`]),
-    ...(rule.notes.length
+    rule.decision_statement
+      ? el('div', { class: 'cv-decision' }, [`决定自述（v${safe(rule.decision_statement.v)} 保存时冻结）：${safe(rule.decision_statement.text)}`])
+      : el('div', { class: 'muted small' }, ['决定自述：无']),
+    ...(rule.notes.length && !rule.decision_statement
       ? rule.notes.map((n) => el('div', { class: 'muted small' }, [`备注（不参与规则判定）：${safe(n)}`]))
-      : [el('div', { class: 'muted small' }, ['备注：无'])]),
+      : []),
     rule.integrity.ok ? null : el('div', { class: 'muted small' }, [`校验结果：${rule.integrity.code} · ${rule.integrity.message}`]),
     rule.duplicates.length
       ? el('div', { class: 'muted small' }, [`早期重复记录：同一候选哈希曾被重复保存为 ${rule.duplicates.map((v) => `v${safe(v)}`).join('、')}；此处按哈希合并展示，本地数据未删除。`])
@@ -178,7 +229,8 @@ export function renderContract(root, ctx) {
   function commitAll(recs, extra = {}) {
     if (!recs || !recs.length) return;
     simToken = null;
-    set({ contracts: { versions: [...c.versions, ...recs], sim: { ...c.sim, result: null, running: false, runId: null, fallback: null }, ...extra } });
+    simContextLoadingKey = null;
+    set({ contracts: { versions: [...c.versions, ...recs], simContext: null, sim: { ...c.sim, result: null, running: false, runId: null, fallback: null }, ...extra } });
     saveContractsDemo();
   }
   function openEditor(mode, { rule = null, template_id = null } = {}) {
@@ -236,6 +288,7 @@ export function renderContract(root, ctx) {
         ]),
       ]),
       el('div', { class: 'cv-rule-text' }, [safe(rule.text)]),
+      rule.decision_statement ? el('div', { class: 'cv-decision cv-decision-current' }, [`决定自述：${safe(rule.decision_statement.text)}`]) : null,
       el('div', { class: 'cv-rule-scope', 'data-scope': rule.scope && rule.scope.kind === 'symbol' ? rule.scope.symbol : 'all' }, [`适用范围：${safe(rule.scope_text)}`]),
       cond ? el('div', { class: 'cv-rule-cond' }, [cond]) : null,
       confirming ? el('div', { class: 'cv-confirm' }, [
@@ -359,8 +412,18 @@ export function renderContract(root, ctx) {
   const hasTrades = hasBuyback || hasBuySell;
   const hasSurge = current.some((r) => r.kind === 'change_pct_threshold');
   const localBill = !!(state.bill && state.bill.status === 'confirmed' && state.bill.sourceType === 'local');
+  const demoSimulationAllowed = ctx.allowDemoSimulation !== false;
   const marketSource = localBill ? adapter.DEFAULT_MARKET_SOURCE : (c.marketSource === 'synthetic-fixture' ? 'synthetic-fixture' : adapter.DEFAULT_MARKET_SOURCE);
   const sim = el('div', { class: 'card', 'data-role': 'sim-section' });
+  const simResultBox = el('div', { class: 'cv-sim-out' });
+  let simBtn = null;
+  if (!localBill && !demoSimulationAllowed) {
+    sim.append(el('div', { class: 'section-title' }, ['历史情境测试']));
+    sim.append(el('div', { class: 'cv-sim-empty' }, [
+      el('div', { class: 'muted' }, ['导入并确认一份账单后，可在上方用当前规则做历史情境测试。没有账单时不会自动加载行情，也不会用示例数据代替。']),
+      el('a', { class: 'btn small', href: '#/import' }, ['去导入账单']),
+    ]));
+  } else {
   sim.append(el('div', { class: 'section-title' }, [localBill
     ? '历史情境测试（Tushare 动态行情）'
     : marketSource === 'synthetic-fixture'
@@ -430,15 +493,13 @@ export function renderContract(root, ctx) {
   if (localBill && sc?.supportScope) sim.append(el('div', { class: 'muted small cv-market-scope' }, [
     `支持标的：${sc.supportScope.symbols.join('、')}；支持日期范围：${sc.supportScope.range.start} 至 ${sc.supportScope.range.end}；asOfDate：${sc.asOfDate}；快照：${sc.marketSource.snapshotId ?? '无'}；拉取时间：${sc.marketSource.fetchedAt ? fmtAt(sc.marketSource.fetchedAt) : '无'}。`,
   ]));
-  const simResultBox = el('div', { class: 'cv-sim-out' });
-  let simBtn = null;
   if (!sc) {
     sim.append(el('div', { class: 'muted' }, [localBill
       ? '正在获取 Tushare 动态行情与交易来源…'
       : `正在加载${marketSource === 'synthetic-fixture' ? '合成回归' : 'Tushare 动态'}行情与交易来源…`]));
     if (simContextLoadingKey !== src.key) {
       simContextLoadingKey = src.key;
-      adapter.contractSimContext({ bill: state.bill, marketSource })
+      adapter.contractSimContext({ bill: state.bill, marketSource, versions: c.versions })
         .then((d) => {
           if (d.error) return { simContext: d, sim: { ...state.contracts.sim, result: null, running: false, runId: null, fallback: null } };
           const cur = state.contracts.sim;
@@ -522,8 +583,10 @@ export function renderContract(root, ctx) {
       sim.append(el('div', { class: 'muted small cv-buys' }, [`买入记录来源：${displayTradeSource(sc.tradesSource)}——买入：${buys}`]));
     }
   }
+  }
   sim.append(simResultBox);
-  page.append(sim);
+  if (c.simContext && !c.simContext.error && c.simContext.ledger) sim.append(ledgerCard(c.simContext.ledger));
+  page.insertBefore(sim, currentBox);
 
   function paintSim() {
     if (simBtn) simBtn.disabled = !!c.sim.running;
@@ -609,10 +672,10 @@ export function renderContract(root, ctx) {
       scopeNodes.push(symInput, el('div', { class: 'muted small' }, [adapter.CONTRACT_SCOPE_OPTIONS.find((o) => o.kind === 'symbol').note]));
     }
     dialog.append(el('div', { class: 'cv-field cv-scope-field' }, scopeNodes));
-    const note = el('textarea', { class: 'input', rows: '2', 'data-role': 'note', placeholder: '可选：写下你为什么想要这条规则' });
+    const note = el('textarea', { class: 'input', rows: '2', 'data-role': 'note', placeholder: '可选：写下你为什么立下这条规则（保存后随版本冻结，不可改写）' });
     note.value = c.draft.note ?? '';
     note.addEventListener('input', (e) => { c.draft.note = e.target.value; });
-    dialog.append(el('label', { class: 'cv-field' }, [el('span', { class: 'muted small' }, ['备注（仅备注，不参与规则判定，不进入哈希）']), note]));
+    dialog.append(el('label', { class: 'cv-field' }, [el('span', { class: 'muted small' }, ['决定自述（保存时随版本冻结；不参与判定，不进入哈希）']), note]));
 
     const live = el('div', { class: 'cv-live' });
     const hint = el('div', { class: 'muted small cv-hint' });
@@ -661,7 +724,7 @@ export function renderContract(root, ctx) {
         nodes.push(el('details', { class: 'cv-tech-note' }, [
           el('summary', {}, ['技术信息（候选哈希）']),
           el('div', { class: 'muted small cv-hash' }, [`${adapter.CONTRACT_HASH_NOTE}：${parsed.hash}`]),
-          el('div', { class: 'muted small' }, [`哈希算法：${parsed.hash_algorithm}（占位算法，冻结后可能替换；覆盖模板、条件、参数与规则文本，不含备注）`]),
+          el('div', { class: 'muted small' }, [`哈希算法：${parsed.hash_algorithm}（占位算法，冻结后可能替换；覆盖模板、条件、参数与规则文本，不含决定自述）`]),
         ]));
       }
       live.replaceChildren(...nodes);
@@ -669,7 +732,7 @@ export function renderContract(root, ctx) {
       saveBtn.disabled = !d.canSave || (needAck && !scopeAcked(d));
       const hintText = {
         invalid: '参数无效：请先修正参数，保存不可用。',
-        unchanged: '与当前规则相同：同一规则不会重复保存；备注不参与判定，不能单独形成新规则。',
+        unchanged: '与当前规则相同：同一规则不会重复保存；决定自述不参与判定，不能单独形成新规则。',
         restore: `与历史版本 v${safe(d.same && d.same.v)} 相同：保存后将恢复该版本为当前规则，不新增版本号。`,
         blocked: '该参数对应的历史记录内容与校验标识不一致，不能保存；请换用其他参数。',
         new: `保存后生成版本 v${d.next_version}，立即参与历史情境测试。`,

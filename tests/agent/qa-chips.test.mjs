@@ -189,7 +189,7 @@ const answerFor = (chipId, extra = {}) => buildLocalChipAnswer({
   };
   const opened = openRuleCandidate(ctx, c);
   check('候选预填：打开既有规则编辑入口，字段/阈值预填且未保存', opened === true
-    && state.route === 'rules'
+    && state.route === 'contract'
     && state.contracts.modal?.mode === 'add'
     && state.contracts.draft?.template_id === 'no_buy_on_surge'
     && String(state.contracts.draft?.fields?.threshold_pct) === '10'

@@ -1,6 +1,8 @@
 // 站点 Function 的百炼 transport（仅在配置 DASHSCOPE_API_KEY 后由入口构造）。
 // 固定北京地域、qwen-plus、JSON mode/非思考；超时按单次上游调用配置。
 // 不记录 question/facts/rawText/API Key；不向调用方回传供应商原始正文。
+import { BEHAVIOR_CANDIDATE } from './behaviorAnalysis.mjs';
+
 export const DASHSCOPE_ENDPOINT = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation';
 export const DASHSCOPE_MULTIMODAL_ENDPOINT = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
 export const DASHSCOPE_VISION_MODEL = 'qwen3-vl-plus';
@@ -81,6 +83,17 @@ const IMPORT_VISION_SYSTEM = [
 ].join('\n');
 
 const IMPORT_VISION_USER_TEXT = '请识别这些页面中的交易明细，并按系统要求返回 JSON。无法确定的内容留空并写入 unresolved，不要猜测。';
+
+const BEHAVIOR_ANALYSIS_SYSTEM = [
+  '你是 TimingMirror 的行为分析器。用户消息是脱敏后的行为事实 JSON，不含股票代码、价格、金额、日期或文件名。',
+  '确定性引擎已经算出 chase_high_buy 的三态、sample_n、evaluated_n 与证据索引；你必须原样复述，不得改写、补算、四舍五入或编造。',
+  '只输出 JSON 对象：{"patterns":[{"pattern_id":"chase_high_buy","status":"成立|不成立|证据不足","sample_n":0,"evaluated_n":0,"evidence_event_indexes":[],"comment":""}],"observations":[],"rule_candidates":[]}。',
+  'patterns 必须恰好一条，字段与事实完全一致；comment 用简体中文，不超过 80 字，只描述事实，不预测、不荐股、不承诺收益、不给出买卖指令。',
+  'observations 只能使用 sell_rebuy_within_2d 或 overtrading；每项为 {"observation_id":"...","text":"...","evidence_event_indexes":[...]}；必须引用 events 中真实索引；没有就 []。',
+  '只有 facts.trading.sell_rebuy_within_2d_count ≥ 1 时才可输出 sell_rebuy_within_2d；只有 facts.trading.sell_after_buy_count ≥ 4 时才可输出 overtrading。',
+  `rule_candidates 只能使用 ${BEHAVIOR_CANDIDATE.candidate_id} / ${BEHAVIOR_CANDIDATE.template_id}；patterns[0].status 为“成立”时返回恰好一条，否则返回 []；不要新增模板、字段或理由。`,
+  '不要输出 Markdown、代码块、网址或额外字段。',
+].join('\n');
 
 export const RULE_NEED_CODES = Object.freeze([
   'trade_pnl', 'sell_action', 'sell_restriction', 'pause_trading', 'position_size', 'account_funds', 'intraday_price', 'volume',
@@ -253,6 +266,12 @@ export function createDashScopeTransport({
         { role: 'system', content: RULE_INTENT_SYSTEM },
         { role: 'user', content: JSON.stringify({ question, allowed_templates, context_summary }) },
       ]);
+    },
+    behaviorAnalysis({ facts }) {
+      return call([
+        { role: 'system', content: BEHAVIOR_ANALYSIS_SYSTEM },
+        { role: 'user', content: JSON.stringify(facts) },
+      ], { temperature: 0.1 });
     },
     resultExplanation({ rule, simulation }) {
       return call([
