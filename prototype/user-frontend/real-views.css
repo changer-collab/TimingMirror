@@ -849,9 +849,41 @@ body {
   width: 100%;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 10px;
-  margin-top: 4px;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.tm-paste-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.tm-paste-label {
+  font-family: var(--font-serif);
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--ink);
+}
+
+.tm-paste-kicker {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.1em;
+  color: var(--gray);
+}
+
+.tm-paste-help {
+  color: var(--gray);
+  font-size: 12px;
+  line-height: 1.7;
 }
 
 .tm-paste textarea,
@@ -867,9 +899,71 @@ body {
 
 .tm-paste textarea {
   width: 100%;
-  min-height: 108px;
+  min-height: 112px;
   padding: 12px 14px;
+  line-height: 1.7;
   resize: vertical;
+}
+
+.tm-paste textarea::placeholder {
+  color: var(--gray);
+  opacity: 1;
+}
+
+.tm-paste textarea:hover {
+  border-color: var(--line-strong);
+}
+
+.tm-paste textarea:focus {
+  border-color: var(--ink);
+}
+
+.tm-paste textarea:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.tm-paste.is-busy textarea:disabled,
+.tm-paste.is-busy textarea:disabled:hover {
+  border-color: var(--line-soft);
+  background: rgba(234, 239, 237, 0.6);
+  color: var(--gray);
+  cursor: progress;
+  resize: none;
+}
+
+.tm-paste:not(.is-busy) textarea:disabled {
+  cursor: not-allowed;
+}
+
+.tm-paste.is-busy .tm-paste-shortcut {
+  opacity: 0.55;
+}
+
+.tm-paste .btn:disabled {
+  cursor: not-allowed;
+}
+
+.tm-paste.is-busy .btn:disabled {
+  cursor: progress;
+}
+
+.tm-paste .btn:disabled:hover {
+  transform: none;
+}
+
+.tm-paste-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.tm-paste-shortcut {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--gray);
 }
 
 .tm-source {
@@ -1126,22 +1220,6 @@ body {
   font-size: 10.5px;
   color: var(--faint);
   overflow-wrap: anywhere;
-}
-
-.tm-paste-entry {
-  margin-top: 14px;
-}
-
-.tm-paste-toggle {
-  padding: 0;
-  border: 0;
-  background: none;
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.tm-paste[hidden] {
-  display: none;
 }
 
 .tm-line-pick {
