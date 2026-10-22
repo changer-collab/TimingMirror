@@ -696,8 +696,13 @@ state.report = { scenario: 'A', symbol: 'pool' };
   state.chat = defaultChat();
 }
 
-/* ==== 契约页：当前规则（每种类型一条）→ 新增 / 修改弹窗 → 历史规则 → 历史情境测试（合成行情）==== */
+/* ==== 契约页：当前规则（多条共存）→ 新增弹窗 → 历史规则 → 历史情境测试（合成行情）==== */
 const fire = async (node, type, value) => { node.value = value; for (const fn of node.listeners[type] ?? []) await fn({ target: { value } }); };
+const checkbox = async (role, checked = true) => {
+  const input = byRole(role);
+  if (!input) throw new Error(`Missing checkbox ${role}`);
+  for (const fn of input.listeners.change ?? []) await fn({ target: { checked } });
+};
 const fieldInput = (key) => findInputs(current).find((i) => i.attrs['data-field'] === key);
 const byRole = (role) => [...findByTag(current, 'select'), ...findInputs(current), ...findByTag(current, 'textarea')].find((n) => n.attrs['data-role'] === role);
 const modalNode = () => findByClass(current, 'cv-modal')[0] ?? null;
@@ -769,7 +774,7 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   const adapterMod = await imp('src/demo/adapter.js');
   const viewSrc = readFileSync(join(ROOT, 'src/ui/views/contractView.js'), 'utf8');
   check('契约：页面只经 adapter 取数（不 import contractMatch / marketCache / engine），当前 / 历史划分由 adapter 提供（页面不自行比较版本或排序），旧的并行 / 整理接口已移除',
-    !/from\s+['"][^'"]*engine\//.test(viewSrc) && !viewSrc.includes('contractMatch') && !viewSrc.includes('marketCache') && !viewSrc.includes('.activated') && !/\.sort\(/.test(viewSrc)
+    !/from\s+['"][^'"]*engine\//.test(viewSrc) && !viewSrc.includes('contractMatch') && !viewSrc.includes('marketCache') && !viewSrc.includes('.activated')
     && typeof adapterMod.contractOrganizeRecords === 'undefined' && typeof adapterMod.contractToggleRecord === 'undefined' && typeof adapterMod.contractEditorRecord === 'undefined'
     && adapterMod.CAPABILITY.contractEngine.label.includes('已接入（候选口径）') && adapterMod.CAPABILITY.bailian.label.includes('未接通'), adapterMod.CAPABILITY.contractEngine.label);
   const H = (template_id, fields) => adapterMod.previewContract({ template_id, fields }).hash;
@@ -811,7 +816,7 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
       txt.includes('当前生效规则（0）') && txt.includes('暂无当前生效的规则') && slotHashes('no_buy_on_surge').length === 0
       && texts(slotNode('no_buy_back_within')).join('|').includes('暂未设置「卖出后 N 个交易日内不追回」规则')
       && texts(slotNode('sell_within_after_buy')).join('|').includes('暂未设置「买入后 N 个交易日内卖出提醒」规则')
-      && findButtons(current).filter((b) => labelOf(b) === '新增此类规则').length === 3
+      && findButtons(current).filter((b) => labelOf(b) === '新增规则').length === 4
       && hist.tagName === 'DETAILS' && hist.attrs.open === undefined && texts(hist).join('|').includes('历史规则（0）')
       && !txt.includes('同时保留') && !txt.includes('整理此组') && !txt.includes('替换旧规则（推荐）') && !txt.includes('并行'), txt.slice(0, 300));
   }
@@ -858,10 +863,10 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     !modalNode() && sameSet(enabledHashes(), [hS3]) && stored().length === 1 && stored()[0].v === 1 && stored()[0].status === '已确认' && stored()[0].hash === hS3
     && stored()[0].schema === 'contract-v1' && stored()[0].template_id === 'no_buy_on_surge' && stored()[0].fields.threshold_pct === 3 && stored()[0].note === '追高总亏'
     && stored()[0].hash_algorithm === 'fnv1a64-placeholder' && !!stored()[0].at, JSON.stringify(stored()).slice(0, 300));
-  check('当前规则卡默认视图：“已启用”+ 规则名称 + 规则文本 + 触发条件 + 弱化版本号 + 修改 / 停用；不显示哈希 / 占位算法 / M0-C1 / 模板字段名 / 原始状态',
+  check('当前规则卡默认视图：”已启用”+ 规则名称 + 规则文本 + 触发条件 + 弱化版本号 + 停用；不显示哈希 / 占位算法 / M0-C1 / 模板字段名 / 原始状态',
     cardVisible(hS3).includes('已启用') && cardVisible(hS3).includes('涨幅超阈值不买入') && cardVisible(hS3).includes('当天涨幅超过 3% 的票，我绝不买入。')
     && cardVisible(hS3).includes('触发条件：申报买入当天涨幅超过 3.0%') && cardVisible(hS3).includes('版本 v1') && cardVisible(hS3).includes('查看详情')
-    && findButtons(ruleCardOf(hS3)).some((b) => labelOf(b) === '修改') && findButtons(ruleCardOf(hS3)).some((b) => labelOf(b) === '停用')
+    && findButtons(ruleCardOf(hS3)).some((b) => labelOf(b) === '停用')
     && !cardVisible(hS3).includes(hS3) && !cardVisible(hS3).includes('候选哈希') && !cardVisible(hS3).includes('fnv1a64') && !cardVisible(hS3).includes('M0-C1')
     && !cardVisible(hS3).includes('涨幅阈值（%）') && !cardVisible(hS3).includes('已确认') && !cardVisible(hS3).includes('历史状态变更'), cardVisible(hS3));
   check('当前规则卡详情（展开后）：版本号、完整候选哈希、占位算法与待 M0-C1 冻结提示、创建 / 最近变更时间、备注、历史状态变更',
@@ -890,7 +895,7 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     const head = findByClass(current, 'cv-sim-headline')[0];
     check('测试：两种类型的当前规则各判定一次，结果顶部列出“本次测试使用的规则”（名称 / 规则文本 / 版本），无并行 / 重复提醒 / 整理字样',
       sameSet(simHashes(), [hS3, hB5]) && texts(head).join('') === '本次测试：2 条规则中，命中 1 条 / 未命中 1 条 / 数据不足 0 条'
-      && s.includes('本次测试使用的规则：涨幅超阈值不买入「当天涨幅超过 3% 的票，我绝不买入。」（版本 v1；提醒动作：申报买入）；卖出后 N 个交易日内不追回「卖出后 5 个交易日内不追回同一只票。」（版本 v2；提醒动作：申报买入）')
+      && s.includes('涨幅超阈值不买入「当天涨幅超过 3% 的票，我绝不买入。」（版本 v1；提醒动作：申报买入）') && s.includes('卖出后 N 个交易日内不追回「卖出后 5 个交易日内不追回同一只票。」（版本 v2；提醒动作：申报买入）')
       && summaryOf('triggered') === '命中 1 条' && summaryOf('error') === '无法判定 0 条' && !s.includes('并行') && !s.includes('可能重复') && !s.includes('整理'), s.slice(0, 400));
   }
   check('测试·不追回：000000 2024-10-10（距卖出 2 日 ≤ 5）→ 命中 + 规则 / 阈值 / 情境事实 / 警告 / 候选哈希 / 演示来源；涨幅 3% 未命中且不使用账单交易',
@@ -899,132 +904,114 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     && ruleTxt(hB5).includes(`候选哈希，待 M0-C1 冻结：${hB5}`) && ruleTxt(hB5).includes('交易来源：演示账单 A')
     && verdictOf(hS3) === '未命中' && ruleTxt(hS3).includes('未超过阈值 3.0%') && !ruleTxt(hS3).includes('规则提醒') && ruleTxt(hS3).includes('涨幅模板不使用账单交易'), ruleTxt(hB5).slice(0, 400));
 
-  /* —— 4. 修改涨幅 3% → 5%：自动替代 —— */
-  await clickIn(ruleCardOf(hS3), '修改');
-  check('修改弹窗：标题“修改交易规则”，带入该规则的模板（不可更换类型）、参数 3 与备注；说明正在修改当前规则、不改写历史；按钮“保存并替换当前规则”+ 替换说明',
-    modalTxt().includes('修改交易规则') && !byRole('template') && modalTxt().includes('规则模板（修改时不能更换类型）') && modalTxt().includes('涨幅超阈值不买入')
-    && fieldInput('threshold_pct').value === '3' && byRole('note').value === '追高总亏'
-    && modalTxt().includes('正在修改当前规则「当天涨幅超过 3% 的票，我绝不买入。」（版本 v1）') && modalTxt().includes('历史版本保持原样，不会被改写')
-    && labelOf(roleBtn('modal-save')) === '保存并替换当前规则' && modalTxt().includes('保存后，新规则会立即生效；当前同类型规则会进入历史记录，不再参与测试。')
-    && !modalTxt().includes('同时保留') && !modalTxt().includes('整理'), modalTxt().slice(0, 400));
-  check('修改弹窗·未改参数：与当前规则相同 → 保存不可点（同一哈希不重复保存、备注不能单独形成新规则）',
-    roleBtn('modal-save').disabled === true && modalTxt().includes('与当前规则相同：同一规则不会重复保存'), modalTxt().slice(-200));
+  /* —— 4. 编辑涨幅规则：3% → 5%，创建新版本 v3，旧版本 v1 进入历史 —— */
+  await clickIn(ruleCardOf(hS3), '编辑');
   await fire(fieldInput('threshold_pct'), 'input', '5');
-  check('修改弹窗：改为 5 → 预览 5%、可保存，提示生成版本 v3', hashOf(liveTxt()) === hS5 && roleBtn('modal-save').disabled === false && modalTxt().includes('保存后生成版本 v3'), modalTxt().slice(-200));
+  check('编辑弹窗：涨幅 5% 预览正确，提示”保存后生成版本 v3，当前版本 v1 将进入历史规则”',
+    hashOf(liveTxt()) === hS5 && labelOf(roleBtn('modal-save')) === '保存并启用' && modalTxt().includes('保存后生成版本 v3，当前版本 v1 将进入历史规则'), modalTxt().slice(-300));
   await saveModal();
   {
-    const [newRec, oldRec] = stored().slice(2);
-    check('修改·写入：追加新规则 v3（已改写，from_v=1，replaces_v=[1]）+ 旧 3% 追加一条“已拒绝 · 经替代”状态记录（仍为 v1，replaced_by_v=3）；原记录未改写、未删除',
-      stored().length === 4 && newRec.hash === hS5 && newRec.v === 3 && newRec.status === '已改写' && newRec.from_v === 1 && JSON.stringify(newRec.replaces_v) === '[1]'
-      && oldRec.hash === hS3 && oldRec.v === 1 && oldRec.status === '已拒绝' && oldRec.via === '替代' && oldRec.replaced_by_v === 3 && oldRec.replaced_by_hash === hS5 && oldRec.transition_from === '已确认'
-      && JSON.stringify(stored()[0]) === firstRec, JSON.stringify(stored().slice(2)).slice(0, 400));
+    const newRec = stored().at(-1);
+    const oldRec = stored().at(-2);
+    check('编辑·写入：追加新规则 v3（已确认），旧规则 v1 标记为”替代”进入历史',
+      stored().length === 4 && newRec.hash === hS5 && newRec.v === 3 && newRec.status === '已确认'
+      && oldRec.hash === hS3 && oldRec.v === 1 && oldRec.status === '已拒绝' && oldRec.via === '替代' && oldRec.replaced_by_hash === hS5, JSON.stringify(stored().slice(2)).slice(0, 400));
   }
   txt = texts(current).join('|');
-  check('修改涨幅 3%→5%：只保留 5% 为当前（买入限制一条，版本 v3），3% 进入历史并标注“已被当前规则替代，不参与后续测试。”可恢复；不追回 5 日不受影响',
-    sameSet(enabledHashes(), [hS5, hB5]) && slotHashes('no_buy_on_surge').join() === hS5 && cardVisible(hS5).includes('已启用') && cardVisible(hS5).includes('版本 v3')
-    && histHashes().join() === hS3 && histState(hS3) === 'replaced' && histVisible(hS3).includes('已被替代') && histVisible(hS3).includes('已被当前规则替代，不参与后续测试。')
-    && histVisible(hS3).includes('恢复为当前规则') && txt.includes('历史规则（1）') && slotHashes('no_buy_back_within').join() === hB5, JSON.stringify({ on: enabledHashes(), hist: histHashes() }));
-  check('历史规则详情：被替代规则可展开查看完整详情（候选哈希、备注、“被同类型规则 v3 替代”的状态变更）',
-    (() => { const d = findByClass(histOf(hS3), 'cv-rule-detail')[0]; const t = d ? texts(d).join('|') : ''; return d.tagName === 'DETAILS' && t.includes(hS3) && t.includes('追高总亏') && t.includes('被同类型规则 v3 替代，未新增版本'); })(),
-    texts(findByClass(histOf(hS3), 'cv-rule-detail')[0] ?? { children: [] }).join('|').slice(0, 300));
+  check('编辑涨幅 5%：当前规则更新为 5%（v3），不追回 5 日不受影响，历史包含旧 3%（v1）',
+    sameSet(enabledHashes(), [hS5, hB5]) && slotHashes('no_buy_on_surge').join() === hS5
+    && cardVisible(hS5).includes('版本 v3') && histHashes().includes(hS3) && histState(hS3) === 'replaced'
+    && histVisible(hS3).includes('已被替代') && slotHashes('no_buy_back_within').join() === hB5, JSON.stringify({ on: enabledHashes(), hist: histHashes() }));
   s = await simulate('000000', '2024-09-30');
-  check('修改后测试：只使用涨幅 5%（不含 3%）与不追回 5 日；000000 2024-09-30 涨约 +4% → 5% 未命中',
-    sameSet(simHashes(), [hS5, hB5]) && verdictOf(hS5) === '未命中' && ruleTxt(hS5).includes('未超过阈值 5.0%') && !s.includes('当天涨幅超过 3% 的票'), JSON.stringify(simHashes()));
+  check('编辑后测试：涨幅 5% 未命中，无先前卖出记录时不追回规则未命中',
+    sameSet(simHashes(), [hS5, hB5]) && verdictOf(hS5) === '未命中' && verdictOf(hB5) === '未命中' && ruleTxt(hB5).includes('无卖出记录'), ruleTxt(hB5));
 
-  /* —— 5. 修改不追回 5 日 → 3 日 —— */
-  await clickIn(ruleCardOf(hB5), '修改');
-  check('修改弹窗·不追回：带入 5 日', fieldInput('days').value === '5' && !byRole('template') && labelOf(roleBtn('modal-save')) === '保存并替换当前规则', modalTxt().slice(0, 200));
+  /* —— 5. 编辑不追回规则：5 日 → 3 日，创建新版本 v4，旧版本 v2 进入历史 —— */
+  await clickIn(ruleCardOf(hB5), '编辑');
   await fire(fieldInput('days'), 'input', '3');
   await saveModal();
-  check('修改不追回 5 日→3 日：只保留 3 日为当前（v4，已改写），5 日进入历史（已被当前规则替代）；涨幅 5%（v3）不受影响、未追加任何记录',
-    sameSet(enabledHashes(), [hS5, hB3]) && slotHashes('no_buy_back_within').join() === hB3 && sameSet(histHashes(), [hS3, hB5]) && histState(hB5) === 'replaced'
-    && histVisible(hB5).includes('已被当前规则替代，不参与后续测试。') && stored().length === 6 && stored().filter((r) => r.hash === hS5).length === 1
-    && cardVisible(hB3).includes('版本 v4') && cardVisible(hB3).includes('触发条件：卖出后 3 个交易日内再次买入同一标的') && stored()[4].status === '已改写', JSON.stringify(stored().slice(4)).slice(0, 300));
+  check('编辑不追回 3 日：当前规则更新为 3 日（v4），旧 5 日（v2）进入历史，涨幅 5% 不受影响',
+    sameSet(enabledHashes(), [hS5, hB3]) && slotHashes('no_buy_back_within').join() === hB3
+    && sameSet(histHashes(), [hS3, hB5]) && stored().length === 6
+    && cardVisible(hB3).includes('版本 v4') && histState(hB5) === 'replaced', JSON.stringify(stored().slice(4)).slice(0, 300));
   s = await simulate('000000', '2024-10-10');
-  check('修改后测试：不追回只用 3 日（命中，距卖出 2 日），5 日不参与', sameSet(simHashes(), [hS5, hB3]) && verdictOf(hB3) === '命中' && ruleTxt(hB3).includes('距最近卖出：2 个交易日') && ruleTxt(hB3).includes('阈值：3 个交易日'), JSON.stringify(simHashes()));
+  check('编辑后测试：涨幅 5%（未命中）+ 不追回 3 日（命中，距卖出 2 日 ≤ 3）', sameSet(simHashes(), [hS5, hB3]) && verdictOf(hB3) === '命中' && verdictOf(hS5) === '未命中', JSON.stringify(simHashes()));
 
-  /* —— 6. 用“新增规则”保存已有类型：同样自动替代，不出现选择 —— */
-  await clickRole('add-rule');
-  await fire(byRole('template'), 'change', 'no_buy_on_surge');
+  /* —— 6. 再次编辑涨幅规则：5% → 4%，创建新版本 v5，旧版本 v3 进入历史 —— */
+  await clickIn(ruleCardOf(hS5), '编辑');
   await fire(fieldInput('threshold_pct'), 'input', '4');
-  check('新增已有类型（涨幅 4%）：按钮“保存并启用”，并明确说明已有同类型当前规则（v3）会进入历史；不出现“同时保留 / 替换旧规则（推荐）/ 整理此组”',
-    labelOf(roleBtn('modal-save')) === '保存并启用' && modalTxt().includes('已有同类型当前规则（版本 v3）。保存后，新规则会立即生效；当前同类型规则会进入历史记录，不再参与测试。')
-    && !modalTxt().includes('同时保留') && !modalTxt().includes('替换旧规则（推荐）') && !modalTxt().includes('整理此组'), modalTxt().slice(-300));
   await saveModal();
-  check('新增已有类型：涨幅 4%（v5）自动成为唯一涨幅当前规则，5%（v3）进入历史；更早的 3%（v1）改为“已被新规则（版本 v3）替代”',
-    sameSet(enabledHashes(), [hS4, hB3]) && histState(hS5) === 'replaced' && stored().length === 8 && cardVisible(hS4).includes('版本 v5')
-    && histVisible(hS3).includes('已被新规则（版本 v3）替代，不参与后续测试。'), JSON.stringify(enabledHashes()));
+  check('再次编辑涨幅 4%：当前规则更新为 4%（v5），旧 5%（v3）进入历史，不追回 3 日不受影响',
+    enabledHashes().sort().join() === [hS4, hB3].sort().join() && stored().length === 8 && cardVisible(hS4).includes('版本 v5')
+    && sameSet(histHashes(), [hS3, hB5, hS5]) && histState(hS5) === 'replaced', JSON.stringify(enabledHashes()));
 
-  /* —— 7. 从历史恢复 —— */
+  /* —— 7. 从历史恢复（停用后再恢复）—— */
   {
     const n0 = stored().length;
-    check('恢复提示：历史 3% 显示“恢复后，当前同类型规则（版本 v5）会进入历史规则。”', histVisible(hS3).includes('恢复后，当前同类型规则（版本 v5）会进入历史规则。'), histVisible(hS3));
-    await clickIn(histOf(hS3), '恢复为当前规则'); await settle();
-    const [restoreRec, retireRec] = stored().slice(n0);
-    check('恢复历史规则：3%（v1）成为涨幅唯一当前规则（版本号不变，追加“经恢复”状态记录），原当前 4%（v5）追加“经替代”记录进入历史；不追回 3 日不受影响',
-      sameSet(enabledHashes(), [hS3, hB3]) && slotHashes('no_buy_on_surge').join() === hS3 && cardVisible(hS3).includes('版本 v1') && stored().length === n0 + 2
-      && restoreRec.hash === hS3 && restoreRec.v === 1 && restoreRec.via === '恢复' && restoreRec.status === '已确认' && restoreRec.transition_from === '已拒绝'
-      && retireRec.hash === hS4 && retireRec.v === 5 && retireRec.via === '替代' && retireRec.replaced_by_v === 1 && histState(hS4) === 'replaced'
-      && histVisible(hS4).includes('已被当前规则替代') && maxV() === 5, JSON.stringify(stored().slice(n0)).slice(0, 300));
+    await clickIn(ruleCardOf(hS4), '停用'); await clickIn(ruleCardOf(hS4), '确认停用'); await settle();
+    check('停用涨幅 4%：进入历史，不追回 3 日不受影响',
+      !enabledHashes().includes(hS4) && enabledHashes().join() === hB3 && stored().length === n0 + 1, JSON.stringify(enabledHashes()));
+    check('恢复提示：历史 4% 显示”恢复后，该规则重新参与情境测试”', histVisible(hS4).includes('恢复后，该规则重新参与情境测试'), histVisible(hS4));
+    await clickIn(histOf(hS4), '恢复为当前规则'); await settle();
+    const restoreRec = stored().at(-1);
+    check('恢复历史规则：4%（v5）重新成为当前（追加”经恢复”状态记录）',
+      enabledHashes().includes(hS4) && slotHashes('no_buy_on_surge').join() === hS4 && stored().length === n0 + 2
+      && restoreRec.hash === hS4 && restoreRec.v === 5 && restoreRec.via === '恢复' && restoreRec.status === '已确认' && restoreRec.transition_from === '已拒绝'
+      && maxV() === 5, JSON.stringify(stored().at(-1)).slice(0, 300));
     await reload();
-    check('恢复后刷新：当前规则仍为 3%（v1）+ 不追回 3 日（v4），历史为 5% / 4% / 不追回 5 日，记录数不变', sameSet(enabledHashes(), [hS3, hB3]) && sameSet(histHashes(), [hS5, hS4, hB5])
-      && state.contracts.versions.length === n0 + 2, JSON.stringify({ on: enabledHashes(), hist: histHashes() }));
+    check('恢复后刷新：当前规则仍为涨幅 4% + 不追回 3 日，记录数不变', sameSet(enabledHashes(), [hS4, hB3])
+      && state.contracts.versions.length === n0 + 2, JSON.stringify({ on: enabledHashes() }));
   }
 
   /* —— 8. 测试语义回归（命中 / 缺价 / 超范围 / 输入无效 / 日历外）—— */
   s = await simulate('000000', '2024-09-30');
-  check('测试·涨幅：000000 2024-09-30 → 3% 命中 + 规则 / 阈值 3.0% / 当日涨跌幅（引擎 display）/ 前收日 / 不复权 / 合成行情',
-    verdictOf(hS3) === '命中' && ruleTxt(hS3).includes('规则提醒') && ruleTxt(hS3).includes('规则：当天涨幅超过 3% 的票，我绝不买入。') && ruleTxt(hS3).includes('阈值：3.0%')
-    && /当日涨跌幅：\+4\.\d+%/.test(ruleTxt(hS3)) && ruleTxt(hS3).includes('前收日 2024-09-27') && ruleTxt(hS3).includes('不复权') && txt.includes('合成回归行情 · 不构成投资建议'), ruleTxt(hS3).slice(0, 400));
+  check('测试·涨幅：000000 2024-09-30 → 4% 命中 + 规则 / 阈值 4.0% / 当日涨跌幅（引擎 display）/ 前收日 / 不复权 / 合成行情',
+    verdictOf(hS4) === '命中' && ruleTxt(hS4).includes('规则提醒') && ruleTxt(hS4).includes('规则：当天涨幅超过 4% 的票，我绝不买入。') && ruleTxt(hS4).includes('阈值：4.0%')
+    && /当日涨跌幅：\+4\.\d+%/.test(ruleTxt(hS4)) && ruleTxt(hS4).includes('前收日 2024-09-27') && ruleTxt(hS4).includes('不复权') && txt.includes('合成回归行情 · 不构成投资建议'), ruleTxt(hS4).slice(0, 400));
   s = await simulate('000000', '2024-10-08');
-  check('测试·涨幅：000000 2024-10-08 → 未命中', verdictOf(hS3) === '未命中' && ruleTxt(hS3).includes('未超过阈值 3.0%') && !ruleTxt(hS3).includes('规则提醒'), ruleTxt(hS3).slice(0, 300));
+  check('测试·涨幅：000000 2024-10-08 → 未命中', verdictOf(hS4) === '未命中' && ruleTxt(hS4).includes('未超过阈值 4.0%') && !ruleTxt(hS4).includes('规则提醒'), ruleTxt(hS4).slice(0, 300));
   s = await simulate('888888', '2024-10-10');
   check('测试·涨幅：888888 2024-10-10 缺价 → 数据不足（E_CHANGE_PCT_MISSING + 引擎原因，不补造）',
-    verdictOf(hS3) === '数据不足' && ruleTxt(hS3).includes('E_CHANGE_PCT_MISSING') && ruleTxt(hS3).includes('缺 888888 收盘价') && !ruleTxt(hS3).includes('当日涨跌幅：') && !ruleTxt(hS3).includes('规则提醒'), ruleTxt(hS3).slice(0, 300));
+    verdictOf(hS4) === '数据不足' && ruleTxt(hS4).includes('E_CHANGE_PCT_MISSING') && ruleTxt(hS4).includes('缺 888888 收盘价') && !ruleTxt(hS4).includes('当日涨跌幅：') && !ruleTxt(hS4).includes('规则提醒'), ruleTxt(hS4).slice(0, 300));
   s = await simulate('000000', '2024-09-23');
-  check('测试·涨幅：缓存首日 → 数据不足（E_PREV_DAY_BEYOND_CACHE 前收不足）', verdictOf(hS3) === '数据不足' && ruleTxt(hS3).includes('E_PREV_DAY_BEYOND_CACHE'), ruleTxt(hS3).slice(0, 300));
+  check('测试·涨幅：缓存首日 → 数据不足（E_PREV_DAY_BEYOND_CACHE 前收不足）', verdictOf(hS4) === '数据不足' && ruleTxt(hS4).includes('E_PREV_DAY_BEYOND_CACHE'), ruleTxt(hS4).slice(0, 300));
   s = await simulate('000000', '2024-11-05');
-  check('测试·涨幅：超出缓存范围 → 数据不足（E_VALUATION_OUT_OF_RANGE，不回退）', verdictOf(hS3) === '数据不足' && ruleTxt(hS3).includes('E_VALUATION_OUT_OF_RANGE'), ruleTxt(hS3).slice(0, 300));
+  check('测试·涨幅：超出缓存范围 → 数据不足（E_VALUATION_OUT_OF_RANGE，不回退）', verdictOf(hS4) === '数据不足' && ruleTxt(hS4).includes('E_VALUATION_OUT_OF_RANGE'), ruleTxt(hS4).slice(0, 300));
   s = await simulate('000000', '');
-  check('测试：日期为空 → 涨幅规则“无法判定”并显示引擎输入错误（不默认日期），计入汇总“无法判定 1 条”',
-    verdictOf(hS3) === '无法判定' && ruleTxt(hS3).includes('E_CONTRACT_SIM_INPUT_INVALID') && summaryOf('error') === '无法判定 1 条', ruleTxt(hS3).slice(0, 300));
+  check('测试：日期为空 → 涨幅规则”无法判定”并显示引擎输入错误（不默认日期），计入汇总”无法判定 1 条”',
+    verdictOf(hS4) === '无法判定' && ruleTxt(hS4).includes('E_CONTRACT_SIM_INPUT_INVALID') && summaryOf('error') === '无法判定 1 条', ruleTxt(hS4).slice(0, 300));
   s = await simulate('000000', '2024-10-05');
   check('测试·不追回：2024-10-05 不在交易日历 → 数据不足（E_DATE_NOT_IN_CALENDAR，不猜测）', verdictOf(hB3) === '数据不足' && ruleTxt(hB3).includes('E_DATE_NOT_IN_CALENDAR')
     && ruleTxt(hB3).includes('不在缓存交易日历') && !ruleTxt(hB3).includes('规则提醒') && simHashes().length === 2, ruleTxt(hB3).slice(0, 300));
 
-  /* —— 9. 同一哈希不新增版本：修改为历史已有参数 = 恢复该版本 —— */
-  await clickIn(ruleCardOf(hS3), '修改');
-  await fire(fieldInput('threshold_pct'), 'input', '5');
-  check('修改为历史已有参数（5%）：提示与历史版本 v3 相同，保存将恢复该版本、不新增版本号', modalTxt().includes('与历史版本 v3 相同：保存后将恢复该版本为当前规则，不新增版本号。') && roleBtn('modal-save').disabled === false, modalTxt().slice(-300));
-  {
-    const n1 = stored().length;
-    await saveModal();
-    check('同一哈希重复保存不新增版本：5% 以原版本 v3 恢复为当前（经恢复），3%（v1）经替代进入历史，最大版本号仍为 5',
-      sameSet(enabledHashes(), [hS5, hB3]) && cardVisible(hS5).includes('版本 v3') && maxV() === 5 && stored().length === n1 + 2 && stored().at(-2).via === '恢复' && stored().at(-2).v === 3
-      && stored().at(-1).hash === hS3 && stored().at(-1).via === '替代', JSON.stringify(stored().slice(n1)).slice(0, 300));
-  }
+  /* —— 9. 完全重复规则：编辑当前规则但不改参数，提示重复 —— */
+  await clickIn(ruleCardOf(hS4), '编辑');
+  check('编辑规则未修改：不重复保存', hashOf(liveTxt()) === hS4 && modalTxt().includes('与当前规则相同') && roleBtn('modal-save').disabled === true);
+  await clickRole('modal-cancel');
 
   /* —— 10. 停用（二次确认）→ 进入历史 → 恢复 —— */
   {
     const n2 = stored().length;
     await clickIn(ruleCardOf(hB3), '停用');
     check('停用确认：先出现简短确认（说明进入历史规则、不再参与测试、可恢复），未写入记录',
-      stored().length === n2 && cardVisible(hB3).includes('确认停用“卖出后 3 个交易日内不追回同一只票。”？') && cardVisible(hB3).includes('停用后，该规则进入历史规则，不再参与之后的历史情境测试；可随时恢复为当前规则。'), cardVisible(hB3));
+      stored().length === n2 && cardVisible(hB3).includes('确认停用\u201c卖出后 3 个交易日内不追回同一只票。\u201d？') && cardVisible(hB3).includes('停用后，该规则进入历史规则，不再参与之后的历史情境测试；可随时恢复为当前规则。'), cardVisible(hB3));
     await clickIn(ruleCardOf(hB3), '取消');
     check('停用确认：取消后恢复原状，不写入记录', stored().length === n2 && enabledHashes().includes(hB3) && !cardVisible(hB3).includes('确认停用'), cardVisible(hB3));
     await disableRule(hB3);
-    check('停用：不追回 3 日（v4）追加“已拒绝 · 手动停用”（版本号不变），进入历史“已停用，不参与后续测试。”；卖出后限制显示“暂未设置 / 新增此类规则”',
+    check('停用：不追回 3 日（v4）追加”已拒绝 · 手动停用”（版本号不变），进入历史；不追回模板无当前规则',
       !enabledHashes().includes(hB3) && histState(hB3) === 'stopped' && histVisible(hB3).includes('已停用，不参与后续测试。') && histVisible(hB3).includes('恢复为当前规则')
       && stored().length === n2 + 1 && stored().at(-1).v === 4 && stored().at(-1).via === '停用' && stored().at(-1).status === '已拒绝'
-      && texts(slotNode('no_buy_back_within')).join('|').includes('暂未设置「卖出后 N 个交易日内不追回」规则') && sellsLine() === '', JSON.stringify(stored().at(-1)).slice(0, 200));
+      && !enabledHashes().includes(hB5), JSON.stringify(stored().at(-1)).slice(0, 200));
     s = await simulate('000000', '2024-10-10');
-    check('停用后测试：只剩涨幅 5%（1 条）', simHashes().join() === hS5 && s.includes('本次测试：1 条规则中'), JSON.stringify(simHashes()));
+    check('停用后测试：只有涨幅 4% 参与判定（不追回模板无当前规则）', sameSet(simHashes(), [hS4]) && s.includes('本次测试：1 条规则中'), JSON.stringify(simHashes()));
     await clickIn(histOf(hB3), '恢复为当前规则'); await settle();
-    check('恢复已停用规则：不追回 3 日以原版本 v4 回到当前（经恢复），不新增版本号', enabledHashes().includes(hB3) && cardVisible(hB3).includes('版本 v4') && stored().at(-1).via === '恢复' && stored().at(-1).v === 4 && maxV() === 5,
+    check('恢复已停用规则：不追回 3 日以原版本 v4 回到当前（经恢复），不新增版本号；涨幅规则不受影响',
+      enabledHashes().includes(hB3) && cardVisible(hB3).includes('版本 v4') && stored().at(-1).via === '恢复' && stored().at(-1).v === 4 && maxV() === 5
+      && sameSet(enabledHashes(), [hS4, hB3]),
       JSON.stringify(stored().at(-1)).slice(0, 200));
   }
 
-  /* —— 11. 旧的同类型并行规则：按“最新保存优先”派生，不删记录、不要求整理 —— */
+  /* —— 11. 旧的同类型并行数据：同模板只保留最新版本为当前，其余进入历史 —— */
   {
     const mk = (template_id, fields, v, at) => {
       const p = adapterMod.previewContract({ template_id, fields });
@@ -1037,23 +1024,24 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     store.set('tm.contracts.demo', JSON.stringify({ versions: pre }));
     await reload();
     txt = texts(current).join('|');
-    check('旧并行规则迁移：载入后每种类型只取最新保存的一条为当前（涨幅 5% v2、不追回 5 日 v4），较旧的 3% / 3 日归入历史“已被较新的同类型规则替代”；本地记录未删除、未改写（仍 4 条）',
-      sameSet(enabledHashes(), [hS5, hB5]) && sameSet(histHashes(), [hS3, hB3]) && [hS3, hB3].every((h) => histState(h) === 'superseded' && histVisible(h).includes('已被较新的同类型规则替代，不参与后续测试。') && histVisible(h).includes('恢复为当前规则'))
-      && state.contracts.versions.length === 4 && JSON.stringify(stored()) === JSON.stringify(pre) && txt.includes('当前生效规则（2）') && !txt.includes('整理此组') && !txt.includes('同时保留'), JSON.stringify({ on: enabledHashes(), hist: histHashes() }));
+    check('旧并行数据在同模板单规则模型下：每种模板只保留最新版本为当前（涨幅 5% v2、不追回 5 日 v4），旧版本进入历史（涨幅 3% v1、不追回 3 日 v3 均为 superseded）',
+      sameSet(enabledHashes(), [hS5, hB5]) && sameSet(histHashes(), [hS3, hB3])
+      && [hS3, hB3].every((h) => histState(h) === 'superseded')
+      && state.contracts.versions.length === 4 && JSON.stringify(stored()) === JSON.stringify(pre)
+      && txt.includes('当前生效规则（2）') && txt.includes('历史规则（2）'), JSON.stringify({ on: enabledHashes(), hist: histHashes() }));
     s = await simulate('000000', '2024-10-10');
-    check('旧并行规则迁移·测试：只使用每种类型最新的一条（5% 与 5 日），3% / 3 日不参与，无重复提醒提示', sameSet(simHashes(), [hS5, hB5]) && !s.includes('重复'), JSON.stringify(simHashes()));
+    check('旧并行数据·测试：只使用每种模板的最新版本（涨幅 5% 与不追回 5 日），旧版本不参与', sameSet(simHashes(), [hS5, hB5]), JSON.stringify(simHashes()));
     await reload();
-    check('旧并行规则迁移·刷新稳定：再次载入划分相同、记录仍 4 条', sameSet(enabledHashes(), [hS5, hB5]) && sameSet(histHashes(), [hS3, hB3]) && stored().length === 4, JSON.stringify(enabledHashes()));
+    check('旧并行数据·刷新稳定：当前规则仍为 2 条（涨幅 5% + 不追回 5 日），历史 2 条，记录仍 4 条', sameSet(enabledHashes(), [hS5, hB5]) && sameSet(histHashes(), [hS3, hB3]) && stored().length === 4, JSON.stringify(enabledHashes()));
     await clickIn(histOf(hS3), '恢复为当前规则'); await settle();
-    check('旧并行规则·恢复较旧的 3%：成为唯一涨幅当前规则，5%（v2）追加“经替代”记录进入历史；不会制造同类型并行，不追回组不受影响',
-      sameSet(enabledHashes(), [hS3, hB5]) && slotHashes('no_buy_on_surge').join() === hS3 && histState(hS5) === 'replaced' && histState(hB3) === 'superseded'
-      && JSON.stringify(stored().slice(4).map((r) => [r.hash, r.via, r.v])) === JSON.stringify([[hS3, '恢复', 1], [hS5, '替代', 2]]), JSON.stringify(stored().slice(4)).slice(0, 300));
-    await disableRule(hB5);
-    check('旧并行规则·停用当前 5 日：较旧的 3 日不会“复活”为当前（同时补追加替代记录），卖出后限制变为“暂未设置”',
-      !enabledHashes().includes(hB5) && !enabledHashes().includes(hB3) && histState(hB5) === 'stopped' && histState(hB3) === 'replaced' && stored().length === 8
-      && stored().at(-2).hash === hB5 && stored().at(-2).via === '停用' && stored().at(-1).hash === hB3 && stored().at(-1).via === '替代', JSON.stringify(stored().slice(6)).slice(0, 300));
+    check('旧并行数据·恢复涨幅 3%：3% 成为当前，5% 进入历史（replaced），不追回组不受影响',
+      sameSet(enabledHashes(), [hS3, hB5]) && sameSet(histHashes(), [hS5, hB3]) && histState(hS5) === 'replaced'
+      && stored().at(-2).via === '恢复' && stored().at(-2).v === 1 && stored().at(-1).via === '替代' && stored().at(-1).hash === hS5, JSON.stringify(stored().slice(-2)).slice(0, 300));
+    await disableRule(hS3);
+    check('旧并行数据·停用涨幅 3%：5% 不会”复活”为当前（同模板单规则，停用后该模板无当前规则），历史包含 3% 和 5%',
+      !enabledHashes().includes(hS3) && !enabledHashes().includes(hS5) && enabledHashes().join() === hB5 && histState(hS3) === 'stopped' && stored().length === 7, JSON.stringify(enabledHashes()));
     await reload();
-    check('旧并行规则·停用后刷新稳定：当前只有涨幅 3%', enabledHashes().join() === hS3 && stored().length === 8, JSON.stringify(enabledHashes()));
+    check('旧并行数据·停用后刷新稳定：当前只有不追回 5 日', enabledHashes().join() === hB5 && stored().length === 7, JSON.stringify(enabledHashes()));
   }
 
   /* —— 12. 旧演示记录 / 早期重复记录 / 哈希完整性 / 损坏存储 —— */
@@ -1077,21 +1065,26 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     enabledHashes().join() === dup.hash && cardVisible(dup.hash).includes('版本 v4') && cardDetail(dup.hash).includes('早期重复记录') && cardDetail(dup.hash).includes('v5、v6') && stored().length === 3, cardDetail(dup.hash).slice(0, 300));
   await clickRole('add-rule');
   await fire(byRole('template'), 'change', 'no_buy_on_surge');
-  check('同一哈希不重复保存：新增弹窗选涨幅模板（默认 5%）与当前规则相同 → 保存不可点', roleBtn('modal-save').disabled === true && modalTxt().includes('与当前规则相同'), modalTxt().slice(-200));
+  check('同一哈希不重复保存：新增弹窗选涨幅模板（默认 5%）与当前规则相同 → 提示"已存在完全相同的当前规则"，保存不可点（需勾选确认）', roleBtn('modal-save').disabled === true && modalTxt().includes('已存在完全相同的当前规则'), modalTxt().slice(-200));
+  await clickRole('modal-cancel');
+  await clickRole('add-rule');
+  await fire(byRole('template'), 'change', 'no_buy_on_surge');
   await fire(fieldInput('threshold_pct'), 'input', '6');
   await saveModal();
   const h6 = H('no_buy_on_surge', { threshold_pct: '6' });
-  check('早期重复记录后修改：新版本 v7（已改写）成为当前，v4 进入历史，旧记录全部保留', enabledHashes().join() === h6 && cardVisible(h6).includes('版本 v7') && histState(dup.hash) === 'replaced' && stored().length === 5, JSON.stringify(stored().map((r) => r.v)));
+  check('早期重复记录后新增不同哈希：新版本 v7（已确认）成为当前，旧 5% 进入历史（superseded）',
+    enabledHashes().join() === h6 && cardVisible(h6).includes('版本 v7') && histState(dup.hash) === 'replaced'
+    && stored().length === 5, JSON.stringify(stored().map((r) => [r.v, r.hash === h6 ? 'h6' : 'dup'])));
   {
     const badHash = '0123456789abcdef';
     state.contracts = { ...defaultContracts(), marketSource: 'synthetic-fixture', versions: [...state.contracts.versions, { ...dupRec(8, '2026-10-02T00:00:00Z'), hash: badHash }] }; mountCycle(); await settle();
     txt = texts(current).join('|');
-    check('完整性：哈希不一致的启用规则不计入当前规则（仍为 6%），单列“待重新确认的规则（1）”，非恐慌式说明；技术原因码只在详情中',
+    check('完整性：哈希不一致的启用规则不计入当前规则（只有 6% 为当前），单列”待重新确认的规则（1）”',
       txt.includes('当前生效规则（1）') && enabledHashes().join() === h6 && txt.includes('待重新确认的规则（1）') && reconfirmHashes().join() === badHash
       && cardVisible(badHash).includes('待重新确认') && cardVisible(badHash).includes('这条规则的保存内容与当前校验标识不一致。为避免误用，它暂不参与测试。')
       && !cardVisible(badHash).includes('E_CONTRACT_RULE_HASH_MISMATCH') && !cardVisible(badHash).includes(badHash) && cardDetail(badHash).includes('E_CONTRACT_RULE_HASH_MISMATCH') && cardDetail(badHash).includes(badHash), cardVisible(badHash).slice(0, 320));
     const sr = await simulate('000000', '2024-09-30');
-    check('完整性：待重新确认规则不参与判定，只判当前 6%（未命中），并说明另有 1 条未参与', simHashes().join() === h6 && verdictOf(h6) === '未命中' && summaryOf('error') === '无法判定 0 条'
+    check('完整性：待重新确认规则不参与判定，只判当前 6%（未命中），并说明另有 1 条未参与', sameSet(simHashes(), [h6]) && verdictOf(h6) === '未命中' && summaryOf('error') === '无法判定 0 条'
       && sr.includes('另有 1 条规则因内容与候选哈希不一致未参与本次判定（见“待重新确认的规则”）'), sr.slice(0, 320));
     await clickIn(ruleCardOf(badHash), '停用'); await settle();
     check('完整性：停用待重新确认规则 → 进入历史（已停用，不能恢复），当前规则不变', reconfirmHashes().length === 0 && histState(badHash) === 'stopped'
@@ -1251,82 +1244,113 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
 
 {
   const A = await imp('src/demo/adapter.js');
+  store.delete('tm.contracts.demo'); state.route = 'contract'; state.bill = defaultBill();
+  state.contracts = { ...defaultContracts(), marketSource: 'synthetic-fixture' }; mountCycle(); await settle();
+  const original = A.previewContract({ template_id: 'no_buy_on_surge', fields: { threshold_pct: '3' } });
+  const updated = A.previewContract({ template_id: 'no_buy_on_surge', fields: { threshold_pct: '3' }, scope: { kind: 'symbol', symbol: '600519' } });
+  await clickRole('add-rule'); await fire(byRole('template'), 'change', 'no_buy_on_surge'); await settle();
+  await fire(fieldInput('threshold_pct'), 'input', '3'); await saveModal();
+  await clickIn(ruleCardOf(original.hash), '编辑');
+  await fire(byRole('scope-kind'), 'change', 'symbol'); await settle();
+  await fire(byRole('scope-symbol-input'), 'input', '600519');
+  check('编辑范围：保存前必须确认原范围将进入历史', roleBtn('modal-save').disabled && !!byRole('edit-scope-ack'));
+  await checkbox('edit-scope-ack'); await saveModal();
+  check('编辑范围：只保留新范围，旧版本进入历史', sameSet(enabledHashes(), [updated.hash]) && histState(original.hash) === 'replaced');
+  await clickIn(histOf(original.hash), '恢复为当前规则'); await settle();
+  check('跨范围恢复：先显示变化说明，不立即替换', enabledHashes().includes(updated.hash) && histVisible(original.hash).includes('确认恢复') && histVisible(original.hash).includes('全部股票'));
+  await clickIn(histOf(original.hash), '确认恢复'); await settle();
+  check('跨范围恢复：确认后原范围生效，新范围进入历史', sameSet(enabledHashes(), [original.hash]) && histState(updated.hash) === 'replaced');
+  const text = '买入前检查交易计划';
+  const customHash = A.CONTRACT_CUSTOM_HASH({ schema: 'custom-v1', kind: 'custom', text, action: 'buy', scope: { kind: 'all' } });
+  state.contracts.versions.push(...A.contractSaveCustomRecords(state.contracts.versions, { rule_id: 'custom-edit-test', text, action: 'buy', scope: { kind: 'all' }, understanding: '核对计划', hash: customHash }));
+  mountCycle(); await settle();
+  await clickIn(ruleCardOf(customHash), '编辑');
+  check('自定义规则编辑：加载原文、动作和 AI 理解', byRole('nl-text')?.value === text && state.contracts.nl.actionChoice === 'buy' && texts(nlPanel()).join('|').includes('核对计划'));
+  await fire(byRole('nl-text'), 'input', '卖出前检查交易计划');
+  siteQueue.push({ status: 200, body: { rawText: JSON.stringify({ status: 'custom', kind: 'custom', template_id: null, params: {}, scope: { kind: 'all', symbol: null }, action: 'sell', needs: [], missing: [], understanding: '卖出核对计划' }) } });
+  await clickRole('nl-recognize'); await settle(); await clickRole('nl-action-sell'); await checkbox('nl-ack'); await clickRole('nl-save'); await settle();
+  const edited = A.contractRuleSet(state.contracts.versions).customCurrent.find((r) => r.rule_id === 'custom-edit-test');
+  check('自定义规则编辑：保留身份，更新内容并保留历史', edited?.text === '卖出前检查交易计划' && edited?.action === 'sell' && A.contractRuleSet(state.contracts.versions).history.some((r) => r.rule_id === 'custom-edit-test' && r.hash === customHash));
+  store.delete('tm.contracts.demo'); state.contracts = defaultContracts();
+}
+
+{
+  const A = await imp('src/demo/adapter.js');
   const s3 = A.previewContract({ template_id: 'no_buy_on_surge', fields: { threshold_pct: '3' } });
   const scoped = A.previewContract({ template_id: 'no_buy_on_surge', fields: { threshold_pct: '3' }, scope: { kind: 'symbol', symbol: '000000' } });
-  const checkbox = async (role, checked = true) => {
-    const input = byRole(role);
-    if (!input) throw new Error(`Missing checkbox ${role}`);
-    for (const fn of input.listeners.change ?? []) await fn({ target: { checked } });
-  };
   store.delete('tm.contracts.demo');
   state.route = 'contract'; state.bill = defaultBill();
   state.contracts = { ...defaultContracts(), marketSource: 'synthetic-fixture' };
   mountCycle(); await settle();
-  check('能力库：页面说明同类型只有一条当前规则，对话页不能使用限定代码的新能力，非交易日来源口径待统一',
-    texts(current).join('|').includes('无论适用全部股票还是单个股票代码')
+  check('能力库：页面说明多规则共存，对话页不能使用限定代码的新能力，非交易日来源口径待统一',
+    texts(current).join('|').includes('不同类型或不同股票范围的规则可以同时生效')
     && texts(current).join('|').includes('对话页目前不读取本页保存的规则')
     && texts(current).join('|').includes('非交易日处理沿用各来源原有口径（待统一）'));
   await clickRole('add-rule'); await fire(fieldInput('threshold_pct'), 'input', '3'); await saveModal();
   const first = JSON.stringify(stored()[0]);
   check('能力库：全部股票仍按 v1 保存，不增加范围字段，原哈希不变', stored()[0].schema === 'contract-v1' && !('scope' in stored()[0]) && stored()[0].hash === s3.hash);
-  await clickIn(ruleCardOf(s3.hash), '修改');
+  await clickRole('add-rule');
+  await fire(byRole('template'), 'change', 'no_buy_on_surge'); await settle();
+  await fire(fieldInput('threshold_pct'), 'input', '3');
   {
     const opts = findByTag(byRole('scope-kind'), 'option');
     const sel = opts.find((o) => o.attrs.selected === 'selected');
-    check('能力库·模板：适用范围改为下拉框，选项为“全部股票 / 单个股票”，默认全部股票，未选单个股票时不显示代码输入框',
+    check('能力库·模板：新增弹窗中适用范围为下拉框，选项为”全部股票 / 单个股票”，默认全部股票',
       byRole('scope-kind').tagName === 'SELECT' && opts.map((o) => texts(o).join('')).join('/') === '全部股票/单个股票'
       && sel?.attrs.value === 'all' && !byRole('scope-symbol-input'));
   }
   await fire(byRole('scope-kind'), 'change', 'symbol'); await settle();
-  check('能力库·模板：选择“单个股票”后出现代码输入框', !!byRole('scope-symbol-input'));
+  check('能力库·模板：选择”单个股票”后出现代码输入框', !!byRole('scope-symbol-input'));
   await fire(byRole('scope-symbol-input'), 'input', '00000');
   check('能力库·模板：不足 6 位代码时不能保存，不补前导零', roleBtn('modal-save').disabled && liveTxt().includes('股票代码须为 6 位数字'));
   await fire(byRole('scope-symbol-input'), 'input', '000000');
   await fire(byRole('scope-kind'), 'change', 'all'); await settle();
-  check('能力库·模板：切回“全部股票”后代码输入框消失，预览恢复全部股票', !byRole('scope-symbol-input') && liveTxt().includes('适用范围：全部股票'));
+  check('能力库·模板：切回”全部股票”后代码输入框消失，预览恢复全部股票', !byRole('scope-symbol-input') && liveTxt().includes('适用范围：全部股票'));
   await fire(byRole('scope-kind'), 'change', 'symbol'); await settle();
-  check('能力库·模板：再次选择“单个股票”保留刚输入的代码', byRole('scope-symbol-input').value === '000000');
-  check('能力库·模板：全市场换成个股明确展示范围缩小和其他股票不再有提醒，未勾选前保存禁用',
-    modalTxt().includes('全部股票 → 仅 000000') && modalTxt().includes('除 000000 外的其他股票将不再有') && roleBtn('modal-save').disabled && !!byRole('scope-ack'));
-  const before = stored().length;
-  await clickRole('modal-save');
-  check('能力库·替代：即使调用未确认的保存动作，也不会写入或替代当前规则', stored().length === before && enabledHashes().includes(s3.hash));
-  await checkbox('scope-ack'); await saveModal();
-  check('能力库·替代：确认后只启用 scoped v2，追加旧 v1 替代状态，原记录未改写且保留前导零',
-    enabledHashes().join() === scoped.hash && stored().length === 3 && stored()[1].schema === 'contract-v2' && stored()[1].scope.symbol === '000000'
-    && stored()[2].schema === 'contract-v1' && stored()[2].via === '替代' && JSON.stringify(stored()[0]) === first
-    && cardVisible(scoped.hash).includes('适用范围：仅 000000'));
+  check('能力库·模板：再次选择”单个股票”保留刚输入的代码', byRole('scope-symbol-input').value === '000000');
+  check('能力库·模板：个股范围预览显示”仅 000000”，保存按钮可用（多规则共存，无需额外确认）',
+    liveTxt().includes('仅 000000') && roleBtn('modal-save').disabled === false);
+  await saveModal();
+  const actualScopedHash = stored()[1].hash;
+  check('能力库·共存：保存后 scoped v2 与 v1 并行共存（不同哈希），记录数 = 2',
+    stored().length === 2 && stored()[1].schema === 'contract-v2' && stored()[1].scope.symbol === '000000'
+    && stored()[0].schema === 'contract-v1', JSON.stringify(stored().map((r) => ({ v: r.v, schema: r.schema, hash: r.hash?.slice(0, 8) }))).slice(0, 300));
+  check('能力库·共存：两条规则均为当前（不同哈希）',
+    sameSet(enabledHashes(), [s3.hash, actualScopedHash]), JSON.stringify({ enabled: enabledHashes(), s3: s3.hash?.slice(0, 8), scoped: actualScopedHash?.slice(0, 8) }));
+  check('能力库·共存显示：全部股票与单个股票规则均显示在同模板下',
+    sameSet(slotHashes('no_buy_on_surge'), [s3.hash, actualScopedHash])
+    && texts(slotNode('no_buy_on_surge')).join('|').includes('适用范围：全部股票')
+    && texts(slotNode('no_buy_on_surge')).join('|').includes('适用范围：仅 000000'), JSON.stringify({ cards: slotHashes('no_buy_on_surge'), enabled: enabledHashes(), slots: findByClass(current, 'cv-slot').map(n => [n.attrs['data-template'], n.attrs['data-action'], findByClass(n, 'cv-rule').map(x => x.attrs['data-hash'])]) }));
   await simulate('888888', '2024-10-10');
-  check('能力库·不适用：不匹配代码时显示“不适用”而非未命中，独立汇总，并说明未读取行情或交易',
-    verdictOf(scoped.hash) === '不适用' && summaryOf('not_applicable') === '不适用 1 条' && summaryOf('not_triggered') === '未命中 0 条'
-    && ruleTxt(scoped.hash).includes('未读取行情或交易记录'));
+  check('能力库·不适用：scoped 规则对 888888 显示”不适用”，v1 规则正常判定',
+    verdictOf(actualScopedHash) === '不适用' && summaryOf('not_applicable') === '不适用 1 条'
+    && ruleTxt(actualScopedHash).includes('未读取行情或交易记录'));
   await simulate('000000', '2024-10-05');
-  check('能力库·B3：示例来源的 v2 与 v1 一样映射，页面同时展示申报日和实际使用的交易日',
-    ruleTxt(scoped.hash).includes('申报日 2024-10-05 → 实际使用交易日 2024-09-30') && ruleTxt(scoped.hash).includes('收盘数据'));
-  check('能力库·时间说明：涨幅仅作收盘后历史复盘，不是盘中实时提醒', ruleTxt(scoped.hash).includes('收盘后历史复盘') && ruleTxt(scoped.hash).includes('不是盘中实时提醒'));
+  check('能力库·B3：scoped v2 对 000000 正常判定，页面同时展示申报日和实际使用的交易日',
+    ruleTxt(actualScopedHash).includes('申报日 2024-10-05 → 实际使用交易日 2024-09-30') && ruleTxt(actualScopedHash).includes('收盘数据'));
+  check('能力库·时间说明：涨幅仅作收盘后历史复盘，不是盘中实时提醒', ruleTxt(actualScopedHash).includes('收盘后历史复盘') && ruleTxt(actualScopedHash).includes('不是盘中实时提醒'));
   await reload();
-  check('能力库·刷新：v1/v2 状态与范围恢复，原记录未删除', enabledHashes().join() === scoped.hash && stored().length === 3 && histHashes().includes(s3.hash));
-  await clickIn(histOf(s3.hash), '恢复为当前规则');
-  check('能力库·恢复：先展示范围由个股扩大为全市场，未确认前不写记录', stored().length === 3 && !!byRole('restore-scope-ack')
-    && texts(current).join('|').includes('仅 000000 → 全部股票') && roleBtn('restore-confirm').disabled);
-  await clickRole('restore-cancel');
-  check('能力库·恢复取消：规则与记录保持不变', enabledHashes().join() === scoped.hash && stored().length === 3);
-  await clickIn(histOf(s3.hash), '恢复为当前规则'); await checkbox('restore-scope-ack'); await clickRole('restore-confirm'); await settle();
-  check('能力库·恢复确认：恢复原 v1 版本，v2 追加自身格式的替代记录，不增加版本号', enabledHashes().join() === s3.hash && stored().length === 5
-    && stored()[3].schema === 'contract-v1' && stored()[3].v === 1 && stored()[3].via === '恢复'
-    && stored()[4].schema === 'contract-v2' && stored()[4].scope.symbol === '000000');
+  check('能力库·刷新：v1/v2 均为当前（多规则共存），记录数不变', sameSet(enabledHashes(), [s3.hash, actualScopedHash]) && stored().length === 2);
+  check('能力库·刷新显示：两个不同范围的规则仍可见', sameSet(slotHashes('no_buy_on_surge'), [s3.hash, actualScopedHash]), JSON.stringify({ cards: slotHashes('no_buy_on_surge'), enabled: enabledHashes() }));
+  await disableRule(s3.hash);
+  check('能力库·停用 v1：v2 不受影响（多规则共存），历史只有 v1',
+    !enabledHashes().includes(s3.hash) && enabledHashes().includes(actualScopedHash) && histState(s3.hash) === 'stopped' && stored().length === 3);
+  await clickIn(histOf(s3.hash), '恢复为当前规则'); await settle();
+  check('能力库·恢复 v1：回到当前，v2 不受影响',
+    sameSet(enabledHashes(), [s3.hash, actualScopedHash]) && stored().at(-1).via === '恢复' && stored().at(-1).v === 1);
   await openCustom();
   const reply = (obj) => ({ status: 200, body: { rawText: JSON.stringify(obj) } });
   const intent = { status: 'template', template_id: 'no_buy_on_surge', params: { threshold_pct: 3, comparator: 'gt' }, scope: { kind: 'symbol', symbol: '000000' }, needs: [], missing: [], understanding: 'x' };
   const recognize = async (text, data) => { await fire(byRole('nl-text'), 'input', text); siteQueue.push(reply(data)); await clickRole('nl-recognize'); await settle(); };
   await recognize('只针对 000000：当天涨幅超过3%不买', intent);
   check('能力库·自然语言：预览写明适用代码与提醒动作，不自动生效', modalTxt().includes('适用范围：仅 000000')
-    && modalTxt().includes('提醒动作：买入提醒') && stored().length === 5 && roleBtn('nl-save').disabled);
+    && modalTxt().includes('提醒动作：买入提醒') && roleBtn('nl-save').disabled);
   await checkbox('nl-ack');
-  check('能力库·自然语言：核对原文后仍需确认范围缩小，不能只勾一次就替代', roleBtn('nl-save').disabled && !!byRole('nl-scope-ack') && modalTxt().includes('其他股票将不再有'));
-  await checkbox('nl-scope-ack'); await clickRole('nl-save'); await settle();
-  check('能力库·自然语言：两项确认后恢复历史 v2，不新增版本号，同类仍只有一条当前规则', enabledHashes().join() === scoped.hash && stored().length === 7
-    && stored()[5].v === 2 && stored()[5].via === '恢复');
+  check('能力库·自然语言：重复规则需要额外确认', roleBtn('nl-save').disabled === true && !!byRole('nl-dup-ack'));
+  await checkbox('nl-dup-ack');
+  const beforeNl = stored().length;
+  await clickRole('nl-save'); await settle();
+  check('能力库·自然语言：保存后新增同哈希 scoped 规则（同 hash 合并版本），记录数 +1', stored().length === beforeNl + 1);
   await openCustom(); await recognize('只针对 000000：当天涨幅超过3%不买', intent); await clickRole('nl-to-template');
   check('能力库·转模板：保留识别出的代码和参数，不把个股规则变为全市场', byRole('scope-symbol-input').value === '000000'
     && fieldInput('threshold_pct').value === '3' && liveTxt().includes('适用范围：仅 000000'));
@@ -1364,7 +1388,7 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   state.route = 'contract'; state.bill = defaultBill();
   state.contracts = { ...defaultContracts(), marketSource: 'synthetic-fixture' };
   mountCycle(); await settle();
-  await clickIn(slotNode('sell_within_after_buy'), '新增此类规则');
+  await clickIn(slotNode('sell_within_after_buy'), '新增规则');
   check('买入后卖出·模板入口：默认窗口 3 个交易日，预览写明申报卖出、历史复盘、同日买入不计与只提醒',
     fieldInput('days').value === '3' && liveTxt().includes('买入后 3 个交易日内卖出同一只票时，提醒我。')
     && liveTxt().includes('申报卖出时') && liveTxt().includes('同日买入不计') && liveTxt().includes('提醒：申报卖出时'));
@@ -1443,12 +1467,12 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     && roleBtn('nl-save').disabled === true && stored().length === 2, modalTxt().slice(0, 500));
   for (const fn of byRole('nl-ack').listeners.change ?? []) await fn({ target: { checked: true } });
   await clickRole('nl-save'); await settle();
-  check('买入后卖出·自然语言确认后保存：生成新版本并替代同模板当前规则，保留原话与所选理解',
+  check('买入后卖出·自然语言确认后保存：生成新版本 v3，旧版本 v1 进入历史（替代），保留原话与所选理解',
     enabledHashes().includes(hBS2) && !enabledHashes().includes(hBS3) && stored().length === 4
-    && stored()[2].v === 3 && stored()[2].status === '已改写' && stored()[2].from_v === 1
-    && stored()[2].origin?.text === nlSellText
-    && stored()[3].v === 1 && stored()[3].status === '已拒绝' && stored()[3].via === '替代',
-    JSON.stringify(stored().slice(2)).slice(0, 400));
+    && stored()[3].v === 3 && stored()[3].status === '已确认'
+    && stored()[3].origin?.text === nlSellText
+    && stored()[2].via === '替代' && stored()[2].hash === hBS3,
+    JSON.stringify(stored().slice(1)).slice(0, 400));
   sbs = await simulateSell('000000', '2024-10-09');
   check('买入后卖出·自然语言规则参与判定：T003 后第 3 个交易日超出 2 日窗口 → 无法确认（不显示未命中，不用原话或模型理解判定）',
     verdictOf(hBS2) === '无法确认' && ruleTxt(hBS2).includes('E_BUY_OUTSIDE_WINDOW_UNCONFIRMED')

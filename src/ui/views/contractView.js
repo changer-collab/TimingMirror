@@ -29,7 +29,7 @@ const ACTION_NOTE = Object.freeze({
 const INTRO = '设置在历史情境测试中用于提醒自己的交易规则。规则仅用于提醒，不会自动交易或阻止交易。';
 const PRIVACY = '规则仅保存在当前浏览器；不会自动交易，也不会改变分析报告结论。';
 const AGENT_NOTE = '对话页目前不读取本页保存的规则，也不能使用“限定股票代码”等新能力；规则只在本页的历史情境测试中参与判定。';
-const CURRENT_NOTE = '不同类型的规则可以同时生效；每种类型只保留一条当前规则（无论适用全部股票还是单个股票代码），保存新参数后会替代旧规则，旧规则进入历史规则。';
+const CURRENT_NOTE = '不同类型或不同股票范围的规则可以同时生效；同一类型、同一范围只保留一条当前规则，保存新参数后旧规则进入历史规则。';
 const REPLACE_NOTE = '保存后，新规则会立即生效；当前同类型规则会进入历史记录，不再参与测试。';
 const STOP_NOTE = '停用后，该规则进入历史规则，不再参与之后的历史情境测试；可随时恢复为当前规则。';
 const RECONFIRM_NOTE = '这条规则的保存内容与当前校验标识不一致。为避免误用，它暂不参与测试。请核对后用“新增规则”重新保存，或停用该规则。';
@@ -204,8 +204,14 @@ export function renderContract(root, ctx) {
     saveContractsDemo();
   }
   function openEditor(mode, { rule = null, template_id = null } = {}) {
+    if (mode === 'edit' && rule?.is_custom) {
+      const result = { status: 'supported', is_custom: true, rule_id: rule.rule_id, text: rule.text, action: rule.action, scope: rule.scope, scope_text: rule.scope_text, understanding: rule.understanding, checks: [] };
+      set({ contracts: { modal: { mode, targetHash: rule.hash, targetRuleId: rule.rule_id }, draft: { template_id: CUSTOM_TEMPLATE, fields: {}, note: rule.latest_note, scope: scopeDraftOf(rule.scope) }, nl: { ...emptyNl(), text: rule.text, status: 'done', result, actionChoice: rule.action } } });
+      return;
+    }
     const wanted = rule ? rule.template_id : template_id;
-    const tpl = templates.find((t) => t.template_id === wanted) ?? templates.find((t) => !slotOf(t.template_id)?.current) ?? templates[0];
+    const fewestTpl = [...templates].sort((a, b) => (slotOf(a.template_id)?.current ? 1 : 0) - (slotOf(b.template_id)?.current ? 1 : 0))[0];
+    const tpl = templates.find((t) => t.template_id === wanted) ?? fewestTpl ?? templates[0];
     set({ contracts: { modal: { mode, targetHash: rule ? rule.hash : null }, draft: draftFor(tpl, rule) } });
   }
   const closeEditor = () => {
@@ -258,7 +264,7 @@ export function renderContract(root, ctx) {
         el('span', { class: 'cv-rule-name' }, [isCustom ? '自定义规则' : safe(rule.template_name)]),
         el('span', { class: 'cv-rule-ver' }, [`版本 v${safe(rule.v)}`]),
         el('span', { class: 'cv-rule-actions' }, [
-          isCustom ? null : el('button', { class: 'btn small', 'data-role': 'edit', onclick: () => openEditor('edit', { rule }) }, ['修改']),
+          confirming ? null : el('button', { class: 'btn small', 'data-role': 'edit', onclick: () => openEditor('edit', { rule }) }, ['编辑']),
           confirming ? null : el('button', { class: 'btn small danger', 'data-role': 'stop', onclick: () => { pendingStop = stopKey; paintCurrent(); } }, ['停用']),
         ]),
       ]),
@@ -283,9 +289,10 @@ export function renderContract(root, ctx) {
   function paintCurrent() {
     const actionGroups = new Map();
     const unknownActionSlots = [];
-    // 模板规则按 slot 分组
+    // 模板规则按 action 分组；同一模板的不同范围可能同时生效。
     for (const s of ruleSet.slots) {
-      const action = s.current?.action ?? adapter.contractTemplates().find((t) => t.template_id === s.template_id)?.action ?? null;
+      const tplAction = adapter.contractTemplates().find((t) => t.template_id === s.template_id)?.action ?? null;
+      const action = (s.current ? s.current.action : null) ?? tplAction;
       if (!action) {
         unknownActionSlots.push(s);
         continue;
@@ -299,7 +306,6 @@ export function renderContract(root, ctx) {
       if (!r.integrity.ok) continue;
       const actions = r.action === 'both' ? ['buy', 'sell'] : r.action ? [r.action] : [];
       if (!actions.length) {
-        // 动作未确认的自定义规则
         if (!customByAction.has('unknown')) customByAction.set('unknown', []);
         customByAction.get('unknown').push(r);
         continue;
@@ -310,7 +316,6 @@ export function renderContract(root, ctx) {
       }
     }
     const actionOrder = ['buy', 'sell'];
-    // 计算当前规则总数（模板 + 自定义，both 只计一次）
     const totalCount = ruleSet.current.length + (ruleSet.customCurrent ?? []).length;
     const nodes = [
       el('div', { class: 'section-title' }, [`当前生效规则（${totalCount}）`]),
@@ -323,13 +328,17 @@ export function renderContract(root, ctx) {
       if (!slots && !customs) continue;
       const groupNodes = [];
       if (slots) {
-        groupNodes.push(...slots.map((s) => el('div', { class: 'cv-slot', 'data-template': s.template_id, 'data-action': action }, [
-          el('div', { class: 'cv-group-title' }, [s.template_name]),
-          s.current ? currentCard(s.current) : el('div', { class: 'cv-slot-empty' }, [
-            el('span', { class: 'muted small' }, [`暂未设置「${s.template_name}」规则`]),
-            el('button', { class: 'btn small', 'data-role': 'add-slot', onclick: () => openEditor('add', { template_id: s.template_id }) }, ['新增此类规则']),
-          ]),
-        ])));
+        for (const s of slots) {
+          const slotChildren = [el('div', { class: 'cv-group-title' }, [s.template_name])];
+          for (const rule of s.currents) slotChildren.push(currentCard(rule));
+          if (!s.current) {
+            slotChildren.push(el('div', { class: 'muted small cv-slot-empty' }, [`暂未设置「${s.template_name}」规则`]));
+          }
+          slotChildren.push(el('div', { class: 'cv-slot-add' }, [
+            el('button', { class: 'btn small', 'data-role': 'add-slot', onclick: () => openEditor('add', { template_id: s.template_id }) }, [s.current ? '新增此类规则' : '新增规则']),
+          ]));
+          groupNodes.push(el('div', { class: 'cv-slot', 'data-template': s.template_id, 'data-action': action }, slotChildren));
+        }
       }
       if (customs) {
         groupNodes.push(...customs.map((r) => el('div', { class: 'cv-slot cv-slot-custom', 'data-rule-id': r.rule_id, 'data-action': action }, [
@@ -348,13 +357,14 @@ export function renderContract(root, ctx) {
     if (unknownActionSlots.length || unknownCustoms.length) {
       const unknownNodes = [];
       if (unknownActionSlots.length) {
-        unknownNodes.push(...unknownActionSlots.map((s) => el('div', { class: 'cv-slot', 'data-template': s.template_id, 'data-action': 'unknown' }, [
-          el('div', { class: 'cv-group-title' }, [s.template_name]),
-          s.current ? currentCard(s.current) : el('div', { class: 'cv-slot-empty' }, [
-            el('span', { class: 'muted small' }, [`暂未设置「${s.template_name}」规则`]),
+        for (const s of unknownActionSlots) {
+          const slotChildren = [el('div', { class: 'cv-group-title' }, [s.template_name])];
+          for (const rule of s.currents) slotChildren.push(currentCard(rule));
+          slotChildren.push(el('div', { class: 'cv-slot-add' }, [
             el('button', { class: 'btn small', 'data-role': 'add-slot', onclick: () => openEditor('add', { template_id: s.template_id }) }, ['新增此类规则']),
-          ]),
-        ])));
+          ]));
+          unknownNodes.push(el('div', { class: 'cv-slot', 'data-template': s.template_id, 'data-action': 'unknown' }, slotChildren));
+        }
       }
       if (unknownCustoms.length) {
         unknownNodes.push(...unknownCustoms.map((r) => el('div', { class: 'cv-slot cv-slot-custom', 'data-rule-id': r.rule_id, 'data-action': 'unknown' }, [
@@ -393,47 +403,28 @@ export function renderContract(root, ctx) {
   }
 
   /* —— 历史规则（默认折叠）：被替代 / 手动停用 / 旧演示记录 —— */
-  // 恢复会改变适用范围时：先展开确认（显示范围变化），勾选确认后才写入恢复记录
-  function restoreConfirm(rule, rs) {
-    let acked = false;
-    const box = el('div', { class: 'cv-confirm', 'data-role': 'restore-pending' });
-    const paint = () => box.replaceChildren(
-      el('div', { class: 'calc-line' }, [`恢复“${safe(rule.text)}”为当前规则，将替代当前规则「${safe(rs.current.text)}」（版本 v${safe(rs.current.v)}）。`]),
-      scopeChangeBox(rs.scope_change, acked, (v) => { acked = v; paint(); }, 'restore-scope-ack'),
-      el('div', { class: 'row' }, [
-        el('button', {
-          class: 'btn small primary', 'data-role': 'restore-confirm', disabled: acked ? null : '',
-          onclick: () => commitAll(adapter.contractRestoreRecords(c.versions, { hash: rule.hash, rule_id: rule.rule_id, confirmScopeChange: acked }), { restorePending: null }),
-        }, ['确认恢复并替代']),
-        el('button', { class: 'btn small', 'data-role': 'restore-cancel', onclick: () => set({ contracts: { restorePending: null } }) }, ['取消']),
-      ]),
-    );
-    paint();
-    return box;
-  }
   function historyItem(rule) {
-    const slotCur = slotOf(rule.template_id)?.current ?? null;
-    const rs = rule.restorable ? adapter.contractRestoreState(c.versions, { hash: rule.hash, rule_id: rule.rule_id }) : null;
-    const needsAck = !!(rs && rs.scope_change && rs.scope_change.requires_ack);
-    const pending = needsAck && c.restorePending === rule.hash;
-    const restore = () => (needsAck
-      ? set({ contracts: { restorePending: rule.hash } })
-      : commitAll(adapter.contractRestoreRecords(c.versions, { hash: rule.hash, rule_id: rule.rule_id })));
+    const preview = adapter.contractRestoreState(c.versions, { hash: rule.hash, rule_id: rule.rule_id });
+    const pending = c.restorePending === rule.hash;
+    const restore = () => {
+      if (preview.scope_change?.requires_ack && !pending) { set({ contracts: { restorePending: rule.hash } }); return; }
+      commitAll(adapter.contractRestoreRecords(c.versions, { hash: rule.hash, rule_id: rule.rule_id, confirmScopeChange: pending }), { restorePending: null });
+    };
     return el('div', { class: `cv-hist ${rule.state}`, 'data-hash': rule.hash, 'data-state': rule.state }, [
       el('div', { class: 'row cv-rule-head' }, [
         chip(HISTORY_TAG[rule.state] ?? '历史', 'mode'),
         el('span', { class: 'cv-rule-name' }, [safe(rule.template_name)]),
         el('span', { class: 'cv-rule-ver' }, [`版本 v${safe(rule.v)}`]),
-        rule.restorable && !pending
-          ? el('span', { class: 'cv-rule-actions' }, [el('button', { class: 'btn small', 'data-role': 'restore', onclick: restore }, ['恢复为当前规则'])])
+        preview.restorable
+          ? el('span', { class: 'cv-rule-actions' }, [el('button', { class: 'btn small', 'data-role': 'restore', onclick: restore }, [pending ? '确认恢复' : '恢复为当前规则'])])
           : null,
       ]),
       el('div', { class: 'cv-rule-text' }, [safe(rule.text)]),
       el('div', { class: 'cv-rule-scope' }, [`适用范围：${safe(rule.scope_text)}`]),
+      pending && preview.scope_change ? el('div', { class: 'cv-confirm' }, [el('div', {}, [preview.scope_change.message]), el('button', { class: 'btn small', onclick: () => set({ contracts: { restorePending: null } }) }, ['取消恢复'])]) : null,
+      preview.conflict ? el('div', { class: 'muted small' }, ['该范围已有其他生效规则，请先处理后再恢复。']) : null,
       el('div', { class: 'cv-hist-reason' }, [historyReason(rule)]),
-      rule.restorable && slotCur ? el('div', { class: 'muted small' }, [`恢复后，当前同类型规则（版本 v${safe(slotCur.v)}）会进入历史规则。`]) : null,
-      needsAck && !pending ? el('div', { class: 'muted small' }, [rs.scope_change.message]) : null,
-      pending ? restoreConfirm(rule, rs) : null,
+      rule.restorable ? el('div', { class: 'muted small' }, ['恢复后，该规则重新参与情境测试；其余规则不受影响。']) : null,
       ruleDetail(rule),
     ]);
   }
@@ -455,7 +446,7 @@ export function renderContract(root, ctx) {
     ...ruleSet.legacy.map(legacyItem),
   ]));
 
-  /* —— 历史情境测试：只用每种类型唯一的当前规则；交易来源由 adapter 按账单状态决定 —— */
+  /* —— 历史情境测试：所有当前规则逐条判定；交易来源由 adapter 按账单状态决定 —— */
   const current = ruleSet.current;
   const hasBuyback = current.some((r) => r.kind === 'sell_buyback_window');
   const hasBuySell = current.some((r) => r.kind === 'buy_sell_window');
@@ -644,29 +635,19 @@ export function renderContract(root, ctx) {
   }
 
   function renderModal() {
-    const edit = c.modal.mode === 'edit';
-    const custom = !edit && c.draft.template_id === CUSTOM_TEMPLATE;
-    const target = edit ? ruleSet.current.find((r) => r.hash === c.modal.targetHash) ?? null : null;
+    const custom = c.draft.template_id === CUSTOM_TEMPLATE;
     const tpl = custom ? null : templates.find((t) => t.template_id === c.draft.template_id) ?? templates[0];
     const preview = () => adapter.previewContract({ template_id: c.draft.template_id, fields: c.draft.fields, scope: scopeArgOf(c.draft) });
+    const isEdit = c.modal?.mode === 'edit';
     const dialog = el('div', { class: 'cv-modal', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'cv-modal-title', tabindex: '-1', 'data-role': 'rule-modal' });
     dialog.append(el('div', { class: 'cv-modal-head' }, [
-      el('h3', { id: 'cv-modal-title', class: 'cv-modal-title' }, [edit ? '修改交易规则' : '新增交易规则']),
+      el('h3', { id: 'cv-modal-title', class: 'cv-modal-title' }, [isEdit ? '编辑交易规则' : '新增交易规则']),
       el('button', { class: 'cv-modal-close', type: 'button', 'aria-label': '关闭', 'data-role': 'modal-close', onclick: closeEditor }, ['×']),
     ]));
-    if (target) {
-      dialog.append(el('div', { class: 'cv-modal-note' }, [`正在修改当前规则「${target.text}」（版本 v${target.v}）。保存会生成一条新规则替换它；历史版本保持原样，不会被改写。`]));
-    }
-    if (edit) {
-      dialog.append(el('div', { class: 'cv-field' }, [
-        el('span', { class: 'muted small' }, ['规则模板（修改时不能更换类型）']),
-        el('div', { class: 'cv-tpl-fixed' }, [tpl.name]),
-      ]));
-    } else {
-      dialog.append(el('label', { class: 'cv-field' }, [
+    dialog.append(el('label', { class: 'cv-field' }, [
         el('span', { class: 'muted small' }, ['规则模板']),
         el('select', {
-          class: 'input', 'data-role': 'template',
+          class: 'input', 'data-role': 'template', disabled: isEdit ? '' : null,
           onchange: (e) => {
             nlToken = null;
             if (e.target.value === CUSTOM_TEMPLATE) {
@@ -681,7 +662,6 @@ export function renderContract(root, ctx) {
           el('option', { value: CUSTOM_TEMPLATE, selected: custom ? 'selected' : null }, ['自定义规则（用一句话描述）']),
         ]),
       ]));
-    }
     if (custom) {
       dialog.append(renderNlEditor());
       return el('div', { class: 'cv-modal-backdrop', 'data-role': 'modal-backdrop' }, [dialog]);
@@ -719,26 +699,36 @@ export function renderContract(root, ctx) {
 
     const live = el('div', { class: 'cv-live' });
     const hint = el('div', { class: 'muted small cv-hint' });
-    const replaceNote = el('div', { class: 'cv-replace-note' });
-    let scopeAckFor = null;
-    const scopeAckKey = (d) => `${d.current?.hash}:${preview().hash}`;
-    const scopeAcked = (d) => !!(d.scope_change && d.scope_change.requires_ack && scopeAckFor === scopeAckKey(d));
+    const dupNote = el('div', { class: 'cv-replace-note' });
+    let dupAcked = false;
+    let scopeAckKey = null;
+    const targetHash = isEdit ? c.modal?.targetHash : null;
+    const editorState = (parsed) => adapter.contractEditorState(c.versions, parsed, { targetHash });
+    const scopeChangeKey = (parsed, d) => {
+      if (!targetHash || !parsed.supported || !d.current) return null;
+      const old = d.current.scope ?? { kind: 'all' };
+      const next = parsed.scope ?? { kind: 'all' };
+      return old.kind === next.kind && (old.symbol ?? '') === (next.symbol ?? '') ? null : JSON.stringify(next);
+    };
     const saveBtn = el('button', {
       class: 'btn primary', 'data-role': 'modal-save',
       onclick: () => {
         const parsed = preview();
-        const d = adapter.contractEditorState(c.versions, parsed);
+        const d = editorState(parsed);
+        const scopeKey = scopeChangeKey(parsed, d);
+        if (scopeKey && scopeAckKey !== scopeKey) return;
         commitAll(adapter.contractSaveRecords(c.versions, {
           parsed,
+          targetHash,
           note: c.draft.note,
-          confirmScopeChange: scopeAcked(d),
+          forceDuplicate: d.action === 'duplicate' ? dupAcked : false,
           assistantFlowId: c.modal?.assistantFlowId ?? null,
         }), { modal: null });
       },
-    }, [edit ? '保存并替换当前规则' : '保存并启用']);
+    }, ['保存并启用']);
     dialog.append(live, el('div', { class: 'cv-modal-foot' }, [
       hint,
-      replaceNote,
+      dupNote,
       el('div', { class: 'row cv-modal-actions' }, [
         el('button', { class: 'btn', 'data-role': 'modal-cancel', onclick: closeEditor }, ['取消']),
         saveBtn,
@@ -747,7 +737,7 @@ export function renderContract(root, ctx) {
 
     function paintLive() {
       const parsed = preview();
-      const d = adapter.contractEditorState(c.versions, parsed);
+      const d = editorState(parsed);
       const nodes = [el('div', { class: 'section-title' }, ['规则预览'])];
       if (!parsed.supported) {
         nodes.push(el('div', { class: 'cv-error' }, [
@@ -769,19 +759,30 @@ export function renderContract(root, ctx) {
         ]));
       }
       live.replaceChildren(...nodes);
-      const needAck = !!(d.scope_change && d.scope_change.requires_ack);
-      saveBtn.disabled = !d.canSave || (needAck && !scopeAcked(d));
+      if (d.action !== 'duplicate') dupAcked = false;
+      const isDup = d.action === 'duplicate';
+      const scopeKey = scopeChangeKey(parsed, d);
+      if (scopeAckKey !== scopeKey) scopeAckKey = null;
+      saveBtn.disabled = !d.canSave || (isDup && !dupAcked) || !!(scopeKey && scopeAckKey !== scopeKey);
       const hintText = {
         invalid: '参数无效：请先修正参数，保存不可用。',
         unchanged: '与当前规则相同：同一规则不会重复保存；备注不参与判定，不能单独形成新规则。',
+        duplicate: '已存在完全相同的当前规则。',
         restore: `与历史版本 v${safe(d.same && d.same.v)} 相同：保存后将恢复该版本为当前规则，不新增版本号。`,
-        blocked: '该参数对应的历史记录内容与校验标识不一致，不能保存；请换用其他参数。',
-        new: `保存后生成版本 v${d.next_version}，立即参与历史情境测试。`,
+        blocked: '目标规则已变化，或该内容对应已有规则；请核对后重新操作。',
+        new: `保存后生成版本 v${d.next_version}，成为当前规则。`,
+        edit: `保存后生成版本 v${d.next_version}，当前版本 v${safe(d.current && d.current.v)} 将进入历史规则。`,
       }[d.action];
-      hint.replaceChildren(el('span', {}, [needAck && !scopeAcked(d) ? `${hintText} 本次会改变此类规则的适用范围，请先勾选确认。` : hintText]));
-      const replacing = edit || (d.current && d.canSave);
-      replaceNote.replaceChildren(...(replacing ? [el('span', {}, [d.current && !edit ? `已有同类型当前规则（版本 v${d.current.v}）。${REPLACE_NOTE}` : REPLACE_NOTE])] : []),
-        ...(d.canSave && d.scope_change ? [scopeChangeBox(d.scope_change, scopeAcked(d), (v) => { scopeAckFor = v ? scopeAckKey(d) : null; paintLive(); }, 'scope-ack')] : []));
+      hint.replaceChildren(el('span', {}, [hintText]));
+      dupNote.replaceChildren(...(isDup ? [
+        el('label', { class: 'cv-dup-confirm' }, [
+          el('input', { type: 'checkbox', 'data-role': 'dup-ack', checked: dupAcked ? '' : null, onchange: (e) => { dupAcked = e.target.checked; paintLive(); } }),
+          el('span', { class: 'muted small' }, ['确认新增：已知存在完全相同的规则，仍要保存。']),
+        ]),
+      ] : scopeKey ? [el('label', { class: 'cv-dup-confirm' }, [
+        el('input', { type: 'checkbox', 'data-role': 'edit-scope-ack', checked: scopeAckKey === scopeKey ? '' : null, onchange: (e) => { scopeAckKey = e.target.checked ? scopeKey : null; paintLive(); } }),
+        el('span', { class: 'muted small' }, ['确认修改适用范围：原范围的规则将进入历史。']),
+      ])] : []));
     }
     paintLive();
     return el('div', { class: 'cv-modal-backdrop', 'data-role': 'modal-backdrop' }, [dialog]);
@@ -800,7 +801,7 @@ export function renderContract(root, ctx) {
     panel.append(el('div', { class: 'muted small' }, [`目前可执行的规则类型示例：${adapter.CONTRACT_NL_EXAMPLES.map((x) => `“${x}”`).join('；')}。`]));
 
     const counter = el('span', { class: 'muted small cv-nl-count' });
-    const stillCustom = () => state.contracts.modal?.mode === 'add' && state.contracts.draft?.template_id === CUSTOM_TEMPLATE;
+    const stillCustom = () => ['add', 'edit'].includes(state.contracts.modal?.mode) && state.contracts.draft?.template_id === CUSTOM_TEMPLATE;
     const recognizeBtn = el('button', {
       class: 'btn primary', 'data-role': 'nl-recognize',
       onclick: async () => {
@@ -846,7 +847,8 @@ export function renderContract(root, ctx) {
           actionChoice: null,
         };
         set({ contracts: { nl: c.nl } });
-        const result = await adapter.recognizeContractText(text);
+        let result = await adapter.recognizeContractText(text);
+        if (c.modal?.targetRuleId && result.status === 'supported' && !result.is_custom) result = { status: 'error', message: '修改后的描述识别为模板规则，无法直接替换自定义规则；请调整描述或另行新增模板规则。' };
         let flowCounts = null;
         if (nlClient && flowId && result.stage !== 'precheck') {
           const recorded = nlClient.recordExternalModelCall({
@@ -914,7 +916,7 @@ export function renderContract(root, ctx) {
             onclick: () => {
               if (!c.nl.ack || !c.nl.actionChoice) return;
               nlToken = null;
-              const rule_id = r.rule_id;
+              const rule_id = c.modal?.targetRuleId ?? r.rule_id;
               const action = c.nl.actionChoice;
               const scope = r.scope ?? { kind: 'all' };
               const hash = computeCustomHashForSave(r.text, action, scope);
@@ -931,7 +933,7 @@ export function renderContract(root, ctx) {
             },
           }, ['确认保存并启用']));
         } else {
-          const ss = adapter.contractNlSaveState(c.versions, r, { choices: cur.choices, ack: cur.ack, scopeAck: cur.scopeAck });
+          const ss = adapter.contractNlSaveState(c.versions, r, { choices: cur.choices, ack: cur.ack, dupAck: cur.dupAck });
           btns.push(el('button', {
             class: 'btn', 'data-role': 'nl-to-template',
             onclick: () => {
@@ -943,14 +945,14 @@ export function renderContract(root, ctx) {
           btns.push(el('button', {
             class: 'btn primary', 'data-role': 'nl-save', disabled: ss.canSave ? null : '',
             onclick: () => {
-              const now = adapter.contractNlSaveState(c.versions, r, { choices: c.nl.choices, ack: c.nl.ack, scopeAck: c.nl.scopeAck });
+              const now = adapter.contractNlSaveState(c.versions, r, { choices: c.nl.choices, ack: c.nl.ack, dupAck: c.nl.dupAck });
               if (!now.canSave) return;
               nlToken = null;
               commitAll(adapter.contractSaveRecords(c.versions, {
                 parsed: r.parsed,
                 note: null,
                 origin: { text: r.text, confirmations: c.nl.choices },
-                confirmScopeChange: !!c.nl.scopeAck,
+                forceDuplicate: now.editor.action === 'duplicate',
                 assistantFlowId: c.modal?.assistantFlowId ?? null,
               }), { modal: null, nl: null });
             },
@@ -1037,7 +1039,7 @@ export function renderContract(root, ctx) {
           return nodes;
         }
         // 模板规则预览（原有逻辑）
-        const ss = adapter.contractNlSaveState(c.versions, r, { choices: c.nl.choices, ack: c.nl.ack, scopeAck: c.nl.scopeAck });
+        const ss = adapter.contractNlSaveState(c.versions, r, { choices: c.nl.choices, ack: c.nl.ack, dupAck: c.nl.dupAck });
         const d = ss.editor;
         nodes.push(el('div', { class: 'section-title' }, ['规则预览']));
         nodes.push(el('div', { class: 'cv-nl-preview' }, [
@@ -1062,7 +1064,7 @@ export function renderContract(root, ctx) {
           choice_pending: '还有待确认的理解，确认前不能保存。',
           choice_unsupported: '你选择的理解当前系统不支持，不能保存。',
           ack_pending: '请先勾选核对确认，才能保存。',
-          scope_ack_pending: '本次保存会改变此类规则的适用范围，请先勾选范围变化确认。',
+          dup_pending: '已存在完全相同的当前规则，请先勾选确认后再保存。',
           editor_unchanged: '与当前规则完全相同：无需重复保存。',
           editor_restore: null,
           editor_blocked: '该参数对应的历史记录内容与校验标识不一致，不能保存；请换用其他参数。',
@@ -1070,8 +1072,11 @@ export function renderContract(root, ctx) {
           ? `与历史版本 v${safe(d.same && d.same.v)} 相同：确认后恢复该版本为当前规则，不新增版本号。`
           : `确认后生成版本 v${d.next_version}，立即参与历史情境测试。`);
         nodes.push(el('div', { class: 'muted small cv-hint' }, [hint]));
-        if (d.current && d.canSave) nodes.push(el('div', { class: 'cv-replace-note' }, [`已有同类型当前规则（版本 v${d.current.v}）。${REPLACE_NOTE}`]));
-        if (d.canSave && d.scope_change) nodes.push(scopeChangeBox(d.scope_change, !!c.nl.scopeAck, (v) => { c.nl = { ...c.nl, scopeAck: v }; paintNl(); }, 'nl-scope-ack'));
+        if (d.action === 'duplicate' && d.canSave) {
+          const dup = el('input', { type: 'checkbox', 'data-role': 'nl-dup-ack', checked: c.nl.dupAck ? '' : null });
+          dup.addEventListener('change', (e) => { c.nl = { ...c.nl, dupAck: !!e.target.checked }; paintNl(); });
+          nodes.push(el('label', { class: 'cv-dup-confirm' }, [dup, el('span', {}, ['已存在相同规则，仍要保存一条重复记录。'])]));
+        }
         return nodes;
       }
       if (r.status === 'unsupported') {

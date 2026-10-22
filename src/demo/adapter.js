@@ -27,7 +27,7 @@ import { computePGR } from '../engine/pgr.js';
 import { DEMO_REPORT_MARKET_SOURCE, getReportScenario, loadReportScenarioMarket } from './reportScenarios.js';
 import { CONTRACT_CODES, CONTRACT_TEMPLATES, dayChangePct, matchContract, canonicalHash, HASH_ALGORITHM } from '../engine/contractMatch.js';
 import {
-  parseRuleSpec, scopeApplies, notApplicableMessage, describeScopeChange, scopeLabel, normalizeScope,
+  parseRuleSpec, scopeApplies, notApplicableMessage, scopeLabel, normalizeScope,
   actionApplies, notApplicableActionMessage, actionLabel, RULE_SCHEMA_V1, RULE_SCHEMA_V2, RULE_SPEC_CODES, RULE_CAPABILITIES,
 } from '../engine/ruleSpec.js';
 import { recognizeRule, confirmationState, RULE_TEXT_MAX_CHARS, SUPPORTED_RULE_EXAMPLES } from '../agent/ruleIntent.js';
@@ -1116,20 +1116,21 @@ export function recognizeContractText(text, opts = {}) {
 }
 
 // 自然语言结果能否保存：待确认项均选了系统支持的选项、用户已核对完整表达、且版本状态允许保存
-export function contractNlSaveState(versions, result, { choices = {}, ack = false, scopeAck = false } = {}) {
+export function contractNlSaveState(versions, result, { choices = {}, ack = false, dupAck = false } = {}) {
   if (!result || result.status !== 'supported') return { canSave: false, reason: 'not_supported', editor: null, confirm: null };
   const confirm = confirmationState(result, choices);
   const editor = contractEditorState(versions, result.parsed);
-  const scopePending = !!(editor.scope_change && editor.scope_change.requires_ack && !scopeAck);
-  const reason = !confirm.ok ? (confirm.blocked.length ? 'choice_unsupported' : 'choice_pending') : !ack ? 'ack_pending' : !editor.canSave ? `editor_${editor.action}` : scopePending ? 'scope_ack_pending' : null;
+  const dupPending = editor.action === 'duplicate' && !dupAck;
+  const reason = !confirm.ok ? (confirm.blocked.length ? 'choice_unsupported' : 'choice_pending') : !ack ? 'ack_pending' : !editor.canSave ? `editor_${editor.action}` : dupPending ? 'dup_pending' : null;
   return { canSave: reason === null, reason, editor, confirm };
 }
 
 /* —— 契约规则集合与版本状态机（版本＝候选哈希；记录只追加不删除）——
    记录级启用：同一哈希最新一条决策为”已确认/已改写”；”已拒绝”＝不启用。
-   当前规则：每个模板最多一条——启用且校验通过的同模板规则中，最近一次启用（保存 / 恢复）的那条；
-   其余同模板启用规则派生为”已被较新的同类型规则替代”（只派生、不改写记录；下次对该模板写入时补追加状态记录）。
-   记录格式：全部股票＝contract-v1（原样，不迁移）；单个 6 位代码＝contract-v2（含 scope）；同一类型的 v1 / v2 共用一个”当前规则”位置。
+   当前规则：每个模板 × 适用范围最多一条——启用且校验通过的同模板同范围规则中，最近一次启用（保存 / 恢复 / 编辑）的那条；
+   同模板不同范围（全部股票 / 单个代码）可各自有一条当前规则并行生效；
+   其余同模板同范围的启用规则派生为”已被较新的同类型规则替代”（只派生、不改写记录；下次对该模板写入时补追加状态记录）。
+   记录格式：全部股票＝contract-v1（原样，不迁移）；单个 6 位代码＝contract-v2（含 scope）。
    自定义规则：custom-v1（template_id: null, kind: 'custom', rule_id, text, action, scope, understanding）。 */
 const CONTRACT_RECORD_SCHEMA = RULE_SCHEMA_V1;
 const RULE_SCHEMAS = new Set([RULE_SCHEMA_V1, RULE_SCHEMA_V2]);
@@ -1307,14 +1308,21 @@ export function contractRuleSet(versions = []) {
     };
   });
   const allRules = [...rules, ...customRules];
-  // 模板规则：每个模板最多一条当前规则
-  const currentByTpl = new Map();
+  // 模板规则：同模板+同范围只保留一条当前规则（最新启用版本），其余进入历史
+  // 不同范围（全部股票 vs 单个代码）即使同模板也可并行共存
+  const scopeKey = (r) => {
+    const s = r.scope ?? r.latest?.scope;
+    if (!s || s.kind === 'all') return 'all';
+    return `${s.kind}:${s.symbol ?? ''}`;
+  };
+  const tplBest = new Map();
   for (const r of rules) {
     if (!r.enabled || !r.integrity.ok) continue;
-    const c = currentByTpl.get(r.template_id);
-    if (!c || r.activated > c.activated) currentByTpl.set(r.template_id, r);
+    const key = `${r.template_id}|${scopeKey(r)}`;
+    const c = tplBest.get(key);
+    if (!c || r.activated > c.activated) tplBest.set(key, r);
   }
-  // 自定义规则：每个 rule_id 最多一条当前规则
+  // 自定义规则：每个 rule_id 最多一条当前规则（编辑产生新版本，旧版本被替代）
   const currentByRuleId = new Map();
   for (const r of customRules) {
     if (!r.enabled || !r.integrity.ok) continue;
@@ -1323,17 +1331,19 @@ export function contractRuleSet(versions = []) {
   }
   const byHash = new Map(allRules.map((r) => [r.hash, r]));
   const refOf = (r, cur) => ({ v: r.v, hash: r.hash, text: r.text, is_current: r === cur });
-  // 模板规则状态
+  // 模板规则状态：同模板+同范围只有最新版本是 current，其余启用规则为 superseded
   for (const r of rules) {
-    const cur = currentByTpl.get(r.template_id) ?? null;
+    const key = `${r.template_id}|${scopeKey(r)}`;
     let by = null;
-    if (cur === r) r.state = 'current';
+    if (r.enabled && r.integrity.ok && tplBest.get(key) === r) r.state = 'current';
     else if (r.enabled && !r.integrity.ok) r.state = 'reconfirm';
-    else if (r.enabled) { r.state = 'superseded'; by = refOf(cur, cur); }
-    else if (REPLACE_VIA.has(r.latest.via)) {
+    else if (r.enabled) {
+      const winner = tplBest.get(key);
+      r.state = 'superseded'; by = winner ? refOf(winner, winner) : null;
+    } else if (REPLACE_VIA.has(r.latest.via)) {
       r.state = 'replaced';
       const target = byHash.get(r.latest.replaced_by_hash ?? r.latest.kept_hash);
-      by = target ? refOf(target, cur) : { v: r.latest.replaced_by_v ?? r.latest.kept_v ?? null, hash: null, text: null, is_current: false };
+      by = target ? refOf(target, null) : { v: r.latest.replaced_by_v ?? r.latest.kept_v ?? null, hash: null, text: null, is_current: false };
     } else r.state = 'stopped';
     r.replaced_by = by;
     r.restorable = r.integrity.ok && r.state !== 'current';
@@ -1355,9 +1365,18 @@ export function contractRuleSet(versions = []) {
   }
   const byRecent = [...allRules].sort((a, b) => b.order - a.order);
   const byVersion = (a, b) => (Number.isFinite(a.v) ? a.v : Infinity) - (Number.isFinite(b.v) ? b.v : Infinity) || a.order - b.order;
-  const slots = Object.entries(CONTRACT_TEMPLATES).map(([template_id, t]) => ({ template_id, template_name: t.name, kind: t.kind, current: currentByTpl.get(template_id) ?? null }));
-  const current = slots.map((s) => s.current).filter(Boolean);
-  // 自定义规则的当前规则列表
+  // 按模板收集当前规则（同模板不同范围可有多条当前）
+  const currentsByTemplate = new Map();
+  for (const r of tplBest.values()) {
+    const arr = currentsByTemplate.get(r.template_id) ?? [];
+    arr.push(r);
+    currentsByTemplate.set(r.template_id, arr);
+  }
+  const slots = Object.entries(CONTRACT_TEMPLATES).map(([template_id, t]) => {
+    const currents = currentsByTemplate.get(template_id) ?? [];
+    return { template_id, template_name: t.name, kind: t.kind, currents, current: currents[0] ?? null };
+  });
+  const current = [...tplBest.values()].sort((a, b) => b.order - a.order);
   const customCurrent = [...currentByRuleId.values()];
   return {
     rules: byRecent,
@@ -1365,7 +1384,7 @@ export function contractRuleSet(versions = []) {
     current,
     customRules: customRules.sort((a, b) => b.order - a.order),
     customCurrent,
-    executable: current,
+    executable: [...current, ...customCurrent],
     needsReconfirm: allRules.filter((r) => r.state === 'reconfirm').sort(byVersion),
     history: byRecent.filter((r) => r.state !== 'current' && r.state !== 'reconfirm'),
     legacy: list.filter((r) => r && typeof r === 'object' && !isRuleRecord(r)),
@@ -1379,30 +1398,68 @@ function computeCustomHash(canonical) {
 }
 export { computeCustomHash as CONTRACT_CUSTOM_HASH };
 
-// 编辑弹窗状态：new＝新版本；restore＝与历史规则同哈希（恢复该版本，不新增版本号）；unchanged＝与当前规则相同；blocked＝同哈希记录校验不一致
-// scope_change：会替代同类型当前规则时的适用范围变化（范围有变化须用户确认后才写入）
-export function contractEditorState(versions, parsed) {
+// 编辑弹窗状态：edit＝编辑当前规则（创建新版本，旧版本进入历史）；new＝新模板规则（同模板不同范围可并存）；
+// restore＝与历史规则同哈希（恢复该版本）；duplicate＝同哈希已存在为当前规则但用户可强制新增；blocked＝校验不一致；
+// unchanged＝与目标规则完全相同
+export function contractEditorState(versions, parsed, { targetHash = null } = {}) {
   const ruleSet = contractRuleSet(versions);
-  const base = { ruleSet, current: null, same: null, action: 'invalid', canSave: false, next_version: ruleSet.next_version, scope_change: null };
+  const base = { ruleSet, current: null, same: null, action: 'invalid', canSave: false, next_version: ruleSet.next_version };
   if (!parsed || !parsed.supported) return base;
-  const current = ruleSet.slots.find((s) => s.template_id === parsed.template_id)?.current ?? null;
+  // 查找同模板+同范围的当前规则
+  const slot = ruleSet.slots.find((s) => s.template_id === parsed.template_id);
+  const parsedScope = parsed.scope ?? { kind: 'all', symbol: null };
+  const currentRule = slot?.currents?.find((r) => {
+    const rScope = r.scope ?? r.latest?.scope ?? { kind: 'all', symbol: null };
+    return rScope.kind === parsedScope.kind && rScope.symbol === parsedScope.symbol;
+  }) ?? null;
+  const anyCurrentRule = slot?.currents?.[0] ?? null;
   const same = ruleSet.rules.find((r) => r.hash === parsed.hash) ?? null;
-  const action = !same ? 'new' : same.state === 'current' ? 'unchanged' : same.integrity.ok ? 'restore' : 'blocked';
-  const canSave = action === 'new' || action === 'restore';
-  const scope_change = canSave && current ? describeScopeChange(current.scope, parsed.scope ?? { kind: 'all' }, parsed.template_name) : null;
-  return { ...base, current, same, action, canSave, scope_change };
+  if (targetHash) {
+    const target = ruleSet.current.find((r) => r.hash === targetHash && r.template_id === parsed.template_id);
+    if (!target) return { ...base, action: 'blocked' };
+    if (parsed.hash === target.hash) return { ...base, current: target, same: target, action: 'unchanged' };
+    if (same) return { ...base, current: target, same, action: 'blocked' };
+    return { ...base, current: target, action: 'edit', canSave: true };
+  }
+  let action;
+  if (!same) {
+    action = currentRule ? 'edit' : 'new';
+  } else if (same.state === 'current') {
+    action = 'duplicate';
+  } else if (same.integrity.ok) {
+    action = 'restore';
+  } else {
+    action = 'blocked';
+  }
+  const canSave = action === 'new' || action === 'edit' || action === 'restore' || action === 'duplicate';
+  return { ...base, current: currentRule ?? anyCurrentRule, same, action, canSave };
 }
 
-// 从历史恢复前的预览：是否可恢复、将替代的当前规则、范围变化
+// 从历史恢复前的预览：是否可恢复、同模板/同 rule_id 的当前规则（用于展示参考）、范围变化
 export function contractRestoreState(versions, { hash, rule_id } = {}) {
   const ruleSet = contractRuleSet(versions);
   const rule = ruleSet.rules.find((r) => r.hash === hash && (rule_id == null ? !r.is_custom : r.rule_id === rule_id)) ?? null;
-  const current = rule?.is_custom
-    ? ruleSet.customCurrent.find((r) => r.rule_id === rule.rule_id) ?? null
-    : rule ? ruleSet.slots.find((s) => s.template_id === rule.template_id)?.current ?? null : null;
+  let currents = rule?.is_custom
+    ? ruleSet.customCurrent.filter((r) => r.rule_id === rule.rule_id && r.hash !== rule.hash)
+    : rule ? (ruleSet.slots.find((s) => s.template_id === rule.template_id)?.currents ?? []).filter((r) => r.hash !== rule.hash) : [];
+  if (rule && !rule.is_custom) {
+    const visited = new Set([rule.hash]);
+    let successor = rule;
+    while (successor?.latest?.replaced_by_hash && !visited.has(successor.latest.replaced_by_hash)) {
+      visited.add(successor.latest.replaced_by_hash);
+      successor = ruleSet.rules.find((r) => !r.is_custom && r.hash === successor.latest.replaced_by_hash);
+    }
+    const sameScope = (r) => r.scope?.kind === rule.scope?.kind && (r.scope?.symbol ?? '') === (rule.scope?.symbol ?? '');
+    const linked = successor?.state === 'current' ? successor : null;
+    const same = currents.find(sameScope);
+    if (linked && same && linked.hash !== same.hash) return { rule, currents, current: linked, restorable: false, scope_change: null, conflict: true };
+    currents = [linked ?? same].filter(Boolean);
+  }
+  const current = currents[0] ?? null;
+  const changed = current && (current.scope?.kind !== rule.scope?.kind || (current.scope?.symbol ?? '') !== (rule.scope?.symbol ?? ''));
+  const scope_change = changed ? { requires_ack: true, message: `恢复后将用“${rule.scope_text}”替换当前“${current.scope_text}”规则。` } : null;
   const restorable = !!(rule && rule.restorable);
-  const scope_change = restorable && current && current !== rule ? describeScopeChange(current.scope, rule.scope, rule.template_name) : null;
-  return { rule, current, restorable, scope_change };
+  return { rule, currents, current, restorable, scope_change };
 }
 
 function recordBase(src, note) {
@@ -1422,45 +1479,36 @@ function recordBase(src, note) {
   return rec;
 }
 
-// 同模板其余启用规则（含派生替代的旧并行规则）各追加一条“已拒绝 · 经替代”状态记录；版本号不变、不删除记录、不涉及其他模板
-// 被替代规则沿用自身记录格式（v1 规则追加 v1 记录），旧版本读取时仍能识别其“已被替代”
-function retireSameTemplate(ruleSet, template_id, by, at) {
-  return ruleSet.rules
-    .filter((r) => r.template_id === template_id && r.hash !== by.hash && r.enabled && r.integrity.ok)
-    .map((r) => ({
-      ...recordBase(r.latest, null), at, v: r.v, status: '已拒绝', transition_from: r.status,
-      via: '替代', replaced_by_v: by.v, replaced_by_hash: by.hash, reason: `被同类型规则 v${by.v} 替代`,
-    }));
-}
-
-// 保存并启用：新哈希 → 新版本成为该模板唯一当前规则（有当前规则时记为“已改写”）；历史同哈希 → 恢复该版本；与当前相同 → 不写入
-// 会改变适用范围的替代须 confirmScopeChange；origin：自然语言来源（原文 + 用户对歧义项的选择），仅作记录展示，不进入哈希与判定
-export function contractSaveRecords(versions, { parsed, note, origin = null, confirmScopeChange = false, assistantFlowId = null } = {}) {
-  const d = contractEditorState(versions, parsed);
+// 保存并启用：edit＝编辑当前规则（创建新版本，旧版本进入历史）；new＝新模板规则（同模板不同范围可并存，互不替代）；
+// restore＝历史同哈希→恢复该版本；duplicate＝同哈希已存在为当前规则但用户可强制新增；origin 仅作记录展示
+export function contractSaveRecords(versions, { parsed, note, origin = null, confirmScopeChange = false, forceDuplicate = false, assistantFlowId = null, targetHash = null } = {}) {
+  const d = contractEditorState(versions, parsed, { targetHash });
   if (!d.canSave) return [];
-  if (d.scope_change && d.scope_change.requires_ack && !confirmScopeChange) return [];
+  if (d.action === 'duplicate' && !forceDuplicate) return [];
   if (d.action === 'restore') return contractRestoreRecords(versions, { hash: parsed.hash, note, confirmScopeChange, assistantFlowId });
   const at = new Date().toISOString();
-  const retired = retireSameTemplate(d.ruleSet, parsed.template_id, { v: d.next_version, hash: parsed.hash }, at);
   const rec = {
     ...recordBase({ ...parsed, threshold_display: parsed.threshold.display }, note), at,
-    v: d.next_version, status: d.current ? '已改写' : '已确认', from_v: d.current ? d.current.v : null,
-    replaces_v: retired.map((r) => r.v),
+    v: d.next_version, status: '已确认', from_v: null,
   };
   if (typeof assistantFlowId === 'string' && assistantFlowId) rec.assistant_flow_id = assistantFlowId;
   if (origin && typeof origin.text === 'string' && origin.text.trim()) {
     rec.origin = { kind: 'natural_language', text: origin.text.trim(), confirmations: { ...(origin.confirmations ?? {}) } };
   }
-  return [rec, ...retired];
+  // edit：编辑当前规则，旧版本进入历史（标记为"替代"）
+  if (d.action === 'edit' && d.current) {
+    const oldRec = { ...recordBase(d.current.latest, null), at, v: d.current.v, status: '已拒绝', transition_from: d.current.status, via: '替代', replaced_by_v: rec.v, replaced_by_hash: rec.hash };
+    return [oldRec, rec];
+  }
+  return [rec];
 }
 
-// 恢复历史规则为当前规则：追加一条“经恢复”的状态记录（版本号不变），同模板原当前规则经替代进入历史；范围有变化须 confirmScopeChange
+// 恢复历史规则为当前规则：追加一条”经恢复”的状态记录（版本号不变）；多规则共存，不影响其余规则
 export function contractRestoreRecords(versions, { hash, rule_id, note, confirmScopeChange = false, assistantFlowId = null } = {}) {
   const ruleSet = contractRuleSet(versions);
-  const rule = ruleSet.rules.find((r) => r.hash === hash && (rule_id == null ? !r.is_custom : r.rule_id === rule_id));
-  if (!rule || !rule.restorable) return [];
-  const { scope_change } = contractRestoreState(versions, { hash, rule_id });
-  if (scope_change && scope_change.requires_ack && !confirmScopeChange) return [];
+  const preview = contractRestoreState(versions, { hash, rule_id });
+  const rule = preview.rule;
+  if (!rule || !preview.restorable || (preview.scope_change?.requires_ack && !confirmScopeChange)) return [];
   const at = new Date().toISOString();
   if (rule.is_custom) {
     const rec = { ...customRecordBase(rule.latest, note, at, rule.v), status: rule.reenable_status, transition_from: rule.status, via: '恢复' };
@@ -1469,12 +1517,15 @@ export function contractRestoreRecords(versions, { hash, rule_id, note, confirmS
     const retired = current ? [{ ...customRecordBase(current.latest, null, at, current.v), status: '已拒绝', transition_from: current.status, via: '替代', replaced_by_v: rule.v, replaced_by_hash: rule.hash }] : [];
     return [rec, ...retired];
   }
+  // 模板规则恢复：查找同模板+同范围的当前规则，标记为"替代"
   const rec = { ...recordBase(rule.latest, note), at, v: rule.v, status: rule.reenable_status, transition_from: rule.status, via: '恢复' };
   if (typeof assistantFlowId === 'string' && assistantFlowId) rec.assistant_flow_id = assistantFlowId;
-  return [rec, ...retireSameTemplate(ruleSet, rule.template_id, rule, at)];
+  const currentRule = preview.current;
+  const retired = currentRule ? [{ ...recordBase(currentRule.latest, null), at, v: currentRule.v, status: '已拒绝', transition_from: currentRule.status, via: '替代', replaced_by_v: rule.v, replaced_by_hash: rule.hash }] : [];
+  return [rec, ...retired];
 }
 
-// 停用当前规则（或待重新确认规则）：仅状态变更，版本号不变；同模板派生替代的旧启用记录一并补追加替代记录，避免旧规则”复活”
+// 停用某条规则（仅状态变更，版本号不变）；多规则共存，不影响同模板其余规则
 export function contractStopRecords(versions, { hash, rule_id } = {}) {
   const ruleSet = contractRuleSet(versions);
   const rule = ruleSet.rules.find((r) => r.hash === hash && (rule_id == null ? !r.is_custom : r.rule_id === rule_id));
@@ -1490,7 +1541,7 @@ export function contractStopRecords(versions, { hash, rule_id } = {}) {
   }
   const at = new Date().toISOString();
   const rec = { ...recordBase(rule.latest, null), at, v: rule.v, status: '已拒绝', transition_from: rule.status, via: '停用' };
-  return rule.state === 'current' ? [rec, ...retireSameTemplate(ruleSet, rule.template_id, rule, at)] : [rec];
+  return [rec];
 }
 
 // 自定义规则记录基础
@@ -1758,7 +1809,7 @@ function simulationDisplay(result) {
   return { ...result, display_verdict };
 }
 
-// 一次情境、每个模板唯一的当前规则逐条判定（各自走引擎链路，结果按规则分别返回，互不覆盖）；
+// 一次情境、所有当前规则逐条判定（各自走引擎链路，结果按规则分别返回，互不覆盖）；
 // 历史规则不参与；完整性失败的启用规则不参与判定，仅在 needs_reconfirm 中如实回传（不猜测、不改写记录）。
 // 本地账单使用动态行情并检查公司行为边界；示例账单按所选行情来源判定。
 export async function simulateContracts({ versions, symbol, date, bill, marketSource = DEFAULT_MARKET_SOURCE, action = 'buy' } = {}) {

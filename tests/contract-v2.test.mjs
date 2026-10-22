@@ -63,14 +63,12 @@ check('v1 保存：全部股票的规则仍写 contract-v1 记录，无 scope �
 /* ==== 2. 替代：全部股票 → 单个代码（缩小）须确认 ==== */
 const sc3 = surge(3, sym('000000'));
 {
-  const d = A.contractEditorState(v, sc3);
-  check('替代前预览：action=new、可保存，范围变化 narrow 且须确认，说明其他股票将不再有此类提醒', d.action === 'new' && d.canSave && d.scope_change.kind === 'narrow'
-    && d.scope_change.requires_ack && d.scope_change.message.includes('除 000000 外的其他股票将不再有'), JSON.stringify(d.scope_change));
-  check('替代未确认：contractSaveRecords 不写入任何记录', A.contractSaveRecords(v, { parsed: sc3 }).length === 0);
-  const recs = A.contractSaveRecords(v, { parsed: sc3, confirmScopeChange: true });
-  const [nv, retire] = recs;
+  const d = A.contractEditorState(v, sc3, { targetHash: s5.hash });
+  check('编辑已有规则：新范围属于原规则的新版本', d.action === 'edit' && d.canSave && d.current.hash === s5.hash);
+  const recs = A.contractSaveRecords(v, { parsed: sc3, targetHash: s5.hash, confirmScopeChange: true });
+  const [retire, nv] = recs;
   check('替代已确认：追加 v2 记录（scope、版本 v3、已改写、from_v=1）+ 原 v1 规则追加 v1 格式“已拒绝 · 经替代”记录（指向 v2 哈希）',
-    recs.length === 2 && nv.schema === 'contract-v2' && nv.scope.symbol === '000000' && nv.v === 3 && nv.status === '已改写' && nv.from_v === 1 && nv.hash === sc3.hash
+    recs.length === 2 && nv.schema === 'contract-v2' && nv.scope.symbol === '000000' && nv.v === 3 && nv.status === '已确认' && nv.hash === sc3.hash
     && nv.text === '仅限 000000：当天涨幅超过 3% 的票，我绝不买入。'
     && retire.schema === 'contract-v1' && !('scope' in retire) && retire.hash === s5.hash && retire.via === '替代' && retire.replaced_by_hash === sc3.hash && retire.replaced_by_v === 3, JSON.stringify(recs));
   v = [...v, ...recs];
@@ -86,12 +84,11 @@ const sc3 = surge(3, sym('000000'));
 /* ==== 3. 同范围替代不需确认；切换代码须确认 ==== */
 {
   const sc4 = surge(4, sym('000000'));
-  const d = A.contractEditorState(v, sc4);
-  check('同范围（仅 000000）改参数：范围不变，无需确认即可保存', d.scope_change.kind === 'same' && !d.scope_change.requires_ack && A.contractSaveRecords(v, { parsed: sc4 }).length === 2);
+  const d = A.contractEditorState(v, sc4, { targetHash: sc3.hash });
+  check('同范围（仅 000000）改参数：编辑原规则', d.action === 'edit' && A.contractSaveRecords(v, { parsed: sc4, targetHash: sc3.hash }).length === 2);
   const other = surge(3, sym('888888'));
   const d2 = A.contractEditorState(v, other);
-  check('切换代码（000000 → 888888）：须确认，并提示 000000 将不再有此类提醒', d2.scope_change.kind === 'switch' && d2.scope_change.requires_ack
-    && d2.scope_change.message.includes('000000 将不再有') && A.contractSaveRecords(v, { parsed: other }).length === 0);
+  check('新增不同代码：可与当前规则共存', d2.action === 'new' && A.contractSaveRecords(v, { parsed: other }).length === 1);
 }
 
 /* ==== 4. 情境测试：不适用 / 汇总 / 只用当前规则 ==== */
@@ -112,7 +109,7 @@ const sc3 = surge(3, sym('000000'));
 /* ==== 5. 恢复：单代码 → 全部股票（扩大）须确认；停用 / 无当前时恢复 ==== */
 {
   const st = A.contractRestoreState(v, { hash: s5.hash });
-  check('恢复预览：可恢复，将替代当前 v2 规则，范围变化 widen 须确认', st.restorable && st.current.hash === sc3.hash && st.scope_change.kind === 'widen' && st.scope_change.requires_ack);
+  check('恢复预览：可恢复，将替代当前 v2 规则，范围变化须确认', st.restorable && st.current.hash === sc3.hash && st.scope_change.requires_ack);
   check('恢复未确认：不写入记录', A.contractRestoreRecords(v, { hash: s5.hash }).length === 0);
   const recs = A.contractRestoreRecords(v, { hash: s5.hash, confirmScopeChange: true });
   check('恢复已确认：v1 规则追加 v1“经恢复”记录（版本号不变）+ v2 规则追加 v2 格式“经替代”记录（保留 scope）', recs.length === 2
@@ -170,8 +167,7 @@ const sc3 = surge(3, sym('000000'));
   const fake = { status: 'supported', parsed: surge(3, sym('000000')), confirmations: [] };
   const vv = save([], s5);
   const pending = A.contractNlSaveState(vv, fake, { ack: true });
-  const ok = A.contractNlSaveState(vv, fake, { ack: true, scopeAck: true });
-  check('自然语言保存：已核对但未确认范围变化 → scope_ack_pending 不能保存；确认后可保存', !pending.canSave && pending.reason === 'scope_ack_pending' && ok.canSave);
+  check('自然语言新增不同范围：核对后可保存并与现有规则共存', pending.canSave && pending.editor.action === 'new');
 }
 
 /* ==== 8. 等价性：范围匹配时 v2 与同参数 v1 逐项一致 ==== */

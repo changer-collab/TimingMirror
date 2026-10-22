@@ -57,12 +57,12 @@ const buyback = (days, scope) => A.previewContract({ template_id: 'no_buy_back_w
 
   const scoped = buySell(3, sym('600519'));
   const editor = A.contractEditorState(v, scoped);
-  check('新规则·限定代码：范围变化缩小须确认，未确认不写记录', editor.scope_change.kind === 'narrow' && editor.scope_change.requires_ack
-    && A.contractSaveRecords(v, { parsed: scoped }).length === 0, JSON.stringify(editor.scope_change));
+  check('新规则·限定代码：不同范围可新增并共存', editor.action === 'new' && A.contractSaveRecords(v, { parsed: scoped }).length === 1);
   v = save(v, scoped, { confirmScopeChange: true });
   const slot = A.contractRuleSet(v).slots.find((s) => s.template_id === 'sell_within_after_buy');
-  check('新规则·限定代码保存后：contract-v2、保留代码、动作=卖出', slot.current.hash === scoped.hash && slot.current.schema === RULE_SCHEMA_V2
-    && slot.current.scope.symbol === '600519' && slot.current.action === 'sell', JSON.stringify(slot.current));
+  const scopedCurrent = slot.currents.find((r) => r.hash === scoped.hash);
+  check('新规则·限定代码保存后：contract-v2、保留代码、动作=卖出', scopedCurrent?.schema === RULE_SCHEMA_V2
+    && scopedCurrent.scope.symbol === '600519' && scopedCurrent.action === 'sell' && slot.currents.length === 2, JSON.stringify(slot.current));
   check('旧规则记录不受新规则影响：仍为当前、哈希未变', ruleOf(v, surge(5).hash).state === 'current' && ruleOf(v, surge(5).hash).hash === '47a10ba4d26648cf');
   const stop = A.contractStopRecords(v, { hash: scoped.hash });
   v = [...v, ...stop];
