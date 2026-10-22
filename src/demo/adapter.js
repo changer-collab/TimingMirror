@@ -19,6 +19,7 @@ import { computeIndicators, RESULT_LABELS } from '../engine/indicators.js';
 import { buildProvenanceReport } from '../engine/provenance.js';
 import { runReview } from '../agent/reviewPipeline.js';
 import { replaceSell } from '../engine/counterfactual.js';
+import { buildBenchmarkLine } from '../engine/benchmarkLine.js';
 import { buildDragDecomposition } from '../engine/decompose.js';
 import { buildPatternList } from '../engine/behavior.js';
 import { buildBehaviorFactsRequest } from '../engine/behaviorFacts.js';
@@ -27,6 +28,7 @@ import { computeStockSelf } from '../engine/stockSelf.js';
 import { computePGR } from '../engine/pgr.js';
 import { DEMO_REPORT_MARKET_SOURCE, getReportScenario, loadReportScenarioMarket } from './reportScenarios.js';
 import { CONTRACT_CODES, CONTRACT_TEMPLATES, dayChangePct, matchContract } from '../engine/contractMatch.js';
+import { buildRuleLedger } from '../engine/ruleLedger.js';
 import {
   parseRuleSpec, scopeApplies, notApplicableMessage, describeScopeChange, scopeLabel, normalizeScope,
   actionApplies, notApplicableActionMessage, actionLabel, RULE_SCHEMA_V1, RULE_SCHEMA_V2, RULE_SPEC_CODES, RULE_CAPABILITIES,
@@ -325,6 +327,14 @@ function marketMeta(mkt) {
     range: { ...market.range },
     symbols: [...market.symbols],
     snapshot: market.snapshot,
+    benchmark: market.benchmark
+      ? {
+        name: market.benchmark.name,
+        ts_code: market.benchmark.ts_code,
+        source: market.benchmark.source,
+        base_date: market.benchmark.base_date,
+      }
+      : null,
   };
 }
 
@@ -746,6 +756,21 @@ function buildUserInsights({ stage, trades, closes, review }) {
           closeOf: (d) => stage.market.getClose(sell.symbol, d),
           tradingDays: stage.market.tradingDays,
         });
+        const benchmarkLine = stage.market.benchmark
+          ? buildBenchmarkLine({
+            points: result.series.points,
+            buyCost: result.replace.buyCost,
+            closeOf: (d) => stage.market.getBenchmarkClose(d),
+            meta: {
+              name: stage.market.benchmark.name,
+              ts_code: stage.market.benchmark.ts_code,
+              source: stage.market.benchmark.source,
+            },
+          })
+          : null;
+        const series = benchmarkLine?.available
+          ? { ...result.series, points: benchmarkLine.points, benchmark: benchmarkLine.meta }
+          : result.series;
         insights.portfolio.counterfactuals.push({
           symbol: sell.symbol,
           trade_id: sell.trade_id,
@@ -753,7 +778,7 @@ function buildUserInsights({ stage, trades, closes, review }) {
           price: sell.price,
           quantity: sell.quantity,
           replace: result.replace,
-          series: result.series,
+          series,
           markers: symbolTrades.map((t) => ({
             trade_id: t.trade_id,
             trade_date: t.trade_date,
@@ -1238,6 +1263,11 @@ export function contractRuleSet(versions = []) {
       duplicates: [...new Set(g.records.map((r) => r.v))].filter((x) => x !== v),
       notes: [...new Set(g.records.map((r) => r.note).filter(Boolean))],
       latest_note: [...g.records].reverse().find((r) => r.note)?.note ?? '',
+      // 决定自述：保存时随版本冻结，只作承诺记录展示；不参与判定、不进入哈希、不随规则修改改写
+      decision_statement: (() => {
+        const rec = [...g.records].reverse().find((r) => r.note);
+        return rec ? { text: rec.note, at: rec.at ?? null, v: Number.isFinite(rec.v) ? rec.v : v, frozen: true } : null;
+      })(),
       origin_text: g.records.find((r) => r.origin && r.origin.kind === 'natural_language' && typeof r.origin.text === 'string')?.origin.text ?? null,
       origin_confirmations: { ...(g.records.find((r) => r.origin && r.origin.kind === 'natural_language')?.origin.confirmations ?? {}) },
       integrity,
@@ -1450,7 +1480,7 @@ function contractMarketScope(trades, local) {
 
 // 情境上下文：本地账单与示例账单均按所选行情来源（默认 Tushare 动态日线）取数。
 // 本地账单先过已知公司行为边界；取数/校验失败原样返回 error，不回落示例账单或其他行情来源。
-export async function contractSimContext({ bill, marketSource = DEFAULT_MARKET_SOURCE } = {}) {
+export async function contractSimContext({ bill, marketSource = DEFAULT_MARKET_SOURCE, versions = [] } = {}) {
   const labels = contractSimLabels(marketSource);
   const local = isLocalBill(bill);
   const { source, trades } = await sourceTrades(bill, labels.id);
@@ -1475,6 +1505,7 @@ export async function contractSimContext({ bill, marketSource = DEFAULT_MARKET_S
       tradingDays: [...market.tradingDays],
       sells: trades.filter((t) => t.side === 'sell').map((t) => ({ trade_id: t.trade_id, symbol: t.symbol, trade_date: t.trade_date })),
       buys: trades.filter((t) => t.side === 'buy').map((t) => ({ trade_id: t.trade_id, symbol: t.symbol, trade_date: t.trade_date })),
+      ledger: buildRuleLedger({ rules: contractRuleSet(versions).current, trades, market }),
     };
   } catch (e) {
     return { ...meta, error: String(e && e.message ? e.message : e) };

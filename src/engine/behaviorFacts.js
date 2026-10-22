@@ -36,7 +36,7 @@ function lastTradingDayIndex(tradingDays, date) {
 }
 
 function windowMapOf(behavior) {
-  const pattern = behavior?.patterns?.[0];
+  const pattern = behavior?.patterns?.find((p) => p.pattern_id === 'chase_high_buy');
   if (!pattern) return null;
   const map = new Map();
   for (const item of pattern.evidence ?? []) {

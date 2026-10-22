@@ -522,3 +522,180 @@ node tests/agent/assistant-controller.test.mjs → 40/40
 - 分支：`feat/behavior-ai-fallback-2026-10-21`，含前序报告 UX 提交；
 - 已合并 `origin/main`（#45 全局问答助手/情境判断/报告溯源、#46 680px 响应式断点），冲突按“保留双方功能”解决；合并后 `npm run check` 51 段 2001 项、`npm run smoke` 316/316、`tests/ui/assistant-layout.test.mjs` 17/17 通过；
 - 已推送分支并创建 PR：https://github.com/changer-collab/TimingMirror/pull/48 ；不包含合并到 `main` 或站点发布，二者需另行确认。
+
+---
+
+## 11. 追加：能力扩充、守约账本、决定自述与沪深 300 第三线（2026-10-22）
+
+> 分支：`feat/behavior-ai-fallback-2026-10-21`（PR #48 分支）
+> 基线：`9c6e02d`（PR #48 当前 HEAD）
+> 范围：行为模式、规则候选、画像标签、报告沙盒、守约账本、决定自述、沪深 300 第三线；未修改 `src/agent/`，未提交任何凭证、原始 CSV 或账户数据。
+> 状态：本节改动**尚未提交、未推送、未合并、未发布**；PR #48 仍为 OPEN。
+
+### 11.1 Issue #14 最新状态同步
+
+- 最新 comment（2026-10-22T03:19:38Z，id `6331845612`）是 PR #47 的站点部署记录：`6809b72` 已 squash 合并；active Release `01a16199-ab1f-79e6-ab19-51d20be22f1b`；deployment `01a16198-f18e-79bf-ad3f-d2b3fed76c4a`；artifact SHA256 `4a6b9b35…`；private 访问；函数 `app` 与 Secrets 版本未变化（未读取 Secret 值）。
+- 部署后只读验证：用户端导入页正常，`.stepper` 为 0；1440px 与 680px 为右侧栏，679px 为全屏；只请求静态资源，未调用模型/行情。
+- **没有新的组长任务**。该 comment 之后没有新的分工或范围指令；此前分工保持：
+  - AI 助手：changer 负责，Qoder 实现；
+  - 规则库扩充与未命中 AI 兜底：吴涵晶负责/验收，Qoder 协助；
+  - 页面删除、个人中心规则迁移、情景测试独立页面：尹辰负责。
+- 本轮工作不触碰上述他人范围；未删除独立问答页、`#/chat` 路由或导入步骤条。
+
+### 11.2 行为模式：1 条扩到 4 条候选
+
+`src/engine/behavior.js` 配置升为 `candidate-2`，新增三条模式：
+
+| pattern_id | 名称 | 口径（候选） | 最小样本 |
+|---|---|---|---|
+| `chase_high_buy` | 追高买入 | 买入日前 5 个交易日涨幅 ≥ 10% | 2 |
+| `sell_rebuy_within_2d` | 卖出后两日内买回 | 同标的卖出后 ≤ 2 个交易日又买入 | 2 |
+| `quick_flip` | 买入后三日内卖出 | 同标的买入后 ≤ 3 个交易日又卖出 | 2 |
+| `overtrading` | 交易频率偏高 | 按标的 FIFO 配对的完整往返 ≥ 4 次 | 4 |
+
+边界：
+
+- 配对只使用交易日历、方向与数量，不读取价格、不计算盈亏；
+- 同日反向成交先后顺序未知，不配对，列入 `unevaluated` 并标注原因；
+- 缺估值日/缺交易日历时保留 `E_DATE_UNRESOLVED`、`E_WINDOW_BEYOND_CACHE` 等原因，不猜测；
+- 每条模式独立给出三态（成立/不成立/证据不足）、`hypothesis`、证据 ID 与检验方式；`overtrading` 不足时只报证据不足，不据此否定频率偏高。
+
+示例场景同步：`sell_rebuy` 增加第二笔追回，`overtrading` 的 4 次往返均判成立；两者报告行为区从“无”变为可见。`overtrading` 仍没有对应模板，因此不出候选，这是有意保留的“看见但不硬推规则”。
+
+### 11.3 规则候选：3 条模板映射
+
+`src/engine/userProfile.js` 的候选版本升为 `candidate-2`，从单一“追高 → 涨幅不买入”扩为：
+
+| pattern_id | 模板 | 预填字段 |
+|---|---|---|
+| `chase_high_buy` | `no_buy_on_surge` | `threshold_pct` |
+| `sell_rebuy_within_2d` | `no_buy_back_within` | `days` |
+| `quick_flip` | `sell_within_after_buy` | `days` |
+
+- 只使用当前账单的确定性行为证据，不接 LLM、不使用其他用户数据；
+- `available / active / dismissed / not_recommended` 状态不变；只有 `available` 进入报告；
+- 报告可同时展示多条可用候选，每个按钮携带 `candidate_id`，打开助手时带入对应证据；
+- 画像页把 `not_recommended` 收进折叠区，避免把“尚不构成建议”的模式铺在首屏；
+- 候选仍只预填模板，不自动保存；阈值、窗口与文本可由用户改写。
+
+### 11.4 画像标签
+
+`buildBehaviorTags` 只从确定性结果派生：
+
+- 四条行为模式成立时生成对应标签：追高买入、卖出后回补、快进快出、交易频率偏高；
+- PGR 的 DE ≥ +5pp 生成“盈利时更愿卖出”，≤ −5pp 生成“亏损时更愿卖出”；
+- 标签写入画像快照与历史 `tag_ids`，个人中心以 chip 展示，`title` 为命中/已评估证据；
+- 不读取 AI 文本，不把 AI 观察写成标签；没有证据时不生成标签。
+
+### 11.5 报告行为区与反事实沙盒
+
+- 行为区从“只显示追高”改为“展示所有成立模式”，每个模式一行：名称、出现次数、口径 lead、前 4 条证据；追高卡保留 AI 评论锚点与“本地规则引擎”标识。
+- 反事实沙盒新增“持有到”日期选择：日期来自 `replaceSell` 同一序列的逐日点；切换日期只读取该点的 `cf − actual`，不引入新的价格假设、不重算行情。
+- 摘要文案按选中日期显示“多拿 / 少拿 / 不变”；图表 index 同步到所选日期。
+- 工具提示修复了 `replaceChildren` 传入 `null` 导致显示字面量 “null” 的问题；浏览器已验证提示框不再出现 “null”。
+
+### 11.6 守约账本与决定自述
+
+新增纯模块 `src/engine/ruleLedger.js`（`rule-ledger-1`）：
+
+- 假设当前规则在整段账单期间生效，逐笔复核当前账单；
+- 只复核当前生效规则，历史版本不参与；
+- 守约类规则（买入前约束）命中且成交已发生 → 记“违反”；提醒类规则（买入后卖出提醒）命中 → 记“已提醒”，不记违反；
+- 缺行情、缺交易日历、缺成交时刻等一律记“数据不足”，不猜测；
+- 输出每条规则的复核/命中/违反/提醒/守约/数据不足计数、`status_text`、事件（默认最多 8 条）与口径说明。
+
+接入：`contractSimContext` 接收规则版本并生成 `ledger`；规则页在情境测试结果下方渲染“守约账本”卡片，展示汇总、每条规则状态与最近事件；smoke 新增账本 UI 断言。
+
+决定自述：
+
+- 规则保存时的 `note` 作为该版本的“决定自述”，展示为“决定自述（vN 保存时冻结）”；
+- 只用于承诺记录，不参与规则判定、不进入哈希、不随规则修改改写；
+- 当前规则卡、规则详情与编辑器均改为“决定自述”口径；未填写时显示“决定自述：无”。
+
+### 11.7 沪深 300 第三线
+
+数据链路：
+
+- 服务端 `server/site-functions/market.mjs` 新增 `index_daily` 请求（`000300.SH`），只保留 `date/close`，按同一交易日历与 `asOfDate` 过滤、按交易日分段；
+- 基准数据进入快照 canonical/checksum；`source.apis` 增加 `index_daily`；
+- 基准不可用（无权限、超时、无数据、字段异常）时返回 `available:false` 与原因，**不阻断个股快照**，不伪造指数数据。
+
+客户端：
+
+- `src/engine/marketCache.js` 的 `normalizeBenchmarkDoc` 校验日期顺序、日历归属、正数收盘；缓存暴露 `benchmark` 与 `getBenchmarkClose`；
+- 新增 `src/engine/benchmarkLine.js`：以反事实序列首日为起点、同一 `buyCost` 折算沪深 300；缺指数收盘的日期留空并记录 `missing_dates`，不插值、不回落；
+- 该线只用于图表对照，不参与 `actual/ghost/cf/gap`、收益、损耗或规则判定；
+- 图表在基准可用时增加第三线、图例与口径说明；不可用时不显示，保持原图。
+
+限制：本地未配置 `TUSHARE_TOKEN`，无法在浏览器做真实 `index_daily` 端到端验证；服务端测试覆盖可用/不可用/分段请求，引擎测试覆盖折算与缺日。示例场景使用冻结合成行情，没有指数数据，因此演示报告不会出现第三线。
+
+### 11.8 验证
+
+```text
+npm run check   → exit 0；52 个汇总段合计 2036 项通过、0 失败
+npm run smoke   → 317/317 通过
+
+node tests/rule-ledger.test.mjs        → 16/16
+node tests/benchmark-line.test.mjs     → 11/11
+node tests/behavior.test.mjs           → 51/51
+node tests/user-profile.test.mjs       → 51/51
+node tests/report-scenarios.test.mjs   → 71/71
+node tests/server/site-function.test.mjs → 101/101
+```
+
+浏览器（本地静态服务，示例场景“卖后追回”下载后重新上传）：
+
+- 报告正常渲染，行为区显示 2 次“卖出后两日内买回”，规则候选可见；
+- 反事实沙盒“持有到”日期切换有效，摘要与图表索引同步；
+- 工具提示不含 “null”；示例行情无基准，图例保持 6 项、无第三线；
+- 控制台无 JS 异常；仅有本地静态服务不提供 `/functions/v1/app/api/llm/behavior-analysis` 的预期 404（触发本地兜底）与样式预加载 warning。
+- 截图接口仍返回 `NATIVE_BROWSER_VIEWPORT_UNAVAILABLE`，本轮以 DOM/文本/计算样式验证，未做像素级截图验收。
+
+未覆盖：
+
+- 真实 Tushare `index_daily` 的浏览器端到端（缺 token）；
+- 本地账单的守约账本真实链路（规则页本地账单固定动态行情，缺 token 时无法加载情境上下文）；账本 UI 由 smoke 覆盖，引擎由 16 项单测覆盖；
+- 真实移动设备与多浏览器兼容。
+
+### 11.9 本轮变更文件
+
+新增：
+
+- `src/engine/benchmarkLine.js`
+- `src/engine/ruleLedger.js`
+- `tests/benchmark-line.test.mjs`
+- `tests/rule-ledger.test.mjs`
+
+修改：
+
+- `package.json`
+- `prototype/user-frontend/real-insights.css`
+- `prototype/user-frontend/realProfile.js`
+- `prototype/user-frontend/realReport.js`
+- `scripts/smoke-frontend.mjs`
+- `server/site-functions/market.mjs`
+- `src/demo/adapter.js`
+- `src/demo/reportScenarios.js`
+- `src/engine/behavior.js`
+- `src/engine/behaviorFacts.js`
+- `src/engine/marketCache.js`
+- `src/engine/userProfile.js`
+- `src/ui/components/ghostChart.js`
+- `src/ui/styles.css`
+- `src/ui/views/contractView.js`
+- `tests/behavior-analysis-client.test.mjs`
+- `tests/behavior-facts.test.mjs`
+- `tests/behavior.test.mjs`
+- `tests/report-scenarios.test.mjs`
+- `tests/rule-buy-sell.test.mjs`
+- `tests/server/site-function.test.mjs`
+- `tests/user-profile.test.mjs`
+
+未修改：`src/agent/`、任何凭证 / 原始 CSV / 账户数据。
+
+### 11.10 提交状态
+
+- 本轮改动仍在工作区，未暂存、未提交、未推送；
+- 所属分支 `feat/behavior-ai-fallback-2026-10-21` 已对应 PR #48（OPEN）；
+- 未合并 `main`、未发布站点；
+- 提交、推送、合并、发布均需当轮明确授权。

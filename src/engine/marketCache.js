@@ -167,7 +167,34 @@ export function assessDynamicCacheDoc(doc) {
   };
 }
 
-export function createMarketCache({ tradingDays, range, symbols, snapshot = null }) {
+// 沪深 300 第三线是可选附加序列：形状不合法时静默忽略（不阻断个股估值），
+// 但绝不补价、补日期或拿个股冒充指数。
+export function normalizeBenchmarkDoc(benchmark, tradingDays) {
+  if (!benchmark || typeof benchmark !== 'object' || benchmark.available !== true) return null;
+  if (!Array.isArray(benchmark.bars) || benchmark.bars.length === 0) return null;
+  const daySet = new Set(tradingDays);
+  const bars = [];
+  let previous = null;
+  for (const bar of benchmark.bars) {
+    if (!bar || typeof bar !== 'object'
+      || typeof bar.date !== 'string' || !DATE_RE.test(bar.date) || !daySet.has(bar.date)
+      || (previous !== null && bar.date <= previous)) return null;
+    if (typeof bar.close !== 'number' || !Number.isFinite(bar.close) || bar.close <= 0) return null;
+    bars.push({ date: bar.date, close: bar.close });
+    previous = bar.date;
+  }
+  return {
+    ts_code: typeof benchmark.ts_code === 'string' ? benchmark.ts_code : null,
+    name: typeof benchmark.name === 'string' ? benchmark.name : '沪深300',
+    source: typeof benchmark.source === 'string' ? benchmark.source : null,
+    as_of: typeof benchmark.as_of === 'string' ? benchmark.as_of : null,
+    base_date: bars[0].date,
+    base_close: bars[0].close,
+    bars,
+  };
+}
+
+export function createMarketCache({ tradingDays, range, symbols, snapshot = null, benchmark = null }) {
   const days = [...tradingDays].sort();
   const closeIndex = new Map();
   for (const [sym, series] of Object.entries(symbols)) {
@@ -176,6 +203,8 @@ export function createMarketCache({ tradingDays, range, symbols, snapshot = null
       bars_fwdadj: new Map((series.bars_fwdadj ?? []).map((b) => [b.date, b.close])),
     });
   }
+  const benchmarkIndex = normalizeBenchmarkDoc(benchmark, days);
+  const benchmarkCloses = new Map((benchmarkIndex?.bars ?? []).map((b) => [b.date, b.close]));
 
   function getClose(symbol, date, seriesKey = 'unadj') {
     assertDate(date);
@@ -183,6 +212,12 @@ export function createMarketCache({ tradingDays, range, symbols, snapshot = null
     if (!field) throw new TypeError(`未知序列：${seriesKey}（仅支持 unadj/fwdadj）`);
     const close = closeIndex.get(symbol)?.[field].get(date);
     return close === undefined ? null : close; // 缺价不回落（B4）
+  }
+
+  function getBenchmarkClose(date) {
+    assertDate(date);
+    const close = benchmarkCloses.get(date);
+    return close === undefined ? null : close;
   }
 
   function resolveValuation(requestedDate) {
@@ -225,12 +260,21 @@ export function createMarketCache({ tradingDays, range, symbols, snapshot = null
       : { blocked: false, code: null };
   }
 
-  return { range: { ...range }, snapshot, symbols: Object.keys(symbols), tradingDays: days, getClose, resolveValuation, resolvePrices, checkLastTrade };
+  return {
+    range: { ...range }, snapshot, symbols: Object.keys(symbols), tradingDays: days,
+    benchmark: benchmarkIndex, getBenchmarkClose, getClose, resolveValuation, resolvePrices, checkLastTrade,
+  };
 }
 
 // 数据形状适配：签收缓存 data/market-cache.json 与 Tushare 动态响应共用同一取用形状
 export function fromPullDraft(doc) {
-  return { tradingDays: doc.calendar.trading_days, range: doc.manifest.date_range, symbols: doc.symbols, snapshot: doc.snapshot ?? null };
+  return {
+    tradingDays: doc.calendar.trading_days,
+    range: doc.manifest.date_range,
+    symbols: doc.symbols,
+    snapshot: doc.snapshot ?? null,
+    benchmark: doc.benchmark ?? null,
+  };
 }
 
 // 数据形状适配：m0 合成夹具（mock-calendar.json + mock-daily-bars.json）

@@ -870,9 +870,9 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     && findButtons(ruleCardOf(hS3)).some((b) => labelOf(b) === '修改') && findButtons(ruleCardOf(hS3)).some((b) => labelOf(b) === '停用')
     && !cardVisible(hS3).includes(hS3) && !cardVisible(hS3).includes('候选哈希') && !cardVisible(hS3).includes('fnv1a64') && !cardVisible(hS3).includes('M0-C1')
     && !cardVisible(hS3).includes('涨幅阈值（%）') && !cardVisible(hS3).includes('已确认') && !cardVisible(hS3).includes('历史状态变更'), cardVisible(hS3));
-  check('当前规则卡详情（展开后）：版本号、完整候选哈希、占位算法与待 M0-C1 冻结提示、创建 / 最近变更时间、备注、历史状态变更',
+  check('当前规则卡详情（展开后）：版本号、完整候选哈希、占位算法与待 M0-C1 冻结提示、创建 / 最近变更时间、决定自述、历史状态变更',
     cardDetail(hS3).includes('版本 v1') && cardDetail(hS3).includes(`候选哈希，待 M0-C1 冻结：${hS3}`) && cardDetail(hS3).includes('fnv1a64-placeholder') && cardDetail(hS3).includes('待 M0-C1 冻结后可能替换')
-    && cardDetail(hS3).includes('创建时间：') && cardDetail(hS3).includes('最近状态变更：') && cardDetail(hS3).includes('备注（不参与规则判定）：追高总亏')
+    && cardDetail(hS3).includes('创建时间：') && cardDetail(hS3).includes('最近状态变更：') && cardDetail(hS3).includes('决定自述（v1 保存时冻结）：追高总亏')
     && cardDetail(hS3).includes('历史状态变更：') && cardDetail(hS3).includes('涨幅阈值（%）：3'), cardDetail(hS3).slice(0, 400));
   await clickRole('add-rule');
   {
@@ -892,6 +892,14 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     state.bill.status === 'confirmed' && state.bill.sourceType !== 'local' && sourceLine().startsWith('交易来源：演示账单 A') && sourceLine().includes('行情：合成演示行情')
     && txt.includes('合成夹具（非真实行情）· 候选口径（待 M0-C1 冻结）· 不构成投资建议') && sellsLine().includes('T004 000000 2024-10-08'), sourceLine());
   let s = await simulate('000000', '2024-10-10');
+  {
+    const ledger = findByClass(current, 'cv-ledger')[0];
+    const ledgerText = ledger ? texts(ledger).join('|') : '';
+    check('守约账本：情境测试加载后展示当前规则复核、汇总与口径说明',
+      !!ledger && ledgerText.includes('守约账本') && ledgerText.includes('按当前生效规则复核账单中的')
+      && ledgerText.includes('涨幅超阈值不买入') && ledgerText.includes('卖出后 N 个交易日内不追回')
+      && ledgerText.includes('账本口径') && ledgerText.includes('不是实时申报记录'), ledgerText.slice(0, 400));
+  }
   {
     const head = findByClass(current, 'cv-sim-headline')[0];
     check('测试：两种类型的当前规则各判定一次，结果顶部列出“本次测试使用的规则”（名称 / 规则文本 / 版本），无并行 / 重复提醒 / 整理字样',

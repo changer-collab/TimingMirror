@@ -50,7 +50,9 @@ for (const { bill, bundle } of allScenarios) {
 for (const { bill, vis } of allScenarios) {
   const scenario = REPORT_SCENARIOS.find((item) => item.id === bill.demoScenarioId);
   const expected = scenario.expectation;
-  const pattern = vis.pattern;
+  const pattern = expected.pattern_id
+    ? vis.patterns.find((p) => p.pattern_id === expected.pattern_id) ?? vis.pattern
+    : vis.pattern;
   check(`${scenario.id}：场景预期与引擎三态一致`, pattern?.status === expected.behavior_status
     && pattern?.sample_n === expected.sample_n
     && pattern?.evaluated_n === expected.evaluated_n
@@ -114,14 +116,17 @@ for (const { bill, vis } of allScenarios) {
 
 {
   const { vis } = sellRebuy;
-  check('sell_rebuy：现有引擎不识别卖后追回，不展示行为与候选', vis.behavior === false && vis.pattern?.status === '不成立'
-    && vis.pattern.sample_n === 0 && vis.pattern.evaluated_n === 2 && vis.candidate === false, JSON.stringify({ status: vis.pattern?.status, n: vis.pattern?.sample_n, evaluated: vis.pattern?.evaluated_n }));
+  const p = vis.patterns.find((x) => x.pattern_id === 'sell_rebuy_within_2d') ?? {};
+  check('sell_rebuy：卖后两日内买回成立（n=2/已评估2），展示行为与候选', vis.behavior === true && p.status === '成立'
+    && p.sample_n === 2 && p.evaluated_n === 2 && vis.candidate === true
+    && vis.candidates.some((c) => c.template_id === 'no_buy_back_within'), JSON.stringify({ visible: vis.behavior, status: p.status, n: p.sample_n, evaluated: p.evaluated_n, candidates: vis.candidates?.map((c) => c.template_id) }));
 }
 
 {
   const { vis } = overtrading;
-  check('overtrading：4 笔可评估、0 命中，不展示行为与候选', vis.behavior === false && vis.pattern?.status === '不成立'
-    && vis.pattern.sample_n === 0 && vis.pattern.evaluated_n === 4 && vis.candidate === false, JSON.stringify({ status: vis.pattern?.status, n: vis.pattern?.sample_n, evaluated: vis.pattern?.evaluated_n }));
+  const p = vis.patterns.find((x) => x.pattern_id === 'overtrading') ?? {};
+  check('overtrading：4 次完整往返成立，展示行为但暂无对应规则模板', vis.behavior === true && p.status === '成立'
+    && p.sample_n === 4 && p.evaluated_n === 4 && vis.candidate === false, JSON.stringify({ visible: vis.behavior, status: p.status, n: p.sample_n, evaluated: p.evaluated_n }));
 }
 
 {

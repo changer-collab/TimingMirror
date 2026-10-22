@@ -6,13 +6,25 @@ import { fmtMoney, fmtPct, fmtPP } from './display.js';
 import { CONTRACT_TEMPLATES } from './contractMatch.js';
 
 export const PROFILE_VERSION = 1;
-export const RULE_CANDIDATE_VERSION = 'candidate-1';
+export const RULE_CANDIDATE_VERSION = 'candidate-2';
 export const CHASE_CANDIDATE_ID = 'rc:no_buy_on_surge:chase_high_buy';
 
 const BEHAVIOR_ANALYSIS_SOURCES = Object.freeze(['ai', 'backend_rules']);
 const PROFILE_OBSERVATION_IDS = Object.freeze(['sell_rebuy_within_2d', 'overtrading']);
 const PROFILE_OBSERVATION_LABELS = Object.freeze({
   sell_rebuy_within_2d: '卖出后两日内买回',
+  overtrading: '交易频率偏高',
+});
+const BEHAVIOR_TAG_IDS = Object.freeze([
+  'chase_high_buy',
+  'sell_rebuy_within_2d',
+  'quick_flip',
+  'overtrading',
+]);
+const BEHAVIOR_TAG_LABELS = Object.freeze({
+  chase_high_buy: '追高买入',
+  sell_rebuy_within_2d: '卖出后回补',
+  quick_flip: '快进快出',
   overtrading: '交易频率偏高',
 });
 
@@ -124,6 +136,31 @@ function reviewSummary(review) {
   };
 }
 
+// 画像标签只用确定性结果派生：模式成立才成标签；处置倾向按 DE 的 5 个百分点阈值（与报告结论一致）。
+export function buildBehaviorTags({ behavior = null, pgr = null } = {}) {
+  const tags = [];
+  const patterns = Array.isArray(behavior?.patterns) ? behavior.patterns : [];
+  for (const id of BEHAVIOR_TAG_IDS) {
+    const pattern = patterns.find((p) => p.pattern_id === id) ?? null;
+    if (!pattern || pattern.status !== '成立' || !(pattern.sample_n > 0)) continue;
+    tags.push({
+      tag_id: id,
+      label: BEHAVIOR_TAG_LABELS[id],
+      kind: 'behavior',
+      evidence: `命中 ${pattern.sample_n} 笔 / 已评估 ${pattern.evaluated_n} 笔`,
+    });
+  }
+  const de = pgr?.de;
+  if (Number.isFinite(de)) {
+    if (de >= 0.05) {
+      tags.push({ tag_id: 'disposition_gain', label: '盈利时更愿卖出', kind: 'disposition', evidence: `DE ${pgr.display?.de ?? '—'}` });
+    } else if (de <= -0.05) {
+      tags.push({ tag_id: 'disposition_loss', label: '亏损时更愿卖出', kind: 'disposition', evidence: `DE ${pgr.display?.de ?? '—'}` });
+    }
+  }
+  return tags;
+}
+
 // 只保留结构化字段：AI 评论、观察原话、成交与资产均不进入画像。
 export function behaviorAnalysisSummary(analysis) {
   if (!analysis || !BEHAVIOR_ANALYSIS_SOURCES.includes(analysis.source)) return null;
@@ -191,7 +228,8 @@ function ruleSummary(ruleState) {
 function dimensionRows(snapshot) {
   const b = snapshot.bill;
   const o = snapshot.outcome;
-  const behavior = snapshot.behavior?.patterns?.[0] ?? null;
+  const patterns = snapshot.behavior?.patterns ?? [];
+  const activePatterns = patterns.filter((p) => p.status === '成立' && p.sample_n > 0);
   const rules = snapshot.rules;
   const pgr = snapshot.pgr;
   const rows = [
@@ -210,8 +248,12 @@ function dimensionRows(snapshot) {
     {
       key: 'behavior',
       label: '行为证据',
-      value: behavior ? `${behavior.name}：${behavior.status}` : '行为发现未运行',
-      note: behavior ? `命中 ${behavior.sample_n} 笔 / 已评估 ${behavior.evaluated_n} 笔 / 最小样本 ${behavior.min_samples}` : '没有可评估的行为证据',
+      value: activePatterns.length
+        ? `${activePatterns.length} 个重复模式`
+        : patterns.length ? '未形成重复模式' : '行为发现未运行',
+      note: activePatterns.length
+        ? activePatterns.map((p) => `${p.name} n=${p.sample_n}`).join('；')
+        : patterns.length ? `已检查 ${patterns.length} 条候选模式，均未达到最小重复数` : '没有可评估的行为证据',
     },
   ];
   const analysisRow = behaviorAnalysisRow(snapshot.behavior_analysis);
@@ -245,18 +287,21 @@ export function buildProfileSnapshot({
   at = new Date().toISOString(),
 } = {}) {
   const bill = tradeSummary(trades);
+  const behaviorOut = behaviorSummary(behavior);
+  const pgrOut = pgrSummary(pgr);
   const snapshot = {
     version: PROFILE_VERSION,
     at,
     profile_key: bill.profile_key,
     bill,
     outcome: outcomeSummary(report),
-    behavior: behaviorSummary(behavior),
+    behavior: behaviorOut,
     behavior_analysis: behaviorAnalysisSummary(behaviorAnalysis),
     stock_self: stockSelfSummary(stockSelf),
-    pgr: pgrSummary(pgr),
+    pgr: pgrOut,
     review: reviewSummary(review),
     rules: ruleSummary(ruleState),
+    tags: buildBehaviorTags({ behavior, pgr: pgrOut }),
   };
   snapshot.dimensions = dimensionRows(snapshot);
   return snapshot;
@@ -280,6 +325,12 @@ function signedMoney(v) {
   return `${v >= 0 ? '+' : '-'}${fmtMoney(Math.abs(v))}`;
 }
 
+function behaviorHitCount(snapshot) {
+  const patterns = snapshot?.behavior?.patterns ?? [];
+  if (!patterns.length) return null;
+  return patterns.filter((p) => p.status === '成立').reduce((sum, p) => sum + (p.sample_n ?? 0), 0);
+}
+
 function trendOf(previous, current) {
   if (!previous || !current) return null;
   const prev = previous.latest;
@@ -287,8 +338,8 @@ function trendOf(previous, current) {
   const prevDrag = prev.outcome?.drag_money;
   const curDrag = current.outcome?.drag_money;
   const dragDelta = Number.isFinite(prevDrag) && Number.isFinite(curDrag) ? curDrag - prevDrag : null;
-  const prevBehaviorN = prev.behavior?.patterns?.[0]?.sample_n ?? null;
-  const curBehaviorN = current.behavior?.patterns?.[0]?.sample_n ?? null;
+  const prevBehaviorN = behaviorHitCount(prev);
+  const curBehaviorN = behaviorHitCount(current);
   return {
     drag_money_delta: dragDelta,
     drag_money_delta_display: dragDelta === null ? '—' : signedMoney(dragDelta),
@@ -316,7 +367,9 @@ export function mergeProfile(previous, snapshot, { at = snapshot?.at ?? new Date
       actual_ret: snapshot.outcome?.display?.actual_ret ?? '—',
       ghost_ret: snapshot.outcome?.display?.ghost_ret ?? '—',
     },
-    behavior_n: snapshot.behavior?.patterns?.[0]?.sample_n ?? null,
+    behavior_n: behaviorHitCount(snapshot),
+    behavior_active_patterns: (snapshot.behavior?.patterns ?? []).filter((p) => p.status === '成立').map((p) => p.pattern_id),
+    tag_ids: (snapshot.tags ?? []).map((t) => t.tag_id),
     rule_count: snapshot.rules.active_count,
   };
   const history = [...(Array.isArray(base.history) ? base.history : []), historyEntry].slice(-12);
@@ -394,15 +447,61 @@ export function withCandidateEvent(profile, candidateId, status, { at = new Date
 }
 
 function evidenceLine(e) {
-  const rise = e.display?.rise ?? (Number.isFinite(e.rise) ? fmtPct(e.rise) : '—');
-  return `${e.trade_date} ${e.symbol} 买入，窗口涨幅 ${rise}`;
+  if (Number.isFinite(e.rise)) {
+    const rise = e.display?.rise ?? fmtPct(e.rise);
+    return `${e.trade_date} ${e.symbol} 买入，窗口涨幅 ${rise}`;
+  }
+  if (Number.isFinite(e.gap_days)) {
+    const side = e.side_label ?? (Array.isArray(e.buy_trade_ids) ? '卖出' : '成交');
+    const prior = e.prior_side_label && e.prior_trade_date
+      ? `距${e.prior_side_label} ${e.prior_trade_date}`
+      : (Array.isArray(e.buy_trade_ids) && e.buy_trade_ids.length ? `对应买入 ${e.buy_trade_ids.join('、')}` : '');
+    return `${e.trade_date} ${e.symbol} ${side}${prior ? `，${prior} ${e.gap_days} 个交易日` : ''}`;
+  }
+  return `${e.trade_date} ${e.symbol} 成交`;
+}
+
+const CANDIDATE_SPECS = Object.freeze([
+  {
+    candidate_id: CHASE_CANDIDATE_ID,
+    pattern_id: 'chase_high_buy',
+    template_id: 'no_buy_on_surge',
+    basis: (pattern) => `本账单中有 ${pattern.sample_n} 笔买入发生在“${pattern.rule?.window ?? '回看窗口'}涨幅 ≥ ${pattern.rule?.threshold_display ?? '—'}”的情境（已评估 ${pattern.evaluated_n} 笔，最小样本 ${pattern.min_samples}）。`,
+    caveat: '模板判定的是“申报当天涨幅”，与行为发现的回看窗口不是同一口径；阈值和文本都可以由你改写。系统只给候选，不替你定规矩。',
+  },
+  {
+    candidate_id: 'rc:no_buy_back_within:sell_rebuy_within_2d',
+    pattern_id: 'sell_rebuy_within_2d',
+    template_id: 'no_buy_back_within',
+    basis: (pattern) => `本账单中有 ${pattern.sample_n} 笔买入发生在“${pattern.rule?.window ?? '卖出后窗口'}”的情境（已评估 ${pattern.evaluated_n} 笔，最小样本 ${pattern.min_samples}）。`,
+    caveat: '模板按“最近一次卖出”的交易日距离判定；窗口天数可以由你改写。系统只给候选，不替你定规矩。',
+  },
+  {
+    candidate_id: 'rc:sell_within_after_buy:quick_flip',
+    pattern_id: 'quick_flip',
+    template_id: 'sell_within_after_buy',
+    basis: (pattern) => `本账单中有 ${pattern.sample_n} 笔卖出发生在“${pattern.rule?.window ?? '买入后窗口'}”的情境（已评估 ${pattern.evaluated_n} 笔，最小样本 ${pattern.min_samples}）。`,
+    caveat: '该模板只提醒、不阻止交易；账单没有成交时刻，同日买卖不计入窗口。系统只给候选，不替你定规矩。',
+  },
+]);
+
+function candidateFieldsOf(spec, pattern) {
+  if (spec.template_id === 'no_buy_on_surge') {
+    const threshold = Math.max(1, Math.round((pattern.rule?.threshold ?? 0.1) * 100));
+    return { threshold_pct: String(threshold) };
+  }
+  const fallback = CONTRACT_TEMPLATES[spec.template_id]?.fields?.days?.default ?? 3;
+  return { days: String(pattern.rule?.threshold ?? fallback) };
+}
+
+function candidateText(template, fields) {
+  return template.text_template.replace(/\{(\w+)\}/g, (_, k) => String(fields[k] ?? ''));
 }
 
 export function buildRuleCandidates({ behavior = null, ruleState = null, profile = null } = {}) {
-  const pattern = behavior?.patterns?.find((p) => p.pattern_id === 'chase_high_buy') ?? null;
+  const patterns = Array.isArray(behavior?.patterns) ? behavior.patterns : [];
   const rules = ruleSummary(ruleState);
-  const event = profile?.rule_events?.[CHASE_CANDIDATE_ID] ?? null;
-  if (!pattern) {
+  if (!patterns.length) {
     return {
       version: RULE_CANDIDATE_VERSION,
       candidates: [],
@@ -410,64 +509,72 @@ export function buildRuleCandidates({ behavior = null, ruleState = null, profile
     };
   }
 
-  const template = CONTRACT_TEMPLATES.no_buy_on_surge;
-  const threshold = Math.max(1, Math.round((pattern.rule?.threshold ?? 0.1) * 100));
-  const isActive = rules.active_templates.includes('no_buy_on_surge');
-  let status = 'not_recommended';
-  if (isActive) status = 'active';
-  else if (event?.status === 'dismissed') status = 'dismissed';
-  else if (pattern.status === '成立') status = 'available';
+  const candidates = [];
+  for (const spec of CANDIDATE_SPECS) {
+    const pattern = patterns.find((p) => p.pattern_id === spec.pattern_id) ?? null;
+    const template = CONTRACT_TEMPLATES[spec.template_id];
+    if (!pattern || !template) continue;
 
-  const reason = status === 'active'
-    ? '当前已有一条“涨幅超阈值不买入”规则，不重复推荐。'
-    : status === 'dismissed'
-      ? '你已忽略这条候选；可在画像记录中恢复。'
-      : status === 'available'
-        ? `行为发现“${pattern.name}”成立：命中 ${pattern.sample_n} 笔，已评估 ${pattern.evaluated_n} 笔。`
-        : pattern.status === '证据不足'
-          ? `行为发现“${pattern.name}”证据不足（已评估 ${pattern.evaluated_n} 笔 < 最小样本 ${pattern.min_samples}），不生成候选。`
-          : `行为发现“${pattern.name}”不成立（命中 ${pattern.sample_n} 笔 < 最小样本 ${pattern.min_samples}），不生成候选。`;
+    const event = profile?.rule_events?.[spec.candidate_id] ?? null;
+    const isActive = rules.active_templates.includes(template.template_id);
+    let status = 'not_recommended';
+    if (isActive) status = 'active';
+    else if (event?.status === 'dismissed') status = 'dismissed';
+    else if (pattern.status === '成立') status = 'available';
 
-  const candidate = {
-    candidate_id: CHASE_CANDIDATE_ID,
-    version: RULE_CANDIDATE_VERSION,
-    status,
-    status_text: {
-      available: '可建立规则',
-      active: '已有同类规则',
-      dismissed: '已忽略',
-      not_recommended: '不推荐',
-    }[status],
-    template_id: template.template_id,
-    template_name: template.name,
-    text: template.text_template.replace('{threshold_pct}', String(threshold)),
-    fields: { threshold_pct: String(threshold) },
-    threshold,
-    source_pattern: {
-      pattern_id: pattern.pattern_id,
-      name: pattern.name,
-      status: pattern.status,
-      sample_n: pattern.sample_n,
-      evaluated_n: pattern.evaluated_n,
-      min_samples: pattern.min_samples,
-      rule: pattern.rule,
-    },
-    basis: `本账单中有 ${pattern.sample_n} 笔买入发生在“${pattern.rule?.window ?? '回看窗口'}涨幅 ≥ ${pattern.rule?.threshold_display ?? `${threshold}%`}”的情境（已评估 ${pattern.evaluated_n} 笔，最小样本 ${pattern.min_samples}）。`,
-    evidence: Array.isArray(pattern.evidence) ? pattern.evidence.slice(0, 6).map((e) => ({
-      trade_id: e.trade_id,
-      trade_date: e.trade_date,
-      symbol: e.symbol,
-      rise: e.rise,
-      display: e.display,
-      line: evidenceLine(e),
-    })) : [],
-    caveat: '模板判定的是“申报当天涨幅”，与行为发现的回看窗口不是同一口径；阈值和文本都可以由你改写。系统只给候选，不替你定规矩。',
-    reason,
-    event: event ? { status: event.status, at: event.at } : null,
-  };
+    const reason = status === 'active'
+      ? `当前已有一条“${template.name}”规则，不重复推荐。`
+      : status === 'dismissed'
+        ? '你已忽略这条候选；可在画像记录中恢复。'
+        : status === 'available'
+          ? `行为发现“${pattern.name}”成立：命中 ${pattern.sample_n} 笔，已评估 ${pattern.evaluated_n} 笔。`
+          : pattern.status === '证据不足'
+            ? `行为发现“${pattern.name}”证据不足（已评估 ${pattern.evaluated_n} 笔 < 最小样本 ${pattern.min_samples}），不生成候选。`
+            : `行为发现“${pattern.name}”不成立（命中 ${pattern.sample_n} 笔 < 最小样本 ${pattern.min_samples}），不生成候选。`;
+
+    const fields = candidateFieldsOf(spec, pattern);
+    candidates.push({
+      candidate_id: spec.candidate_id,
+      version: RULE_CANDIDATE_VERSION,
+      status,
+      status_text: {
+        available: '可建立规则',
+        active: '已有同类规则',
+        dismissed: '已忽略',
+        not_recommended: '不推荐',
+      }[status],
+      template_id: template.template_id,
+      template_name: template.name,
+      text: candidateText(template, fields),
+      fields,
+      threshold: Number(Object.values(fields)[0]),
+      source_pattern: {
+        pattern_id: pattern.pattern_id,
+        name: pattern.name,
+        status: pattern.status,
+        sample_n: pattern.sample_n,
+        evaluated_n: pattern.evaluated_n,
+        min_samples: pattern.min_samples,
+        rule: pattern.rule,
+      },
+      basis: spec.basis(pattern),
+      evidence: Array.isArray(pattern.evidence) ? pattern.evidence.slice(0, 6).map((e) => ({
+        trade_id: e.trade_id,
+        trade_date: e.trade_date,
+        symbol: e.symbol,
+        rise: e.rise,
+        gap_days: e.gap_days,
+        display: e.display,
+        line: evidenceLine(e),
+      })) : [],
+      caveat: spec.caveat,
+      reason,
+      event: event ? { status: event.status, at: event.at } : null,
+    });
+  }
   return {
     version: RULE_CANDIDATE_VERSION,
-    candidates: [candidate],
+    candidates,
     notes: [
       '候选只来自当前账单的行为发现证据，不来自 LLM，也不来自其他用户。',
       '规则须由用户确认或改写后保存；候选本身不会自动生效。',

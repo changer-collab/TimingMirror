@@ -148,7 +148,7 @@ const lowSample = await loadScenario('low_sample');
   }), { facts: sellRebuy.facts, localPattern: sellRebuy.localPattern });
   check('AI 观察：卖后追回有真实成交对 → 保留', valid?.observations.length === 1
     && valid.observations[0].evidence_event_indexes.join(',') === '1,2', JSON.stringify(valid));
-  check('AI 观察：服务端交易统计与本地一致', base.trading.sell_rebuy_within_2d_count === 1, JSON.stringify(base.trading));
+  check('AI 观察：服务端交易统计与本地一致', base.trading.sell_rebuy_within_2d_count === 2, JSON.stringify(base.trading));
 
   const wrongPair = sanitizeAnalysis(aiPayload({
     facts: sellRebuy.facts,

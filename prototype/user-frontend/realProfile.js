@@ -43,6 +43,16 @@ function dimensionCards(snapshot) {
   </article>`).join('')}</div>`;
 }
 
+function tagsBlock(snapshot) {
+  const tags = Array.isArray(snapshot?.tags) ? snapshot.tags : [];
+  if (!tags.length) return '';
+  return `<div class="rp-profile-tags">
+    <span class="rp-subtitle">画像标签</span>
+    <div class="rp-tag-list">${tags.map((t) => `<span class="rp-tag" data-tag="${esc(t.tag_id)}" title="${esc(t.evidence)}">${esc(t.label)}</span>`).join('')}</div>
+    <p class="rp-note">标签由行为发现和处置倾向自动派生，只描述模式，不评价交易好坏。</p>
+  </div>`;
+}
+
 function historyBlock(profile) {
   const history = Array.isArray(profile?.history) ? profile.history : [];
   if (!history.length) return '<p class="rp-note">还没有历史观察。每打开一次已发布的真实报告，会记录一次派生统计。</p>';
@@ -101,10 +111,16 @@ function candidateCard(c) {
 function candidatesBlock(pack) {
   const candidates = Array.isArray(pack?.candidates) ? pack.candidates : [];
   const notes = Array.isArray(pack?.notes) ? pack.notes : [];
+  const visible = candidates.filter((c) => c.status !== 'not_recommended');
+  const notRecommended = candidates.filter((c) => c.status === 'not_recommended');
   return `<div class="rp-profile-candidates">
     <h3 class="rp-subtitle">规则候选（来自本账单证据）</h3>
     <p class="rp-note">候选只做模板预填；保存前由你确认或改写，系统不替你定规矩。${notes[0] ? ` ${notes[0]}` : ''}</p>
-    ${candidates.length ? candidates.map(candidateCard).join('') : '<p class="rp-note">当前没有可展示的规则候选。</p>'}
+    ${visible.length ? visible.map(candidateCard).join('') : '<p class="rp-note">当前没有可建立的规则候选。</p>'}
+    ${notRecommended.length ? `<details class="rp-details" data-role="not-recommended">
+      <summary>${notRecommended.length} 条行为模式尚未达到可建规则的条件</summary>
+      ${notRecommended.map(candidateCard).join('')}
+    </details>` : ''}
   </div>`;
 }
 
@@ -195,6 +211,7 @@ function renderProfile(host, ctx, bundle, bill) {
     ${observationLine(observation, profile, published)}
     <p class="rp-note rp-profile-meta">画像快照：${esc(fmtAt(shown.at))} · 账单覆盖 ${esc(shown.bill?.trade_count ?? '—')} 笔 / ${esc(shown.bill?.symbol_count ?? '—')} 只标的</p>
     ${dimensionCards(shown)}
+    ${tagsBlock(shown)}
     ${trendBlock(profile)}
     ${historyBlock(profile)}
     ${candidatesBlock(pack)}

@@ -61,7 +61,7 @@ for (const scenario of REPORT_SCENARIOS) {
   const sellRebuy = bundles.get('sell_rebuy').bundle.behaviorFacts;
   const normalized = normalizeBehaviorFactsRequest(sellRebuy);
   const trading = normalized.ok ? buildBehaviorFacts(normalized.request).trading : null;
-  check('卖后追回：相对偏移保留 2 个交易日间隔', trading?.sell_rebuy_within_2d_count === 1, JSON.stringify(trading));
+  check('卖后追回：相对偏移保留 2 个交易日间隔（2 次）', trading?.sell_rebuy_within_2d_count === 2, JSON.stringify(trading));
   const overtrading = bundles.get('overtrading').bundle.behaviorFacts;
   const overNormalized = normalizeBehaviorFactsRequest(overtrading);
   const overTrading = overNormalized.ok ? buildBehaviorFacts(overNormalized.request).trading : null;
