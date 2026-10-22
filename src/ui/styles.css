@@ -131,16 +131,20 @@ body {
 .cv-scope-change { display: flex; flex-direction: column; gap: 6px; border: 1px dashed var(--line); border-radius: 8px; padding: 10px 14px; margin-top: 6px; }
 .cv-date-mapping { font-size: 14px; color: var(--amber-ink); }
 .cv-agent-note { margin-top: 4px; }
-.cv-rule-detail > summary { cursor: pointer; font-size: 13px; color: var(--faint); }
-.cv-rule-detail[open] { display: flex; flex-direction: column; gap: 6px; }
-.cv-hash-full { user-select: all; }
 .cv-group-title { font-weight: 700; font-size: 15px; }
+.cv-action-group { display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel2); margin-bottom: 12px; }
+.cv-action-group.cv-action-unknown { border-left: 4px solid var(--amber); }
+.cv-action-title { font-weight: 700; font-size: 16px; color: var(--cream); }
+.cv-action-note { font-size: 14px; color: var(--dim); }
+.cv-slot-custom { border-left: 3px solid var(--accent, #4a9eff); padding-left: 12px; }
+.cv-rule-custom { border-left: 3px solid var(--accent, #4a9eff); }
+.cv-rule-action { font-size: 14px; color: var(--cream); margin-top: 4px; }
+.cv-rule-understanding { margin-top: 4px; font-style: italic; }
 .cv-confirm { display: flex; flex-direction: column; gap: 8px; border: 1px dashed var(--line); border-radius: 8px; padding: 10px 14px; }
 .cv-reconfirm-why { font-size: 14px; color: var(--dim); }
 .cv-reconfirm-box { border-left: 4px solid var(--amber); }
 .cv-reconfirm-note { color: var(--amber); }
 .cv-empty, .cv-sim-empty { border: 1px dashed var(--line); border-radius: 8px; padding: 10px 14px; color: var(--dim); font-size: 14px; }
-.cv-sim-used { font-size: 14px; color: var(--dim); }
 /* 守约账本：历史复盘统计；卡片内低密度列表 */
 .cv-ledger { display: flex; flex-direction: column; gap: 10px; border-top: 1px dashed var(--line); padding-top: 12px; }
 .cv-ledger-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }

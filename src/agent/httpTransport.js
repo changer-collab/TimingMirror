@@ -17,6 +17,7 @@ export const SITE_FUNCTION_PATHS = Object.freeze({
   ruleIntent: '/functions/v1/app/api/llm/rule-intent',
   resultExplanation: '/functions/v1/app/api/llm/result-explanation',
   scenarioJudgment: '/functions/v1/app/api/llm/scenario-judgment',
+  customRuleJudgment: '/functions/v1/app/api/llm/custom-rule-judgment',
   importRecover: '/functions/v1/app/api/llm/import-recover',
   importVision: '/functions/v1/app/api/llm/import-vision',
 });
@@ -66,10 +67,10 @@ function normalizePaths(paths) {
     throw new TypeError('paths 必须为对象');
   }
   const out = {};
-  for (const key of ['intent', 'restate', 'ruleIntent', 'resultExplanation', 'scenarioJudgment', 'importRecover', 'importVision']) {
+  for (const key of ['intent', 'restate', 'ruleIntent', 'resultExplanation', 'scenarioJudgment', 'customRuleJudgment', 'importRecover', 'importVision']) {
     const value = paths[key];
     if (value === undefined) {
-      if (key === 'ruleIntent' || key === 'resultExplanation' || key === 'scenarioJudgment' || key === 'importRecover' || key === 'importVision') continue;
+      if (key === 'ruleIntent' || key === 'resultExplanation' || key === 'scenarioJudgment' || key === 'customRuleJudgment' || key === 'importRecover' || key === 'importVision') continue;
       throw new TypeError(`paths.${key} 缺失`);
     }
     if (typeof value !== 'string' || !value.startsWith('/')
@@ -165,6 +166,10 @@ export function createHttpTransport({
     scenarioJudgment({ stage, flow_id, request_id, scenario_id, rule_set_hash, scenario, signal } = {}) {
       if (!routes.scenarioJudgment) throw transportError(HTTP_TRANSPORT_CODES.CONFIG);
       return call(routes.scenarioJudgment, { stage, flow_id, request_id, scenario_id, rule_set_hash, scenario }, signal);
+    },
+    customRuleJudgment({ stage, flow_id, request_id, judgment_id, rule, scenario, data, signal } = {}) {
+      if (!routes.customRuleJudgment) throw transportError(HTTP_TRANSPORT_CODES.CONFIG);
+      return call(routes.customRuleJudgment, { stage, flow_id, request_id, judgment_id, rule, scenario, data }, signal);
     },
     importRecover({ content, stage, source_kind, flow_id, request_id, signal } = {}) {
       if (!routes.importRecover) throw transportError(HTTP_TRANSPORT_CODES.CONFIG);

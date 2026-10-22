@@ -1,5 +1,5 @@
 // 站点 Edge Function 的 HTTP handler（Web Request/Response；可注入 fake transport）。
-// 路由由平台挂在 /functions/v1/app 下；这里按 /api/llm/intent、/api/llm/restate、/api/llm/rule、/api/llm/rule-intent、/api/llm/behavior-analysis、/api/llm/result-explanation、/api/llm/scenario-judgment、/api/llm/import-recover、/api/llm/import-vision 与 /api/market/snapshot 后缀分派。
+// 路由由平台挂在 /functions/v1/app 下；这里按 /api/llm/intent、/api/llm/restate、/api/llm/rule、/api/llm/rule-intent、/api/llm/result-explanation、/api/llm/scenario-judgment、/api/llm/custom-rule-judgment、/api/llm/import-recover、/api/llm/import-vision 与 /api/market/snapshot 后缀分派。
 // 不记录 question/facts/text/rawText/行情请求，不返回上游原始错误或 token。
 import { projectFacts } from './validation.mjs';
 import { DYNAMIC_CACHE_ARTIFACT, MARKET_MAX_RANGE_DAYS, MARKET_MAX_SYMBOLS, isMarketDate } from './market.mjs';
@@ -37,6 +37,11 @@ import {
   normalizeScenarioJudgmentRequest,
   validateScenarioJudgmentResponse,
 } from './scenarioJudgment.mjs';
+import {
+  CUSTOM_RULE_JUDGMENT_CODES,
+  normalizeCustomRuleJudgmentRequest,
+  validateCustomRuleJudgmentResponse,
+} from './customRuleJudgment.mjs';
 
 export const SITE_FUNCTION_CODES = Object.freeze({
   NOT_FOUND: 'E_FUNCTION_NOT_FOUND',
@@ -48,6 +53,9 @@ export const SITE_FUNCTION_CODES = Object.freeze({
   UNKNOWN_FIELD: 'E_FUNCTION_UNKNOWN_FIELD',
   REQUEST_INVALID: 'E_FUNCTION_REQUEST_INVALID',
   MODEL_NOT_CONFIGURED: 'E_MODEL_NOT_CONFIGURED',
+  MODEL_AUTH_FAILED: 'E_MODEL_AUTH_FAILED',
+  MODEL_FORBIDDEN: 'E_MODEL_FORBIDDEN',
+  MODEL_RATE_LIMITED: 'E_MODEL_RATE_LIMITED',
   MODEL_UNAVAILABLE: 'E_MODEL_UNAVAILABLE',
   MODEL_TIMEOUT: 'E_MODEL_TIMEOUT',
   MODEL_RESPONSE: 'E_MODEL_RESPONSE_INVALID',
@@ -63,6 +71,8 @@ export const SITE_FUNCTION_CODES = Object.freeze({
   RESULT_EXPLANATION_RESPONSE: RESULT_EXPLANATION_CODES.RESPONSE,
   SCENARIO_JUDGMENT_REQUEST_INVALID: SCENARIO_JUDGMENT_CODES.REQUEST_INVALID,
   SCENARIO_JUDGMENT_RESPONSE: SCENARIO_JUDGMENT_CODES.RESPONSE,
+  CUSTOM_RULE_JUDGMENT_REQUEST_INVALID: CUSTOM_RULE_JUDGMENT_CODES.REQUEST_INVALID,
+  CUSTOM_RULE_JUDGMENT_RESPONSE: CUSTOM_RULE_JUDGMENT_CODES.RESPONSE,
   MARKET_NOT_CONFIGURED: 'E_MARKET_NOT_CONFIGURED',
   MARKET_REQUEST_INVALID: 'E_MARKET_REQUEST_INVALID',
   MARKET_SYMBOL_UNKNOWN: 'E_MARKET_SYMBOL_UNKNOWN',
@@ -81,7 +91,10 @@ const MESSAGES = Object.freeze({
   [SITE_FUNCTION_CODES.JSON]: '请求体不是合法 JSON',
   [SITE_FUNCTION_CODES.UNKNOWN_FIELD]: '请求包含不允许的字段',
   [SITE_FUNCTION_CODES.REQUEST_INVALID]: '请求未通过服务端校验',
-  [SITE_FUNCTION_CODES.MODEL_NOT_CONFIGURED]: '模型未启用：服务端尚未配置 DASHSCOPE_API_KEY',
+  [SITE_FUNCTION_CODES.MODEL_NOT_CONFIGURED]: '模型未启用：服务端尚未配置 DEEPSEEK_API_KEY',
+  [SITE_FUNCTION_CODES.MODEL_AUTH_FAILED]: '模型服务鉴权失败：请检查服务端模型 Key',
+  [SITE_FUNCTION_CODES.MODEL_FORBIDDEN]: '模型服务无访问权限：请检查模型权限',
+  [SITE_FUNCTION_CODES.MODEL_RATE_LIMITED]: '模型服务请求过于频繁：请稍后重试',
   [SITE_FUNCTION_CODES.MODEL_UNAVAILABLE]: '模型服务不可用',
   [SITE_FUNCTION_CODES.MODEL_TIMEOUT]: '模型服务超时',
   [SITE_FUNCTION_CODES.MODEL_RESPONSE]: '模型服务响应格式非法',
@@ -97,6 +110,8 @@ const MESSAGES = Object.freeze({
   [SITE_FUNCTION_CODES.RESULT_EXPLANATION_RESPONSE]: '结果解释响应未通过服务端校验',
   [SITE_FUNCTION_CODES.SCENARIO_JUDGMENT_REQUEST_INVALID]: '情景判断请求未通过服务端校验',
   [SITE_FUNCTION_CODES.SCENARIO_JUDGMENT_RESPONSE]: '情景判断响应未通过服务端校验',
+  [SITE_FUNCTION_CODES.CUSTOM_RULE_JUDGMENT_REQUEST_INVALID]: '自定义规则判定请求未通过服务端校验',
+  [SITE_FUNCTION_CODES.CUSTOM_RULE_JUDGMENT_RESPONSE]: '自定义规则判定响应未通过服务端校验',
   [SITE_FUNCTION_CODES.MARKET_NOT_CONFIGURED]: '行情未启用：服务端尚未配置 TUSHARE_TOKEN',
   [SITE_FUNCTION_CODES.MARKET_REQUEST_INVALID]: '行情请求未通过服务端校验',
   [SITE_FUNCTION_CODES.MARKET_SYMBOL_UNKNOWN]: '行情标的未在股票列表中找到（请核对 6 位 A 股代码）',
@@ -122,6 +137,14 @@ const MARKET_STATUS = Object.freeze({
   [SITE_FUNCTION_CODES.MARKET_UNAVAILABLE]: 502,
   [SITE_FUNCTION_CODES.MARKET_TIMEOUT]: 504,
   [SITE_FUNCTION_CODES.MARKET_RESPONSE]: 502,
+});
+const MODEL_STATUS = Object.freeze({
+  [SITE_FUNCTION_CODES.MODEL_AUTH_FAILED]: 502,
+  [SITE_FUNCTION_CODES.MODEL_FORBIDDEN]: 502,
+  [SITE_FUNCTION_CODES.MODEL_RATE_LIMITED]: 429,
+  [SITE_FUNCTION_CODES.MODEL_UNAVAILABLE]: 502,
+  [SITE_FUNCTION_CODES.MODEL_TIMEOUT]: 504,
+  [SITE_FUNCTION_CODES.MODEL_RESPONSE]: 502,
 });
 
 function jsonResponse(status, payload, extraHeaders = {}) {
@@ -208,9 +231,9 @@ async function callTransport(transport, stage, request) {
     }
     return { ok: true, rawText: result.rawText };
   } catch (error) {
-    if (error && error.code === SITE_FUNCTION_CODES.MODEL_TIMEOUT) {
-      return { ok: false, status: 504, code: SITE_FUNCTION_CODES.MODEL_TIMEOUT };
-    }
+    const code = error && typeof error.code === 'string' ? error.code : '';
+    const status = MODEL_STATUS[code];
+    if (status) return { ok: false, status, code };
     return { ok: false, status: 502, code: SITE_FUNCTION_CODES.MODEL_UNAVAILABLE };
   }
 }
@@ -276,7 +299,9 @@ export function createHandler({
     const path = url.pathname;
     const stage = path.endsWith('/api/llm/rule-intent')
       ? 'ruleIntent'
-      : path.endsWith('/api/llm/behavior-analysis')
+      : path.endsWith('/api/llm/custom-rule-judgment')
+        ? 'customRuleJudgment'
+        : path.endsWith('/api/llm/behavior-analysis')
         ? 'behaviorAnalysis'
         : path.endsWith('/api/llm/result-explanation')
           ? 'resultExplanation'
@@ -417,6 +442,34 @@ export function createHandler({
         rawText: JSON.stringify({
           judgment: checked.judgment,
           answer_text: checked.answer_text,
+          binding,
+        }),
+      });
+    }
+    if (stage === 'customRuleJudgment') {
+      const validated = normalizeCustomRuleJudgmentRequest(body);
+      if (!validated.ok) return errorResponse(400, validated.code);
+      const result = await callTransport(transport, 'customRuleJudgment', validated.request);
+      if (!result.ok) return errorResponse(result.status, result.code);
+      const checked = validateCustomRuleJudgmentResponse(result.rawText);
+      if (!checked.ok) return errorResponse(502, SITE_FUNCTION_CODES.CUSTOM_RULE_JUDGMENT_RESPONSE);
+      const binding = {
+        flow_id: validated.request.flow_id,
+        request_id: validated.request.request_id,
+        judgment_id: validated.request.judgment_id,
+        rule_id: validated.request.rule.rule_id,
+        rule_hash: validated.request.rule.hash,
+        rule_version: validated.request.rule.version,
+        rule_action: validated.request.rule.action,
+        scenario_symbol: validated.request.scenario.symbol,
+        scenario_requested_date: validated.request.scenario.requested_date,
+        scenario_action: validated.request.scenario.action,
+      };
+      return jsonResponse(200, {
+        rawText: JSON.stringify({
+          verdict: checked.verdict,
+          reason: checked.reason,
+          used_data: checked.used_data,
           binding,
         }),
       });

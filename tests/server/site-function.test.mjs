@@ -305,7 +305,7 @@ function streamOfChunks(chunks) {
   check('规则识别路由：被拒绝的请求均未调用模型', calls.length === 2, String(calls.length));
 
   const noKey = await invoke(createHandler({ transport: null }), '/api/llm/rule', { body: { text: RULE_TEXT } });
-  check('规则识别路由：未配置 DASHSCOPE_API_KEY → 503 E_MODEL_NOT_CONFIGURED', noKey.status === 503 && noKey.json.code === SITE_FUNCTION_CODES.MODEL_NOT_CONFIGURED, noKey.text);
+  check('规则识别路由：未配置模型 Key → 503 E_MODEL_NOT_CONFIGURED', noKey.status === 503 && noKey.json.code === SITE_FUNCTION_CODES.MODEL_NOT_CONFIGURED, noKey.text);
   const legacy = await invoke(createHandler({ transport: createFakeTransport() }), '/api/llm/rule', { body: { text: RULE_TEXT } });
   check('规则识别路由：transport 缺少 rule() → 502 E_MODEL_UNAVAILABLE（脱敏）', legacy.status === 502 && legacy.json.code === SITE_FUNCTION_CODES.MODEL_UNAVAILABLE, legacy.text);
   const get = await invoke(handler, '/api/llm/rule', { method: 'GET', body: undefined });
@@ -331,13 +331,19 @@ function streamOfChunks(chunks) {
   check('DashScope rule()：系统提示含三个模板 ID 与“不得假设默认值”约束', msgs[0].role === 'system'
     && msgs[0].content.includes('no_buy_on_surge') && msgs[0].content.includes('no_buy_back_within')
     && msgs[0].content.includes('sell_within_after_buy') && msgs[0].content.includes('不得自行假设默认值'));
-  check('DashScope rule()：系统提示区分申报买入 / 申报卖出模板，并要求买入后卖出明确同一只股票或单个代码', msgs[0].content.includes('提醒动作：申报买入')
-    && msgs[0].content.includes('提醒动作：申报卖出') && msgs[0].content.includes('same_symbol')
-    && msgs[0].content.includes('days_sell') && msgs[0].content.includes('不能把“买入”和“卖出”分开当成其他模板')
+  check('DashScope rule()：系统提示区分申报买入 / 申报卖出模板，并要求买入后卖出明确同一只股票或单个代码', msgs[0].content.includes('买入提醒（buy）')
+    && msgs[0].content.includes('卖出提醒（sell）') && msgs[0].content.includes('same_symbol')
+    && msgs[0].content.includes('days_sell') && msgs[0].content.includes('不能把”买入”和”卖出”分开当成其他模板')
     && msgs[0].content.includes('只提醒，不阻止卖出'));
   check('DashScope rule()：用户消息只含规则原文', msgs[1].role === 'user' && msgs[1].content === text);
-  check('DashScope rule()：系统提示约定 scope 字段（仅原文明确写出的单个 6 位代码），且禁止按名称推断代码', msgs[0].content.includes('"scope":{"kind":"all|symbol","symbol":null}')
+  check('DashScope rule()：系统提示约定 scope 字段（仅原文明确写出的单个 6 位代码），且禁止按名称推断代码', msgs[0].content.includes('"scope":{"kind":"all","symbol":null}')
     && msgs[0].content.includes('6 位数字股票代码') && msgs[0].content.includes('不得推断或补全股票代码'));
+  const example = msgs[0].content.match(/示例：(\{[^\n]+?\})。status/)?.[1];
+  let parsedExample = null;
+  try { parsedExample = JSON.parse(example); } catch { /* invalid example */ }
+  check('DashScope rule()：标准 JSON 示例及模板外单条规则保存为 custom', parsedExample?.status === 'custom'
+    && parsedExample.action === 'buy' && msgs[0].content.includes('能理解但不能完整映射到模板的单条规则')
+    && !msgs[0].content.includes('若描述需要模板以外的数据或判定能力（含部分超出），status 为'));
   check('DashScope rule()：返回 rawText', r.rawText === '{"status":"unsupported"}');
 }
 

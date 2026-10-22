@@ -1,4 +1,4 @@
-// 站点 Function 的百炼 transport（仅在配置 DASHSCOPE_API_KEY 后由入口构造）。
+// 站点 Function 的旧 DashScope transport（保留供人工回滚；当前入口优先 DeepSeek）。
 // 固定北京地域、qwen-plus、JSON mode/非思考；超时按单次上游调用配置。
 // 不记录 question/facts/rawText/API Key；不向调用方回传供应商原始正文。
 import { BEHAVIOR_CANDIDATE } from './behaviorAnalysis.mjs';
@@ -87,6 +87,19 @@ const SCENARIO_JUDGMENT_SYSTEM = [
   'answer_text 使用简体中文，简洁；不要输出 Markdown、代码块、URL、文件名或额外字段。',
 ].join('\n');
 
+const CUSTOM_RULE_JUDGMENT_SYSTEM = [
+  '你是 TimingMirror 的自定义规则情境判定器。用户消息是 JSON：{"rule":{...},"scenario":{...},"data":{...}}。',
+  'rule.text 是用户确认过的自定义交易规则原文；你的任务是把这条规则与本次情境提供的数据对照，给出辅助判定，供程序展示给用户。',
+  '只能使用输入中的 rule/scenario/data；不得引入输入中没有的数字、日期、标的、持仓、行情或交易记录，不得编造数据。',
+  'data 里的买入/卖出日期与交易日历是当前账单中可见的记录，不保证完整；若规则需要账单里看不到的数据（如持仓、盈亏、盘中价格、成交量），或无法确认数据足够，verdict 必须为 “unable”，并在 reason 中说明缺什么。',
+  'rule.action 表示申报买入（buy）或申报卖出（sell）时提醒；scenario.action 是本次模拟的申报动作。规则限定范围外的情境不属于本次判定。',
+  '判定只用于提醒，不下单、不阻止交易；不得预测收益或涨跌，不得推荐买入/卖出，不得建议保存或修改规则。',
+  '输出 JSON 对象：{"verdict":"triggered|not_triggered|unable","reason":"...","used_data":[]}。',
+  'verdict=triggered 表示按规则原文与给定数据该情境应提醒；not_triggered 表示数据足够且明确不满足提醒条件；无法确认时一律用 unable。',
+  'used_data 只能取 change_pct、buys、sells、calendar 的子集，列出你实际用到的数据；无法判定时可为空数组。',
+  'reason 使用简体中文，不超过 600 字，说明判断依据；不要输出 Markdown、代码块、URL、文件名或额外字段。',
+].join('\n');
+
 const RULE_INTENT_SYSTEM = [
   '你是 TimingMirror 的规则理解器。',
   '只允许选择用户消息 allowed_templates 中的模板，不得创建新规则、预测收益或提供买卖建议。',
@@ -137,9 +150,7 @@ export const RULE_NEED_CODES = Object.freeze([
   'trade_pnl', 'sell_action', 'sell_restriction', 'pause_trading', 'position_size', 'account_funds', 'intraday_price', 'volume',
   'technical_indicator', 'price_drop', 'fundamentals', 'specific_symbol', 'multi_symbol', 'scope_exclude', 'trade_frequency',
   'auto_execution', 'compound_condition', 'calendar_days', 'other',
-]);
-
-// 只做意图识别：把用户的一句话映射到既有规则模板或说明缺口；是否合法、能否执行由浏览器端程序确定性校验。
+]);// 只做意图识别：把用户的一句话映射到既有规则模板或说明缺口；是否合法、能否执行由浏览器端程序确定性校验。
 const RULE_SYSTEM = [
   '你是 TimingMirror 交易规则的意图识别器，只负责理解用户用一句话描述的个人交易规则，不执行、不生成代码、不提供投资建议。',
   '系统目前只有三个可执行的规则模板：',
@@ -147,20 +158,37 @@ const RULE_SYSTEM = [
   '2. no_buy_back_within（提醒动作：申报买入）：卖出某只股票后 days 个交易日内又买回同一只股票时提醒。参数 days 为正整数。',
   '3. sell_within_after_buy（提醒动作：申报卖出）：买入某只股票后 days 个交易日内卖出同一只股票时提醒。参数 days 为正整数；只提醒，不阻止卖出。',
   '适用范围 scope：默认对所有股票生效，{"kind":"all","symbol":null}；只有原文明确写出一个 6 位数字股票代码并表示只针对它时，才为 {"kind":"symbol","symbol":"该 6 位代码（字符串，保留前导零）"}。',
+  '提醒动作 action：指”用户准备执行什么操作时需要提醒”。买入提醒（buy）＝申报买入时提醒；卖出提醒（sell）＝申报卖出时提醒；两者都适用时为 “both”。',
   '判断规则：',
-  '- 只有当用户描述与某个模板语义完全一致、且不含模板无法表达的额外条件时，status 才为 "template"。',
-  '- 若描述需要模板以外的数据或判定能力（含部分超出），status 为 "unsupported"，并在 needs 中列出所需能力代码，不得只截取其中一部分套用模板。',
-  '- 含有多个条件（如“并且/同时/或者”、多个数值）、多个股票代码、排除某只股票、或一句话里有多条规则时，同样为 "unsupported"（compound_condition）。',
-  '- 只用股票名称、简称、板块、行业或类别限定时，不得推断或补全股票代码，status 为 "unsupported"，needs 含 specific_symbol。',
-  '- 若描述能对应某个模板但缺少具体数字、或意思含糊，status 为 "unclear"，在 missing 中列出缺少的项；不得自行假设默认值。',
-  '- threshold_pct、days 只能取用户原文中明确写出的数字；comparator：“超过/高于/大于”为 "gt"，“达到/不低于/及以上”为 "gte"。',
-  '- day_unit：原文写“交易日”为 "trading_day"，写“自然日/日历日/周/月”为 "calendar_day"，只写“天/日”为 "unspecified"。',
-  '- 买入后卖出提醒必须明确“同一只股票 / 这只股票”或以单个 6 位代码限定；不能把“买入”和“卖出”分开当成其他模板。',
+  '- 只有当用户描述与某个模板语义完全一致、且不含模板无法表达的额外条件时，status 才为 “template”。',
+  '- 能理解但不能完整映射到模板的单条规则（包括需要其他数据或多个条件），返回 custom，保留全部条件；不能将其截取成模板规则。custom 仅保存，不表示当前可执行。',
+  '- 多个股票代码、排除股票或一句话包含多条独立规则且范围无法用 all 或 symbol 表达时，返回 unsupported，并在 needs 中列出原因。',
+  '- 只用股票名称、简称、板块、行业或类别限定时，不得推断或补全股票代码，status 为 “unsupported”，needs 含 specific_symbol。',
+  '- 若描述能对应某个模板但缺少具体数字、或意思含糊，status 为 “unclear”，在 missing 中列出缺少的项；不得自行假设默认值。',
+  '- 若描述无法匹配任何模板，但你能理解用户的规则意图（例如自定义的交易纪律、提醒条件），status 为 “custom”，kind 为 “custom”，template_id 为 null，并在 action 中给出你识别的提醒动作（buy/sell/both/无法确定时留空）。',
+  '- threshold_pct、days 只能取用户原文中明确写出的数字；comparator：”超过/高于/大于”为 “gt”，”达到/不低于/及以上”为 “gte”。',
+  '- day_unit：原文写”交易日”为 “trading_day”，写”自然日/日历日/周/月”为 “calendar_day”，只写”天/日”为 “unspecified”。',
+  '- 买入后卖出提醒必须明确”同一只股票 / 这只股票”或以单个 6 位代码限定；不能把”买入”和”卖出”分开当成其他模板。',
   `needs 代码只能取：${RULE_NEED_CODES.join(', ')}。`,
   'missing 代码只能取：threshold_pct, days, days_sell, same_symbol, condition, action。',
-  '只输出 JSON 对象：{"status":"template|unsupported|unclear","template_id":"no_buy_on_surge|no_buy_back_within|sell_within_after_buy|null","params":{"threshold_pct":null,"comparator":null,"days":null,"day_unit":null},"scope":{"kind":"all|symbol","symbol":null},"needs":[],"missing":[],"understanding":"..."}。',
+  '只输出标准 JSON 对象，示例：{"status":"custom","kind":"custom","template_id":null,"params":{},"scope":{"kind":"all","symbol":null},"action":"buy","needs":[],"missing":[],"understanding":"买入前检查用户条件"}。status 可为 template、custom、unsupported 或 unclear；action 可为 buy、sell、both 或 null。',
   'understanding 用简体中文、不超过 60 字，复述你对用户规则的理解；不要输出 Markdown、解释或额外字段。',
+  'status 为 “custom” 时：kind 必须为 “custom”，template_id 必须为 null，params 为空对象，action 为你识别的提醒动作（无法确定时留空）。',
 ].join('\n');
+
+export const MODEL_PROMPTS = Object.freeze({
+  intent: INTENT_SYSTEM,
+  restate: RESTATE_SYSTEM,
+  ruleIntent: RULE_INTENT_SYSTEM,
+  behaviorAnalysis: BEHAVIOR_ANALYSIS_SYSTEM,
+  resultExplanation: RESULT_EXPLANATION_SYSTEM,
+  scenarioJudgment: SCENARIO_JUDGMENT_SYSTEM,
+  customRuleJudgment: CUSTOM_RULE_JUDGMENT_SYSTEM,
+  importRecover: IMPORT_RECOVER_SYSTEM,
+  importVisionSystem: IMPORT_VISION_SYSTEM,
+  importVisionUser: IMPORT_VISION_USER_TEXT,
+  rule: RULE_SYSTEM,
+});
 
 export class ModelTransportError extends Error {
   constructor(code) {
@@ -321,6 +349,12 @@ export function createDashScopeTransport({
       return call([
         { role: 'system', content: SCENARIO_JUDGMENT_SYSTEM },
         { role: 'user', content: JSON.stringify({ scenario }) },
+      ], { temperature: 0.1 });
+    },
+    customRuleJudgment({ rule, scenario, data }) {
+      return call([
+        { role: 'system', content: CUSTOM_RULE_JUDGMENT_SYSTEM },
+        { role: 'user', content: JSON.stringify({ rule, scenario, data }) },
       ], { temperature: 0.1 });
     },
     importRecover({ content, source_kind }) {
