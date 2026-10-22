@@ -1508,8 +1508,8 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   await recognize('资金账号 12345678 涨幅超过5%不买', null);
   check('自然语言·疑似账户信息：本地拦截，不发送请求', siteCalls.length === beforeSensitive && nlTxt().includes('疑似账号') && !roleBtn('nl-save'), nlTxt().slice(0, 300));
   await recognize('当天涨幅超过3%的股票我不买', { status: 503, body: { ok: false, code: 'E_MODEL_NOT_CONFIGURED', message: '模型未启用' } });
-  check('自然语言·服务失败：提示原因（DASHSCOPE_API_KEY 未配置）与已有功能不受影响，无确认按钮',
-    nlTxt().includes('识别未完成') && nlTxt().includes('DASHSCOPE_API_KEY') && nlTxt().includes('已有规则、模板新增与历史情境测试不受影响') && !roleBtn('nl-save'), nlTxt().slice(0, 300));
+  check('自然语言·服务失败：提示原因（DEEPSEEK_API_KEY 未配置）与已有功能不受影响，无确认按钮',
+    nlTxt().includes('识别未完成') && nlTxt().includes('DEEPSEEK_API_KEY') && nlTxt().includes('已有规则、模板新增与历史情境测试不受影响') && !roleBtn('nl-save'), nlTxt().slice(0, 300));
   await recognize('当天涨幅超过3%的股票我不买', { status: 404, body: {} });
   check('自然语言·函数未发布：HTTP 404 → 说明原因', nlTxt().includes('HTTP 404') && !roleBtn('nl-save'), nlTxt().slice(0, 300));
 
@@ -1898,7 +1898,7 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     && summaryOf('unable') === '无法判断 1 条' && !stU.includes('未命中 1 条'), ruleTxt(hCustom).slice(0, 400));
 
   judgePlan = null;
-  siteQueue.push({ status: 503, body: { ok: false, code: 'E_MODEL_NOT_CONFIGURED', message: '模型未启用：服务端尚未配置 DASHSCOPE_API_KEY' } });
+  siteQueue.push({ status: 503, body: { ok: false, code: 'E_MODEL_NOT_CONFIGURED', message: '模型未启用：服务端尚未配置 DEEPSEEK_API_KEY' } });
   await runSim('000000', '2024-09-30');
   check('自定义规则·服务失败：显示“无法判断”与原因码，规则结果不作命中判定', verdictOf(hCustom) === '无法判断'
     && ruleTxt(hCustom).includes('E_MODEL_NOT_CONFIGURED') && ruleTxt(hCustom).includes('模型未启用'), ruleTxt(hCustom).slice(0, 400));

@@ -8,7 +8,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, normalize, extname, sep } from 'node:path';
 import { createHandler } from '../server/site-functions/handler.mjs';
-import { createDashScopeTransport } from '../server/site-functions/dashscope.mjs';
+import { createModelTransport } from '../server/site-functions/provider.mjs';
 import { createTushareMarketTransport } from '../server/site-functions/market.mjs';
 import { createLocalFakeImportModel } from './local-fake-import-model.mjs';
 
@@ -17,14 +17,15 @@ const PORT = Number(process.argv.find((a) => a.startsWith('--port='))?.split('='
 const FUNCTION_PREFIX = '/functions/v1/app/';
 
 // 凭证只从开发机环境变量读取，不写入文件或日志；未配置时对应接口明确返回 NOT_CONFIGURED。
-// 本地未配置 DASHSCOPE_API_KEY 时用 fake 跑导入与助手链路（仅开发验证，线上入口不引用）；配置后直连真实模型。
+// 本地未配置 DEEPSEEK_API_KEY 时用 fake 跑导入与助手链路（仅开发验证，线上入口不引用）；配置后直连 DeepSeek。
 const tushareToken = (process.env.TUSHARE_TOKEN ?? '').trim();
-const dashscopeKey = (process.env.DASHSCOPE_API_KEY ?? '').trim();
-const usingFakeModel = dashscopeKey === '';
+const deepseekKey = (process.env.DEEPSEEK_API_KEY ?? '').trim();
+const deepseekModel = (process.env.DEEPSEEK_MODEL ?? '').trim();
+const usingFakeModel = deepseekKey === '';
 const appHandler = createHandler({
   transport: usingFakeModel
     ? createLocalFakeImportModel()
-    : createDashScopeTransport({ apiKey: dashscopeKey }),
+    : createModelTransport({ deepseekApiKey: deepseekKey, deepseekModel }),
   marketTransport: tushareToken === '' ? null : createTushareMarketTransport({ token: tushareToken }),
 });
 
@@ -118,6 +119,6 @@ server.listen(PORT, () => {
   console.log(`TimingMirror dev server → http://localhost:${PORT}`);
   console.log(usingFakeModel
     ? '本地 fake 模型已启用：import-recover、import-vision、rule-intent、behavior-analysis、result-explanation、restate（不调用真实模型；行情仍需 TUSHARE_TOKEN）'
-    : '已读取开发机 DASHSCOPE_API_KEY，模型请求将调用真实上游');
+    : '已读取开发机 DEEPSEEK_API_KEY，模型请求将调用 DeepSeek');
   if (tushareToken === '') console.log('行情未启用：未配置 TUSHARE_TOKEN');
 });

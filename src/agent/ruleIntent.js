@@ -39,10 +39,13 @@ const LOCAL_MESSAGES = Object.freeze({
 });
 
 const SERVICE_MESSAGES = Object.freeze({
-  E_MODEL_NOT_CONFIGURED: '识别服务未启用：站点函数未读取到 DASHSCOPE_API_KEY（请在站点设置中配置后重新发布函数）。',
-  E_MODEL_TIMEOUT: '百炼模型响应超时，请稍后重试。',
-  E_MODEL_UNAVAILABLE: '百炼模型服务暂时不可用，请稍后重试。',
-  E_MODEL_RESPONSE_INVALID: '百炼模型返回格式异常，请稍后重试。',
+  E_MODEL_NOT_CONFIGURED: '识别服务未启用：站点函数未读取到 DEEPSEEK_API_KEY（请在站点设置中配置后重新发布函数）。',
+  E_MODEL_AUTH_FAILED: '模型服务鉴权失败：请检查站点模型 Key。',
+  E_MODEL_FORBIDDEN: '模型服务无访问权限：请检查站点模型权限。',
+  E_MODEL_RATE_LIMITED: '模型服务请求过于频繁，请稍后重试。',
+  E_MODEL_TIMEOUT: '模型服务响应超时，请稍后重试。',
+  E_MODEL_UNAVAILABLE: '模型服务暂时不可用，请稍后重试。',
+  E_MODEL_RESPONSE_INVALID: '模型服务返回格式异常，请稍后重试。',
   E_FUNCTION_NOT_FOUND: '识别接口不存在：站点函数可能尚未发布包含规则识别（/api/llm/rule）的版本。',
   E_FUNCTION_REQUEST_INVALID: '规则文本未通过服务端校验（不能为空，最多 200 字）。',
   E_FUNCTION_UNKNOWN_FIELD: '请求包含不允许的字段，已被服务端拒绝。',
