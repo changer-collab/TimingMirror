@@ -313,7 +313,22 @@ const { createOnlineBoundary } = await imp('src/agent/onlineBoundary.js');
 const { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } = await imp('src/agent/httpTransport.js');
 const { loadUserBillReport } = await imp('src/demo/adapter.js');
 const { ruleStateOf } = await imp('src/agent/qaChips.js');
-const VIEWS = { import: renderImport, report: renderReport, chat: renderRealChat, contract: renderContract };
+// 测试桩：规则页与独立情境测试页共用同一份 DOM 根，保留既有契约测试的断言；
+// 实际页面拆分由 tests/ui/user-scenario-page.test.mjs 与浏览器走查覆盖。
+function renderContractTest(root, ctx) {
+  const scenarioRoot = makeEl('div');
+  const rulesRoot = makeEl('div');
+  renderContract(scenarioRoot, ctx, { section: 'scenario' });
+  renderContract(rulesRoot, ctx);
+  root.append(rulesRoot, scenarioRoot);
+}
+const VIEWS = {
+  import: renderImport,
+  report: renderReport,
+  chat: renderRealChat,
+  contract: renderContractTest,
+  scenario: (root, ctx) => renderContract(root, ctx, { section: 'scenario' }),
+};
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -791,14 +806,15 @@ state.report = { scenario: 'A', symbol: 'pool' };
     const scroller = findByClass(page ?? {}, 'tm-qa-scroll')[0] ?? null;
     const dock = findByClass(page ?? {}, 'tm-qa-dock')[0] ?? null;
     const form = askForm();
-    check('问答账本·页首与空状态：账本独立滚动/输入底栏/8 个示例芯片（1 个在线）',
+    check('问答账本·页首与空状态：账本独立滚动/输入底栏/8 个示例芯片（1 个在线）/无重复账单状态栏',
       !!page && !!ledger && ledger.attrs['data-role'] === 'qa-ledger'
       && !!scroller && !!dock && !!form && form.parentNode === dock && ledger.parentNode === scroller
       && pageVisibleTxt().includes('STEP 03 / ASK') && pageVisibleTxt().includes('问它为什么，')
       && pageVisibleTxt().includes('别问它买什么。')
       && pageVisibleTxt().includes('还没有提问。示例问法只是入口，不是全部。')
       && chips().length === 8 && chips().filter((b) => b.attrs['data-online'] === 'true').length === 1
-      && pageVisibleTxt().includes('规则 v0 · 生效 0 条') && pageVisibleTxt().includes('原始 CSV 仅本机')
+      && !pageVisibleTxt().includes('规则 v0 · 生效 0 条') && !findByClass(current, 'tm-qa-context').length
+      && pageVisibleTxt().includes('原始 CSV 仅本机')
       && entries().length === 0, pageTxt().slice(0, 320));
   }
 
@@ -810,13 +826,13 @@ state.report = { scenario: 'A', symbol: 'pool' };
     const facts = entry ? findByClass(entry, 'tm-qa-facts')[0] : null;
     const evidence = entry ? findByClass(entry, 'tm-qa-evidence')[0] : null;
     const evidenceSummary = evidence ? findByTag(evidence, 'summary')[0] : null;
-    check('问答账本·最错一笔：local/本地规则/4 条事实/证据折叠/报告已发布',
+    check('问答账本·最错一笔：local/本地规则/4 条事实/证据折叠/已校验',
       state.chat.pending === false && !!entry && entry.attrs['data-state'] === 'local'
       && entry.attrs['data-role'] === 'qa-entry'
       && texts(entry).join('|').includes('本地规则')
       && facts && findByClass(facts, 'tm-qa-fact').length === 4
       && evidenceSummary && texts(evidenceSummary).join('').includes('证据')
-      && pageVisibleTxt().includes('已校验') && pageVisibleTxt().includes('报告 已发布')
+      && pageVisibleTxt().includes('已校验')
       && siteCalls.length === siteBeforeWorst,
       JSON.stringify({ attrs: entry?.attrs, facts: facts ? texts(facts) : null, site: siteCalls.length - siteBeforeWorst }));
   }
@@ -904,11 +920,11 @@ state.report = { scenario: 'A', symbol: 'pool' };
     const call = siteCalls.at(-1);
     const body = call ? JSON.parse(call.options.body) : null;
     const entryTxt = entry ? texts(entry).join('|') : '';
-    check('问答账本·在线成功：online/复述文本一致/数字校验/上下文账单',
+    check('问答账本·在线成功：online/复述文本一致/数字校验/面板不重复账单状态栏',
       !!entry && entry.attrs['data-state'] === 'online'
       && entryTxt.includes(answerCsv1) && entryTxt.includes('已核对 4 个可识别数字')
       && entryTxt.includes('在线复述 · 已校验')
-      && state.bill.contextId === context1 && pageVisibleTxt().includes('chat-bill.csv')
+      && state.bill.contextId === context1 && !pageVisibleTxt().includes('chat-bill.csv')
       && siteCalls.length === siteBeforeOnline + 1,
       JSON.stringify({ attrs: entry?.attrs, text: entryTxt.slice(0, 240), calls: siteCalls.length - siteBeforeOnline }));
     check('问答账本·在线出站：POST restate，body 仅 question + F-6 四事实',
@@ -2121,8 +2137,8 @@ check('用户CSV：有效账单后读取失败 → 干净错误态且不可确�
   await flush();
   await clickLabel('确认交易列表');
   await flush();
-  check('AI补救：正式确认后才同步已导入并收口 flow', state.bill.status === 'confirmed'
-    && state.assistant.messages.some((m) => String(m.text).includes('账单已确认导入'))
+  check('AI补救：正式确认后收口 flow，助手不自动生成账单确认提示', state.bill.status === 'confirmed'
+    && !state.assistant.messages.some((m) => String(m.text).includes('账单已确认导入'))
     && state.contracts.versions.length === versionsBefore
     && recoveryClient.getSession().flow_id === null
     && recoveryClient.getSession().model_calls === 0

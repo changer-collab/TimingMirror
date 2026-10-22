@@ -1,7 +1,6 @@
 // 右侧常驻助手（首版规则闭环 UI；接口候选，未冻结）
 // 页面：报告/规则/导入显示；分析问答页保留原入口，不再复制一个聊天系统。
-// 首版 AI 动作只在规则页：用户主动点击“让 AI 理解”才发起规则 intent；
-// 草案送入现有规则页弹窗，由用户确认/保存；历史模拟复用规则页触发。
+// 规则描述入口只在规则工作区；侧栏保留问答、草案与结果状态，不重复规则输入。
 import { el, chip } from './components.js';
 import { createRuleAssistant } from '../agent/ruleAssistant.js';
 import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../agent/httpTransport.js';
@@ -105,6 +104,14 @@ function marketNoticeFromState(state) {
 
 function sameNotice(a, b) {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
+
+const AUTO_BILL_NOTICE_PREFIX = '账单已确认导入：';
+
+function isAutoBillNotice(message) {
+  return message?.kind === 'notice'
+    && typeof message.text === 'string'
+    && message.text.startsWith(AUTO_BILL_NOTICE_PREFIX);
 }
 
 function scrollToSimulation() {
@@ -364,8 +371,11 @@ export function createAssistantController({ client, state, set, go, scrollSimula
       return;
     }
     if (state.assistant.mobileView) patch({ mobileView: false });
-    go('contract');
-    scrollSimulation();
+    go('scenario');
+    const schedule = typeof requestAnimationFrame === 'function'
+      ? (fn) => requestAnimationFrame(() => requestAnimationFrame(fn))
+      : (fn) => setTimeout(fn, 0);
+    schedule(scrollSimulation);
   }
 
   function returnToRuleEdit() {
@@ -1166,10 +1176,6 @@ export function renderAssistantPanel(root, ctx) {
     });
   }
   scheduleAssistantSync();
-  const goBusiness = (route) => {
-    if (state.assistant.mobileView) ctx.set({ assistant: { ...state.assistant, mobileView: false } });
-    ctx.go(route);
-  };
   root.className = 'assistant-panel';
   const card = el('div', {
     class: 'assistant-card',
@@ -1189,9 +1195,7 @@ export function renderAssistantPanel(root, ctx) {
   if (!ctx.globalAssistant) {
     card.append(el('div', { class: 'assistant-context' }, [contextLine(state)]));
     card.append(el('div', { class: 'assistant-local-status' }, [
-      state.route === 'contract'
-        ? '在下方描述规则；保存、模拟和调整都在交易规则页完成。'
-        : '规则操作在交易规则页；这里会保留当前任务和结果。',
+      '规则操作在交易规则页；这里会保留当前任务和结果。',
     ]));
   }
   if (state.assistant.marketNotice) {
@@ -1208,47 +1212,16 @@ export function renderAssistantPanel(root, ctx) {
       !state.assistant.draft ? el('div', { class: 'row assistant-actions' }, [
         el('button', {
           class: 'btn small', 'data-role': 'assistant-market-rules',
-          onclick: () => goBusiness('contract'),
+          onclick: () => {
+            if (state.assistant.mobileView) ctx.set({ assistant: { ...state.assistant, mobileView: false } });
+            ctx.go('contract');
+          },
         }, ['查看/新增规则']),
       ]) : null,
     ]));
   }
 
-  if (state.route === 'contract') {
-    const input = el('textarea', {
-      class: 'input assistant-input',
-      id: 'assistant-rule-input',
-      rows: '2',
-      maxlength: '240',
-      placeholder: '例如：当天涨幅超过 5% 的票我绝不买入',
-      'aria-describedby': 'assistant-rule-hint',
-    });
-    input.value = state.assistant.input ?? '';
-    input.addEventListener('input', (e) => { state.assistant.input = e.target.value; });
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-        e.preventDefault();
-        controller.submit(input.value);
-      }
-    });
-    card.append(el('div', { class: 'assistant-input-field' }, [
-      el('label', { class: 'assistant-input-label', for: 'assistant-rule-input' }, ['描述你想设的规则']),
-      input,
-      el('div', { class: 'assistant-hint', id: 'assistant-rule-hint' }, [
-        'Enter 发送，Shift+Enter 换行；只支持两种规则。点击后才会发送问题与最小上下文。',
-      ]),
-      el('div', { class: 'assistant-input-row' }, [
-        el('button', {
-          class: 'btn primary small', 'data-role': 'assistant-submit',
-          disabled: state.assistant.pending ? 'disabled' : null,
-          onclick: () => controller.submit(input.value),
-        }, [state.assistant.pending ? '理解中…' : '让 AI 理解']),
-      ]),
-    ]));
-    if (ctx.assistantShowFactLink) {
-      card.append(el('button', { class: 'btn small', onclick: () => goBusiness('chat') }, ['前往事实问答']));
-    }
-  } else {
+  if (!ctx.globalAssistant && state.route !== 'contract') {
     const note = state.assistant.draft
       ? '草案已保留在助手中；切页或关闭助手不会保存，也不会丢失。'
       : state.route === 'report'
@@ -1258,13 +1231,7 @@ export function renderAssistantPanel(root, ctx) {
           : state.route === 'home'
             ? '首页不发起请求；可以继续导入账单或描述规则。'
             : '导入页只显示当前任务；规则建议不要求已有账单。';
-    if (!ctx.globalAssistant) card.append(el('div', { class: 'assistant-hint' }, [note]));
-    if (!state.assistant.draft) {
-      card.append(el('button', { class: 'btn small', onclick: () => goBusiness('contract') }, ['前往交易规则']));
-    }
-    if (ctx.assistantShowFactLink && state.route !== 'chat') {
-      card.append(el('button', { class: 'btn small', onclick: () => goBusiness('chat') }, ['前往事实问答']));
-    }
+    card.append(el('div', { class: 'assistant-hint' }, [note]));
   }
 
   if (state.assistant.staleNotice) card.append(el('div', { class: 'assistant-drift' }, [state.assistant.staleNotice]));
@@ -1302,6 +1269,7 @@ export function renderAssistantPanel(root, ctx) {
     'aria-label': '助手消息',
   });
   for (const m of state.assistant.messages ?? []) {
+    if (isAutoBillNotice(m)) continue;
     messages.append(el('div', { class: `assistant-msg ${m.role === 'user' ? 'user' : 'assistant'}` }, [m.text]));
   }
   if (messages.children.length) card.append(messages);
