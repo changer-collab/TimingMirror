@@ -3,6 +3,7 @@
 import { contractRuleSet } from '../../src/demo/adapter.js';
 import {
   PROFILE_VERSION, emptyProfile, buildProfileSnapshot, mergeProfile, withCandidateEvent, withRuleState,
+  withBehaviorAnalysis,
 } from '../../src/engine/userProfile.js';
 
 const PROFILE_KEY = 'tm.profile.v1';
@@ -97,6 +98,13 @@ export function recordCandidateEvent(candidateId, status, { at = new Date().toIS
 export function syncRuleUsage(ruleState, { at = new Date().toISOString() } = {}) {
   const before = loadProfile();
   const next = withRuleState(before, ruleState, { at });
+  if (next !== before) saveProfile(next);
+  return next;
+}
+
+export function syncBehaviorAnalysis(analysis, { profileKey = null, at = new Date().toISOString() } = {}) {
+  const before = loadProfile();
+  const next = withBehaviorAnalysis(before, analysis, { key: profileKey, at });
   if (next !== before) saveProfile(next);
   return next;
 }

@@ -24,6 +24,15 @@ import {
   validateResultExplanationResponse,
 } from './resultExplanation.mjs';
 import {
+  BEHAVIOR_CODES,
+  normalizeBehaviorFactsRequest,
+  buildBehaviorFacts,
+  behaviorFactsForAi,
+  validateBehaviorAiResponse,
+  buildAiBehaviorAnalysis,
+} from './behaviorAnalysis.mjs';
+import { buildBehaviorFallback } from './behaviorFallback.mjs';
+import {
   SCENARIO_JUDGMENT_CODES,
   normalizeScenarioJudgmentRequest,
   validateScenarioJudgmentResponse,
@@ -50,6 +59,7 @@ export const SITE_FUNCTION_CODES = Object.freeze({
   RULE_INTENT_REQUEST_INVALID: RULE_INTENT_CODES.REQUEST_INVALID,
   RULE_INTENT_SCOPE: RULE_INTENT_CODES.SCOPE,
   RULE_INTENT_RESPONSE: RULE_INTENT_CODES.RESPONSE,
+  BEHAVIOR_REQUEST_INVALID: BEHAVIOR_CODES.REQUEST_INVALID,
   IMPORT_RECOVER_REQUEST_INVALID: IMPORT_RECOVER_CODES.REQUEST_INVALID,
   IMPORT_RECOVER_RESPONSE: IMPORT_RECOVER_CODES.RESPONSE,
   IMPORT_VISION_REQUEST_INVALID: IMPORT_VISION_CODES.REQUEST_INVALID,
@@ -85,6 +95,7 @@ const MESSAGES = Object.freeze({
   [SITE_FUNCTION_CODES.RULE_INTENT_REQUEST_INVALID]: '规则理解请求未通过服务端校验',
   [SITE_FUNCTION_CODES.RULE_INTENT_SCOPE]: '规则理解请求超出服务端允许范围',
   [SITE_FUNCTION_CODES.RULE_INTENT_RESPONSE]: '规则理解响应未通过服务端校验',
+  [SITE_FUNCTION_CODES.BEHAVIOR_REQUEST_INVALID]: '行为分析请求未通过服务端校验',
   [SITE_FUNCTION_CODES.IMPORT_RECOVER_REQUEST_INVALID]: '账单识别请求未通过服务端校验',
   [SITE_FUNCTION_CODES.IMPORT_RECOVER_RESPONSE]: '账单识别响应未通过服务端校验',
   [SITE_FUNCTION_CODES.IMPORT_VISION_REQUEST_INVALID]: '图片识别请求未通过服务端校验',
@@ -274,25 +285,27 @@ export function createHandler({
     const path = url.pathname;
     const stage = path.endsWith('/api/llm/rule-intent')
       ? 'ruleIntent'
-      : path.endsWith('/api/llm/result-explanation')
-        ? 'resultExplanation'
-        : path.endsWith('/api/llm/scenario-judgment')
-          ? 'scenarioJudgment'
-          : path.endsWith('/api/llm/custom-rule-judgment')
-            ? 'customRuleJudgment'
+      : path.endsWith('/api/llm/custom-rule-judgment')
+        ? 'customRuleJudgment'
+        : path.endsWith('/api/llm/behavior-analysis')
+        ? 'behaviorAnalysis'
+        : path.endsWith('/api/llm/result-explanation')
+          ? 'resultExplanation'
+          : path.endsWith('/api/llm/scenario-judgment')
+            ? 'scenarioJudgment'
             : path.endsWith('/api/llm/import-recover')
-          ? 'importRecover'
-          : path.endsWith('/api/llm/import-vision')
-            ? 'importVision'
-            : path.endsWith('/api/llm/intent')
-              ? 'intent'
-              : path.endsWith('/api/llm/restate')
-                ? 'restate'
-                : path.endsWith('/api/llm/rule')
-                  ? 'rule'
-                  : path.endsWith('/api/market/snapshot')
-                    ? 'market'
-                    : null;
+              ? 'importRecover'
+              : path.endsWith('/api/llm/import-vision')
+                ? 'importVision'
+                : path.endsWith('/api/llm/intent')
+                  ? 'intent'
+                  : path.endsWith('/api/llm/restate')
+                    ? 'restate'
+                    : path.endsWith('/api/llm/rule')
+                      ? 'rule'
+                      : path.endsWith('/api/market/snapshot')
+                        ? 'market'
+                        : null;
     if (stage === null) return errorResponse(404, SITE_FUNCTION_CODES.NOT_FOUND);
     if (request.method !== 'POST') {
       return errorResponse(405, SITE_FUNCTION_CODES.METHOD, { Allow: 'POST' });
@@ -328,6 +341,36 @@ export function createHandler({
       const result = await callMarketTransport(marketTransport, validated.request);
       if (!result.ok) return errorResponse(result.status, result.code);
       return jsonResponse(200, { ok: true, market: result.doc });
+    }
+
+    if (stage === 'behaviorAnalysis') {
+      const validated = normalizeBehaviorFactsRequest(body);
+      if (!validated.ok) return errorResponse(400, SITE_FUNCTION_CODES.BEHAVIOR_REQUEST_INVALID);
+      const facts = buildBehaviorFacts(validated.request);
+      let aiValue = null;
+      let fallbackReason = null;
+      if (transport === null) {
+        fallbackReason = 'model_not_configured';
+      } else if (typeof transport.behaviorAnalysis !== 'function') {
+        fallbackReason = 'model_unavailable';
+      } else {
+        try {
+          const result = await transport.behaviorAnalysis({ facts: behaviorFactsForAi(facts) });
+          if (!isPlainObject(result) || typeof result.rawText !== 'string') {
+            fallbackReason = 'model_response_invalid';
+          } else {
+            const checked = validateBehaviorAiResponse(result.rawText, facts);
+            if (checked.ok) aiValue = checked.value;
+            else fallbackReason = checked.reason;
+          }
+        } catch (error) {
+          fallbackReason = error && error.code === SITE_FUNCTION_CODES.MODEL_TIMEOUT ? 'model_timeout' : 'model_unavailable';
+        }
+      }
+      const analysis = aiValue
+        ? buildAiBehaviorAnalysis(aiValue, facts)
+        : buildBehaviorFallback(facts, fallbackReason ?? 'model_unavailable');
+      return jsonResponse(200, { ok: true, analysis });
     }
 
     let requestBody;

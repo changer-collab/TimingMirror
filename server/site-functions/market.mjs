@@ -6,6 +6,7 @@ export const TUSHARE_ENDPOINT = 'https://api.tushare.pro';
 export const DYNAMIC_CACHE_ARTIFACT = 'market-cache-dynamic';
 export const MARKET_MAX_SYMBOLS = 10;
 export const MARKET_MAX_RANGE_DAYS = 7305;
+export const BENCHMARK_INDEX = Object.freeze({ ts_code: '000300.SH', name: '沪深300' });
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const SYMBOL_RE = /^\d{6}$/;
@@ -252,6 +253,50 @@ function finalizeSeries(item, asOfDate) {
   };
 }
 
+// 沪深 300 第三线：只作报告对照，不参与个股估值；index_daily 不可用时降级为 available:false，
+// 不让基准失败拖垮整份个股快照。只返回 date/close，不带成交量或上游原始错误文本。
+async function loadBenchmark({ callTushare, tradingDays, asOfDate, chunkSize, rowLimit }) {
+  try {
+    const rows = await callTushareByRange(callTushare, {
+      apiName: 'index_daily',
+      tsCode: BENCHMARK_INDEX.ts_code,
+      fields: 'ts_code,trade_date,close',
+      tradingDays,
+      chunkSize,
+      rowLimit,
+    });
+    const daySet = new Set(tradingDays);
+    const byDate = new Map();
+    for (const row of rows) {
+      const date = normalizeTradeDate(row.trade_date);
+      const close = positiveNumber(row.close);
+      if (date === null || close === null || !daySet.has(date) || date > asOfDate) continue;
+      byDate.set(date, close);
+    }
+    const bars = [...byDate.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([date, close]) => ({ date, close }));
+    if (bars.length === 0) {
+      return { available: false, ...BENCHMARK_INDEX, reason: 'E_BENCHMARK_NO_DATA' };
+    }
+    return {
+      available: true,
+      ...BENCHMARK_INDEX,
+      source: 'tushare.index_daily',
+      as_of: asOfDate,
+      base_date: bars[0].date,
+      base_close: bars[0].close,
+      bars,
+    };
+  } catch (error) {
+    return {
+      available: false,
+      ...BENCHMARK_INDEX,
+      reason: error && typeof error.code === 'string' ? error.code : 'E_BENCHMARK_UNAVAILABLE',
+    };
+  }
+}
+
 async function buildSnapshot({
   symbols, start, end, callTushare, getStockBasicMappings, now,
   chunkTradingDays, rowLimit, maxConcurrency,
@@ -305,11 +350,19 @@ async function buildSnapshot({
   indexed.forEach((item) => {
     series[item.symbol] = { ts_code: item.ts_code, ...finalizeSeries(item, asOfDate) };
   });
+  const benchmark = await loadBenchmark({
+    callTushare,
+    tradingDays,
+    asOfDate,
+    chunkSize: chunkTradingDays,
+    rowLimit,
+  });
 
   const range = { start, end: asOfDate };
   const canonical = JSON.stringify({
     asOfDate,
     calendar: tradingDays,
+    benchmark: benchmark.available === true ? { ts_code: benchmark.ts_code, bars: benchmark.bars } : null,
     symbols: symbols.map((symbol) => ({
       symbol,
       ts_code: series[symbol].ts_code,
@@ -330,20 +383,23 @@ async function buildSnapshot({
     source: {
       provider: 'tushare',
       endpoint: TUSHARE_ENDPOINT,
-      apis: ['stock_basic', 'trade_cal', 'daily', 'adj_factor'],
+      apis: ['stock_basic', 'trade_cal', 'daily', 'adj_factor', 'index_daily'],
       mapping: 'stock_basic（交易所 × list_status=L/P/D）',
-      segmentation: `daily/adj_factor 按交易日分段（每段 ≤${chunkTradingDays} 个交易日）；单次响应达到 ${rowLimit} 行即失败`,
+      segmentation: `daily/adj_factor/index_daily 按交易日分段（每段 ≤${chunkTradingDays} 个交易日）；单次响应达到 ${rowLimit} 行即失败`,
       freshness: 'latest_closed_daily',
       adjustment: '前复权 close = close × adj_factor / 基准日 adj_factor；估值使用不复权 close',
+      benchmark: '沪深300（000300.SH）来自 index_daily，只作第三线对照；不可用时不影响个股快照',
       note: '服务端获取的最新已收盘日线，非实时；不包含分钟级数据',
     },
     manifest: {
       asOfDate,
       date_range: { ...range },
       symbols: [...symbols],
+      benchmark: { ...BENCHMARK_INDEX },
     },
     calendar: { trading_days: tradingDays },
     symbols: series,
+    benchmark,
     snapshot: {
       snapshot_id: `tushare-${asOfDate.replace(/-/g, '')}-${checksum.slice(0, 8)}`,
       fetch_time: fetchedAt,

@@ -174,7 +174,25 @@ const sim = (versions, opts) => A.simulateContracts({ versions, bill, marketSour
     && ctx.buys.some((b) => b.symbol === '888888' && b.trade_date === '2024-09-25'), JSON.stringify(ctx.buys));
 }
 
-/* ==== 7. 完整性：新规则 v2 记录被篡改 / 换范围 → 待重新确认，不参与判定 ==== */
+/* ==== 7. 决定自述：随版本冻结、不进入哈希、不参与判定 ==== */
+{
+  const rec = A.contractSaveRecords([], { parsed: surge(5), note: '  我不想追高。  ' })[0];
+  const rule = A.contractRuleSet([rec]).current[0];
+  check('决定自述：保存时冻结文本、版本与时间，明确 frozen', rule.decision_statement?.text === '我不想追高。'
+    && rule.decision_statement.v === 1 && rule.decision_statement.frozen === true && typeof rule.decision_statement.at === 'string', JSON.stringify(rule.decision_statement));
+  check('决定自述：不进入哈希（同参数有/无自述哈希一致）', rec.hash === surge(5).hash && A.contractSaveRecords([], { parsed: surge(5) })[0].hash === rec.hash, rec.hash);
+  const newer = A.contractSaveRecords([rec], { parsed: surge(6), note: '新的决定自述' });
+  const next = A.contractRuleSet([rec, ...newer]);
+  const oldRule = next.rules.find((r) => r.hash === surge(5).hash);
+  const newRule = next.rules.find((r) => r.hash === surge(6).hash);
+  check('决定自述：改写后旧版本自述保持原样，新版本使用新自述', oldRule.decision_statement?.text === '我不想追高。'
+    && newRule.decision_statement?.text === '新的决定自述' && newRule.decision_statement.v === 2, JSON.stringify({ old: oldRule.decision_statement, new: newRule.decision_statement }));
+  const stopped = A.contractStopRecords([rec, ...newer], { hash: surge(6).hash });
+  const stoppedRule = A.contractRuleSet([rec, ...newer, ...stopped]).rules.find((r) => r.hash === surge(6).hash);
+  check('决定自述：状态变更不丢失已冻结的自述', stoppedRule.decision_statement?.text === '新的决定自述', JSON.stringify(stoppedRule.decision_statement));
+}
+
+/* ==== 8. 完整性：新规则 v2 记录被篡改 / 换范围 → 待重新确认，不参与判定 ==== */
 {
   const v2 = buySell(3, sym('600519'));
   const base = A.contractSaveRecords([], { parsed: v2 });
@@ -185,7 +203,7 @@ const sim = (versions, opts) => A.simulateContracts({ versions, bill, marketSour
   check('完整性：新规则参数被篡改 → 不参与判定', tamperedFields.needsReconfirm.length === 1 && tamperedFields.executable.length === 0);
 }
 
-/* ==== 8. 回退（可选）：旧版 adapter 读取新规则记录 → 原样保留、不执行 ==== */
+/* ==== 9. 回退（可选）：旧版 adapter 读取新规则记录 → 原样保留、不执行 ==== */
 if (process.env.ROLLBACK_ADAPTER) {
   const OLD = await import(pathToFileURL(process.env.ROLLBACK_ADAPTER).href);
   const data = save(save([], surge(5)), buySell(3));

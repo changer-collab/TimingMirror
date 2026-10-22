@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * 报告页示例场景 + 条件展示单元测试。
- * 覆盖：四套场景均为冻结行情且复核发布；行为/候选/PGR 只在成立或样本足够时进入用户视图；
- *       无卖出账单不生成单笔反事实与瀑布。
+ * 覆盖：八套场景均为冻结行情且复核发布；行为/候选/PGR 只在成立或样本足够时进入用户视图；
+ *       无卖出账单不生成单笔反事实与瀑布；无模式/低样本/卖后追回/频繁交易按预期暴露 AI 盲区。
  */
 import { loadReportScenarioBill, loadUserBillFromTable, loadUserBillReport } from '../src/demo/adapter.js';
 import { REPORT_SCENARIOS, getReportScenarioByFileName, matchReportScenario } from '../src/demo/reportScenarios.js';
@@ -30,11 +30,37 @@ const chase = await scenarioBundle('chase');
 const early = await scenarioBundle('early');
 const stop = await scenarioBundle('stop');
 const hold = await scenarioBundle('hold');
+const noPattern = await scenarioBundle('no_pattern');
+const lowSample = await scenarioBundle('low_sample');
+const sellRebuy = await scenarioBundle('sell_rebuy');
+const overtrading = await scenarioBundle('overtrading');
+const allScenarios = [chase, early, stop, hold, noPattern, lowSample, sellRebuy, overtrading];
 
-for (const { bill, bundle } of [chase, early, stop, hold]) {
+check('场景清单：8 个场景且 id / 文件名唯一', REPORT_SCENARIOS.length === 8
+  && new Set(REPORT_SCENARIOS.map((s) => s.id)).size === 8
+  && new Set(REPORT_SCENARIOS.map((s) => s.fileName)).size === 8
+  && REPORT_SCENARIOS.every((s) => s.expectation && Number.isFinite(s.expectation.sample_n)), JSON.stringify(REPORT_SCENARIOS.map((s) => s.id)));
+
+for (const { bill, bundle } of allScenarios) {
   const id = bill.demoScenarioId;
   check(`${id}：示例账单标记且走冻结行情`, bill.demo === true && bundle.demo === true && bundle.marketSource?.id === 'demo-frozen', JSON.stringify({ demo: bundle.demo, market: bundle.marketSource?.id }));
   check(`${id}：复核发布且行情不联网`, bundle.review?.portfolio_published === true && bundle.marketSource?.dynamic === false, JSON.stringify({ published: bundle.review?.portfolio_published, dynamic: bundle.marketSource?.dynamic }));
+}
+
+for (const { bill, vis } of allScenarios) {
+  const scenario = REPORT_SCENARIOS.find((item) => item.id === bill.demoScenarioId);
+  const expected = scenario.expectation;
+  const pattern = expected.pattern_id
+    ? vis.patterns.find((p) => p.pattern_id === expected.pattern_id) ?? vis.pattern
+    : vis.pattern;
+  check(`${scenario.id}：场景预期与引擎三态一致`, pattern?.status === expected.behavior_status
+    && pattern?.sample_n === expected.sample_n
+    && pattern?.evaluated_n === expected.evaluated_n
+    && vis.behavior === expected.behavior_visible
+    && vis.candidate === expected.candidate_visible, JSON.stringify({
+    expected: { status: expected.behavior_status, n: expected.sample_n, evaluated: expected.evaluated_n },
+    actual: { status: pattern?.status, n: pattern?.sample_n, evaluated: pattern?.evaluated_n, behavior: vis.behavior, candidate: vis.candidate },
+  }));
 }
 
 {
@@ -76,12 +102,40 @@ for (const { bill, bundle } of [chase, early, stop, hold]) {
 }
 
 {
+  const { bundle, vis } = noPattern;
+  check('no_pattern：3 笔可评估、0 命中，不展示行为与候选', vis.behavior === false && vis.pattern?.status === '不成立'
+    && vis.pattern.sample_n === 0 && vis.pattern.evaluated_n === 3 && vis.candidate === false, JSON.stringify({ status: vis.pattern?.status, n: vis.pattern?.sample_n, evaluated: vis.pattern?.evaluated_n }));
+  check('no_pattern：仍能看到普通交易的反事实', Array.isArray(bundle.insights.portfolio.counterfactuals) && bundle.insights.portfolio.counterfactuals.length >= 2, JSON.stringify(bundle.insights.portfolio.counterfactuals?.length));
+}
+
+{
+  const { vis } = lowSample;
+  check('low_sample：单次命中判证据不足，不展示行为与候选', vis.behavior === false && vis.pattern?.status === '证据不足'
+    && vis.pattern.sample_n === 1 && vis.pattern.evaluated_n === 1 && vis.candidate === false, JSON.stringify({ status: vis.pattern?.status, n: vis.pattern?.sample_n, evaluated: vis.pattern?.evaluated_n }));
+}
+
+{
+  const { vis } = sellRebuy;
+  const p = vis.patterns.find((x) => x.pattern_id === 'sell_rebuy_within_2d') ?? {};
+  check('sell_rebuy：卖后两日内买回成立（n=2/已评估2），展示行为与候选', vis.behavior === true && p.status === '成立'
+    && p.sample_n === 2 && p.evaluated_n === 2 && vis.candidate === true
+    && vis.candidates.some((c) => c.template_id === 'no_buy_back_within'), JSON.stringify({ visible: vis.behavior, status: p.status, n: p.sample_n, evaluated: p.evaluated_n, candidates: vis.candidates?.map((c) => c.template_id) }));
+}
+
+{
+  const { vis } = overtrading;
+  const p = vis.patterns.find((x) => x.pattern_id === 'overtrading') ?? {};
+  check('overtrading：4 次完整往返成立，展示行为但暂无对应规则模板', vis.behavior === true && p.status === '成立'
+    && p.sample_n === 4 && p.evaluated_n === 4 && vis.candidate === false, JSON.stringify({ visible: vis.behavior, status: p.status, n: p.sample_n, evaluated: p.evaluated_n }));
+}
+
+{
   const { vis } = chase;
   check('展示开关不含内部状态码', !JSON.stringify(vis).includes('not_recommended') && !JSON.stringify(vis).includes('dismissed'), '');
 }
 
 {
-  const expected = new Map([['chase', chase], ['early', early], ['stop', stop], ['hold', hold]]);
+  const expected = new Map(allScenarios.map((item) => [item.bill.demoScenarioId, item]));
   for (const scenario of REPORT_SCENARIOS) {
     const parsed = parseDelimitedText(scenario.csv);
     const draft = buildLocalDraft(parsed, scenario.fileName);

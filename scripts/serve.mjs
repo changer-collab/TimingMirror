@@ -117,7 +117,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`TimingMirror dev server → http://localhost:${PORT}`);
   console.log(usingFakeModel
-    ? '本地 fake 模型已启用：import-recover、import-vision、rule-intent、result-explanation、restate（不调用真实模型；行情仍需 TUSHARE_TOKEN）'
+    ? '本地 fake 模型已启用：import-recover、import-vision、rule-intent、behavior-analysis、result-explanation、restate（不调用真实模型；行情仍需 TUSHARE_TOKEN）'
     : '已读取开发机 DASHSCOPE_API_KEY，模型请求将调用真实上游');
   if (tushareToken === '') console.log('行情未启用：未配置 TUSHARE_TOKEN');
 });

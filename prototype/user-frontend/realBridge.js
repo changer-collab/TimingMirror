@@ -4,11 +4,13 @@ import { getRuleAssistantClient, renderAssistantPanel } from '../../src/ui/assis
 import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../../src/agent/httpTransport.js';
 import { createImportRecovery } from '../../src/agent/importRecovery.js';
 import { createChatOnline } from '../../src/agent/chatOnline.js';
+import { createOnlineBoundary } from '../../src/agent/onlineBoundary.js';
 import { renderContract } from '../../src/ui/views/contractView.js';
 import { renderRealImport } from './realImport.js';
 import { getRealReportBundle, loadRealReport } from './realReport.js';
 import { ruleStateOf, loadProfile } from './profileStore.js';
 import { openRuleCandidate } from './ruleCandidates.js';
+import { createQaAnswerService } from './qaAnswer.js';
 
 const MOBILE_BREAKPOINT = 680;
 const OLD_CSS = '/src/ui/styles.css';
@@ -96,6 +98,8 @@ const SHADOW_STYLE = `
 let onChangeCallback = null;
 let recoveryClient = null;
 let qaOnlineClient = null;
+let qaAnswerClient = null;
+let qaIntentBoundary = null;
 let currentRoute = 'home';
 let lastMobileLayout = null;
 let demoSelected = false;
@@ -103,6 +107,9 @@ let realRulesRequested = false;
 let rulesRestored = false;
 let pendingKeys = new Set();
 let scheduled = false;
+let shellBound = false;
+let overlayWasOpen = false;
+let assistantReturnFocus = null;
 const shadowHosts = new WeakMap();
 
 function getRecoveryClient() {
@@ -144,8 +151,7 @@ export function set(patch) {
 }
 
 export function go(route) {
-  const target = route === 'contract' ? 'rules' : route;
-  if (route === 'contract') realRulesRequested = true;
+  const target = route === 'contract' || route === 'rules' ? 'me' : route;
   const next = `#/${target}`;
   if (location.hash === next) {
     scheduleChange(['route']);
@@ -167,10 +173,34 @@ function getQaOnlineClient() {
   return qaOnlineClient;
 }
 
+function getQaIntentBoundary() {
+  if (!qaIntentBoundary) {
+    qaIntentBoundary = createOnlineBoundary({
+      transport: createHttpTransport({ baseUrl: SAME_ORIGIN_BASE, paths: SITE_FUNCTION_PATHS }),
+      timeoutMs: 5000,
+    });
+  }
+  return qaIntentBoundary;
+}
+
+function getQaAnswerClient() {
+  if (!qaAnswerClient) {
+    qaAnswerClient = createQaAnswerService({
+      getBundle: (bill) => getRealReportBundle(bill),
+      loadBundle: (bill) => loadRealReport(bill),
+      askOnline: ({ question, review }) => getQaOnlineClient().ask({ question, review }),
+      loadProfile,
+      classifyIntent: ({ question }) => getQaIntentBoundary().classifyIntent({ question }),
+    });
+  }
+  return qaAnswerClient;
+}
+
 const ctx = {
   state: shared,
   set,
   go,
+  allowDemoSimulation: false,
   importRecovery: getRecoveryClient(),
   ruleAssistantClient: getRuleAssistantClient(),
   assistantTitle: 'AI 助手',
@@ -181,11 +211,14 @@ const ctx = {
     getReportBundle: (bill) => getRealReportBundle(bill),
     loadReportBundle: (bill) => loadRealReport(bill),
     askOnline: ({ question, review }) => getQaOnlineClient().ask({ question, review }),
+    askQuestion: (args) => getQaAnswerClient().ask(args),
     ruleStateOf,
     loadProfile,
     openRuleCandidate,
   },
   scrollToSimulation,
+  isOverlayLayout: mobileLayout,
+  focusAssistant,
   setRuleModal,
 };
 
@@ -199,6 +232,7 @@ export function initBridge({ onChange } = {}) {
   lastMobileLayout = mobileLayout();
   shared.assistant.open = !lastMobileLayout;
   shared.assistant.mobileView = false;
+  bindAssistantShell();
   return { state: shared, ctx };
 }
 
@@ -207,8 +241,8 @@ export function getCtx() { return ctx; }
 
 export function setRoute(route) {
   currentRoute = route;
-  shared.route = route === 'rules' ? 'contract' : route;
-  if (route !== 'rules') setRuleModal(null);
+  shared.route = route === 'me' ? 'contract' : route;
+  if (route !== 'me') setRuleModal(null);
 }
 
 export function hasRealState() {
@@ -221,16 +255,9 @@ export function isRealBill() {
   return shared.bill?.status === 'confirmed' && shared.bill?.sourceType === 'local';
 }
 
-export function isRealRules() {
-  return realRulesRequested
-    || !!shared.assistant?.draft
-    || (Array.isArray(shared.contracts?.versions) && shared.contracts.versions.length > 0)
-    || hasRealState();
-}
-
 export function getMode(route) {
   if (route === 'import') return 'real';
-  if (route === 'rules' && isRealRules()) return 'real';
+  if (route === 'me' || route === 'rules') return 'real';
   if (isRealBill()) return 'real';
   if (hasRealState()) return 'real';
   if (demoSelected) return 'demo';
@@ -252,7 +279,6 @@ export function leaveDemo() {
 export function isDemoSelected() { return demoSelected; }
 
 export function openRealRules() {
-  realRulesRequested = true;
   go('contract');
 }
 
@@ -375,6 +401,10 @@ function mobileLayout() {
     : false;
 }
 
+function overlayOpen() {
+  return mobileLayout() && shared.assistant.mobileView === true;
+}
+
 export function toggleAssistant() {
   if (mobileLayout()) {
     shared.assistant.mobileView = shared.assistant.mobileView !== true;
@@ -386,13 +416,90 @@ export function toggleAssistant() {
   renderAssistant();
 }
 
+export function closeAssistant() {
+  if (mobileLayout()) {
+    shared.assistant.mobileView = false;
+  } else {
+    shared.assistant.open = false;
+  }
+  renderAssistant();
+}
+
+function assistantFocusables(aside) {
+  if (!aside) return [];
+  return Array.from(aside.querySelectorAll(
+    'button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
+  )).filter((node) => node.getClientRects().length > 0);
+}
+
+export function focusAssistant() {
+  if (typeof document === 'undefined') return;
+  const run = () => {
+    const aside = document.getElementById('tm-assistant');
+    if (!aside || aside.hidden) return;
+    const draft = aside.querySelector('[data-role="assistant-draft-card"]');
+    const target = draft
+      || (overlayOpen() ? aside : aside.querySelector('textarea, button:not([disabled]), [href], input, select'))
+      || aside;
+    target.focus?.({ preventScroll: true });
+  };
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => requestAnimationFrame(run));
+  } else {
+    setTimeout(run, 0);
+  }
+}
+
+function onAssistantKeydown(event) {
+  if (!overlayOpen()) return;
+  const modal = document.getElementById('modal-root');
+  if (modal && modal.hidden === false) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeAssistant();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+  const aside = document.getElementById('tm-assistant');
+  const focusables = assistantFocusables(aside);
+  if (!focusables.length) {
+    event.preventDefault();
+    aside?.focus?.();
+    return;
+  }
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  if (!aside?.contains(document.activeElement)) {
+    event.preventDefault();
+    first.focus();
+  } else if (event.shiftKey && (document.activeElement === first || document.activeElement === aside)) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+export function bindAssistantShell() {
+  if (shellBound || typeof document === 'undefined') return;
+  shellBound = true;
+  const scrim = document.getElementById('tm-assistant-scrim');
+  if (scrim) scrim.addEventListener('click', closeAssistant);
+  document.addEventListener('keydown', onAssistantKeydown);
+}
+
 function updateAssistantButton() {
   const button = document.getElementById('assistant-toggle');
   if (!button) return;
   const mobile = mobileLayout();
   const open = mobile ? shared.assistant.mobileView === true : shared.assistant.open === true;
-  button.textContent = mobile ? 'AI 助手' : (open ? '收起助手' : '打开 AI 助手');
+  const hasDraft = !!shared.assistant.draft && !shared.assistant.semanticConfirmation;
+  const label = mobile ? 'AI 助手' : (open ? '收起助手' : '打开 AI 助手');
+  button.textContent = label;
+  button.classList.toggle('has-draft', hasDraft);
   button.setAttribute('aria-expanded', String(open));
+  button.setAttribute('aria-label', hasDraft ? `${label}，有未保存的规则草案` : label);
   button.hidden = mobile && open;
 }
 
@@ -401,19 +508,72 @@ export function applyAssistantShell() {
   const open = mobile ? shared.assistant.mobileView === true : shared.assistant.open === true;
   const shell = document.getElementById('tm-shell');
   const aside = document.getElementById('tm-assistant');
+  const scrim = document.getElementById('tm-assistant-scrim');
+  const main = document.getElementById('tm-main');
+  const overlay = mobile && open;
+  const opening = overlay && !overlayWasOpen;
+  const closing = !overlay && overlayWasOpen;
+  if (opening) {
+    assistantReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }
   if (shell) {
     shell.classList.toggle('assistant-open', !mobile && open);
     shell.classList.toggle('assistant-mobile-open', mobile && open);
   }
-  if (aside) aside.hidden = !open;
+  if (aside) {
+    aside.hidden = !open;
+    aside.setAttribute('aria-labelledby', 'assistant-panel-title');
+    if (mobile) {
+      aside.setAttribute('role', 'dialog');
+      aside.setAttribute('aria-modal', 'true');
+    } else {
+      aside.setAttribute('role', 'region');
+      aside.removeAttribute('aria-modal');
+    }
+  }
+  if (scrim) scrim.hidden = !overlay;
+  if (main) {
+    if (overlay) main.setAttribute('inert', '');
+    else main.removeAttribute('inert');
+  }
   if (document.body) {
-    document.body.classList.toggle('tm-assistant-mobile-active', mobile && open);
+    document.body.classList.toggle('tm-assistant-mobile-active', overlay);
   }
   updateAssistantButton();
+  if (opening) {
+    overlayWasOpen = true;
+    focusAssistant();
+  } else if (closing) {
+    overlayWasOpen = false;
+    const findRuleModal = () => document.getElementById('tm-rule-modal')?.shadowRoot
+      ?.querySelector?.('[data-role="rule-modal"]');
+    const focusRuleModal = () => {
+      const modal = findRuleModal();
+      if (!modal) return;
+      const root = modal.getRootNode?.();
+      if (root?.activeElement && modal.contains(root.activeElement)) return;
+      const active = document.activeElement;
+      if (active && active !== document.body && active !== document.documentElement
+        && !modal.contains(active)) return;
+      modal.focus?.({ preventScroll: true });
+    };
+    const ruleModal = findRuleModal();
+    if (ruleModal) {
+      focusRuleModal();
+      [0, 100, 300].forEach((delay) => setTimeout(focusRuleModal, delay));
+    } else {
+      const target = assistantReturnFocus?.isConnected
+        ? assistantReturnFocus
+        : document.getElementById('assistant-toggle');
+      target?.focus?.({ preventScroll: true });
+    }
+    assistantReturnFocus = null;
+  }
 }
 
 export function onViewportChange() {
   const mobile = mobileLayout();
+  let crossed = false;
   if (lastMobileLayout === null) lastMobileLayout = mobile;
   if (mobile !== lastMobileLayout) {
     if (mobile) {
@@ -423,8 +583,11 @@ export function onViewportChange() {
       shared.assistant.mobileView = false;
     }
     lastMobileLayout = mobile;
+    crossed = true;
   } else if (!mobile) {
     shared.assistant.mobileView = false;
   }
-  renderAssistant();
+  // 跨断点需要重建面板结构；同一断点内只更新外壳，避免调整窗口时丢失焦点。
+  if (crossed) renderAssistant();
+  else applyAssistantShell();
 }

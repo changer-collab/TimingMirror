@@ -460,8 +460,9 @@ function streamOfChunks(chunks) {
     '300750.SZ': [['20250102', 1], ['20250106', 1]],
     '000003.SZ': [['20250102', 1], ['20250103', 1], ['20250106', 1]],
   };
+  const indexCloses = [['20250102', 3900], ['20250103', 3930], ['20250106', 3960]];
 
-  function createFakeUpstream({ failAt = () => null, calendarData = calendar, stockBasicData = stockBasic } = {}) {
+  function createFakeUpstream({ failAt = () => null, calendarData = calendar, stockBasicData = stockBasic, indexData = indexCloses } = {}) {
     const calls = [];
     const exchangeSuffix = { SSE: '.SH', SZSE: '.SZ', BSE: '.BJ' };
     const fetchImpl = async (url, options) => {
@@ -493,6 +494,12 @@ function streamOfChunks(chunks) {
       } else if (sent.api_name === 'adj_factor') {
         fields = ['ts_code', 'trade_date', 'adj_factor'];
         rows = (factors[sent.params.ts_code] ?? []).map(([d, f]) => [sent.params.ts_code, d, f]);
+      } else if (sent.api_name === 'index_daily') {
+        if (indexData === null) {
+          return new Response(JSON.stringify({ code: 1, msg: 'index permission unavailable' }), { status: 200 });
+        }
+        fields = ['ts_code', 'trade_date', 'close'];
+        rows = indexData.map(([d, c]) => [sent.params.ts_code, d, c]);
       } else {
         return new Response(JSON.stringify({ code: 1, msg: 'unexpected api' }), { status: 200 });
       }
@@ -548,6 +555,16 @@ function streamOfChunks(chunks) {
   check('Tushare：bar 仅含 date/close（不返回成交量）', doc.symbols['600519'].bars.length === 3
     && Object.keys(doc.symbols['600519'].bars[0]).sort().join(',') === 'close,date'
     && doc.symbols['600519'].bars[2].close === 1520);
+  check('Tushare：沪深300 第三线来自 index_daily（同交易日历、只含 date/close）', doc.benchmark?.available === true
+    && doc.benchmark.ts_code === '000300.SH' && doc.benchmark.name === '沪深300'
+    && doc.benchmark.bars.length === 3 && doc.benchmark.bars[0].close === 3900
+    && Object.keys(doc.benchmark.bars[0]).sort().join(',') === 'close,date'
+    && doc.benchmark.base_date === '2025-01-02', JSON.stringify(doc.benchmark));
+  check('Tushare：基准请求指定 000300.SH 并按交易日分段', upstream.calls.some((c) => c.sent.api_name === 'index_daily'
+    && c.sent.params.ts_code === '000300.SH' && c.sent.params.start_date === '20250102' && c.sent.params.end_date === '20250103')
+    && upstream.calls.some((c) => c.sent.api_name === 'index_daily'
+      && c.sent.params.start_date === '20250106' && c.sent.params.end_date === '20250106')
+    && doc.source.apis.includes('index_daily'), JSON.stringify(upstream.calls.filter((c) => c.sent.api_name === 'index_daily').map((c) => c.sent.params)));
   check('Tushare：除权边界——不复权原样用于估值，前复权按固定基准日折算',
     doc.symbols['600519'].bars.map((b) => b.close).join(',') === '1500,1510,1520'
     && doc.symbols['600519'].bars_fwdadj.map((b) => b.close).join(',') === '750,1510,1520'
@@ -574,6 +591,23 @@ function streamOfChunks(chunks) {
     && doc.snapshot.snapshot_id.startsWith('tushare-20250106-') && doc.snapshot.snapshot_id.endsWith(doc.checksum.slice(0, 8)));
   check('Tushare：fetched_at 来自注入时钟', doc.fetched_at === '2026-10-19T01:30:00.000Z' && doc.snapshot.fetch_time === doc.fetched_at);
   check('Tushare：响应不含 token', !JSON.stringify(doc).includes(TOKEN) && upstream.calls.every((c) => c.sent.token === TOKEN));
+
+  {
+    const noIndexUpstream = createFakeUpstream({ indexData: null });
+    const noIndexTransport = createTushareMarketTransport({
+      token: TOKEN,
+      fetchImpl: noIndexUpstream.fetchImpl,
+      timeoutMs: 1000,
+      ttlMs: 60000,
+      retryDelayMs: 0,
+      sleepImpl: async () => {},
+      now: () => new Date('2026-10-19T01:30:00.000Z'),
+    });
+    const noIndex = await noIndexTransport.snapshot({ symbols: ['600519'], start: START, end: END });
+    check('Tushare：基准不可用不阻断个股快照，明确标记 available:false', noIndex.symbols['600519'].bars.length === 3
+      && noIndex.benchmark?.available === false && noIndex.benchmark.reason === MARKET_TRANSPORT_CODES.UPSTREAM
+      && !('bars' in noIndex.benchmark), JSON.stringify(noIndex.benchmark));
+  }
 
   const stockBasicCalls = () => upstream.calls.filter((c) => c.sent.api_name === 'stock_basic').length;
   const beforeBasic = stockBasicCalls();

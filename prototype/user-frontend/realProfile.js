@@ -1,4 +1,4 @@
-// 规则页顶部：本地用户画像 + 规则候选（非 Agent）。
+// 个人中心顶部：本地用户画像 + 规则候选（非 Agent）。
 // 画像只从已复核报告、行为发现与规则使用记录派生；只存本地、不含成交明细或文件名。
 import { buildRuleCandidates } from '../../src/engine/userProfile.js';
 import { loadRealReport, getRealReportBundle } from './realReport.js';
@@ -41,6 +41,16 @@ function dimensionCards(snapshot) {
     <p class="rp-dim-value">${esc(d.value)}</p>
     <p class="rp-dim-note">${esc(d.note)}</p>
   </article>`).join('')}</div>`;
+}
+
+function tagsBlock(snapshot) {
+  const tags = Array.isArray(snapshot?.tags) ? snapshot.tags : [];
+  if (!tags.length) return '';
+  return `<div class="rp-profile-tags">
+    <span class="rp-subtitle">画像标签</span>
+    <div class="rp-tag-list">${tags.map((t) => `<span class="rp-tag" data-tag="${esc(t.tag_id)}" title="${esc(t.evidence)}">${esc(t.label)}</span>`).join('')}</div>
+    <p class="rp-note">标签由行为发现和处置倾向自动派生，只描述模式，不评价交易好坏。</p>
+  </div>`;
 }
 
 function historyBlock(profile) {
@@ -101,10 +111,16 @@ function candidateCard(c) {
 function candidatesBlock(pack) {
   const candidates = Array.isArray(pack?.candidates) ? pack.candidates : [];
   const notes = Array.isArray(pack?.notes) ? pack.notes : [];
+  const visible = candidates.filter((c) => c.status !== 'not_recommended');
+  const notRecommended = candidates.filter((c) => c.status === 'not_recommended');
   return `<div class="rp-profile-candidates">
     <h3 class="rp-subtitle">规则候选（来自本账单证据）</h3>
     <p class="rp-note">候选只做模板预填；保存前由你确认或改写，系统不替你定规矩。${notes[0] ? ` ${notes[0]}` : ''}</p>
-    ${candidates.length ? candidates.map(candidateCard).join('') : '<p class="rp-note">当前没有可展示的规则候选。</p>'}
+    ${visible.length ? visible.map(candidateCard).join('') : '<p class="rp-note">当前没有可建立的规则候选。</p>'}
+    ${notRecommended.length ? `<details class="rp-details" data-role="not-recommended">
+      <summary>${notRecommended.length} 条行为模式尚未达到可建规则的条件</summary>
+      ${notRecommended.map(candidateCard).join('')}
+    </details>` : ''}
   </div>`;
 }
 
@@ -195,6 +211,7 @@ function renderProfile(host, ctx, bundle, bill) {
     ${observationLine(observation, profile, published)}
     <p class="rp-note rp-profile-meta">画像快照：${esc(fmtAt(shown.at))} · 账单覆盖 ${esc(shown.bill?.trade_count ?? '—')} 笔 / ${esc(shown.bill?.symbol_count ?? '—')} 只标的</p>
     ${dimensionCards(shown)}
+    ${tagsBlock(shown)}
     ${trendBlock(profile)}
     ${historyBlock(profile)}
     ${candidatesBlock(pack)}
@@ -208,6 +225,10 @@ export function renderRealProfile(host, ctx) {
   const bill = ctx?.state?.bill;
   if (!bill || bill.status !== 'confirmed' || bill.sourceType !== 'local') {
     host.innerHTML = emptyState();
+    return;
+  }
+  if (bill.demo === true) {
+    host.innerHTML = emptyState('示例场景只用于演示，不写入画像；导入并确认自己的账单后才会开始记录。');
     return;
   }
   const cached = getRealReportBundle(bill);

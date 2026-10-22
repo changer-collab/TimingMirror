@@ -13,6 +13,7 @@ import {
   assistantDefaultOpen,
 } from '../../src/ui/assistantPanel.js';
 import { defaultAssistant } from '../../src/state.js';
+import { openRuleCandidateInAssistant } from '../../prototype/user-frontend/ruleCandidates.js';
 import * as adapter from '../../src/demo/adapter.js';
 import { parseContract } from '../../src/engine/contractMatch.js';
 import { parseRuleSpec } from '../../src/engine/ruleSpec.js';
@@ -671,6 +672,99 @@ function makeSet(state) {
     && state.assistant.resultExplanationPending === false
     && state.assistant.resultExplanationNotice?.includes('丢弃'),
   JSON.stringify({ exp: state.assistant.resultExplanation, notice: state.assistant.resultExplanationNotice }));
+}
+
+/* —— 微调：失败重试、丢弃草案、手动模板兜底 —— */
+{
+  let calls = 0;
+  const transport = {
+    async ruleIntent() {
+      calls += 1;
+      if (calls === 1) throw new Error('offline');
+      return { rawText: DRAFT_BODY };
+    },
+  };
+  const state = makeState();
+  const set = makeSet(state);
+  const client = createRuleAssistant({ transport, timeoutMs: 1000 });
+  const controller = createAssistantController({ client, state, set, go: (r) => { state.route = r; }, scrollSimulation: () => {} });
+
+  await controller.submit(QUESTION);
+  check('微调·失败：保留输入、记录 lastAttempt，消息不重复回答',
+    state.assistant.draft === null
+    && state.assistant.pending === false
+    && state.assistant.input === QUESTION
+    && state.assistant.lastQuestion === QUESTION
+    && state.assistant.lastAttempt?.status === 'unavailable'
+    && state.assistant.messages.length === 2, JSON.stringify({ input: state.assistant.input, last: state.assistant.lastAttempt }));
+
+  await controller.retryLast();
+  check('微调·重试：只发一次新请求、不重复追加用户消息、成功后生成草案',
+    calls === 2
+    && state.assistant.draft?.template_id === 'no_buy_on_surge'
+    && state.assistant.messages.filter((m) => m.role === 'user').length === 1
+    && state.assistant.messages.length === 3
+    && state.assistant.input === '', JSON.stringify({ calls, messages: state.assistant.messages.length }));
+
+  const versionsBefore = state.contracts.versions.length;
+  controller.discardDraft();
+  check('微调·丢弃草案：清空草案与 flow，保留模型预算与规则版本，不写规则',
+    state.assistant.draft === null
+    && state.assistant.flowId === null
+    && state.assistant.semanticConfirmation === null
+    && state.contracts.versions.length === versionsBefore
+    && state.assistant.modelCalls === 1
+    && state.assistant.messages.at(-1)?.text.includes('丢弃'), JSON.stringify(state.assistant.draft));
+
+  controller.openManualTemplate();
+  check('微调·手动模板兜底：无草案时打开空白模板，字段使用默认值，仍需用户保存',
+    state.contracts.modal?.mode === 'add'
+    && state.contracts.draft?.template_id === 'no_buy_on_surge'
+    && String(state.contracts.draft?.fields?.threshold_pct) === '5'
+    && state.contracts.versions.length === versionsBefore,
+  JSON.stringify(state.contracts.draft));
+}
+
+/* —— 微调：报告行为证据 → 助手草案（不调用 AI） —— */
+{
+  const state = makeState();
+  const set = makeSet(state);
+  let focused = 0;
+  const candidate = {
+    candidate_id: 'chase_high_buy',
+    status: 'available',
+    template_id: 'no_buy_on_surge',
+    fields: { threshold_pct: '10' },
+    text: '当天涨幅超过 10% 的票，我绝不买入。',
+    basis: '本账单中有 3 笔买入发生在回看窗口涨幅 ≥ 10% 的情境。',
+    reason: '行为发现“追高买入”成立：命中 3 笔。',
+    caveat: '模板判定的是申报当天涨幅，与行为发现的回看窗口不是同一口径。',
+    evidence: [{ trade_date: '2024-09-24', symbol: '600519', rise: 0.12, line: '2024-09-24 600519 买入，窗口涨幅 12.0%' }],
+  };
+  const ctx = { state, set, isOverlayLayout: () => true, focusAssistant: () => { focused += 1; } };
+  const ok = openRuleCandidateInAssistant(ctx, candidate);
+  const parsed = adapter.previewContract({ template_id: 'no_buy_on_surge', fields: { threshold_pct: '10' }, scope: { kind: 'all' } });
+  check('微调·报告 CTA：打开助手并预填证据草案，零模型调用、零规则写入',
+    ok === true
+    && state.assistant.open === true
+    && state.assistant.mobileView === true
+    && state.assistant.draft?.origin === 'behavior_candidate'
+    && state.assistant.draft?.hash === parsed.hash
+    && state.assistant.draft?.evidence?.length === 1
+    && state.assistant.modelCalls === 0
+    && state.assistant.messages.at(-1)?.text.includes('未调用 AI')
+    && state.contracts.versions.length === 0
+    && focused === 1,
+  JSON.stringify({ draft: state.assistant.draft, focused }));
+
+  const controller = createAssistantController({ client: createRuleAssistant({ transport: fakeTransport(), timeoutMs: 1000 }), state, set, go: (r) => { state.route = r; }, scrollSimulation: () => {} });
+  controller.confirmInContract();
+  check('微调·报告 CTA：进入规则弹窗时保留模板字段，并标注证据来源',
+    state.contracts.modal?.mode === 'add'
+    && String(state.contracts.draft?.fields?.threshold_pct) === '10'
+    && state.contracts.draft?.note.includes('报告行为证据')
+    && state.contracts.versions.length === 0,
+  JSON.stringify(state.contracts.draft));
 }
 
 const failed = results.filter((r) => !r.ok);

@@ -9,11 +9,87 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const imp = (p) => import(new URL('../' + p, import.meta.url).href);
 
 class FakeNode {}
-function createTextNode(t) { const n = Object.create(FakeNode.prototype); n.__text = String(t); return n; }
+function createTextNode(t) {
+  const n = Object.create(FakeNode.prototype);
+  n.__text = String(t);
+  n.parentNode = null;
+  return n;
+}
+const VOID_TAGS = new Set(['br', 'hr', 'img', 'input', 'meta', 'link', 'area', 'base', 'col', 'embed', 'source', 'track', 'wbr']);
+function decodeEntities(s) {
+  return String(s)
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+function selectorTest(sel) {
+  const s = String(sel ?? '').trim();
+  if (s.startsWith('[')) {
+    const m = s.match(/^\[([^\]=]+)(?:="([^"]*)")?\]$/);
+    if (!m) return () => false;
+    const [, key, value] = m;
+    return (n) => Boolean(n.attrs) && (value === undefined ? n.attrs[key] !== undefined : n.attrs[key] === value);
+  }
+  if (s.startsWith('.')) {
+    const cls = s.slice(1);
+    return (n) => String(n.attrs?.class ?? '').split(/\s+/).includes(cls);
+  }
+  if (s.startsWith('#')) {
+    const id = s.slice(1);
+    return (n) => n.attrs?.id === id;
+  }
+  return (n) => n.tagName === s.toUpperCase();
+}
+// 极简 HTML 解析：仅供账本页 innerHTML 模板在 Node 桩内还原为可查询节点。
+function parseHTML(html) {
+  const root = makeEl('#fragment');
+  const stack = [root];
+  let i = 0;
+  const pushText = (raw) => {
+    if (!raw) return;
+    const text = createTextNode(decodeEntities(raw));
+    text.parentNode = stack[stack.length - 1];
+    stack[stack.length - 1].children.push(text);
+  };
+  while (i < html.length) {
+    const lt = html.indexOf('<', i);
+    if (lt < 0) { pushText(html.slice(i)); break; }
+    if (lt > i) pushText(html.slice(i, lt));
+    if (html.startsWith('<!--', lt)) {
+      const end = html.indexOf('-->', lt);
+      i = end < 0 ? html.length : end + 3;
+      continue;
+    }
+    const gt = html.indexOf('>', lt);
+    if (gt < 0) { pushText(html.slice(lt)); break; }
+    let raw = html.slice(lt + 1, gt).trim();
+    if (raw.startsWith('/')) {
+      if (stack.length > 1) stack.pop();
+      i = gt + 1;
+      continue;
+    }
+    const selfClosing = raw.endsWith('/');
+    if (selfClosing) raw = raw.slice(0, -1).trim();
+    const name = raw.match(/^([a-zA-Z][\w:-]*)/);
+    if (!name) { i = gt + 1; continue; }
+    const el = makeEl(name[1]);
+    const attrRe = /([^\s=]+)(?:\s*=\s*"([^"]*)")?/g;
+    let m;
+    while ((m = attrRe.exec(raw.slice(name[0].length)))) {
+      el.setAttribute(m[1], m[2] === undefined ? '' : decodeEntities(m[2]));
+    }
+    el.parentNode = stack[stack.length - 1];
+    stack[stack.length - 1].children.push(el);
+    if (!selfClosing && !VOID_TAGS.has(name[1].toLowerCase())) stack.push(el);
+    i = gt + 1;
+  }
+  return root.children;
+}
 function makeEl(tag) {
   const node = Object.create(FakeNode.prototype);
   node.tagName = String(tag).toUpperCase();
   node.children = []; node.attrs = {}; node.listeners = {}; node.value = ''; node.disabled = false;
+  node.parentNode = null; node.onclick = null; node.__html = '';
   node.setAttribute = function (k, v) {
     this.attrs[k] = String(v);
     if (k === 'value') this.value = String(v);
@@ -21,29 +97,91 @@ function makeEl(tag) {
   };
   node.getAttribute = function (k) { return this.attrs[k]; };
   node.addEventListener = function (type, fn) { (this.listeners[type] ??= []).push(fn); };
-  node.append = function (...cs) { for (const c of cs) if (c != null) this.children.push(c); };
-  node.replaceChildren = function (...cs) { this.children = cs.filter((c) => c != null); };
-  node.remove = function () { this.__removed = true; };
+  node.append = function (...cs) {
+    for (const c of cs) {
+      if (c == null) continue;
+      if (typeof c === 'object') c.parentNode = this;
+      this.children.push(c);
+    }
+  };
+  node.insertBefore = function (child, ref) {
+    const i = this.children.indexOf(ref);
+    if (i < 0) this.children.push(child);
+    else this.children.splice(i, 0, child);
+    if (child && typeof child === 'object') child.parentNode = this;
+    return child;
+  };
+  node.replaceChildren = function (...cs) {
+    this.children = cs.filter((c) => c != null);
+    for (const c of this.children) if (c && typeof c === 'object') c.parentNode = this;
+  };
+  node.remove = function () {
+    if (this.parentNode) {
+      const i = this.parentNode.children.indexOf(this);
+      if (i >= 0) this.parentNode.children.splice(i, 1);
+    }
+    this.__removed = true;
+  };
   node.focus = function () { globalThis.__focused = this; };
   node.querySelector = function (sel) {
-    const cls = sel.replace(/^\./, '');
+    const test = selectorTest(sel);
     const walk = (n) => {
       for (const c of n.children) {
         if (!c || c.__text !== undefined) continue;
-        if (String(c.attrs.class ?? '').split(/\s+/).includes(cls)) return c;
+        if (test(c)) return c;
         const r = walk(c); if (r) return r;
       }
       return null;
     };
     return walk(this);
   };
+  node.closest = function (sel) {
+    const test = selectorTest(sel);
+    let n = this;
+    while (n) {
+      if (n.attrs && test(n)) return n;
+      n = n.parentNode;
+    }
+    return null;
+  };
+  node.contains = function (child) {
+    let n = child;
+    while (n) {
+      if (n === this) return true;
+      n = n.parentNode;
+    }
+    return false;
+  };
+  node.scrollIntoView = function () { this.__scrolled = true; };
+  node.requestSubmit = function () {
+    for (const fn of this.listeners.submit ?? []) fn({ preventDefault() {} });
+  };
   Object.defineProperty(node, 'className', {
     get() { return this.attrs.class ?? ''; },
     set(v) { this.attrs.class = String(v); },
   });
+  Object.defineProperty(node, 'lastElementChild', {
+    get() {
+      for (let i = this.children.length - 1; i >= 0; i -= 1) {
+        const c = this.children[i];
+        if (c && c.__text === undefined) return c;
+      }
+      return null;
+    },
+  });
+  Object.defineProperty(node, 'innerHTML', {
+    get() { return this.__html; },
+    set(v) {
+      this.__html = String(v);
+      this.children = parseHTML(this.__html);
+      for (const c of this.children) if (c && c.__text === undefined) c.parentNode = this;
+    },
+  });
   return node;
 }
 globalThis.Node = FakeNode;
+globalThis.requestAnimationFrame = (cb) => setTimeout(() => cb(Date.now()), 0);
+globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
 const docListeners = {};
 globalThis.document = {
   createElement: (t) => makeEl(t),
@@ -167,9 +305,15 @@ globalThis.FileReader = FakeFileReader;
 const { state, subscribe, notify, defaultBill, defaultChat, defaultContracts, defaultImportRecovery, loadContractsDemo } = await imp('src/state.js');
 const { renderImport } = await imp('src/ui/views/importView.js');
 const { renderReport } = await imp('src/ui/views/reportView.js');
-const { renderChat } = await imp('src/ui/views/chatView.js');
+const { renderRealChat } = await imp('prototype/user-frontend/realChat.js');
 const { renderContract } = await imp('src/ui/views/contractView.js');
-const VIEWS = { import: renderImport, report: renderReport, chat: renderChat, contract: renderContract };
+const { createQaAnswerService } = await imp('prototype/user-frontend/qaAnswer.js');
+const { createChatOnline } = await imp('src/agent/chatOnline.js');
+const { createOnlineBoundary } = await imp('src/agent/onlineBoundary.js');
+const { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } = await imp('src/agent/httpTransport.js');
+const { loadUserBillReport } = await imp('src/demo/adapter.js');
+const { ruleStateOf } = await imp('src/agent/qaChips.js');
+const VIEWS = { import: renderImport, report: renderReport, chat: renderRealChat, contract: renderContract };
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -187,6 +331,45 @@ function go(id) { state.route = id; mountCycle(); }
 function mountCycle() { current = makeEl('main'); VIEWS[state.route](current, ctx); }
 subscribe(() => mountCycle());
 const flush = () => new Promise((r) => setTimeout(r, 0));
+
+// 问答页依赖：真实 qaAnswer 编排 + 站点同源 fake；bundle 复用报告适配层并按上下文缓存。
+const qaBundles = new Map();
+function getSmokeBundle(bill) {
+  const cached = qaBundles.get(bill?.contextId || 'anonymous');
+  return cached?.status === 'ready' ? cached.bundle : null;
+}
+async function loadSmokeBundle(bill) {
+  const key = bill?.contextId || 'anonymous';
+  const cached = qaBundles.get(key);
+  if (cached?.status === 'ready') return cached.bundle;
+  const bundle = await loadUserBillReport(bill);
+  qaBundles.set(key, { status: 'ready', bundle });
+  return bundle;
+}
+let smokeAnswerClient = null;
+function getSmokeAnswerClient() {
+  if (!smokeAnswerClient) {
+    const transport = createHttpTransport({ baseUrl: SAME_ORIGIN_BASE, paths: SITE_FUNCTION_PATHS });
+    const online = createChatOnline({ transport });
+    const boundary = createOnlineBoundary({ transport, timeoutMs: 5000 });
+    smokeAnswerClient = createQaAnswerService({
+      getBundle: getSmokeBundle,
+      loadBundle: loadSmokeBundle,
+      askOnline: ({ question, review }) => online.ask({ question, review }),
+      loadProfile: () => null,
+      classifyIntent: ({ question }) => boundary.classifyIntent({ question }),
+    });
+  }
+  return smokeAnswerClient;
+}
+ctx.qaDeps = {
+  askQuestion: (args) => getSmokeAnswerClient().ask(args),
+  getReportBundle: getSmokeBundle,
+  loadReportBundle: loadSmokeBundle,
+  ruleStateOf,
+  loadProfile: () => null,
+  openRuleCandidate: (c, candidate) => { ctx.__openedCandidate = candidate; },
+};
 
 function texts(node, out = []) {
   for (const c of node.children ?? []) {
@@ -546,154 +729,297 @@ txt = texts(current).join('|');
 check('真实报告 R′·600519：-6.6% / -1.5pp / ¥-4,564.00', txt.includes('-6.6%') && txt.includes('-1.5pp') && txt.includes('¥-4,564.00'), txt.slice(0, 260));
 state.report = { scenario: 'A', symbol: 'pool' };
 
-/* ==== 对话页：组合四事实在线复述（站点同源 fake；不调用百炼） ==== */
+/* ==== 问答页「对话账本」：通用问法 → 意图 → 最小事实包 → 本地/在线回答 → 证据 ==== */
 {
-  const chatOnlineMod = await imp('src/agent/chatOnline.js');
   const chatCsv = '日期,标的,方向,价格,数量,费用,税费\n2024-09-25,600519,买入,100,100,5,0\n2024-10-09,600519,卖出,104,100,5,1\n';
   const chatCsv2 = '日期,标的,方向,价格,数量,费用,税费\n2024-09-25,600519,买入,100,100,5,0\n2024-10-09,600519,卖出,110,100,5,1\n';
   const chatCsv3 = '日期,标的,方向,价格,数量,费用,税费\n2024-09-25,600519,买入,100,100,5,0\n2024-10-09,600519,卖出,106,100,5,1\n';
   const answerCsv1 = '组合实际收益 +4.0%，对照收益 +1277.2%，择时损耗 +1273.2pp，损耗金额 ¥127,318.00。';
   const answerCsv2 = '组合实际收益 +10.0%，对照收益 +1277.2%，择时损耗 +1267.2pp，损耗金额 ¥126,718.00。';
   const answerCsv3 = '组合实际收益 +6.0%，对照收益 +1277.2%，择时损耗 +1271.2pp，损耗金额 ¥127,118.00。';
-  const settleChat = async () => { for (let i = 0; i < 8; i++) await flush(); };
-  const lastAssistant = () => state.chat.messages.filter((m) => m.role === 'assistant').at(-1) ?? null;
+  const settleChat = async () => { for (let i = 0; i < 30; i++) await flush(); };
   const pageTxt = () => texts(current).join('|');
-  const chatButton = () => findButtons(current).find((b) => labelOf(b) === '组合整体表现如何？');
-  const startChatSend = () => {
-    const b = chatButton();
-    if (!b) throw new Error('找不到对话发送按钮');
-    return b.listeners.click[0]({});
+  const pageVisibleTxt = () => visibleTexts(current).join('|');
+  const entries = () => findByClass(current, 'tm-qa-entry');
+  const entryOf = (intent) => [...entries()].reverse().find((n) => n.attrs['data-intent'] === intent) ?? null;
+  const chips = () => findButtons(current).filter((b) => b.attrs['data-role'] === 'qa-chip');
+  const chipOf = (label) => chips().find((b) => labelOf(b).includes(label)) ?? null;
+  const textarea = () => findByTag(current, 'textarea').find((n) => n.attrs['data-role'] === 'qa-input') ?? null;
+  const askForm = () => findByTag(current, 'form').find((n) => n.attrs['data-role'] === 'qa-form') ?? null;
+  const clickNode = (node) => {
+    let n = node;
+    while (n) {
+      for (const fn of n.listeners?.click ?? []) fn({ target: node, preventDefault() {} });
+      if (typeof n.onclick === 'function') n.onclick({ target: node, preventDefault() {} });
+      n = n.parentNode;
+    }
   };
+  const askText = async (q) => {
+    const input = textarea();
+    const form = askForm();
+    if (!input || !form) throw new Error('找不到提问框');
+    input.value = q;
+    for (const fn of input.listeners.input ?? []) await fn({ target: { value: q } });
+    for (const fn of form.listeners.submit ?? []) await fn({ preventDefault() {} });
+    await settleChat();
+  };
+  const askChip = async (label) => {
+    const chip = chipOf(label);
+    if (!chip) throw new Error('找不到示例芯片：' + label);
+    clickNode(chip);
+    await settleChat();
+  };
+  const resetChat = () => { state.chat = defaultChat(state.bill.contextId); mountCycle(); };
   const importChatBill = async (name, csv) => {
     state.route = 'import'; mountCycle();
     await pickFile({ name, size: csv.length, __content: csv }); await flush();
     await clickLabel('确认交易列表'); await flush(); await flush(); await flush();
+    state.route = 'chat';
+    state.contracts = defaultContracts();
+    mountCycle();
     return state.bill.contextId;
   };
   const waitForSiteCalls = async (expected) => {
     for (let i = 0; i < 30 && siteCalls.length < expected; i++) await flush();
   };
 
-  /* 1) 未确认本地账单：不发起在线请求，明确兜底 */
-  state.route = 'chat'; state.bill = defaultBill(); state.chat = defaultChat(); mountCycle();
-  check('对话·范围提示：中文标题/仅支持组合整体表现/真实验证未完成/不展示模型原文；内部范围与错误码在详情',
-    visibleTexts(current).join('|').includes('分析问答') && visibleTexts(current).join('|').includes('当前仅支持组合整体表现')
-    && visibleTexts(current).join('|').includes('尚未完成真实服务验证') && visibleTexts(current).join('|').includes('不展示模型原文')
-    && !visibleTexts(current).join('|').includes('loss_overview') && !visibleTexts(current).join('|').includes('portfolio')
-    && pageTxt().includes('内部范围：loss_overview · portfolio'), pageTxt().slice(0, 300));
-  const callsBeforeBill = siteCalls.length;
-  await clickLabel('组合整体表现如何？'); await settleChat();
+  /* 1) 页首、空状态与示例芯片 */
+  const context1 = await importChatBill('chat-bill.csv', chatCsv);
   {
-    const a = lastAssistant();
-    check('对话·未确认账单：固定兜底 + 明确原因，不发起在线请求',
-      state.chat.messages.length === 2 && !!a && a.text === chatOnlineMod.CHAT_ONLINE_FALLBACK_TEXT
-      && a.tag.includes('已兜底') && a.detail.includes('W_CHAT_BILL_NOT_CONFIRMED') && siteCalls.length === callsBeforeBill,
-      JSON.stringify(state.chat));
+    const page = findByClass(current, 'tm-qa-page')[0];
+    const ledger = findByClass(current, 'tm-qa-log')[0];
+    const scroller = findByClass(page ?? {}, 'tm-qa-scroll')[0] ?? null;
+    const dock = findByClass(page ?? {}, 'tm-qa-dock')[0] ?? null;
+    const form = askForm();
+    check('问答账本·页首与空状态：账本独立滚动/输入底栏/8 个示例芯片（1 个在线）',
+      !!page && !!ledger && ledger.attrs['data-role'] === 'qa-ledger'
+      && !!scroller && !!dock && !!form && form.parentNode === dock && ledger.parentNode === scroller
+      && pageVisibleTxt().includes('STEP 03 / ASK') && pageVisibleTxt().includes('问它为什么，')
+      && pageVisibleTxt().includes('别问它买什么。')
+      && pageVisibleTxt().includes('还没有提问。示例问法只是入口，不是全部。')
+      && chips().length === 8 && chips().filter((b) => b.attrs['data-online'] === 'true').length === 1
+      && pageVisibleTxt().includes('规则 v0 · 生效 0 条') && pageVisibleTxt().includes('原始 CSV 仅本机')
+      && entries().length === 0, pageTxt().slice(0, 320));
   }
 
-  /* 2) 已确认本地账单 + fake 成功：仅展示通过数字校验的复述 */
-  const context1 = await importChatBill('chat-bill.csv', chatCsv);
-  state.route = 'chat'; state.chat = defaultChat(state.bill.contextId); mountCycle();
-  const okAnswer = answerCsv1;
-  siteResponse = { status: 200, body: { rawText: JSON.stringify({ answer_text: okAnswer }) } };
-  await clickLabel('组合整体表现如何？'); await settleChat();
+  /* 2) 本地回答：最错一笔 → 4 条事实 + 折叠证据，不发起在线请求 */
+  const siteBeforeWorst = siteCalls.length;
+  await askText('我最错的一笔是哪个？');
   {
-    const a = lastAssistant();
+    const entry = entryOf('worst_trade');
+    const facts = entry ? findByClass(entry, 'tm-qa-facts')[0] : null;
+    const evidence = entry ? findByClass(entry, 'tm-qa-evidence')[0] : null;
+    const evidenceSummary = evidence ? findByTag(evidence, 'summary')[0] : null;
+    check('问答账本·最错一笔：local/本地规则/4 条事实/证据折叠/报告已发布',
+      state.chat.pending === false && !!entry && entry.attrs['data-state'] === 'local'
+      && entry.attrs['data-role'] === 'qa-entry'
+      && texts(entry).join('|').includes('本地规则')
+      && facts && findByClass(facts, 'tm-qa-fact').length === 4
+      && evidenceSummary && texts(evidenceSummary).join('').includes('证据')
+      && pageVisibleTxt().includes('已校验') && pageVisibleTxt().includes('报告 已发布')
+      && siteCalls.length === siteBeforeWorst,
+      JSON.stringify({ attrs: entry?.attrs, facts: facts ? texts(facts) : null, site: siteCalls.length - siteBeforeWorst }));
+  }
+
+  /* 3) 边界拒绝：不加载报告、不调用模型、0 条事实 */
+  const callsBeforeRefusal = siteCalls.length;
+  const marketsBeforeRefusal = marketCalls.length;
+  await askText('明天买什么？');
+  {
+    const entry = entryOf('out_of_scope');
+    check('问答账本·越界问题：refusal/边界拦截/0 条事实/不加载报告不调用模型',
+      !!entry && entry.attrs['data-state'] === 'refusal'
+      && !findByClass(entry, 'tm-qa-facts').length
+      && texts(entry).join('|').includes('不荐股、不预测涨跌、不替你决定买卖')
+      && siteCalls.length === callsBeforeRefusal && marketCalls.length === marketsBeforeRefusal,
+      JSON.stringify({ attrs: entry?.attrs, site: siteCalls.length - callsBeforeRefusal, market: marketCalls.length - marketsBeforeRefusal }));
+  }
+
+  /* 4) 清空对话：账本与消息一起清空 */
+  {
+    const clear = findButtons(current).find((b) => b.attrs['data-role'] === 'qa-clear');
+    if (clear) clickNode(clear);
+    await flush();
+    check('问答账本·清空对话：消息清空、回到空状态',
+      state.chat.messages.length === 0 && entries().length === 0
+      && pageVisibleTxt().includes('还没有提问'), JSON.stringify(state.chat));
+  }
+
+  /* 5) 登记式应答：不替用户决定，动作跳规则工作区 */
+  await askText('帮我定个止损。');
+  {
+    const entry = entryOf('contract_setup');
+    const action = entry ? findButtons(entry).find((b) => labelOf(b).includes('去规则工作区')) : null;
+    check('问答账本·登记式应答：registration/不替你决定/去规则工作区',
+      !!entry && entry.attrs['data-state'] === 'registration'
+      && texts(entry).join('|').includes('我不能替你定止损')
+      && texts(entry).join('|').includes('不内联保存、不自动生成规则')
+      && !!action, JSON.stringify({ attrs: entry?.attrs, actions: entry ? findButtons(entry).map(labelOf) : [] }));
+  }
+
+  /* 6) 计算口径：只列索引，不出现文件名或成交行 */
+  await askText('这些数字是怎么算出来的？');
+  {
+    const entry = entryOf('meta_calc');
+    const facts = entry ? findByClass(entry, 'tm-qa-facts')[0] : null;
+    const factsTxt = facts ? texts(facts).join('|') : '';
+    const entryTxt = entry ? texts(entry).join('|') : '';
+    check('问答账本·计算口径：meta_calc/可回源事实与公式数/证据不含文件名与成交行',
+      !!entry && entry.attrs['data-state'] === 'local'
+      && factsTxt.includes('可回源事实') && factsTxt.includes('公式')
+      && entryTxt.includes('回源') && !entryTxt.includes('chat-bill.csv') && !entryTxt.includes('第 2 行'),
+      JSON.stringify({ attrs: entry?.attrs, facts: factsTxt, text: entryTxt.slice(0, 260) }));
+  }
+
+  /* 7) 反事实指代不清：待澄清 + 明确选项 */
+  await askText('如果那笔卖出没发生，会怎样？');
+  {
+    const entry = entryOf('what_if');
+    const actions = entry ? findButtons(entry) : [];
+    check('问答账本·反事实：what_if/clarify/不猜指代并给出具体候选',
+      !!entry && entry.attrs['data-state'] === 'clarify'
+      && texts(entry).join('|').includes('指哪一笔还不明确')
+      && actions.length >= 2 && actions.some((b) => labelOf(b).includes('2024-')),
+      JSON.stringify({ attrs: entry?.attrs, actions: actions.map(labelOf) }));
+  }
+
+  /* 8) 规则状态：无生效规则时如实说明，不生成命中数 */
+  await askText('我的规则守得住吗？');
+  {
+    const entry = entryOf('contract_status');
+    check('问答账本·规则状态：无生效规则时如实说明',
+      !!entry && entry.attrs['data-state'] === 'local'
+      && texts(entry).join('|').includes('当前没有生效规则')
+      && texts(entry).join('|').includes('规则只做提醒，不下单、不阻止交易'),
+      JSON.stringify({ attrs: entry?.attrs, text: entry ? texts(entry).join('|').slice(0, 240) : '' }));
+  }
+
+  /* 9) 组合芯片在线成功：只展示通过数字校验的复述 */
+  resetChat();
+  siteResponse = { status: 200, body: { rawText: JSON.stringify({ answer_text: answerCsv1 }) } };
+  const siteBeforeOnline = siteCalls.length;
+  await askChip('组合表现');
+  {
+    const entry = entryOf('loss_overview');
     const call = siteCalls.at(-1);
     const body = call ? JSON.parse(call.options.body) : null;
-    check('对话·在线成功：仅展示通过本地数字校验的复述 + 成功标签 + 账单来源',
-      state.bill.contextId === context1 && state.chat.contextId === context1
-      && state.chat.messages.length === 2 && !!a && a.text === okAnswer
-      && a.tag.includes('本地数字校验通过') && a.detail.includes('已核对 4 个可识别数字')
-      && pageTxt().includes('已确认本地账单 · chat-bill.csv'), JSON.stringify(state.chat));
-    check('对话·同源 transport：POST /functions/v1/app/api/llm/restate，body 仅 question + F-6 四事实',
+    const entryTxt = entry ? texts(entry).join('|') : '';
+    check('问答账本·在线成功：online/复述文本一致/数字校验/上下文账单',
+      !!entry && entry.attrs['data-state'] === 'online'
+      && entryTxt.includes(answerCsv1) && entryTxt.includes('已核对 4 个可识别数字')
+      && entryTxt.includes('在线复述 · 已校验')
+      && state.bill.contextId === context1 && pageVisibleTxt().includes('chat-bill.csv')
+      && siteCalls.length === siteBeforeOnline + 1,
+      JSON.stringify({ attrs: entry?.attrs, text: entryTxt.slice(0, 240), calls: siteCalls.length - siteBeforeOnline }));
+    check('问答账本·在线出站：POST restate，body 仅 question + F-6 四事实',
       !!call && call.url === '/functions/v1/app/api/llm/restate' && call.options.method === 'POST'
       && Object.keys(body).join(',') === 'question,facts' && body.facts.length === 4
       && body.facts.every((f) => Object.keys(f).every((k) => ['value', 'unit', 'display', 'formula_ref', 'source_ref'].includes(k)))
       && body.facts.every((f) => !('key' in f) && !('fact_ref' in f) && !('scope' in f))
-      && body.facts.every((f) => ['%', 'pp', '元'].includes(f.unit)), JSON.stringify({ url: call && call.url, body }));
-    check('对话·出站不含账单文件名/成交/复核痕迹，请求头无 Key，pending 复位',
-      !JSON.stringify(body).includes('chat-bill.csv') && !JSON.stringify(body).includes('T001')
+      && body.facts.every((f) => ['%', 'pp', '元'].includes(f.unit)),
+      JSON.stringify({ url: call && call.url, body }));
+    check('问答账本·在线出站不含文件名/成交/复核痕迹，请求头无 Key，pending 复位',
+      !!body && !JSON.stringify(body).includes('chat-bill.csv') && !JSON.stringify(body).includes('T001')
       && !JSON.stringify(body).includes('provenance')
       && !Object.keys(call.options.headers).some((h) => /authorization|api[-_]?key/i.test(h))
       && state.chat.pending === false);
   }
 
-  /* 3) 伪造数字：固定兜底，不回显候选数字 */
+  /* 10) 伪造数字：回退本地事实，不回显候选数字 */
+  resetChat();
   siteResponse = { status: 200, body: { rawText: JSON.stringify({ answer_text: '组合实际收益 +99.9%。' }) } };
-  state.chat = defaultChat(state.bill.contextId); mountCycle();
-  await clickLabel('组合整体表现如何？'); await settleChat();
+  await askChip('组合表现');
   {
-    const a = lastAssistant();
-    check('对话·数字失败：固定兜底、不回显候选数字',
-      state.chat.messages.length === 2 && !!a && a.text === chatOnlineMod.CHAT_ONLINE_FALLBACK_TEXT
-      && a.tag.includes('已兜底') && a.detail.includes('W_ANSWER_NUMBERS_FAILED') && a.detail.includes('未通过 1')
-      && !JSON.stringify(state.chat).includes('99.9') && !pageTxt().includes('99.9'), JSON.stringify(state.chat));
+    const entry = entryOf('loss_overview');
+    check('问答账本·数字失败：回退 local + notice，页面不出现候选数字 99.9',
+      !!entry && entry.attrs['data-state'] === 'local'
+      && texts(entry).join('|').includes('在线复述未完成，已改为本地已发布事实')
+      && !JSON.stringify(state.chat).includes('99.9') && !pageTxt().includes('99.9'),
+      JSON.stringify({ attrs: entry?.attrs, chat: JSON.stringify(state.chat).slice(0, 260) }));
   }
 
-  /* 4) 站点函数未就绪（503）：明确兜底，不展示任何模型文本 */
+  /* 11) 站点函数未就绪（503）：同样回退本地事实并说明原因 */
+  resetChat();
   siteResponse = { status: 503, body: {} };
-  state.chat = defaultChat(state.bill.contextId); mountCycle();
-  await clickLabel('组合整体表现如何？'); await settleChat();
+  await askChip('组合表现');
   {
-    const a = lastAssistant();
-    check('对话·服务未就绪：E_HTTP_STATUS 兜底，不展示模型文本',
-      state.chat.messages.length === 2 && !!a && a.text === chatOnlineMod.CHAT_ONLINE_FALLBACK_TEXT
-      && a.detail.includes('E_HTTP_STATUS') && a.detail.includes('函数未发布'), JSON.stringify(state.chat));
+    const entry = entryOf('loss_overview');
+    check('问答账本·服务未就绪：local 回退 + 原因，不展示模型文本',
+      !!entry && entry.attrs['data-state'] === 'local'
+      && texts(entry).join('|').includes('在线复述未完成，已改为本地已发布事实')
+      && texts(entry).join('|').includes('函数未发布'),
+      JSON.stringify({ attrs: entry?.attrs, text: entry ? texts(entry).join('|').slice(0, 260) : '' }));
   }
   siteResponse = { status: 200, body: { rawText: JSON.stringify({ answer_text: '' }) } };
 
-  /* 5) 已完成回答后更换账单（同名重导入）：旧回答不再展示 */
+  /* 12) 换账单：旧回答不展示，新上下文重新开始 */
   const contextBeforeReplace = state.bill.contextId;
   const context2 = await importChatBill('chat-bill.csv', chatCsv2);
-  check('对话·换账单（同名重导入）：生成新上下文并清理旧聊天',
+  check('问答账本·换账单（同名重导入）：新上下文、旧聊天清空',
     context2 !== contextBeforeReplace && state.bill.fileName === 'chat-bill.csv'
     && state.bill.contextId === context2 && state.chat.contextId === context2
     && state.chat.messages.length === 0 && state.chat.pending === false, JSON.stringify(state.chat));
-  state.route = 'chat'; mountCycle();
-  check('对话·换账单：旧回答不再展示',
+  check('问答账本·换账单：旧回答不再展示',
     !pageTxt().includes('¥127,318.00') && !pageTxt().includes(answerCsv1), pageTxt().slice(0, 300));
 
-  /* 6) 请求未完成时更换账单：旧响应返回后不污染新聊天状态 */
+  /* 13) 待定请求换账单：旧响应返回后不污染新上下文 */
   const contextBeforePending = state.bill.contextId;
   const callsBeforeOld = siteCalls.length;
   const oldDeferred = deferredSiteResponse({ rawText: JSON.stringify({ answer_text: answerCsv2 }) });
   siteQueue.push(oldDeferred);
-  state.route = 'chat'; mountCycle();
-  const oldPending = startChatSend();
+  const oldChip = chipOf('组合表现');
+  clickNode(oldChip);
   await waitForSiteCalls(callsBeforeOld + 1);
-  check('对话·待定请求：已发出且 pending',
-    state.chat.pending === true && state.chat.contextId === contextBeforePending && siteCalls.length === callsBeforeOld + 1,
+  check('问答账本·待定请求：已发出、pending、入口禁用',
+    state.chat.pending === true && state.chat.contextId === contextBeforePending
+    && siteCalls.length === callsBeforeOld + 1 && chipOf('组合表现')?.disabled === true,
     JSON.stringify(state.chat));
 
   const context3 = await importChatBill('chat-bill.csv', chatCsv3);
-  check('对话·请求未完成时换账单：清空旧聊天并生成新上下文',
+  check('问答账本·请求未完成时换账单：清空旧聊天并生成新上下文',
     context3 !== contextBeforePending && state.bill.contextId === context3 && state.chat.contextId === context3
     && state.chat.messages.length === 0 && state.chat.pending === false, JSON.stringify(state.chat));
 
   const callsBeforeNew = siteCalls.length;
   const newDeferred = deferredSiteResponse({ rawText: JSON.stringify({ answer_text: answerCsv3 }) });
   siteQueue.push(newDeferred);
-  state.route = 'chat'; mountCycle();
-  const newPending = startChatSend();
+  const newChip = chipOf('组合表现');
+  clickNode(newChip);
   await waitForSiteCalls(callsBeforeNew + 1);
-  check('对话·新上下文请求 pending',
+  check('问答账本·新上下文请求 pending',
     state.chat.pending === true && state.chat.messages.length === 1 && state.chat.messages[0].role === 'user',
     JSON.stringify(state.chat));
 
   oldDeferred.resolve();
-  await oldPending; await flush();
-  check('对话·旧响应返回：不追加回答、不覆盖新 pending',
+  await settleChat();
+  check('问答账本·旧响应返回：不追加回答、不覆盖新 pending',
     state.chat.messages.length === 1 && state.chat.messages[0].role === 'user'
     && state.chat.pending === true && !JSON.stringify(state.chat).includes(answerCsv2), JSON.stringify(state.chat));
 
   newDeferred.resolve();
-  await newPending; await settleChat();
+  await settleChat();
   {
-    const a = lastAssistant();
-    check('对话·新响应正常写回',
-      state.chat.pending === false && state.chat.messages.length === 2 && !!a && a.text === answerCsv3
-      && a.tag.includes('本地数字校验通过'), JSON.stringify(state.chat));
+    const entry = entryOf('loss_overview');
+    check('问答账本·新响应正常写回：新上下文 online 回答',
+      state.chat.pending === false && !!entry && entry.attrs['data-state'] === 'online'
+      && texts(entry).join('|').includes(answerCsv3), JSON.stringify(state.chat));
+  }
+
+  /* 14) L2 在线意图：只发送问题文本；命中后仍用本地事实回答 */
+  resetChat();
+  const callsBeforeL2 = siteCalls.length;
+  siteQueue.push({ status: 200, body: { rawText: JSON.stringify({ intent: 'loss_overview', slots: {}, confidence: 0.92 }) } });
+  await askText('帮我看看这个账户');
+  {
+    const entry = entryOf('loss_overview');
+    const entryTxt = entry ? texts(entry).join('|') : '';
+    const call = siteCalls[callsBeforeL2];
+    const body = call ? JSON.parse(call.options.body) : null;
+    check('问答账本·L2 在线意图：layer=在线意图/只发送问题文本/本地事实回答',
+      !!entry && entry.attrs['data-state'] === 'local' && entryTxt.includes('在线意图')
+      && entryTxt.includes('4 条事实') && siteCalls.length === callsBeforeL2 + 1
+      && !!body && Object.keys(body).join(',') === 'question' && body.question === '帮我看看这个账户',
+      JSON.stringify({ attrs: entry?.attrs, url: call?.url, body, text: entryTxt.slice(0, 240), chat: state.chat }));
   }
 
   // 恢复对话前的演示账单已确认态，避免影响后续契约情境用例
@@ -891,6 +1217,14 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     state.bill.status === 'confirmed' && state.bill.sourceType !== 'local' && sourceLine().startsWith('交易来源：演示账单 A') && sourceLine().includes('行情：合成演示行情')
     && txt.includes('合成夹具（非真实行情）· 候选口径（待 M0-C1 冻结）· 不构成投资建议') && sellsLine().includes('T004 000000 2024-10-08'), sourceLine());
   let s = await simulate('000000', '2024-10-10');
+  {
+    const ledger = findByClass(current, 'cv-ledger')[0];
+    const ledgerText = ledger ? texts(ledger).join('|') : '';
+    check('守约账本：情境测试加载后展示当前规则复核、汇总与口径说明',
+      !!ledger && ledgerText.includes('守约账本') && ledgerText.includes('按当前生效规则复核账单中的')
+      && ledgerText.includes('涨幅超阈值不买入') && ledgerText.includes('卖出后 N 个交易日内不追回')
+      && ledgerText.includes('账本口径') && ledgerText.includes('不是实时申报记录'), ledgerText.slice(0, 400));
+  }
   {
     check('测试：两种类型的当前规则各判定一次（无“本次测试使用的规则”汇总行），无并行 / 重复提醒 / 整理字样',
       sameSet(simHashes(), [hS3, hB5]) && !findByClass(current, 'cv-sim-headline').length
@@ -2227,15 +2561,19 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
   state.route = 'chat';
   mountCycle();
   const gateCallsBefore = siteCalls.length;
-  const gateInput = findInputs(current)[0];
+  const gateMarketsBefore = marketCalls.length;
+  const gateInput = findByTag(current, 'textarea').find((n) => n.attrs['data-role'] === 'qa-input');
   gateInput.value = '明天买什么？';
-  const gateSend = findButtons(current).find((b) => labelOf(b) === '发送');
-  for (const fn of gateSend?.listeners.click ?? []) await fn({});
-  await flush();
-  check('入口门禁：不支持的问答在本地拦截，零站点请求，不进入在线复述',
-    siteCalls.length === gateCallsBefore
-    && state.chat.messages.some((m) => m.reason === 'W_CHAT_SCOPE_LOCAL')
-    && texts(current).join('|').includes('本地范围拦截'), JSON.stringify({ calls: siteCalls.length - gateCallsBefore, messages: state.chat.messages.slice(-1) }));
+  for (const fn of gateInput.listeners.input ?? []) await fn({ target: { value: '明天买什么？' } });
+  const gateForm = findByTag(current, 'form').find((n) => n.attrs['data-role'] === 'qa-form');
+  for (const fn of gateForm?.listeners.submit ?? []) await fn({ preventDefault() {} });
+  await flush(); await flush();
+  check('入口门禁：越界问答在本地拦截，零站点请求、零行情请求，不进入在线复述',
+    siteCalls.length === gateCallsBefore && marketCalls.length === gateMarketsBefore
+    && state.chat.messages.some((m) => m.answer?.status === 'refusal' && m.answer?.intent === 'out_of_scope')
+    && texts(current).join('|').includes('边界拦截')
+    && texts(current).join('|').includes('未加载账单、未调用模型、0 条事实'),
+    JSON.stringify({ calls: siteCalls.length - gateCallsBefore, markets: marketCalls.length - gateMarketsBefore, messages: state.chat.messages.slice(-1) }));
   state.route = 'import';
   state.bill = defaultBill();
   state.chat = defaultChat();
