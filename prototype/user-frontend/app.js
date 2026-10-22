@@ -495,7 +495,7 @@ import { renderRealProfile } from './realProfile.js';
         intro: `<div class="report-meta">
           <div class="report-account"><span>DEMO / 示例场景</span><span>${esc(scenario.title || '示例报告')}</span></div>
           <dl>
-            <div><dt>数据</dt><dd>合成账单 + 示例行情</dd></div>
+            <div><dt>数据</dt><dd>示例交易 + Tushare 历史日线</dd></div>
             <div><dt>用途</dt><dd>演示不同报告状态</dd></div>
             <div><dt>性质</dt><dd><span class="status-dot demo">示例 · 非真实</span></dd></div>
           </dl>
@@ -549,7 +549,7 @@ import { renderRealProfile } from './realProfile.js';
     const sharedBill = sharedState().bill;
     const realBanner = isConfirmedLocal()
       ? (sharedBill.demo
-        ? `<div class="container tm-real-home-banner"><strong>当前是示例场景。</strong><span>${esc(sharedBill.demoScenario?.title || '示例报告')} · 合成账单与示例行情，仅用于演示。</span><a class="text-link" href="#/report">查看示例报告 →</a><a class="text-link" href="#/import">换个场景 →</a></div>`
+        ? `<div class="container tm-real-home-banner"><strong>当前是示例场景。</strong><span>${esc(sharedBill.demoScenario?.title || '示例报告')} · 示例交易与 Tushare 历史行情快照，仅用于演示。</span><a class="text-link" href="#/report">查看示例报告 →</a><a class="text-link" href="#/import">换个场景 →</a></div>`
         : `<div class="container tm-real-home-banner"><strong>当前有已确认的本地账单。</strong><span>${esc(sharedBill.fileName || '本地账单')} · 报告、问答和助手都使用这笔账单。</span><a class="text-link" href="#/report">查看真实报告 →</a><a class="text-link" href="#/chat">去事实问答 →</a></div>`)
       : '';
     return `${realBanner}<div class="home">

@@ -126,6 +126,30 @@ const answerFor = (chipId, extra = {}) => buildLocalChipAnswer({
     && !JSON.stringify(a).includes('6,440') && !JSON.stringify(a).includes('¥6,440.00'), JSON.stringify(a.facts));
   check('最错一笔：明确事后对照、展示序不等于因果', a.text.includes('事后对照')
     && a.text.includes('展示序不等于因果') && a.notice.includes('候选补充口径'), a.text);
+
+  const negativeBundle = makeBundle({
+    insights: {
+      ...BUNDLE.insights,
+      portfolio: {
+        ...BUNDLE.insights.portfolio,
+        decomposition: {
+          blocked: false,
+          total: { value: -500, display: '¥-500.00' },
+          items: [
+            { trade_id: 'N1', trade_date: '2024-09-27', symbol: '000000', quantity: 100, price: 12.1, close: 12, dragMoney: -10, display: { dragMoney: '¥-10.00', share: '+2.0%' }, source: { file: 'qa-mini.csv', line: 3 } },
+            { trade_id: 'N2', trade_date: '2024-09-30', symbol: '888888', quantity: 10, price: 159, close: 110, dragMoney: -490, display: { dragMoney: '¥-490.00', share: '+98.0%' }, source: { file: 'qa-mini.csv', line: 5 } },
+          ],
+        },
+      },
+    },
+  });
+  const negative = buildLocalChipAnswer({ chip: 'worst_trade', bundle: negativeBundle, bill: BILL });
+  check('最错一笔：全部差额为负时不虚构“最错”，按绝对值展示且不用双负号', negative.ok
+    && negative.text.includes('没有哪一笔卖出相对“买入不动”更差')
+    && negative.text.includes('没有“最错一笔”')
+    && negative.text.includes('¥490.00')
+    && !negative.text.includes('¥-490.00')
+    && negative.facts.some((f) => f.label === '优于对照' && f.value === '¥490.00'), JSON.stringify(negative));
 }
 
 /* ==== ③ 为什么追高：三态照实 + 证据 ==== */
@@ -151,12 +175,93 @@ const answerFor = (chipId, extra = {}) => buildLocalChipAnswer({
     && weakAnswer.text.includes('不下确定结论'), JSON.stringify(weakAnswer));
 }
 
+/* ==== ③b 行为解释：按问题与实际成立模式选择，不固定追高 ==== */
+{
+  const patternBundle = (patterns) => makeBundle({
+    insights: {
+      ...BUNDLE.insights,
+      behavior: { available: true, reason: '', data: { ...BEHAVIOR, patterns } },
+    },
+  });
+  const REBUY_EVIDENCE = [
+    { trade_id: 'R2', trade_date: '2024-09-25', symbol: '333333', side: 'buy', side_label: '买入', prior_trade_id: 'R1', prior_trade_date: '2024-09-23', prior_side_label: '卖出', gap_days: 2, display: { gap_days: '2 个交易日' }, source: { file: 'qa-mini.csv', line: 3 } },
+    { trade_id: 'R4', trade_date: '2024-09-27', symbol: '333333', side: 'buy', side_label: '买入', prior_trade_id: 'R3', prior_trade_date: '2024-09-25', prior_side_label: '卖出', gap_days: 2, display: { gap_days: '2 个交易日' }, source: { file: 'qa-mini.csv', line: 5 } },
+  ];
+  const rebuyPattern = { ...BEHAVIOR.patterns[1], status: '成立', sample_n: 2, evaluated_n: 2, evidence: REBUY_EVIDENCE };
+  const overPattern = {
+    ...BEHAVIOR.patterns[3], status: '成立', sample_n: 4, evaluated_n: 4,
+    evidence: [{ trade_id: 'O8', trade_date: '2024-09-25', symbol: '444444', side: 'sell', gap_days: 2, display: { gap_days: '2 个交易日' }, source: { file: 'qa-mini.csv', line: 9 } }],
+  };
+  const quiet = (index) => ({ ...BEHAVIOR.patterns[index], status: '证据不足', sample_n: 0, evaluated_n: 0, evidence: [] });
+
+  const ambiguous = buildLocalChipAnswer({
+    chip: 'pattern_explain', bundle: BUNDLE, bill: BILL,
+    question: '我是不是总在同一个地方栽跟头？',
+  });
+  check('行为解释：问题未指明模式时并列全部成立模式，不默认追高', ambiguous.ok
+    && ambiguous.text.includes('成立的重复模式有 2 类')
+    && ambiguous.text.includes('追高买入') && ambiguous.text.includes('买入后三日内卖出')
+    && ambiguous.facts.length === 2
+    && ambiguous.notice.includes('不默认套用“追高买入”模板'), JSON.stringify(ambiguous));
+
+  const rebuyBundle = patternBundle([quiet(0), rebuyPattern, quiet(2), quiet(3)]);
+  const rebuy = buildLocalChipAnswer({
+    chip: 'pattern_explain', bundle: rebuyBundle, bill: BILL,
+    question: '为什么我卖出后很快又买回？',
+  });
+  check('行为解释：问题指向“卖出后买回”时回答该模式，不写涨幅', rebuy.ok
+    && rebuy.text.includes('卖出后 2 个交易日内买回')
+    && rebuy.text.includes('距卖出')
+    && !rebuy.text.includes('涨幅')
+    && rebuy.evidence.length === 2, JSON.stringify(rebuy));
+
+  const overBundle = patternBundle([quiet(0), quiet(1), quiet(2), overPattern]);
+  const over = buildLocalChipAnswer({
+    chip: 'pattern_explain', bundle: overBundle, bill: BILL,
+    question: '我是不是交易太频繁了？',
+  });
+  check('行为解释：频繁交易问题使用“完整往返”，不套涨幅', over.ok
+    && over.text.includes('交易频率偏高') && over.text.includes('完整往返 ≥ 4 次往返')
+    && !over.text.includes('涨幅'), JSON.stringify(over));
+
+  const chaseNotBundle = patternBundle([
+    { ...BEHAVIOR.patterns[0], status: '不成立', sample_n: 0, evaluated_n: 2, evidence: [] },
+    rebuyPattern, quiet(2), quiet(3),
+  ]);
+  const chaseNot = buildLocalChipAnswer({
+    chip: 'pattern_explain', bundle: chaseNotBundle, bill: BILL,
+    question: '为什么说我追高？',
+  });
+  check('行为解释：点名模式不成立时照实说未达重复数，并列出其他成立模式', chaseNot.ok
+    && chaseNot.text.includes('追高买入”在当前账单不成立')
+    && chaseNot.text.includes('未达到最小样本 2 笔')
+    && !chaseNot.text.includes('低于最小样本')
+    && chaseNot.text.includes('本账单同时成立：卖出后两日内买回')
+    && chaseNot.facts.length === 4, JSON.stringify(chaseNot));
+
+  const noneBundle = patternBundle(BEHAVIOR.patterns.map((p) => ({ ...p, status: '证据不足', sample_n: 0, evaluated_n: 0, evidence: [] })));
+  const none = buildLocalChipAnswer({
+    chip: 'pattern_explain', bundle: noneBundle, bill: BILL,
+    question: '我有什么重复毛病？',
+  });
+  check('行为解释：没有成立模式时不硬选一个', none.ok
+    && none.text.includes('没有成立的行为模式')
+    && none.facts.length === 4 && none.evidence.length === 0
+    && !none.text.includes('行为发现“追高买入”在当前账单成立'), JSON.stringify(none));
+}
+
 /* ==== ④ 我是谁：只列本账单可验证行为，不虚构标签 ==== */
 {
   const a = answerFor('profile');
   check('我是谁：账单覆盖 4 笔 / 2 买入 / 2 卖出 + 行为发现结论', a.ok && a.template_id === 'T-profile'
     && a.text.includes('4 笔交易') && a.text.includes('买入 2') && a.text.includes('卖出 2')
     && a.text.includes('追高买入') && a.text.includes('成立'), JSON.stringify(a));
+  check('我是谁：列出全部已实现模式而非只报追高', a.text.includes('卖出后两日内买回')
+    && a.text.includes('买入后三日内卖出') && a.text.includes('交易频率偏高')
+    && !a.text.includes('只实现了')
+    && a.facts.length === 4
+    && a.facts.find((f) => f.label === '成立的模式')?.value.includes('追高买入')
+    && a.facts.find((f) => f.label === '成立的模式')?.value.includes('买入后三日内卖出'), JSON.stringify({ text: a.text, facts: a.facts }));
   check('我是谁：不生成性格/风险偏好等未实现标签', !/(保守型|激进型|稳健型|风险偏好[:：]|性格[:：])/.test(a.text), a.text);
 }
 
@@ -199,17 +304,89 @@ const answerFor = (chipId, extra = {}) => buildLocalChipAnswer({
     chip: 'how_to_change', bundle: BUNDLE, bill: BILL,
     ruleState: { active_templates: ['no_buy_on_surge'], active_count: 1, version_count: 1 },
   });
-  check('怎么改：已有同类规则时不重复推荐', active.ok && active.candidate.status === 'active'
-    && active.candidate.reason.includes('不重复推荐'), JSON.stringify(active.candidate));
+  check('怎么改：追高规则已生效时，改推其他可建立规则的模式', active.ok
+    && active.candidate.status === 'available'
+    && active.candidate.source_pattern.pattern_id === 'quick_flip'
+    && active.text.includes('买入后三日内卖出'), JSON.stringify({ candidate: active.candidate, text: active.text }));
+
+  const rebuyMarket = {
+    tradingDays: DAYS,
+    resolveValuation(date) { return { blocked: false, requested_date: date, effective_date: date }; },
+    getClose(symbol, date) { return symbol === '333333' ? 10 : (PRICES[symbol]?.[date] ?? null); },
+  };
+  const rebuyTrades = [
+    mk('R1', '2024-09-23', '333333', 'buy', 10, 100, 2),
+    mk('R2', '2024-09-25', '333333', 'sell', 10, 100, 3),
+    mk('R3', '2024-09-26', '333333', 'buy', 10, 100, 4),
+    mk('R4', '2024-09-27', '333333', 'sell', 10, 100, 5),
+    mk('R5', '2024-09-30', '333333', 'buy', 10, 100, 6),
+  ];
+  const rebuyBundle = makeBundle({
+    insights: {
+      ...BUNDLE.insights,
+      behavior: { available: true, reason: '', data: buildPatternList({ trades: rebuyTrades, market: rebuyMarket }) },
+    },
+  });
+  const rebuy = buildLocalChipAnswer({
+    chip: 'how_to_change', bundle: rebuyBundle, bill: BILL,
+    ruleState: { active_templates: [], active_count: 0, version_count: 0 },
+  });
+  check('怎么改：追高不成立时，选择“卖出后两日内买回”的可用候选', rebuy.ok
+    && rebuy.candidate?.status === 'available'
+    && rebuy.candidate?.template_id === 'no_buy_back_within'
+    && rebuy.candidate?.source_pattern?.pattern_id === 'sell_rebuy_within_2d'
+    && rebuy.text.includes('卖出后两日内买回')
+    && rebuy.evidence.some((line) => line.includes('距卖出')), JSON.stringify({ candidate: rebuy.candidate, text: rebuy.text, evidence: rebuy.evidence }));
 
   const baseCandidate = c;
+  const quickFlipCandidate = active.candidate;
   const dismissed = buildLocalChipAnswer({
     chip: 'how_to_change', bundle: BUNDLE, bill: BILL,
     ruleState: { active_templates: [], active_count: 0, version_count: 0 },
-    profile: { rule_events: { [baseCandidate.candidate_id]: { status: 'dismissed', at: '2026-10-21T00:00:00.000Z' } } },
+    profile: {
+      rule_events: {
+        [baseCandidate.candidate_id]: { status: 'dismissed', at: '2026-10-21T00:00:00.000Z' },
+        [quickFlipCandidate.candidate_id]: { status: 'dismissed', at: '2026-10-21T00:00:00.000Z' },
+      },
+    },
   });
-  check('怎么改：已忽略的候选照实标注', dismissed.ok && dismissed.candidate.status === 'dismissed'
-    && dismissed.candidate.reason.includes('已忽略'), JSON.stringify(dismissed.candidate));
+  check('怎么改：没有可用候选时，已忽略的候选照实标注且不提供保存', dismissed.ok
+    && dismissed.candidate.status === 'dismissed'
+    && dismissed.candidate.source_pattern.pattern_id === 'chase_high_buy'
+    && dismissed.text.includes('已被你忽略')
+    && dismissed.text.includes('当前没有可新建的候选'), JSON.stringify({ candidate: dismissed.candidate, text: dismissed.text }));
+
+  const flatMarket = {
+    tradingDays: DAYS,
+    resolveValuation(date) { return { blocked: false, requested_date: date, effective_date: date }; },
+    getClose() { return 10; },
+  };
+  const overtradingTrades = [
+    mk('O1', '2024-09-16', 'AAA001', 'buy', 10, 100, 2),
+    mk('O2', '2024-09-20', 'AAA001', 'sell', 10, 100, 3),
+    mk('O3', '2024-09-17', 'BBB002', 'buy', 10, 100, 4),
+    mk('O4', '2024-09-23', 'BBB002', 'sell', 10, 100, 5),
+    mk('O5', '2024-09-18', 'CCC003', 'buy', 10, 100, 6),
+    mk('O6', '2024-09-24', 'CCC003', 'sell', 10, 100, 7),
+    mk('O7', '2024-09-19', 'DDD004', 'buy', 10, 100, 8),
+    mk('O8', '2024-09-25', 'DDD004', 'sell', 10, 100, 9),
+  ];
+  const overtradingBundle = makeBundle({
+    insights: {
+      ...BUNDLE.insights,
+      behavior: { available: true, reason: '', data: buildPatternList({ trades: overtradingTrades, market: flatMarket }) },
+    },
+  });
+  const overtrading = buildLocalChipAnswer({
+    chip: 'how_to_change', bundle: overtradingBundle, bill: BILL,
+    ruleState: { active_templates: [], active_count: 0, version_count: 0 },
+  });
+  check('怎么改：无模板覆盖的模式也照实列出（交易频率偏高成立），不硬推追高', overtrading.ok
+    && overtrading.candidate === null
+    && overtrading.text.includes('交易频率偏高成立')
+    && overtrading.text.includes('当前没有可建立的规则候选')
+    && overtrading.notice.includes('交易频率偏高')
+    && !overtrading.text.includes('行为发现“追高买入”'), JSON.stringify({ text: overtrading.text, notice: overtrading.notice }));
 }
 
 /* ==== ⑥ 账单变化隐藏旧回答；规则变化只使候选失效 ==== */

@@ -1,88 +1,49 @@
-// 报告页示例场景：合成账单 + 冻结合成行情。
-// 目的：让示例报告与行情来自同一套合成数据，避免“假成交价 + 真实行情”的错配；
-// 用户真实账单仍走 Tushare 动态行情，不在本模块内回退。
+// 报告页示例场景：真实 A 股历史收盘价 + 冻结的 Tushare 区间行情。
+// 目的：让示例报告与行情来自同一份真实历史快照，避免“假成交价 + 真实行情”的错配；
+// 示例交易按当日收盘价构造，非真实成交；用户真实账单仍走 Tushare 动态行情，不在本模块内回退。
 import { createMarketCache } from '../engine/marketCache.js';
+import { REPORT_SCENARIO_MARKET } from './reportScenarioMarket.js';
 
 export const DEMO_REPORT_MARKET_SOURCE = Object.freeze({
   id: 'demo-frozen',
-  label: '示例行情（冻结合成）',
-  shortLabel: '示例行情',
-  note: '合成价格，仅用于演示不同报告状态；占位代码非真实证券，非实时行情',
+  label: '示例行情（Tushare 历史日线快照）',
+  shortLabel: '示例行情 · Tushare',
+  note: '真实历史日线，冻结区间 2024-12-02～2025-06-30；非实时、非投资建议',
   demo: true,
   signed: false,
   dynamic: false,
 });
 
-const START = '2024-12-02';
-const END = '2025-06-30';
-
-function isoDate(date) {
-  return date.toISOString().slice(0, 10);
-}
-
-function weekdays(start, end) {
-  const days = [];
-  const cursor = new Date(`${start}T00:00:00Z`);
-  const last = new Date(`${end}T00:00:00Z`);
-  while (cursor <= last) {
-    const weekday = cursor.getUTCDay();
-    if (weekday !== 0 && weekday !== 6) days.push(isoDate(cursor));
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-  return days;
-}
-
-export const DEMO_TRADING_DAYS = Object.freeze(weekdays(START, END));
-export const DEMO_VALUATION_DATE = DEMO_TRADING_DAYS[DEMO_TRADING_DAYS.length - 1];
-
-const round2 = (v) => Math.round(v * 100) / 100;
-
-function priceAt(anchors, index) {
-  if (index <= anchors[0][0]) return anchors[0][1];
-  for (let i = 1; i < anchors.length; i += 1) {
-    const [endIndex, endPrice] = anchors[i];
-    if (index <= endIndex) {
-      const [startIndex, startPrice] = anchors[i - 1];
-      const t = (index - startIndex) / (endIndex - startIndex);
-      return round2(startPrice + (endPrice - startPrice) * t);
-    }
-  }
-  return anchors[anchors.length - 1][1];
-}
-
-function buildBars(anchors) {
-  return DEMO_TRADING_DAYS.map((date, index) => {
-    const close = priceAt(anchors, index);
-    return {
-      date,
-      open: close,
-      high: close,
-      low: close,
-      close,
-      volume: 100000,
-    };
-  });
-}
-
-const SYMBOL_ANCHORS = {
-  900001: [[0, 82], [40, 88], [50, 96], [55, 102], [60, 135], [70, 122], [78, 105], [90, 142], [100, 150], [139, 165], [150, 168]],
-  900002: [[0, 38], [40, 42], [60, 50], [70, 60], [80, 62], [90, 72], [100, 78], [110, 84], [139, 86], [150, 88]],
-  900003: [[0, 95], [40, 96], [60, 94], [75, 92], [90, 80], [100, 70], [120, 72], [139, 64], [150, 62]],
-};
+export const DEMO_TRADING_DAYS = Object.freeze([...REPORT_SCENARIO_MARKET.trading_days]);
+export const DEMO_VALUATION_DATE = REPORT_SCENARIO_MARKET.asOfDate;
 
 const bars = Object.fromEntries(
-  Object.entries(SYMBOL_ANCHORS).map(([symbol, anchors]) => {
-    const series = buildBars(anchors);
-    return [symbol, { bars: series, bars_fwdadj: series.map((bar) => ({ ...bar })) }];
+  Object.entries(REPORT_SCENARIO_MARKET.symbols).map(([symbol, series]) => {
+    const unadjusted = DEMO_TRADING_DAYS.map((date, index) => ({ date, close: series.closes[index] }));
+    const forwardAdjusted = DEMO_TRADING_DAYS.map((date, index) => ({ date, close: series.fwdadj[index] }));
+    return [symbol, { bars: unadjusted, bars_fwdadj: forwardAdjusted }];
   }),
 );
 
+const closeIndex = new Map(
+  Object.entries(bars).map(([symbol, series]) => [symbol, new Map(series.bars.map((bar) => [bar.date, bar.close]))]),
+);
+
+function priceAt(symbol, date) {
+  const close = closeIndex.get(symbol)?.get(date);
+  if (!Number.isFinite(close)) throw new Error(`示例行情缺少 ${symbol} ${date} 的收盘价`);
+  return close;
+}
+
 export const DEMO_MARKET_SNAPSHOT = Object.freeze({
-  snapshot_id: 'demo-report-snapshot-v1',
-  range: { start: DEMO_TRADING_DAYS[0], end: DEMO_VALUATION_DATE },
+  snapshot_id: REPORT_SCENARIO_MARKET.snapshot_id,
+  range: { ...REPORT_SCENARIO_MARKET.range },
   latest_trade_date: DEMO_VALUATION_DATE,
-  adjustment_basis: 'none',
-  adjustment_basis_note: '示例行情：不复权与前复权同值',
+  adjustment_basis: '前复权展示；不复权估值',
+  adjustment_basis_note: '示例行情来自 Tushare 历史日线；估值只用不复权 close，前复权仅用于展示',
+  provider: REPORT_SCENARIO_MARKET.provider,
+  fetched_at: REPORT_SCENARIO_MARKET.fetched_at,
+  checksum: REPORT_SCENARIO_MARKET.checksum,
 });
 
 class ScenarioTable {
@@ -91,10 +52,10 @@ class ScenarioTable {
     this.rows = rows.map((row, index) => ({
       line: index + 2,
       cells: [
-        DEMO_TRADING_DAYS[row[0]],
+        row[0],
         String(row[1]),
         row[2] === 'buy' ? '买入' : '卖出',
-        priceAt(SYMBOL_ANCHORS[row[1]], row[0]).toFixed(2),
+        priceAt(row[1], row[0]).toFixed(2),
         String(row[3]),
         '5.00',
         row[2] === 'sell' ? '10.00' : '0.00',
@@ -109,7 +70,7 @@ const DEFINITIONS = [
     title: '追高止损',
     tag: '行为成立 · 有规则候选',
     headline: '追高之后，<br>差距在哪。',
-    story: '两次在短期大涨后买入，之后止损卖出；看得到行为发现和规则候选。',
+    story: '两次在比亚迪（002594）短期大涨后买入，之后止损卖出；看得到行为发现和规则候选。',
     expectation: {
       behavior_status: '成立',
       sample_n: 2,
@@ -119,12 +80,12 @@ const DEFINITIONS = [
       ai_blind_spot: '行为已由确定性引擎识别，AI 不应扩大或改写命中笔数。',
     },
     rows: [
-      [60, 900001, 'buy', 100],
-      [62, 900001, 'buy', 100],
-      [75, 900002, 'buy', 200],
-      [78, 900001, 'sell', 100],
-      [90, 900001, 'sell', 50],
-      [110, 900002, 'sell', 100],
+      ['2025-03-20', '002594', 'buy', 100],
+      ['2025-03-21', '002594', 'buy', 100],
+      ['2025-03-24', '600036', 'buy', 200],
+      ['2025-04-07', '002594', 'sell', 100],
+      ['2025-04-09', '002594', 'sell', 50],
+      ['2025-04-16', '600036', 'sell', 100],
     ],
   },
   {
@@ -132,7 +93,7 @@ const DEFINITIONS = [
     title: '卖得太早',
     tag: '卖出后继续上涨',
     headline: '卖早之后，<br>差距在哪。',
-    story: '把上涨中的持仓提前卖出；报告把“少拿的部分”摆出来，不展示未成立的行为模式。',
+    story: '在招商银行（600036）上涨途中分两次卖出；报告把“少拿的部分”摆出来，不展示未成立的行为模式。',
     expectation: {
       behavior_status: '不成立',
       sample_n: 0,
@@ -142,10 +103,10 @@ const DEFINITIONS = [
       ai_blind_spot: '趋势卖出不是追高，AI 不应把它包装成已识别的行为模式。',
     },
     rows: [
-      [70, 900002, 'buy', 200],
-      [80, 900003, 'buy', 100],
-      [90, 900002, 'sell', 100],
-      [100, 900002, 'sell', 100],
+      ['2025-01-14', '600036', 'buy', 200],
+      ['2025-02-05', '600036', 'buy', 100],
+      ['2025-04-16', '600036', 'sell', 100],
+      ['2025-05-13', '600036', 'sell', 100],
     ],
   },
   {
@@ -153,7 +114,7 @@ const DEFINITIONS = [
     title: '及时止损',
     tag: '卖出后继续下跌',
     headline: '止损之后，<br>差距在哪。',
-    story: '在下跌中卖出；报告显示“相对一直持有少亏”，而不是只讲代价。',
+    story: '在五粮液（000858）下跌中卖出；报告显示“相对一直持有少亏”，而不是只讲代价。',
     expectation: {
       behavior_status: '证据不足',
       sample_n: 0,
@@ -163,8 +124,8 @@ const DEFINITIONS = [
       ai_blind_spot: '只有一笔可评估买入，AI 不应据此下重复模式结论。',
     },
     rows: [
-      [75, 900003, 'buy', 300],
-      [100, 900003, 'sell', 300],
+      ['2025-03-17', '000858', 'buy', 300],
+      ['2025-04-07', '000858', 'sell', 300],
     ],
   },
   {
@@ -172,7 +133,7 @@ const DEFINITIONS = [
     title: '一直持有',
     tag: '没有卖出',
     headline: '一直持有，<br>差距在哪。',
-    story: '只买入、不卖出；没有单笔反事实，报告保持简短。',
+    story: '只买入招商银行（600036）与中国平安（601318）、不卖出；没有单笔反事实，报告保持简短。',
     expectation: {
       behavior_status: '不成立',
       sample_n: 0,
@@ -182,8 +143,8 @@ const DEFINITIONS = [
       ai_blind_spot: '没有卖出行为，AI 不应虚构择时损失或规则候选。',
     },
     rows: [
-      [70, 900002, 'buy', 200],
-      [80, 900003, 'buy', 100],
+      ['2025-01-14', '600036', 'buy', 200],
+      ['2025-02-05', '601318', 'buy', 100],
     ],
   },
   {
@@ -191,7 +152,7 @@ const DEFINITIONS = [
     title: '无明显模式',
     tag: '行为不成立 · 无候选',
     headline: '没有模式，<br>也是一种结果。',
-    story: '几笔交易都很普通，没有重复追高；报告不硬凑行为结论，也不给规则候选。',
+    story: '三只真实标的、三笔普通买卖，没有重复追高；报告不硬凑行为结论，也不给规则候选。',
     expectation: {
       behavior_status: '不成立',
       sample_n: 0,
@@ -201,12 +162,12 @@ const DEFINITIONS = [
       ai_blind_spot: 'AI 容易把普通交易描述成“习惯”；这里必须承认没有可识别模式。',
     },
     rows: [
-      [75, 900002, 'buy', 100],
-      [80, 900003, 'buy', 100],
-      [90, 900002, 'sell', 100],
-      [100, 900001, 'buy', 100],
-      [100, 900003, 'sell', 100],
-      [110, 900001, 'sell', 100],
+      ['2025-01-14', '600519', 'buy', 100],
+      ['2025-02-05', '601318', 'buy', 100],
+      ['2025-03-17', '000001', 'buy', 100],
+      ['2025-03-17', '600519', 'sell', 100],
+      ['2025-04-16', '601318', 'sell', 100],
+      ['2025-05-13', '000001', 'sell', 100],
     ],
   },
   {
@@ -214,7 +175,7 @@ const DEFINITIONS = [
     title: '样本不足',
     tag: '证据不足 · 不下结论',
     headline: '只有一次，<br>先别下结论。',
-    story: '只有一笔可评估买入，虽然命中追高条件，但没有达到最小重复数。',
+    story: '只有一笔可评估买入（紫金矿业 601899），虽然命中追高条件，但没有达到最小重复数。',
     expectation: {
       behavior_status: '证据不足',
       sample_n: 1,
@@ -224,8 +185,8 @@ const DEFINITIONS = [
       ai_blind_spot: '单次命中不是重复模式；AI 不得把 n=1 说成稳定行为。',
     },
     rows: [
-      [60, 900001, 'buy', 100],
-      [78, 900001, 'sell', 100],
+      ['2025-04-16', '601899', 'buy', 100],
+      ['2025-05-13', '601899', 'sell', 100],
     ],
   },
   {
@@ -233,7 +194,7 @@ const DEFINITIONS = [
     title: '卖后追回',
     tag: '行为成立 · 有规则候选',
     headline: '卖了又追回，<br>现在看得见了。',
-    story: '两次在卖出后两个交易日内买回；引擎识别重复模式，并给出“卖出后不追回”的规则候选。',
+    story: '两次在宁德时代（300750）卖出后两个交易日内买回；引擎识别重复模式，并给出“卖出后不追回”的规则候选。',
     expectation: {
       pattern_id: 'sell_rebuy_within_2d',
       behavior_status: '成立',
@@ -244,11 +205,11 @@ const DEFINITIONS = [
       ai_blind_spot: '本地引擎已识别卖后追回；AI 不应改写命中笔数或窗口。',
     },
     rows: [
-      [70, 900002, 'buy', 200],
-      [90, 900002, 'sell', 200],
-      [92, 900002, 'buy', 100],
-      [110, 900002, 'sell', 100],
-      [112, 900002, 'buy', 100],
+      ['2025-02-17', '300750', 'buy', 200],
+      ['2025-02-24', '300750', 'sell', 200],
+      ['2025-02-26', '300750', 'buy', 100],
+      ['2025-03-10', '300750', 'sell', 100],
+      ['2025-03-12', '300750', 'buy', 100],
     ],
   },
   {
@@ -256,7 +217,7 @@ const DEFINITIONS = [
     title: '频繁交易',
     tag: '行为成立 · 暂无规则模板',
     headline: '来回四次，<br>先看见频率。',
-    story: '四次完整往返、收益接近持平；引擎识别交易频率偏高，但现有模板还没有对应规则。',
+    story: '招商银行（600036）四次完整往返；引擎识别交易频率偏高，但现有模板还没有对应规则。',
     expectation: {
       pattern_id: 'overtrading',
       behavior_status: '成立',
@@ -267,14 +228,14 @@ const DEFINITIONS = [
       ai_blind_spot: '频率模式已由本地引擎识别；当前没有对应规则模板，不得编造规则或买卖指令。',
     },
     rows: [
-      [40, 900003, 'buy', 100],
-      [45, 900003, 'sell', 100],
-      [50, 900003, 'buy', 100],
-      [55, 900003, 'sell', 100],
-      [60, 900003, 'buy', 100],
-      [65, 900003, 'sell', 100],
-      [70, 900003, 'buy', 100],
-      [75, 900003, 'sell', 100],
+      ['2025-01-14', '600036', 'buy', 100],
+      ['2025-02-05', '600036', 'sell', 100],
+      ['2025-02-17', '600036', 'buy', 100],
+      ['2025-03-03', '600036', 'sell', 100],
+      ['2025-03-13', '600036', 'buy', 100],
+      ['2025-03-27', '600036', 'sell', 100],
+      ['2025-04-08', '600036', 'buy', 100],
+      ['2025-04-22', '600036', 'sell', 100],
     ],
   },
 ];
@@ -349,6 +310,11 @@ export function loadReportScenarioMarket(id) {
         symbols: [...market.symbols],
         asOfDate: DEMO_VALUATION_DATE,
         snapshot: DEMO_MARKET_SNAPSHOT,
+        provider: REPORT_SCENARIO_MARKET.provider,
+        fetchedAt: REPORT_SCENARIO_MARKET.fetched_at,
+        snapshotId: DEMO_MARKET_SNAPSHOT.snapshot_id,
+        checksum: DEMO_MARKET_SNAPSHOT.checksum,
+        manifestVersion: 'tushare-frozen-v1',
       },
     });
   }

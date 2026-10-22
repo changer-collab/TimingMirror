@@ -69,7 +69,7 @@ for (const { bill, vis } of allScenarios) {
   const pgr = bundle.insights.pgr.data;
   check('chase：行为成立且报告展示', vis.behavior === true && vis.pattern?.status === '成立' && vis.pattern.sample_n === 2, JSON.stringify({ behavior: vis.behavior, sample: vis.pattern?.sample_n }));
   check('chase：规则候选可用', vis.candidate === true && vis.candidateData?.status === 'available', JSON.stringify(vis.candidateData));
-  check('chase：三笔反事实与正损耗', portfolio.counterfactuals.length === 3 && portfolio.report.portfolio.dragMoney === 8000, JSON.stringify({ cf: portfolio.counterfactuals.length, drag: portfolio.report.portfolio.dragMoney }));
+  check('chase：三笔反事实与正损耗', portfolio.counterfactuals.length === 3 && portfolio.report.portfolio.dragMoney === 1750.5, JSON.stringify({ cf: portfolio.counterfactuals.length, drag: portfolio.report.portfolio.dragMoney }));
   check('chase：PGR 样本足够后展示', vis.pgr === true && pgr.counts.realized.total === 3 && pgr.counts.paper.total === 2, JSON.stringify(pgr.counts));
   check('chase：对照/瀑布/归因可见', vis.ghost && vis.waterfall && vis.attribution && vis.stockSelf, JSON.stringify(vis));
 }
@@ -79,7 +79,7 @@ for (const { bill, vis } of allScenarios) {
   const portfolio = bundle.insights.portfolio;
   check('early：行为未成立则不展示', vis.behavior === false && vis.pattern?.status === '不成立', JSON.stringify({ behavior: vis.behavior, status: vis.pattern?.status }));
   check('early：没有可用候选则不展示', vis.candidate === false, JSON.stringify(vis.candidate));
-  check('early：两笔反事实且损耗为正', portfolio.counterfactuals.length === 2 && portfolio.report.portfolio.dragMoney === 2600, JSON.stringify({ cf: portfolio.counterfactuals.length, drag: portfolio.report.portfolio.dragMoney }));
+  check('early：两笔反事实且损耗为正', portfolio.counterfactuals.length === 2 && portfolio.report.portfolio.dragMoney === 509, JSON.stringify({ cf: portfolio.counterfactuals.length, drag: portfolio.report.portfolio.dragMoney }));
   check('early：卖出样本不足则不展示 PGR', vis.pgr === false, JSON.stringify(bundle.insights.pgr.data?.counts));
   check('early：对照与瀑布仍可见', vis.ghost && vis.waterfall && vis.attribution, '');
 }
@@ -89,7 +89,7 @@ for (const { bill, vis } of allScenarios) {
   const portfolio = bundle.insights.portfolio;
   const cf = portfolio.counterfactuals[0];
   check('stop：行为证据不足则不展示', vis.behavior === false && vis.pattern?.status === '证据不足', JSON.stringify({ behavior: vis.behavior, status: vis.pattern?.status }));
-  check('stop：止损后下跌显示为负损耗', portfolio.report.portfolio.dragMoney === -2400 && cf.replace.recoveredMoney === -2400, JSON.stringify({ drag: portfolio.report.portfolio.dragMoney, recovered: cf?.replace?.recoveredMoney }));
+  check('stop：止损后下跌显示为负损耗', portfolio.report.portfolio.dragMoney === -2364 && cf.replace.recoveredMoney === -2364, JSON.stringify({ drag: portfolio.report.portfolio.dragMoney, recovered: cf?.replace?.recoveredMoney }));
   check('stop：没有候选与 PGR', vis.candidate === false && vis.pgr === false, JSON.stringify({ candidate: vis.candidate, pgr: vis.pgr }));
 }
 

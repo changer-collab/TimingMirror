@@ -119,8 +119,11 @@ function makeService({ bundle = BUNDLE, askOnline = null, classifyIntent = null,
   check('为什么追高：文本不称对当时动机的判断', pattern.text.includes('不是对你当时动机的判断'), pattern.text);
 
   const profile = await service.ask({ question: '我是谁？', bill: BILL });
-  check('我是谁：local / 3 条事实 / 不生成人格标签', profile.status === 'local'
-    && profile.intent === 'profile' && profile.facts.length === 3
+  check('我是谁：local / 账单覆盖 + 模式状态事实 / 不生成人格标签', profile.status === 'local'
+    && profile.intent === 'profile' && profile.facts.length === 4
+    && profile.facts.some((f) => f.label === '成立的模式' && f.value.includes('追高买入'))
+    && profile.facts.some((f) => f.label === '不成立')
+    && !profile.text.includes('只实现了')
     && !/(保守型|激进型|稳健型)/.test(profile.text), JSON.stringify(profile));
 
   const how = await service.ask({ question: '我该怎么改？', bill: BILL });
@@ -293,6 +296,8 @@ function makeService({ bundle = BUNDLE, askOnline = null, classifyIntent = null,
   const clarify = await plain.service.ask({ question: '帮我看看', bill: BILL });
   check('无法判断（无 L2）：clarify / 不读取账单', clarify.status === 'clarify'
     && clarify.actions.length === 3 && plain.calls.loads === 0, JSON.stringify({ clarify, calls: plain.calls }));
+  check('澄清文案：不声称未调用模型，只说明未读取账单', clarify.text.includes('没有读取账单')
+    && !clarify.text.includes('不调用模型'), clarify.text);
 }
 
 /* ==== ⑦ 在线意图 L2 与错误边界 ==== */
@@ -304,6 +309,19 @@ function makeService({ bundle = BUNDLE, askOnline = null, classifyIntent = null,
   check('L2 命中：intent 来自在线意图，层显示“在线意图”', l2.status === 'local'
     && l2.intent === 'loss_overview' && l2.route.layer === 'L2'
     && l2.trace.layer_label === '在线意图' && l2.trace.intent_code === 'loss_overview', JSON.stringify(l2));
+
+  const patternService = makeService({
+    classifyIntent: async () => ({
+      ok: true,
+      intentJson: { intent: 'pattern_explain', slots: { pattern: 'chase_high_buy' }, confidence: 0.78 },
+    }),
+  });
+  const l2Pattern = await patternService.service.ask({ question: '我是不是总在同一个地方栽跟头？', bill: BILL });
+  check('L2 行为解释：模糊问题并列本账单成立模式，不默认追高', l2Pattern.status === 'local'
+    && l2Pattern.intent === 'pattern_explain' && l2Pattern.route.layer === 'L2'
+    && l2Pattern.text.includes('成立的重复模式有 2 类')
+    && l2Pattern.text.includes('追高买入') && l2Pattern.text.includes('买入后三日内卖出')
+    && l2Pattern.facts.length === 2, JSON.stringify(l2Pattern));
 
   const empty = await service.ask({ question: '   ', bill: BILL });
   check('空问题：error / E_QA_EMPTY / 不发任何内容', empty.status === 'error'

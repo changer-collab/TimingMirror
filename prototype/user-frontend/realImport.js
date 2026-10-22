@@ -318,9 +318,9 @@ function sampleCardHTML() {
   return `<aside class="sample-card scenario-card" id="tm-sample-scenarios" aria-label="示例场景">
     <span class="sample-stamp">DEMO / ${REPORT_SCENARIOS.length} 个场景</span>
     <h2>没有账单？<br>下载示例再上传。</h2>
-    <p>下载任一场景的 CSV，拖回左侧导入，就能看到对应报告。含无模式、低样本等边界场景。</p>
+    <p>下载任一场景的 CSV，拖回左侧导入，就能看到对应报告。交易按真实历史收盘价构造，含无模式、低样本等边界场景。</p>
     <div class="scenario-list" role="group" aria-label="示例场景列表" tabindex="0">${items}</div>
-    <p class="fine" data-role="scenario-hint" role="status">示例 CSV 只含合成交易，不是真实账户。</p>
+    <p class="fine" data-role="scenario-hint" role="status">示例 CSV 使用真实 A 股代码与历史收盘价。</p>
   </aside>`;
 }
 
