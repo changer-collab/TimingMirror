@@ -73,6 +73,21 @@ export function createLocalFakeImportModel() {
         }),
       };
     },
+    async scenarioJudgment({ scenario }) {
+      await wait();
+      const rules = Array.isArray(scenario?.rules) ? scenario.rules : [];
+      const symbol = scenario?.symbol ?? '—';
+      const date = scenario?.requested_date ?? '—';
+      const ineffective = rules.filter((r) => r.verdict === 'not_applicable' || r.verdict === 'missing_data').length;
+      return {
+        rawText: JSON.stringify({
+          judgment: 'no_match',
+          answer_text: rules.length
+            ? `本次情景 ${symbol} 在 ${date} 没有匹配任何已锁定规则；已检查 ${rules.length} 条规则，其中 ${ineffective} 条不适用或数据不足。AI 只补充未命中理由，规则结果仍以本地判定为准。`
+            : `本次情景 ${symbol} 在 ${date} 没有可匹配的已锁定规则；AI 只补充这一判断的理由，不会创建或保存规则。`,
+        }),
+      };
+    },
     async restate({ facts }) {
       await wait();
       const displays = (Array.isArray(facts) ? facts : []).map((f) => f && f.display).filter(Boolean);

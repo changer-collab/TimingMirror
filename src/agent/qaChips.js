@@ -1,0 +1,404 @@
+// 真实问答页的五个预置芯片（确定性；接口候选，未冻结）
+// 复用 planner 现有意图/模板与当前账单已发布报告 bundle：
+//   · 四个本地芯片只读 bundle 中已生成的指标、逐笔分解与行为发现，不发起行情或模型请求；
+//   · “组合表现”仅在用户点击时由调用方加载/读取同一份报告 bundle，再走既有 chatOnline 复述接口；
+//   · 规则候选复用 engine/userProfile.buildRuleCandidates；只返回候选与证据，不保存、不改写规则。
+// 边界：确定性回答构造；不直接操作 DOM / localStorage / 网络 / 模型；报告加载与在线复述由调用方注入。
+import { buildPlan } from './planner.js';
+import { classifyOffline } from './offlineIntent.js';
+import { buildRuleCandidates } from '../engine/userProfile.js';
+import { fmtMoney, fmtPct } from '../engine/display.js';
+
+export const QA_CHIP_CODES = Object.freeze({
+  UNKNOWN_CHIP: 'E_QA_UNKNOWN_CHIP',
+  REPORT_NOT_READY: 'W_QA_REPORT_NOT_READY',
+  REPORT_WITHHELD: 'W_QA_REPORT_WITHHELD',
+  DECOMPOSITION_UNAVAILABLE: 'W_QA_DECOMPOSITION_UNAVAILABLE',
+  DECOMPOSITION_BLOCKED: 'W_QA_DECOMPOSITION_BLOCKED',
+  BEHAVIOR_UNAVAILABLE: 'W_QA_BEHAVIOR_UNAVAILABLE',
+  ONLINE_UNAVAILABLE: 'W_QA_ONLINE_UNAVAILABLE',
+  ONLINE_FAILED: 'W_QA_ONLINE_FAILED',
+});
+
+export const QA_CHIPS = Object.freeze([
+  Object.freeze({ id: 'worst_trade', label: '最错一笔', question: '我最错的一笔是哪个？', intent: 'worst_trade', online: false }),
+  Object.freeze({ id: 'pattern_explain', label: '为什么追高', question: '为什么说我追高？', intent: 'pattern_explain', online: false }),
+  Object.freeze({ id: 'how_to_change', label: '怎么改', question: '我该怎么改？', intent: 'how_to_change', online: false }),
+  Object.freeze({ id: 'profile', label: '我是谁', question: '我是谁？', intent: 'profile', online: false }),
+  Object.freeze({ id: 'portfolio', label: '组合表现', question: '组合整体表现如何？', intent: 'loss_overview', online: true }),
+]);
+
+const CHIP_BY_ID = new Map(QA_CHIPS.map((c) => [c.id, c]));
+const CHIP_BY_QUESTION = new Map(QA_CHIPS.map((c) => [c.question, c]));
+
+export function findQaChip(value) {
+  if (value && typeof value === 'object' && CHIP_BY_ID.has(value.id)) return CHIP_BY_ID.get(value.id);
+  const key = String(value ?? '').trim();
+  return CHIP_BY_ID.get(key) ?? CHIP_BY_QUESTION.get(key) ?? null;
+}
+
+export function ruleStateKeyOf(versions = []) {
+  const list = Array.isArray(versions) ? versions : [];
+  const parts = list.map((v) => `${v?.hash ?? ''}:${v?.status ?? ''}`);
+  return parts.length ? parts.join('|') : 'none';
+}
+
+export function isBillMessageVisible(message, billContextId) {
+  return Boolean(billContextId) && message?.billContextId === billContextId;
+}
+
+export function candidateStateOf(message, currentRuleStateKey) {
+  const candidate = message?.kind === 'chip' && message.chipId === 'how_to_change'
+    ? message.answer?.candidate ?? null
+    : null;
+  if (!candidate) return Object.freeze({ has: false, stale: false, candidate: null, notice: null });
+  const stale = typeof message.ruleStateKey === 'string' && message.ruleStateKey !== currentRuleStateKey;
+  return Object.freeze({
+    has: true,
+    stale,
+    candidate: stale ? null : candidate,
+    notice: stale ? '规则状态已变化，原候选已失效；上方账单事实仍然有效。' : null,
+  });
+}
+
+function fail(code, message) {
+  return { ok: false, code, message: String(message ?? '') };
+}
+
+function planContext(bundle, bill) {
+  const context = {};
+  if (Array.isArray(bill?.trades)) context.trades = bill.trades;
+  const report = bundle?.insights?.portfolio?.report;
+  if (report) context.report = report;
+  if (bundle?.closes && typeof bundle.closes === 'object') context.closes = bundle.closes;
+  if (bundle?.market) context.market = bundle.market;
+  return context;
+}
+
+export function buildChipPlan({ chip, bundle, bill } = {}) {
+  const def = findQaChip(chip);
+  if (!def) return null;
+  return buildPlan({
+    question: def.question,
+    intentJson: classifyOffline(def.question),
+    context: planContext(bundle, bill),
+  });
+}
+
+function planView(plan) {
+  return {
+    template_id: plan?.template_id ?? null,
+    plan_id: plan?.plan_id ?? null,
+    plan_status: plan?.status ?? null,
+    composition_reason: plan?.composition_reason ?? '',
+  };
+}
+
+function localAnswer({ chip, plan, text, facts = [], evidence = [], candidate = null, notice = null }) {
+  return {
+    ok: true,
+    kind: 'local',
+    chip_id: chip.id,
+    question: chip.question,
+    intent: chip.intent,
+    ...planView(plan),
+    text: String(text ?? ''),
+    facts: facts.filter(Boolean),
+    evidence: evidence.filter(Boolean),
+    candidate,
+    notice,
+  };
+}
+
+function behaviorPack(bundle) {
+  const pack = bundle?.insights?.behavior;
+  if (!pack?.available || !pack.data) {
+    return { ok: false, message: pack?.reason || '行为发现没有生成：不引用示例或其他账单的结论' };
+  }
+  const pattern = Array.isArray(pack.data.patterns)
+    ? pack.data.patterns.find((p) => p?.pattern_id === 'chase_high_buy') ?? null
+    : null;
+  if (!pattern) return { ok: false, message: '行为发现清单中没有已实现的“追高买入”模式：不虚构其他模式' };
+  return { ok: true, data: pack.data, pattern };
+}
+
+function patternEvidenceLines(pattern, limit = 3) {
+  const rows = Array.isArray(pattern?.evidence) ? pattern.evidence.slice(0, limit) : [];
+  return rows.map((e) => {
+    const rise = e?.display?.rise ?? (Number.isFinite(e?.rise) ? fmtPct(e.rise) : '—');
+    const source = e?.source?.line ? `（第 ${e.source.line} 行）` : '';
+    return `${e.trade_date} ${e.symbol} 买入，窗口涨幅 ${rise}${source}`;
+  });
+}
+
+function patternFacts(pattern) {
+  return [
+    { label: '结论', value: `${pattern.name} · ${pattern.status}` },
+    { label: '样本', value: `命中 ${pattern.sample_n} 笔 / 已评估 ${pattern.evaluated_n} 笔 / 最小样本 ${pattern.min_samples} 笔` },
+    { label: '判定', value: `${pattern.rule?.window ?? '回看窗口'}涨幅 ${pattern.rule?.comparator ?? '≥'} ${pattern.rule?.threshold_display ?? '—'}` },
+  ];
+}
+
+function patternTexts(pattern) {
+  const evidence = patternEvidenceLines(pattern);
+  const evidenceText = evidence.length ? `命中：${evidence.join('；')}。` : '没有可展示的命中成交。';
+  if (pattern.status === '成立') {
+    return `行为发现“${pattern.name}”在当前账单成立：${pattern.rule?.window ?? '回看窗口'}涨幅 ${pattern.rule?.comparator ?? '≥'} ${pattern.rule?.threshold_display ?? '—'} 的买入命中 ${pattern.sample_n} 笔（已评估 ${pattern.evaluated_n} 笔，最小样本 ${pattern.min_samples}）。${evidenceText}这是行为发现引擎按候选阈值判定的模式，不是对你当时动机的判断。`;
+  }
+  if (pattern.status === '不成立') {
+    return `行为发现“${pattern.name}”在当前账单不成立：已评估 ${pattern.evaluated_n} 笔，命中 ${pattern.sample_n} 笔，低于最小样本 ${pattern.min_samples}。${evidenceText}不利结论照实展示，不用其他账单补齐。`;
+  }
+  return `行为发现“${pattern.name}”在当前账单证据不足：可评估 ${pattern.evaluated_n} 笔，低于最小样本 ${pattern.min_samples}，不下确定结论。${evidenceText}`;
+}
+
+function tradeSourceLabel(source) {
+  return source?.file && Number.isFinite(source.line) ? `${source.file} 第 ${source.line} 行` : '源行不可定位';
+}
+
+function shareText(item) {
+  if (typeof item?.display?.share === 'string' && item.display.share !== '') return item.display.share;
+  return Number.isFinite(item?.share) ? fmtPct(item.share) : '—';
+}
+
+function moneyText(item) {
+  if (typeof item?.display?.dragMoney === 'string' && item.display.dragMoney !== '') return item.display.dragMoney;
+  return Number.isFinite(item?.dragMoney) ? fmtMoney(item.dragMoney) : '—';
+}
+
+function priceText(value) {
+  return Number.isFinite(value) ? Number(value).toFixed(2) : '—';
+}
+
+function worstTradeAnswer({ chip, bundle, bill, plan }) {
+  const decomposition = bundle?.insights?.portfolio?.decomposition;
+  if (!decomposition) {
+    return fail(QA_CHIP_CODES.DECOMPOSITION_UNAVAILABLE, '当前账单报告的逐笔损耗分解没有生成：本次不回答“最错一笔”，也不用其他数字代替。');
+  }
+  if (decomposition.blocked) {
+    return fail(QA_CHIP_CODES.DECOMPOSITION_BLOCKED, '逐笔损耗分解未通过加总或回源校验：本次不展示“最错一笔”。');
+  }
+  const items = Array.isArray(decomposition.items) ? decomposition.items : [];
+  if (items.length === 0) {
+    return localAnswer({
+      chip,
+      plan,
+      text: `当前账单没有卖出笔，逐笔损耗为 ${decomposition.total?.display ?? '—'}；没有可以排序的“最错一笔”。`,
+      facts: [{ label: '组合损耗', value: decomposition.total?.display ?? '—' }],
+      notice: '没有卖出笔时不生成逐笔归因，也不用示例交易补齐。',
+    });
+  }
+  const top = items[0];
+  const drag = moneyText(top);
+  const share = shareText(top);
+  const positive = Number(top.dragMoney) > 0;
+  const label = positive ? '代价最高的一笔' : '金额最大的一笔（实际优于对照）';
+  const relation = positive ? '与买入不动相比少赚' : '与买入不动相比多赚';
+  const text = `按当前账单报告的逐笔损耗分解，${label}是 ${top.trade_date} 卖出 ${top.symbol} ${top.quantity} 股：卖出价 ${priceText(top.price)}，估值日收盘 ${priceText(top.close)}，${relation} ${drag}，占组合总损耗 ${share}。这是事后对照，不评价当时的决定；展示序不等于因果。`;
+  return localAnswer({
+    chip,
+    plan,
+    text,
+    facts: [
+      { label: '成交', value: `${top.trade_date} · 卖出 ${top.symbol} × ${top.quantity}` },
+      { label: '差额', value: drag },
+      { label: '占总损耗', value: share },
+      { label: '回源', value: tradeSourceLabel(top.source) },
+    ],
+    evidence: [`公式：${top.quantity} × (${priceText(top.close)} − ${priceText(top.price)}) = ${drag}（不含费用、税费与分红）`],
+    notice: '“代价最高”只按逐笔损耗金额排序；逐笔分解是候选补充口径，未进入复核发布事实。',
+  });
+}
+
+function patternAnswer({ chip, bundle, bill, plan }) {
+  const pack = behaviorPack(bundle);
+  if (!pack.ok) return fail(QA_CHIP_CODES.BEHAVIOR_UNAVAILABLE, pack.message);
+  const pattern = pack.pattern;
+  return localAnswer({
+    chip,
+    plan,
+    text: patternTexts(pattern),
+    facts: patternFacts(pattern),
+    evidence: patternEvidenceLines(pattern, 6),
+    notice: '回看窗口与阈值是候选参数，不是普适标准；行为发现未进入复核发布事实。',
+  });
+}
+
+function profileAnswer({ chip, bundle, bill, plan }) {
+  const pack = behaviorPack(bundle);
+  if (!pack.ok) return fail(QA_CHIP_CODES.BEHAVIOR_UNAVAILABLE, pack.message);
+  const pattern = pack.pattern;
+  const scope = pack.data.scope ?? {};
+  const trades = Array.isArray(bill?.trades) ? bill.trades : [];
+  const tradeCount = Number.isFinite(scope.trade_count) ? scope.trade_count : trades.length;
+  const buyCount = Number.isFinite(scope.buy_count) ? scope.buy_count : trades.filter((t) => t.side === 'buy').length;
+  const sellCount = Number.isFinite(scope.sell_count) ? scope.sell_count : trades.filter((t) => t.side === 'sell').length;
+  return localAnswer({
+    chip,
+    plan,
+    text: `镜子不给你贴人格标签。这份账单覆盖 ${tradeCount} 笔交易（买入 ${buyCount}、卖出 ${sellCount}）。目前只实现了“追高买入”一项行为发现：结论“${pattern.status}”，命中 ${pattern.sample_n} 笔，已评估 ${pattern.evaluated_n} 笔。完整行为画像尚未实现，不用示例标签补齐。`,
+    facts: [
+      { label: '账单覆盖', value: `${tradeCount} 笔 / ${buyCount} 笔买入 / ${sellCount} 笔卖出` },
+      { label: '行为发现', value: `${pattern.name} · ${pattern.status}` },
+      { label: '样本', value: `命中 ${pattern.sample_n} 笔 / 已评估 ${pattern.evaluated_n} 笔` },
+    ],
+    evidence: patternEvidenceLines(pattern, 6),
+    notice: '“我是谁”只列本账单可验证的交易行为；不生成性格、风险偏好等未经实现的标签。',
+  });
+}
+
+function howToChangeAnswer({ chip, bundle, bill, plan, ruleState, profile }) {
+  const pack = behaviorPack(bundle);
+  if (!pack.ok) return fail(QA_CHIP_CODES.BEHAVIOR_UNAVAILABLE, pack.message);
+  const pattern = pack.pattern;
+  let candidatePack = null;
+  try {
+    candidatePack = buildRuleCandidates({
+      behavior: pack.data,
+      ruleState,
+      profile,
+    });
+  } catch {
+    return fail(QA_CHIP_CODES.BEHAVIOR_UNAVAILABLE, '规则候选生成失败：不生成候选，也不虚构模板或阈值。');
+  }
+  const candidate = candidatePack?.candidates?.[0] ?? null;
+  const evidence = patternEvidenceLines(pattern, 6);
+  if (!candidate) {
+    return localAnswer({
+      chip,
+      plan,
+      text: `行为发现“${pattern.name}”${pattern.status}：命中 ${pattern.sample_n} 笔，已评估 ${pattern.evaluated_n} 笔。当前没有足够证据生成规则候选；镜子不替你定规矩，也不用示例候选补齐。`,
+      facts: patternFacts(pattern),
+      evidence,
+      notice: candidatePack?.notes?.[0] ?? null,
+    });
+  }
+  const actionable = candidate.status === 'available';
+  const lead = `行为发现“${pattern.name}”${pattern.status}：命中 ${pattern.sample_n} 笔，已评估 ${pattern.evaluated_n} 笔。`;
+  const text = candidate.status === 'available'
+    ? `${lead}下面这条候选来自本账单证据，只做模板预填；保存前由你确认或改写。`
+    : candidate.status === 'dismissed'
+      ? `${lead}这条候选已被你忽略；可在规则页恢复。`
+      : candidate.status === 'active'
+        ? `${lead}已有同类规则，不重复推荐。`
+        : candidate.reason;
+  return localAnswer({
+    chip,
+    plan,
+    text,
+    facts: patternFacts(pattern),
+    evidence,
+    candidate,
+    notice: actionable
+      ? '候选由本账单行为证据生成，不来自模型；打开模板不会自动保存。'
+      : `当前候选状态：${candidate.status_text}；不提供一键保存。`,
+  });
+}
+
+export function buildLocalChipAnswer({ chip, bundle, bill, ruleState = null, profile = null } = {}) {
+  const def = findQaChip(chip);
+  if (!def) return fail(QA_CHIP_CODES.UNKNOWN_CHIP, '未知的问答芯片：不生成回答');
+  if (def.online) return fail(QA_CHIP_CODES.UNKNOWN_CHIP, '“组合表现”只在点击时调用既有在线复述接口，不使用本地芯片回答');
+  if (!bundle) return fail(QA_CHIP_CODES.REPORT_NOT_READY, '当前账单的已发布报告尚未载入：请先打开报告页；问答页不会为本地芯片重复请求行情');
+  if (bundle.status === 'blocked' || bundle.review?.portfolio_published !== true) {
+    return fail(QA_CHIP_CODES.REPORT_WITHHELD, '当前账单组合结果未发布（可能缺价、复核未通过或行情阻断）：不生成芯片回答');
+  }
+  const plan = buildChipPlan({ chip: def, bundle, bill });
+  if (def.id === 'worst_trade') return worstTradeAnswer({ chip: def, bundle, bill, plan });
+  if (def.id === 'pattern_explain') return patternAnswer({ chip: def, bundle, bill, plan });
+  if (def.id === 'profile') return profileAnswer({ chip: def, bundle, bill, plan });
+  if (def.id === 'how_to_change') return howToChangeAnswer({ chip: def, bundle, bill, plan, ruleState, profile });
+  return fail(QA_CHIP_CODES.UNKNOWN_CHIP, '该芯片没有本地回答实现');
+}
+
+export function buildLocalPortfolioAnswer({ chip = 'portfolio', bundle, bill } = {}) {
+  const def = findQaChip(chip) ?? findQaChip('portfolio');
+  if (!bundle) return fail(QA_CHIP_CODES.REPORT_NOT_READY, '当前账单的已发布报告尚未载入：不生成组合表现回答');
+  if (bundle.status === 'blocked' || bundle.review?.portfolio_published !== true) {
+    return fail(QA_CHIP_CODES.REPORT_WITHHELD, '当前账单组合结果未发布（可能缺价、复核未通过或行情阻断）：不生成组合表现回答');
+  }
+  const published = Array.isArray(bundle.review?.published_facts) ? bundle.review.published_facts : [];
+  const byKey = new Map(published.filter((f) => f.scope === 'portfolio').map((f) => [f.key, f]));
+  const required = ['actualRet', 'ghostRet', 'drag', 'dragMoney'];
+  const missing = required.filter((k) => !byKey.get(k) || typeof byKey.get(k).display !== 'string');
+  if (missing.length) {
+    return fail(QA_CHIP_CODES.DECOMPOSITION_UNAVAILABLE, `组合四事实不齐（缺少：${missing.join('、')}）：不生成组合表现回答`);
+  }
+  const values = required.map((k) => byKey.get(k));
+  return {
+    ok: true,
+    kind: 'local',
+    chip_id: def.id,
+    question: def.question,
+    intent: def.intent,
+    template_id: 'T-loss-overview',
+    plan_id: null,
+    plan_status: 'local',
+    composition_reason: '自由输入复用已发布组合四事实；在线复述仅在点击“组合表现”时调用',
+    text: `按已发布事实复述：组合实际收益 ${values[0].display}，对照收益 ${values[1].display}，择时损耗 ${values[2].display}，损耗金额 ${values[3].display}。这是对已发生交易的事后对照，不是预测。`,
+    facts: [
+      { label: '实际收益', value: values[0].display },
+      { label: '对照收益', value: values[1].display },
+      { label: '择时损耗', value: values[2].display },
+      { label: '损耗金额', value: values[3].display },
+    ],
+    evidence: [],
+    candidate: null,
+    notice: '自由输入使用本地已发布事实；只有点击“组合表现”芯片才会请求在线复述。',
+  };
+}
+
+export function createQaChipService({
+  getBundle = () => null,
+  loadBundle = null,
+  askOnline = null,
+  loadProfile = () => null,
+} = {}) {
+  async function answerOnline({ question, bill } = {}) {
+    let bundle = typeof getBundle === 'function' ? getBundle(bill) : null;
+    if (!bundle) {
+      if (typeof loadBundle !== 'function') {
+        return fail(QA_CHIP_CODES.REPORT_NOT_READY, '当前账单的已发布报告尚未载入：请先打开报告页；不会在问答页重复请求行情');
+      }
+      try {
+        bundle = await loadBundle(bill);
+      } catch (e) {
+        const message = String(e && e.message ? e.message : e);
+        return fail(QA_CHIP_CODES.REPORT_NOT_READY, `已发布报告加载失败：${message.slice(0, 240)}`);
+      }
+    }
+    if (!bundle?.review) {
+      return fail(QA_CHIP_CODES.REPORT_WITHHELD, '当前账单没有可复述的复核结果（不回退示例或其他账单）');
+    }
+    if (bundle.review.portfolio_published !== true) {
+      return fail(QA_CHIP_CODES.REPORT_WITHHELD, '当前账单组合结果未发布（可能缺价或复核未通过），不能在线复述');
+    }
+    if (typeof askOnline !== 'function') {
+      return fail(QA_CHIP_CODES.ONLINE_UNAVAILABLE, '在线复述接口不可用：未发起请求');
+    }
+    try {
+      const result = await askOnline({ question, review: bundle.review, bundle });
+      return result ?? fail(QA_CHIP_CODES.ONLINE_FAILED, '在线复述没有返回结果');
+    } catch (e) {
+      const message = String(e && e.message ? e.message : e);
+      return fail(QA_CHIP_CODES.ONLINE_FAILED, `在线复述失败：${message.slice(0, 240)}`);
+    }
+  }
+
+  return Object.freeze({
+    async answer({ chip, bill, ruleState = null } = {}) {
+      const def = findQaChip(chip);
+      if (!def) return fail(QA_CHIP_CODES.UNKNOWN_CHIP, '未知的问答芯片：不生成回答');
+      if (def.online) return answerOnline({ question: def.question, bill });
+      const bundle = typeof getBundle === 'function' ? getBundle(bill) : null;
+      if (!bundle) {
+        return fail(QA_CHIP_CODES.REPORT_NOT_READY, '当前账单的已发布报告尚未载入：请先打开报告页；本地芯片不会触发行情或模型请求');
+      }
+      let profile = null;
+      if (def.id === 'how_to_change' && typeof loadProfile === 'function') {
+        try { profile = loadProfile(); } catch { profile = null; }
+      }
+      return buildLocalChipAnswer({ chip: def, bundle, bill, ruleState, profile });
+    },
+    answerOnline,
+  });
+}

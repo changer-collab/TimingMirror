@@ -652,3 +652,8 @@ body {
   #capability-chips { display: none; }
   .im-draft-table .im-cell { width: 86px; }
 }
+
+/* 规则模拟未命中 · AI 兜底判断（只展示，不改写规则） */
+.cv-ai-fallback { display: flex; flex-direction: column; gap: 7px; border: 1px solid var(--line); border-left: 4px solid var(--blue-accent, #4A6CF7); border-radius: 10px; padding: 10px 13px; background: var(--panel2); }
+.cv-ai-fallback-head { font-weight: 700; color: var(--cream); }
+.cv-ai-fallback.is-skipped { border-left-color: var(--line); color: var(--dim); font-size: 13px; }
