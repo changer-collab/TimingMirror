@@ -2,7 +2,7 @@
 // 链路：本地预检 → 同源站点函数 /api/llm/rule（仅 { text }）→ 严格校验模型 JSON → 映射到既有引擎模板 → parseRuleSpec（适用范围：全部股票 / 单个 6 位代码）。
 // 出站只含用户输入的规则文本；不发送 CSV、交易记录、账户信息、行情或已保存规则。模型输出不作为代码执行。
 // 关键词、连接词与数值检查只是辅助手段，不能保证识别了全部意图；无法确认完整表达时只提示补充或暂不支持，不截取部分启用。
-import { CONTRACT_TEMPLATES } from '../engine/contractMatch.js';
+import { CONTRACT_TEMPLATES, canonicalHash, HASH_ALGORITHM } from '../engine/contractMatch.js';
 import { parseRuleSpec } from '../engine/ruleSpec.js';
 
 export const RULE_INTENT_URL = '/functions/v1/app/api/llm/rule';
@@ -154,19 +154,29 @@ export async function requestRuleIntent(text, { fetchImpl = globalThis.fetch, ti
   }
 }
 
-const STATUSES = new Set(['template', 'unsupported', 'unclear']);
+const STATUSES = new Set(['template', 'custom', 'unsupported', 'unclear']);
 const COMPARATORS = new Set(['gt', 'gte']);
 const DAY_UNITS = new Set(['trading_day', 'calendar_day', 'unspecified']);
 const SCOPE_KINDS = new Set(['all', 'symbol']);
+const ACTION_KINDS = new Set(['buy', 'sell', 'both']);
+const RULE_KINDS = new Set(['template', 'custom']);
 
 // 只读取约定字段；类型不符即整体拒绝（不猜测、不纠正）
 export function validateRuleJson(obj) {
   const bad = (why) => ({ ok: false, code: C.SCHEMA, why });
   if (!isPlainObject(obj)) return bad('not_object');
-  if (Object.keys(obj).some((k) => !['status', 'template_id', 'params', 'scope', 'needs', 'missing', 'understanding'].includes(k))) return bad('unknown_field');
+  if (Object.keys(obj).some((k) => !['status', 'template_id', 'params', 'scope', 'action', 'kind', 'needs', 'missing', 'understanding'].includes(k))) return bad('unknown_field');
   if (!STATUSES.has(obj.status)) return bad('status');
+  // kind 可缺省（旧版站点函数不返回）；缺省时按 status 推断
+  let kind = null;
+  if (obj.kind != null) {
+    if (typeof obj.kind !== 'string' || !RULE_KINDS.has(obj.kind)) return bad('kind');
+    kind = obj.kind;
+  }
+  if (obj.status === 'custom' && kind && kind !== 'custom') return bad('kind_status_mismatch');
   const tid = obj.template_id ?? null;
   if (tid !== null && typeof tid !== 'string') return bad('template_id');
+  if (obj.status === 'custom' && tid !== null) return bad('custom_template_id');
   const params = obj.params ?? {};
   if (!isPlainObject(params)) return bad('params');
   if (Object.keys(params).some((k) => !['threshold_pct', 'comparator', 'days', 'day_unit'].includes(k))) return bad('unknown_param');
@@ -179,6 +189,12 @@ export function validateRuleJson(obj) {
   const strList = (v) => v === undefined || v === null || (Array.isArray(v) && v.every((x) => typeof x === 'string'));
   if (!strList(obj.needs) || !strList(obj.missing)) return bad('lists');
   if (obj.understanding != null && typeof obj.understanding !== 'string') return bad('understanding');
+  // action 可缺省（旧版站点函数不返回）；缺省时由程序按模板决定，不默认填 buy
+  let action = null;
+  if (obj.action != null) {
+    if (typeof obj.action !== 'string' || !ACTION_KINDS.has(obj.action)) return bad('action');
+    action = obj.action;
+  }
   // scope 可缺省（旧版站点函数不返回）；缺省时由程序按原文是否含代码决定能否继续，不默认放宽为全部股票
   let scope = null;
   if (obj.scope != null) {
@@ -192,6 +208,7 @@ export function validateRuleJson(obj) {
     ok: true,
     value: {
       status: obj.status,
+      kind: kind ?? (obj.status === 'custom' ? 'custom' : 'template'),
       template_id: tid,
       params: {
         threshold_pct: params.threshold_pct ?? null,
@@ -199,6 +216,7 @@ export function validateRuleJson(obj) {
         days: params.days ?? null,
         day_unit: params.day_unit ?? null,
       },
+      action,
       scope,
       needs: [...(obj.needs ?? [])],
       missing: [...(obj.missing ?? [])],
@@ -392,6 +410,62 @@ const SAME_STOCK_RE = /同一只|同一|这只|该股|该股票|该标的|同一
 const REMIND_RE = /提醒|提示|通知|告诉我|叫我|警告|注意/;
 const looksLikeBuySellRule = (text) => BUY_IN_RE.test(text) && SELL_OUT_RE.test(text) && !NO_BUY_RE.test(text) && /后/.test(text);
 
+// 自定义规则：不映射模板，保留原文、AI 理解、用户确认的动作与适用范围
+// 第一版只保存原话、AI 理解和确认动作，不强制提取阈值 / 天数等参数
+function resolveCustomIntent(intent, text, scan, understanding) {
+  const unsupportedScope = scan.needs.filter((need) => need === 'multi_symbol' || need === 'scope_exclude');
+  if (unsupportedScope.length) return unsupported(unsupportedScope, understanding);
+  const resolvedScope = resolveScope(intent, scan, text);
+  if (resolvedScope.error) return unclear([resolvedScope.error], understanding);
+  const scope = resolvedScope.scope;
+  const scopeCheck = resolvedScope.check;
+  // 动作：模型返回 buy / sell / both；缺省时不猜测，标记为待确认
+  const action = intent.action ?? null;
+  // rule_id：创建时生成，编辑时保持不变（此处为首次创建）
+  const rule_id = generateCustomRuleId();
+  // 内容哈希：基于 kind + text + action + scope，与 rule_id 分离
+  const canonical = {
+    schema: 'custom-rule-v1',
+    kind: 'custom',
+    text: text.trim(),
+    action: action ?? 'unconfirmed',
+    scope: scope.kind === 'symbol' ? { kind: 'symbol', symbol: scope.symbol } : { kind: 'all' },
+  };
+  const hash = canonicalHash(canonical);
+  const scopeText = scope.kind === 'symbol' ? `仅 ${scope.symbol}` : '全部股票';
+  const actionText = action === 'both' ? '买入提醒 + 卖出提醒' : action === 'buy' ? '买入提醒' : action === 'sell' ? '卖出提醒' : '待确认';
+  return {
+    status: 'supported',
+    is_custom: true,
+    understanding,
+    rule_id,
+    hash,
+    hash_algorithm: HASH_ALGORITHM,
+    text: text.trim(),
+    action,
+    scope,
+    scope_text: scopeText,
+    template_name: '自定义规则',
+    condition: `用户自定义规则：${text.trim()}`,
+    checks: [
+      '自定义规则未映射到现有模板；请核对原文和识别结果。',
+      scopeCheck,
+      action ? `提醒动作：识别结果为${actionText}` : '提醒动作：识别服务未返回动作，请手动确认',
+    ],
+    confirmations: [],
+    // 自定义规则不生成 parsed（无模板映射）；前端按 is_custom 分支渲染
+    parsed: null,
+  };
+}
+
+function generateCustomRuleId() {
+  const ts = Date.now().toString(36);
+  const rand = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID().replace(/-/g, '').slice(0, 12)
+    : Math.random().toString(36).slice(2, 14);
+  return `custom-${ts}-${rand}`;
+}
+
 // 模型结果 → 程序判定：先按原文做确定性检查（不依赖模型），再只接受既有模板 + 原文中明确写出的参数与代码；
 // 原文含义不唯一的地方（只写“天”、未写“超过/达到”）列为待确认项，未确认前不能保存。
 export function resolveRuleIntent(intent, text, meta = {}) {
@@ -399,8 +473,12 @@ export function resolveRuleIntent(intent, text, meta = {}) {
   const scan = analyzeRuleText(text);
   const t = toAsciiDigits(text);
   const protocolStale = meta.serverProtocol !== RULE_INTENT_PROTOCOL;
-  // 旧版站点函数不认识“买入后卖出提醒”；不能把它的“暂不支持”当成用户表达不清，也不能静默套用旧模板。
+  // 旧版站点函数不认识”买入后卖出提醒”；不能把它的”暂不支持”当成用户表达不清，也不能静默套用旧模板。
   if (protocolStale && looksLikeBuySellRule(t)) return unclear([PROTOCOL_STALE_TEXT], understanding);
+  // 自定义规则：不映射模板，跳过模板特定的 needs/compound 检查，保留原文、AI 理解、用户确认的动作
+  if (intent.status === 'custom') {
+    return resolveCustomIntent(intent, text, scan, understanding);
+  }
   const modelNeeds = intent.status === 'unsupported' ? intent.needs : [];
   if (scan.needs.length) return unsupported([...scan.needs, ...modelNeeds], understanding);
   if (intent.status === 'unsupported') {
