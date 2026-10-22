@@ -531,7 +531,7 @@ v2 想要“你选的股本身涨幅”，目的是证明“股票在涨，是�
 ### 10.4 验证
 
 ```text
-npm run check   → exit 0；52 个汇总段合计 2036 项通过、0 失败
+npm run check   → exit 0；52 个汇总段合计 2044 项通过、0 失败（合并 origin/main 24e37cd 后复跑）
 npm run smoke   → 317/317 通过
 
 node tests/rule-ledger.test.mjs        → 16/16

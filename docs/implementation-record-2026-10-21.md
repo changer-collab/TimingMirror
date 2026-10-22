@@ -632,7 +632,7 @@ node tests/agent/assistant-controller.test.mjs → 40/40
 ### 11.8 验证
 
 ```text
-npm run check   → exit 0；52 个汇总段合计 2036 项通过、0 失败
+npm run check   → exit 0；52 个汇总段合计 2044 项通过、0 失败（合并 origin/main 24e37cd 后复跑）
 npm run smoke   → 317/317 通过
 
 node tests/rule-ledger.test.mjs        → 16/16
@@ -695,7 +695,8 @@ node tests/server/site-function.test.mjs → 101/101
 
 ### 11.10 提交状态
 
-- 本轮改动仍在工作区，未暂存、未提交、未推送；
-- 所属分支 `feat/behavior-ai-fallback-2026-10-21` 已对应 PR #48（OPEN）；
-- 未合并 `main`、未发布站点；
-- 提交、推送、合并、发布均需当轮明确授权。
+- 实现提交：`031149c feat: 扩充行为模式、守约账本与沪深300第三线`（逐路径暂存，未使用 `git add .`）；
+- 已合并最新 `origin/main` `24e37cd`（#49/#50），合并提交 `0d7df88`；冲突仅 `real-views.css` 助手输入行，保留右侧对齐与 10px 间距；
+- 合并后复跑：`npm run check` 52 段 2044 项通过、0 失败；`npm run smoke` 317/317；
+- 所属分支 `feat/behavior-ai-fallback-2026-10-21` 对应 PR #48（OPEN）；推送后将更新 PR 描述；
+- 未合并 `main`、未发布站点；合并与发布仍需另行确认。
