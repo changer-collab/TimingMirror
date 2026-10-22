@@ -37,6 +37,9 @@ venv/
 node_modules/
 npm-debug.log*
 
+# ---- 站点构建产物（npm run build:site）----
+dist/
+
 # ---- 日志与临时文件 ----
 *.log
 *.tmp

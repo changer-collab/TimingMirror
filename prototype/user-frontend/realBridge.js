@@ -4,11 +4,13 @@ import { getRuleAssistantClient, renderAssistantPanel } from '../../src/ui/assis
 import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../../src/agent/httpTransport.js';
 import { createImportRecovery } from '../../src/agent/importRecovery.js';
 import { createChatOnline } from '../../src/agent/chatOnline.js';
+import { createOnlineBoundary } from '../../src/agent/onlineBoundary.js';
 import { renderContract } from '../../src/ui/views/contractView.js';
 import { renderRealImport } from './realImport.js';
 import { getRealReportBundle, loadRealReport } from './realReport.js';
 import { ruleStateOf, loadProfile } from './profileStore.js';
 import { openRuleCandidate } from './ruleCandidates.js';
+import { createQaAnswerService } from './qaAnswer.js';
 
 const MOBILE_BREAKPOINT = 680;
 const OLD_CSS = '/src/ui/styles.css';
@@ -96,6 +98,8 @@ const SHADOW_STYLE = `
 let onChangeCallback = null;
 let recoveryClient = null;
 let qaOnlineClient = null;
+let qaAnswerClient = null;
+let qaIntentBoundary = null;
 let currentRoute = 'home';
 let lastMobileLayout = null;
 let demoSelected = false;
@@ -167,6 +171,29 @@ function getQaOnlineClient() {
   return qaOnlineClient;
 }
 
+function getQaIntentBoundary() {
+  if (!qaIntentBoundary) {
+    qaIntentBoundary = createOnlineBoundary({
+      transport: createHttpTransport({ baseUrl: SAME_ORIGIN_BASE, paths: SITE_FUNCTION_PATHS }),
+      timeoutMs: 5000,
+    });
+  }
+  return qaIntentBoundary;
+}
+
+function getQaAnswerClient() {
+  if (!qaAnswerClient) {
+    qaAnswerClient = createQaAnswerService({
+      getBundle: (bill) => getRealReportBundle(bill),
+      loadBundle: (bill) => loadRealReport(bill),
+      askOnline: ({ question, review }) => getQaOnlineClient().ask({ question, review }),
+      loadProfile,
+      classifyIntent: ({ question }) => getQaIntentBoundary().classifyIntent({ question }),
+    });
+  }
+  return qaAnswerClient;
+}
+
 const ctx = {
   state: shared,
   set,
@@ -182,6 +209,7 @@ const ctx = {
     getReportBundle: (bill) => getRealReportBundle(bill),
     loadReportBundle: (bill) => loadRealReport(bill),
     askOnline: ({ question, review }) => getQaOnlineClient().ask({ question, review }),
+    askQuestion: (args) => getQaAnswerClient().ask(args),
     ruleStateOf,
     loadProfile,
     openRuleCandidate,

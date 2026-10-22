@@ -522,15 +522,7 @@ import { renderRealProfile } from './realProfile.js';
 
   function realChatPage() {
     if (!isConfirmedLocal()) return realPendingPage('chat');
-    const bill = sharedState().bill;
-    const demo = bill.demo === true;
-    return `${pageHead({
-      code: 'STEP 03 / ASK',
-      title: '问它为什么，<br>别问它买什么。',
-      intro: `<p>${demo ? '当前是示例账单，回答只复述这份示例的已复核结果。' : '只复述当前已确认账单的已复核事实。数字在本机再校验；不预测、不荐股、不替你决定。'}</p><ul class="mini-rules"><li>${demo ? '示例数据' : '真实账单'}</li><li>四项事实</li><li>失败即兜底</li></ul>`,
-      right: `<span class="sample-tag">${demo ? '示例数据' : '真实账单'}</span><a class="text-link" href="#/import">${demo ? '换个场景' : '换一份账单'}</a>`,
-    })}
-    <div id="tm-real-chat"></div>`;
+    return '<div id="tm-real-chat"></div>';
   }
 
   function mePage() {
@@ -1966,6 +1958,7 @@ import { renderRealProfile } from './realProfile.js';
     state.route = currentRoute();
     bridge.setRoute(state.route);
     const mode = pageMode();
+    document.body.classList.toggle('tm-qa-standalone', state.route === 'chat' && mode === 'real' && isConfirmedLocal());
     document.title = TITLES[state.route];
     renderChrome();
 
