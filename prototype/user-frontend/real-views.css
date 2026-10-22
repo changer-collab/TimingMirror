@@ -18,7 +18,7 @@ body {
 }
 
 .tm-shell.assistant-open {
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr) clamp(320px, 25vw, 400px);
 }
 
 .tm-main {
@@ -469,7 +469,8 @@ body {
   font-size: 11px;
 }
 
-@media (max-width: 1279px) {
+/* 移动端全屏助手：断点与 realBridge.js 的 MOBILE_BREAKPOINT=680 保持一致 */
+@media (max-width: 679.98px) {
   body {
     overflow: auto;
   }
