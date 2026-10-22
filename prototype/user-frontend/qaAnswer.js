@@ -129,7 +129,7 @@ function clarifyEnvelope({ route, bill, elapsedMs, notice = null, text = null })
     intent: null,
     route,
     source: 'template',
-    text: text ?? '我没能把这个问法对应到已实现的事实问题。换一种问法，或从下面的示例开始；这句不会读取账单，也不调用模型。',
+    text: text ?? '我没能把这个问法对应到已实现的事实问题。换一种问法，或从下面的示例开始；这次没有读取账单，也没有用未核对的内容作答。',
     actions: sampleActions(),
     notice: notice ?? route?.notice ?? null,
     trace: { template_id: 'T-clarify' },
@@ -758,6 +758,7 @@ export function createQaAnswerService({
       bill,
       ruleState: ruleStateFromVersions(versions, ruleState),
       profile,
+      question: normalized,
     });
     if (!local.ok) {
       return localFailureEnvelope({ failure: local, intent, route, bill, elapsedMs: elapsed(), question: normalized });

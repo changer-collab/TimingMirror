@@ -245,7 +245,7 @@ function askHTML(pending) {
 
 function suggestHTML(pending) {
   return `<div class="tm-qa-suggest" data-role="qa-chips" aria-label="示例问法">${QA_SUGGESTIONS.map((item) => `
-    <button type="button" class="tm-qa-chip${item.online ? ' is-online' : ''}" data-role="qa-chip" data-question="${esc(item.question)}" data-online="${item.online ? 'true' : 'false'}" ${pending ? 'disabled' : ''}>${esc(item.label)}${item.online ? '<span aria-hidden="true"> · ONLINE</span>' : ''}</button>`).join('')}</div>`;
+    <button type="button" class="tm-qa-chip${item.online ? ' is-online' : ''}" data-role="qa-chip" data-question="${esc(item.question)}" data-online="${item.online ? 'true' : 'false'}" ${pending ? 'disabled' : ''}>${esc(item.label)}</button>`).join('')}</div>`;
 }
 
 function failureAnswer({ question, contextId }) {

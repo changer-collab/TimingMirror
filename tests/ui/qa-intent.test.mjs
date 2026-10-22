@@ -160,6 +160,22 @@ const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: 
   const slotHit = await slotRouter.route('帮我看看这笔操作');
   check('L2：槽位归一化（日期补零/代码保留）',
     slotHit.intent === 'what_if' && slotHit.slots.trade_date === '2024-09-03' && slotHit.slots.symbol === '000001', JSON.stringify(slotHit));
+
+  const extraSlotRouter = createIntentRouter({
+    classifyIntent: async () => ({
+      ok: true,
+      intentJson: {
+        intent: 'pattern_explain',
+        slots: { pattern: 'chase_high_buy', possible_cause: '情绪', symbol: '600519' },
+        confidence: 0.82,
+      },
+    }),
+  });
+  const extraSlotHit = await extraSlotRouter.route('为什么我会反复这样');
+  check('L2：未声明槽位（pattern/possible_cause）被丢弃，仅保留 symbol',
+    extraSlotHit.intent === 'pattern_explain'
+    && Object.keys(extraSlotHit.slots).join(',') === 'symbol'
+    && extraSlotHit.slots.symbol === '600519', JSON.stringify(extraSlotHit));
 }
 
 const failed = results.filter((r) => !r.ok);

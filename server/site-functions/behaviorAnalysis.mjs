@@ -29,7 +29,6 @@ const WINDOW_KEYS = new Set(['event_index', 'rise_pct', 'evaluated']);
 const AI_KEYS = new Set(['patterns', 'observations', 'rule_candidates']);
 const AI_PATTERN_KEYS = new Set(['pattern_id', 'status', 'sample_n', 'evaluated_n', 'evidence_event_indexes', 'comment']);
 const AI_OBSERVATION_KEYS = new Set(['observation_id', 'text', 'evidence_event_indexes']);
-const AI_CANDIDATE_KEYS = new Set(['candidate_id', 'template_id']);
 const MAX_EVENTS = 500;
 const MAX_TEXT = 80;
 
@@ -192,6 +191,10 @@ export function behaviorFactsForAi(facts) {
     events: facts.events,
     buy_windows: facts.buy_windows,
     trading: facts.trading,
+    allowed_rule_candidates: canonicalRuleCandidates(facts).map((c) => ({
+      candidate_id: c.candidate_id,
+      template_id: c.template_id,
+    })),
   };
 }
 
@@ -291,9 +294,10 @@ export function validateBehaviorAiResponse(rawText, facts) {
   if (!Array.isArray(parsed.rule_candidates) || parsed.rule_candidates.length !== canonical.length) {
     return { ok: false, reason: 'ai_candidate_mismatch' };
   }
+  // 候选内容一律以服务端 canonical 为准：模型可回传额外字段，但不得改动或遗漏 ID。
   for (let i = 0; i < canonical.length; i += 1) {
     const item = parsed.rule_candidates[i];
-    if (!hasOnlyKeys(item, AI_CANDIDATE_KEYS)
+    if (!isObject(item)
       || item.candidate_id !== canonical[i].candidate_id
       || item.template_id !== canonical[i].template_id) {
       return { ok: false, reason: 'ai_candidate_mismatch' };
