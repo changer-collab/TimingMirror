@@ -13,6 +13,8 @@ import {
   BEHAVIOR_ANALYSIS_PROTOCOL,
   BEHAVIOR_CANDIDATE,
   buildBehaviorFacts,
+  behaviorFactsForAi,
+  canonicalRuleCandidates,
   normalizeBehaviorFactsRequest,
   validateBehaviorAiResponse,
   buildAiBehaviorAnalysis,
@@ -138,6 +140,13 @@ async function invoke(handler, body) {
   check('事实：单次命中判证据不足', low.pattern.status === '证据不足'
     && low.pattern.sample_n === 1 && low.pattern.evaluated_n === 1, JSON.stringify(low.pattern));
 
+  const aiFacts = behaviorFactsForAi(chase);
+  check('AI 输入：提供 canonical 候选（仅 candidate_id/template_id）', aiFacts.allowed_rule_candidates.length === 1
+    && Object.keys(aiFacts.allowed_rule_candidates[0]).sort().join(',') === 'candidate_id,template_id'
+    && aiFacts.allowed_rule_candidates[0].candidate_id === BEHAVIOR_CANDIDATE.candidate_id
+    && aiFacts.allowed_rule_candidates[0].template_id === BEHAVIOR_CANDIDATE.template_id, JSON.stringify(aiFacts.allowed_rule_candidates));
+  check('AI 输入：证据不足时候选清单为空', behaviorFactsForAi(low).allowed_rule_candidates.length === 0);
+
   const extra = normalizeBehaviorFactsRequest({ ...CHASE, raw_csv: 'date,symbol' });
   check('请求：携带原始 CSV 字段 → 拒绝', extra.ok === false && extra.code === 'E_BEHAVIOR_REQUEST_INVALID');
   const symbol = normalizeBehaviorFactsRequest({
@@ -195,6 +204,26 @@ async function invoke(handler, body) {
   badCandidate.rule_candidates = [{ candidate_id: 'rc:no_buy_back_within:chase_high_buy', template_id: 'no_buy_back_within' }];
   const candidate = validateBehaviorAiResponse(JSON.stringify(badCandidate), chase);
   check('AI：推荐白名单外候选 → ai_candidate_mismatch', candidate.ok === false && candidate.reason === 'ai_candidate_mismatch');
+
+  const echoed = JSON.parse(aiPayload(chase));
+  echoed.rule_candidates = [{
+    candidate_id: BEHAVIOR_CANDIDATE.candidate_id,
+    template_id: BEHAVIOR_CANDIDATE.template_id,
+    pattern_id: 'chase_high_buy',
+    fields: { threshold_pct: '10' },
+    reason: '模型自行补充的理由',
+  }];
+  const echoedChecked = validateBehaviorAiResponse(JSON.stringify(echoed), chase);
+  const echoedBuilt = echoedChecked.ok ? buildAiBehaviorAnalysis(echoedChecked.value, chase) : null;
+  check('AI：候选回传额外字段 → 通过，服务端仍用 canonical', echoedChecked.ok === true
+    && JSON.stringify(echoedBuilt.rule_candidates) === JSON.stringify(canonicalRuleCandidates(chase))
+    && echoedBuilt.rule_candidates[0].fields.threshold_pct === '10', JSON.stringify(echoedBuilt?.rule_candidates));
+
+  const missingTemplate = JSON.parse(aiPayload(chase));
+  missingTemplate.rule_candidates = [{ candidate_id: BEHAVIOR_CANDIDATE.candidate_id }];
+  const missingCandidateField = validateBehaviorAiResponse(JSON.stringify(missingTemplate), chase);
+  check('AI：候选缺少 template_id → ai_candidate_mismatch', missingCandidateField.ok === false
+    && missingCandidateField.reason === 'ai_candidate_mismatch');
 
   const rebuy = factsOf(SELL_REBUY);
   const rebuyAi = JSON.parse(aiPayload(rebuy, {
@@ -259,7 +288,9 @@ async function invoke(handler, body) {
     && response.json.analysis.rule_candidates.length === 1, JSON.stringify(response.json));
   check('Handler：transport 只收到脱敏 facts 信封', calls.length === 1
     && Object.keys(calls[0]).join(',') === 'facts'
-    && Object.keys(calls[0].facts).sort().join(',') === 'buy_windows,events,pattern,protocol,scope,trading'
+    && Object.keys(calls[0].facts).sort().join(',') === 'allowed_rule_candidates,buy_windows,events,pattern,protocol,scope,trading'
+    && calls[0].facts.allowed_rule_candidates.length === 1
+    && calls[0].facts.allowed_rule_candidates[0].candidate_id === BEHAVIOR_CANDIDATE.candidate_id
     && !JSON.stringify(calls[0]).includes('600519')
     && !JSON.stringify(calls[0]).includes('price'), JSON.stringify(calls[0]));
 

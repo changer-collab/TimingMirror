@@ -1868,15 +1868,19 @@ a.view-option:hover {
 .import-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
-  gap: 18px;
+  gap: 20px;
   align-items: stretch;
 }
 
 .upload-card {
+  display: flex;
+  flex-direction: column;
   padding: 22px 24px 24px;
 }
 
 .dropzone {
+  position: relative;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1892,7 +1896,8 @@ a.view-option:hover {
 }
 
 .dropzone:hover,
-.dropzone.is-over {
+.dropzone.is-over,
+.dropzone:focus-visible {
   border-color: var(--ink);
   background: rgba(255, 255, 255, 0.88);
 }
@@ -1935,11 +1940,179 @@ a.view-option:hover {
   color: var(--gray);
 }
 
+.dropzone-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  border-radius: inherit;
+  background: var(--sheet-2);
+  color: var(--ink);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+}
+
+.dropzone.is-over .dropzone-overlay {
+  opacity: 1;
+  visibility: visible;
+}
+
+.dropzone-overlay-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 26px 20px;
+  border: 1px dashed rgba(21, 25, 28, 0.32);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.42);
+  text-align: center;
+}
+
+.dropzone-overlay-mark {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 4px;
+  border: 1px solid rgba(21, 25, 28, 0.34);
+  border-radius: 50%;
+  font-family: var(--font-serif);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.dropzone-overlay-title {
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 500;
+}
+
+.dropzone-overlay-sub {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  color: var(--gray);
+}
+
 .upload-note {
   margin-top: 14px;
   font-size: 12px;
   line-height: 1.8;
   color: var(--gray);
+}
+
+/* 导入反馈：解析中 / 成功 / 失败都留在左侧导入区，不打断下方结果 */
+.tm-import-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  margin-top: 18px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--ink);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: rgba(249, 251, 250, 0.86);
+}
+
+.tm-import-status.is-loading {
+  background: rgba(234, 239, 237, 0.52);
+}
+
+.tm-import-status.is-error {
+  border-left-color: var(--loss);
+  background: var(--loss-soft);
+}
+
+.tm-import-status-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tm-import-status-body strong {
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.tm-import-status-body span {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--gray);
+  overflow-wrap: anywhere;
+}
+
+.tm-import-status.is-error .tm-import-status-body strong {
+  color: var(--loss);
+}
+
+.tm-import-status-mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--ink);
+}
+
+.tm-import-status-mark.is-error {
+  border-color: var(--loss);
+  color: var(--loss);
+}
+
+.tm-import-spinner {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin-top: 3px;
+  border: 1.5px solid var(--line);
+  border-top-color: var(--ink);
+  border-radius: 50%;
+  animation: tm-import-spin 0.8s linear infinite;
+}
+
+@keyframes tm-import-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tm-import-status-action {
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+.dropzone.is-busy,
+.dropzone.is-busy:hover {
+  border-color: var(--line);
+  background: rgba(234, 239, 237, 0.54);
+  cursor: progress;
+}
+
+.dropzone-spinner {
+  width: 24px;
+  height: 24px;
+  margin: 0 0 12px;
+  border-width: 2px;
+}
+
+.upload-card > .tm-import-status--top {
+  margin: 0 0 16px;
 }
 
 .sample-card {
@@ -1979,14 +2152,56 @@ a.view-option:hover {
 }
 
 .scenario-card {
+  /* 行高由左栏决定：height:0 不参与撑高，min-height:100% 再铺满等高区域 */
+  height: 0;
+  min-height: 100%;
+  overflow: hidden;
   background: linear-gradient(165deg, #ffffff 0%, #f2f6f4 100%);
+}
+
+.scenario-card > :not(.scenario-list) {
+  flex: 0 0 auto;
 }
 
 .scenario-list {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 8px;
+  min-height: 0;
   margin: 14px 0;
+  padding: 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-gutter: stable;
+}
+
+.scenario-list:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.scenario-list::-webkit-scrollbar {
+  width: 10px;
+}
+
+.scenario-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scenario-list::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: var(--line-strong);
+  background-clip: content-box;
+}
+
+.scenario-list:hover::-webkit-scrollbar-thumb {
+  background: var(--gray);
+  background-clip: content-box;
 }
 
 .scenario-item {
@@ -1995,6 +2210,7 @@ a.view-option:hover {
   justify-content: space-between;
   gap: 12px;
   width: 100%;
+  min-width: 0;
   padding: 11px 13px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -2003,13 +2219,20 @@ a.view-option:hover {
   font-family: var(--font-sans);
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.2s ease, background-color 0.2s ease, transform 0.2s ease;
+  transition: border-color 0.2s ease, background-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .scenario-item:hover {
   border-color: var(--line-strong);
   background: #f3f7f5;
   transform: translateY(-1px);
+}
+
+.scenario-item:focus-visible {
+  border-color: var(--ink);
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--ink);
+  background: #f3f7f5;
 }
 
 .scenario-item:disabled {
@@ -2022,6 +2245,7 @@ a.view-option:hover {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  min-width: 0;
 }
 
 .scenario-title {
@@ -2029,6 +2253,7 @@ a.view-option:hover {
   font-size: 15.5px;
   font-weight: 600;
   line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .scenario-tag {
@@ -2049,6 +2274,10 @@ a.view-option:hover {
 }
 
 .scenario-item:hover .scenario-download {
+  border-color: var(--ink);
+}
+
+.scenario-item:focus-visible .scenario-download {
   border-color: var(--ink);
 }
 
@@ -2101,6 +2330,32 @@ a.view-option:hover {
 .bill {
   margin-top: 22px;
   padding: 24px;
+}
+
+#bill {
+  scroll-margin-top: 18px;
+}
+
+#bill-title.is-just-imported {
+  display: inline-block;
+  animation: tm-import-title-flash 1.7s ease-out 1;
+}
+
+@keyframes tm-import-title-flash {
+  0% {
+    background-color: rgba(21, 25, 28, 0.18);
+    box-shadow: 0 0 0 6px rgba(21, 25, 28, 0.18);
+  }
+
+  62% {
+    background-color: rgba(21, 25, 28, 0.08);
+    box-shadow: 0 0 0 6px rgba(21, 25, 28, 0.08);
+  }
+
+  100% {
+    background-color: transparent;
+    box-shadow: 0 0 0 6px transparent;
+  }
 }
 
 .bill-head {
@@ -4643,6 +4898,18 @@ table.ledger tr.is-missing {
 
   .import-grid {
     grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .scenario-card {
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .scenario-list {
+    flex: 0 1 auto;
+    max-height: clamp(220px, 40vh, 360px);
   }
 
   .bill-actions {
@@ -4883,6 +5150,23 @@ table.ledger tr.is-missing {
 
   .dropzone h2 {
     font-size: 20px;
+  }
+
+  .tm-import-status {
+    flex-wrap: wrap;
+    padding: 12px;
+  }
+
+  .tm-import-status-body {
+    flex-basis: calc(100% - 30px);
+  }
+
+  .tm-import-status-action {
+    width: 100%;
+  }
+
+  #bill {
+    scroll-margin-top: calc(var(--topbar-h) + 16px);
   }
 
   .sample-card h2 {
@@ -5338,5 +5622,10 @@ table.ledger tr.is-missing {
     opacity: 1;
     transform: none;
     animation: none;
+  }
+
+  #bill-title.is-just-imported {
+    background: rgba(21, 25, 28, 0.1);
+    box-shadow: 0 0 0 6px rgba(21, 25, 28, 0.1);
   }
 }

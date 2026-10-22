@@ -395,7 +395,7 @@ function localTradeBoundary(trades) {
     : [];
 }
 
-// 共享市场段（本地账单）：默认 Tushare 动态行情；示例场景显式使用冻结合成行情。
+// 共享市场段（本地账单）：默认 Tushare 动态行情；8 个示例场景显式使用冻结的 Tushare 历史日线快照。
 // 两条来源不互相回退：示例场景不会请求网络，真实账单也不会回落到示例价格。
 async function runUserMarketStage(trades, { marketSource = DEFAULT_MARKET_SOURCE, demoScenarioId = null } = {}) {
   const boundary = localTradeBoundary(trades);
@@ -474,11 +474,11 @@ export const USER_BILL_VISION_DATA_MODE = Object.freeze({
 
 export const DEMO_REPORT_DATA_MODE = Object.freeze({
   id: 'demo_report_frozen_market',
-  label: '示例场景 + 冻结合成行情',
-  note: '合成账单与合成价格，仅用于演示不同报告状态；不是真实账户、真实行情或投资建议',
+  label: '示例场景 + Tushare 历史行情快照',
+  note: '示例交易按真实历史收盘价构造；行情为 Tushare 历史日线冻结快照（2024-12-02～2025-06-30），非实时、非投资建议',
 });
 
-/** 导入页示例场景 → 已确认示例账单；报告仍走同一复核链路，但行情固定为冻结合成快照。 */
+/** 导入页示例场景 → 已确认示例账单；报告仍走同一复核链路，但行情固定为同一份 Tushare 历史快照。 */
 export async function loadReportScenarioBill(id, { contextId = null } = {}) {
   const scenario = getReportScenario(id);
   if (!scenario) throw new Error(`未知示例场景：${id}`);
@@ -498,7 +498,7 @@ export async function loadReportScenarioBill(id, { contextId = null } = {}) {
     errors: normalized.errors,
     blocked: false,
     dataMode: DEMO_REPORT_DATA_MODE,
-    sourceNote: `示例场景：${scenario.title}（合成账单 + 冻结合成行情；非真实账户）`,
+    sourceNote: `示例场景：${scenario.title}（示例交易按真实历史收盘价构造 + Tushare 历史日线快照；非真实账户）`,
     resultLabelling: RESULT_LABELS,
     contextId,
     demo: true,
@@ -526,7 +526,7 @@ export async function loadUserBillFromText(csvText, fileName) {
 }
 
 /** 表格（CSV/TSV/Excel/PDF 提取或 AI 草稿）→ 用户账单；正式入账仍走默认整表校验。
-    `scenario` 仅在用户上传下载的示例 CSV 时传入，用于把行情固定到该场景的冻结合成快照。 */
+    `scenario` 仅在用户上传下载的示例 CSV 时传入，用于把行情固定到该场景的 Tushare 历史快照。 */
 export async function loadUserBillFromTable(table, fileName, { method = 'manual', modality = 'text', note = '', scenario = null } = {}) {
   const name = String(fileName || 'user-bill.csv');
   const normalized = normalizeRows(table, name);
@@ -551,7 +551,7 @@ export async function loadUserBillFromTable(table, fileName, { method = 'manual'
     warnings: normalized.warnings,
     errors: normalized.errors,
     sourceNote: scenario
-      ? `示例场景：${scenario.title}（上传的示例 CSV，本机解析；合成账单 + 冻结合成行情；非真实账户）`
+      ? `示例场景：${scenario.title}（上传的示例 CSV，本机解析；示例交易 + Tushare 历史日线快照；非真实账户）`
       : `来源：${name}（${methodText}，未上传原始文件；schema ${normalized.schema_version}）${note ? `；${note}` : ''}`,
     resultLabelling: RESULT_LABELS,
   };
