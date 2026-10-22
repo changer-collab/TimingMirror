@@ -1,4 +1,4 @@
-// 站点 Function 的百炼 transport（仅在配置 DASHSCOPE_API_KEY 后由入口构造）。
+// 站点 Function 的旧 DashScope transport（保留供人工回滚；当前入口优先 DeepSeek）。
 // 固定北京地域、qwen-plus、JSON mode/非思考；超时按单次上游调用配置。
 // 不记录 question/facts/rawText/API Key；不向调用方回传供应商原始正文。
 import { BEHAVIOR_CANDIDATE } from './behaviorAnalysis.mjs';
@@ -112,9 +112,7 @@ export const RULE_NEED_CODES = Object.freeze([
   'trade_pnl', 'sell_action', 'sell_restriction', 'pause_trading', 'position_size', 'account_funds', 'intraday_price', 'volume',
   'technical_indicator', 'price_drop', 'fundamentals', 'specific_symbol', 'multi_symbol', 'scope_exclude', 'trade_frequency',
   'auto_execution', 'compound_condition', 'calendar_days', 'other',
-]);
-
-// 只做意图识别：把用户的一句话映射到既有规则模板或说明缺口；是否合法、能否执行由浏览器端程序确定性校验。
+]);// 只做意图识别：把用户的一句话映射到既有规则模板或说明缺口；是否合法、能否执行由浏览器端程序确定性校验。
 const RULE_SYSTEM = [
   '你是 TimingMirror 交易规则的意图识别器，只负责理解用户用一句话描述的个人交易规则，不执行、不生成代码、不提供投资建议。',
   '系统目前只有三个可执行的规则模板：',
@@ -139,6 +137,20 @@ const RULE_SYSTEM = [
   'understanding 用简体中文、不超过 60 字，复述你对用户规则的理解；不要输出 Markdown、解释或额外字段。',
   'status 为 “custom” 时：kind 必须为 “custom”，template_id 必须为 null，params 为空对象，action 为你识别的提醒动作（无法确定时留空）。',
 ].join('\n');
+
+export const MODEL_PROMPTS = Object.freeze({
+  intent: INTENT_SYSTEM,
+  restate: RESTATE_SYSTEM,
+  ruleIntent: RULE_INTENT_SYSTEM,
+  behaviorAnalysis: BEHAVIOR_ANALYSIS_SYSTEM,
+  resultExplanation: RESULT_EXPLANATION_SYSTEM,
+  scenarioJudgment: SCENARIO_JUDGMENT_SYSTEM,
+  customRuleJudgment: CUSTOM_RULE_JUDGMENT_SYSTEM,
+  importRecover: IMPORT_RECOVER_SYSTEM,
+  importVisionSystem: IMPORT_VISION_SYSTEM,
+  importVisionUser: IMPORT_VISION_USER_TEXT,
+  rule: RULE_SYSTEM,
+});
 
 export class ModelTransportError extends Error {
   constructor(code) {

@@ -292,7 +292,7 @@ function streamOfChunks(chunks) {
   check('规则识别路由：被拒绝的请求均未调用模型', calls.length === 2, String(calls.length));
 
   const noKey = await invoke(createHandler({ transport: null }), '/api/llm/rule', { body: { text: RULE_TEXT } });
-  check('规则识别路由：未配置 DASHSCOPE_API_KEY → 503 E_MODEL_NOT_CONFIGURED', noKey.status === 503 && noKey.json.code === SITE_FUNCTION_CODES.MODEL_NOT_CONFIGURED, noKey.text);
+  check('规则识别路由：未配置模型 Key → 503 E_MODEL_NOT_CONFIGURED', noKey.status === 503 && noKey.json.code === SITE_FUNCTION_CODES.MODEL_NOT_CONFIGURED, noKey.text);
   const legacy = await invoke(createHandler({ transport: createFakeTransport() }), '/api/llm/rule', { body: { text: RULE_TEXT } });
   check('规则识别路由：transport 缺少 rule() → 502 E_MODEL_UNAVAILABLE（脱敏）', legacy.status === 502 && legacy.json.code === SITE_FUNCTION_CODES.MODEL_UNAVAILABLE, legacy.text);
   const get = await invoke(handler, '/api/llm/rule', { method: 'GET', body: undefined });

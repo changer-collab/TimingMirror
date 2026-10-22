@@ -53,6 +53,9 @@ export const SITE_FUNCTION_CODES = Object.freeze({
   UNKNOWN_FIELD: 'E_FUNCTION_UNKNOWN_FIELD',
   REQUEST_INVALID: 'E_FUNCTION_REQUEST_INVALID',
   MODEL_NOT_CONFIGURED: 'E_MODEL_NOT_CONFIGURED',
+  MODEL_AUTH_FAILED: 'E_MODEL_AUTH_FAILED',
+  MODEL_FORBIDDEN: 'E_MODEL_FORBIDDEN',
+  MODEL_RATE_LIMITED: 'E_MODEL_RATE_LIMITED',
   MODEL_UNAVAILABLE: 'E_MODEL_UNAVAILABLE',
   MODEL_TIMEOUT: 'E_MODEL_TIMEOUT',
   MODEL_RESPONSE: 'E_MODEL_RESPONSE_INVALID',
@@ -88,7 +91,10 @@ const MESSAGES = Object.freeze({
   [SITE_FUNCTION_CODES.JSON]: '请求体不是合法 JSON',
   [SITE_FUNCTION_CODES.UNKNOWN_FIELD]: '请求包含不允许的字段',
   [SITE_FUNCTION_CODES.REQUEST_INVALID]: '请求未通过服务端校验',
-  [SITE_FUNCTION_CODES.MODEL_NOT_CONFIGURED]: '模型未启用：服务端尚未配置 DASHSCOPE_API_KEY',
+  [SITE_FUNCTION_CODES.MODEL_NOT_CONFIGURED]: '模型未启用：服务端尚未配置 DEEPSEEK_API_KEY',
+  [SITE_FUNCTION_CODES.MODEL_AUTH_FAILED]: '模型服务鉴权失败：请检查服务端模型 Key',
+  [SITE_FUNCTION_CODES.MODEL_FORBIDDEN]: '模型服务无访问权限：请检查模型权限',
+  [SITE_FUNCTION_CODES.MODEL_RATE_LIMITED]: '模型服务请求过于频繁：请稍后重试',
   [SITE_FUNCTION_CODES.MODEL_UNAVAILABLE]: '模型服务不可用',
   [SITE_FUNCTION_CODES.MODEL_TIMEOUT]: '模型服务超时',
   [SITE_FUNCTION_CODES.MODEL_RESPONSE]: '模型服务响应格式非法',
@@ -131,6 +137,14 @@ const MARKET_STATUS = Object.freeze({
   [SITE_FUNCTION_CODES.MARKET_UNAVAILABLE]: 502,
   [SITE_FUNCTION_CODES.MARKET_TIMEOUT]: 504,
   [SITE_FUNCTION_CODES.MARKET_RESPONSE]: 502,
+});
+const MODEL_STATUS = Object.freeze({
+  [SITE_FUNCTION_CODES.MODEL_AUTH_FAILED]: 502,
+  [SITE_FUNCTION_CODES.MODEL_FORBIDDEN]: 502,
+  [SITE_FUNCTION_CODES.MODEL_RATE_LIMITED]: 429,
+  [SITE_FUNCTION_CODES.MODEL_UNAVAILABLE]: 502,
+  [SITE_FUNCTION_CODES.MODEL_TIMEOUT]: 504,
+  [SITE_FUNCTION_CODES.MODEL_RESPONSE]: 502,
 });
 
 function jsonResponse(status, payload, extraHeaders = {}) {
@@ -217,9 +231,9 @@ async function callTransport(transport, stage, request) {
     }
     return { ok: true, rawText: result.rawText };
   } catch (error) {
-    if (error && error.code === SITE_FUNCTION_CODES.MODEL_TIMEOUT) {
-      return { ok: false, status: 504, code: SITE_FUNCTION_CODES.MODEL_TIMEOUT };
-    }
+    const code = error && typeof error.code === 'string' ? error.code : '';
+    const status = MODEL_STATUS[code];
+    if (status) return { ok: false, status, code };
     return { ok: false, status: 502, code: SITE_FUNCTION_CODES.MODEL_UNAVAILABLE };
   }
 }

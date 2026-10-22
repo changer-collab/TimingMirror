@@ -322,7 +322,7 @@ check('校验：非对象 → 拒绝', !validateRuleJson([1]).ok && !validateRul
   check('识别：预检失败不发请求', pre.status === 'error' && pre.stage === 'precheck' && calls.length === 1);
 
   const noKey = await recognizeRule('涨幅超过5%不买', { fetchImpl: async () => reply(503, { ok: false, code: 'E_MODEL_NOT_CONFIGURED', message: 'x' }) });
-  check('识别：503 未配置 → 提示 DASHSCOPE_API_KEY', noKey.status === 'error' && noKey.code === 'E_MODEL_NOT_CONFIGURED' && noKey.message.includes('DASHSCOPE_API_KEY') && noKey.httpStatus === 503);
+  check('识别：503 未配置 → 提示 DEEPSEEK_API_KEY', noKey.status === 'error' && noKey.code === 'E_MODEL_NOT_CONFIGURED' && noKey.message.includes('DEEPSEEK_API_KEY') && noKey.httpStatus === 503);
   const notFound = await recognizeRule('涨幅超过5%不买', { fetchImpl: async () => ({ ok: false, status: 404, json: async () => { throw new Error('html'); } }) });
   check('识别：404 非 JSON → E_RULE_SERVICE_STATUS 且说明 HTTP 404', notFound.code === C.STATUS && notFound.message.includes('HTTP 404'));
   const fnMissing = await recognizeRule('涨幅超过5%不买', { fetchImpl: async () => reply(404, { ok: false, code: 'E_FUNCTION_NOT_FOUND' }) });
