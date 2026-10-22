@@ -119,6 +119,7 @@ function deferredSiteResponse(body) {
   return { promise, resolve: () => resolve(siteHttpResponse({ body })) };
 }
 let marketResponseHook = null;
+let siteResponseHook = null;
 const resourceCalls = [];
 globalThis.fetch = async (url, options = {}) => {
   if (isMarketSnapshot(url)) {
@@ -129,6 +130,10 @@ globalThis.fetch = async (url, options = {}) => {
   }
   if (isSiteFunction(url)) {
     siteCalls.push({ url: String(url), options });
+    if (siteResponseHook) {
+      const hooked = siteResponseHook(String(url), options);
+      if (hooked) return hooked;
+    }
     const queued = siteQueue.shift();
     if (queued) return queued.promise ? queued.promise : siteHttpResponse(queued);
     return siteHttpResponse(siteResponse);
@@ -1479,6 +1484,150 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     && ruleTxt(hBS2).includes('距最近买入：3 个交易日') && ruleTxt(hBS2).includes('已超出买入后 2 个交易日窗口')
     && ruleTxt(hBS2).includes('可能存在未导出的窗口内买入'), ruleTxt(hBS2).slice(0, 500));
 
+  store.delete('tm.contracts.demo'); state.contracts = defaultContracts(); state.bill = defaultBill();
+}
+
+/* ==== 自定义规则参与情境测试：逐条辅助判定（隐私、失败回退、旧结果不覆盖新测试）==== */
+{
+  const ruleReply = (obj) => ({ status: 200, body: { rawText: JSON.stringify(obj) } });
+  const tickAck = async (checked = true) => { for (const fn of byRole('nl-ack').listeners.change ?? []) await fn({ target: { checked } }); };
+  const judgeReply = (obj) => ({ status: 200, body: { rawText: JSON.stringify(obj) } });
+  // 判定回包钩子：模拟站点服务端为模型回包附加 binding（真实链路在服务端完成；siteQueue 用于失败/丢弃类回包）。
+  const bindOf = (req) => ({
+    flow_id: req.flow_id, request_id: req.request_id, judgment_id: req.judgment_id,
+    rule_id: req.rule.rule_id ?? null, rule_hash: req.rule.hash, rule_version: req.rule.version,
+    rule_action: req.rule.action, scenario_symbol: req.scenario.symbol,
+    scenario_requested_date: req.scenario.requested_date, scenario_action: req.scenario.action,
+  });
+  let judgePlan = null;
+  siteResponseHook = (url, options) => {
+    if (!judgePlan || !String(url).endsWith('/api/llm/custom-rule-judgment')) return null;
+    const req = JSON.parse(String(options.body));
+    const reply = judgePlan(req);
+    return reply ? siteHttpResponse({ body: { rawText: JSON.stringify({ ...reply, binding: bindOf(req) }) } }) : null;
+  };
+  const runSim = async (symbol, date) => {
+    await fire(byRole('sim-symbol'), 'change', symbol);
+    await fire(byRole('sim-date'), 'input', date);
+    const btn = btnOf('测试该日买入是否触发规则') ?? btnOf('测试该日卖出是否触发规则');
+    for (const fn of btn.listeners.click ?? []) await fn({});
+    await settle();
+    return simTxt();
+  };
+  const saveCustom = async (text, action, symbol = null) => {
+    await openCustom();
+    await fire(byRole('nl-text'), 'input', text);
+    siteQueue.push(ruleReply({ status: 'custom', kind: 'custom', template_id: null, params: {}, scope: symbol ? { kind: 'symbol', symbol } : { kind: 'all', symbol: null }, action, needs: [], missing: [], understanding: '判定用自定义规则' }));
+    await clickRole('nl-recognize'); await settle();
+    await clickRole(`nl-action-${action}`); await tickAck();
+    await clickRole('nl-save'); await settle();
+  };
+  const setSimAction = async (action) => {
+    const b = roleBtn(`sim-action-${action}`);
+    for (const fn of b.listeners.click ?? []) await fn({});
+    await settle();
+  };
+
+  store.delete('tm.contracts.demo');
+  state.route = 'contract'; state.bill = defaultBill();
+  state.contracts = { ...defaultContracts(), marketSource: 'synthetic-fixture' };
+  mountCycle(); await settle();
+  await saveCustom('买入前核对自己的交易计划', 'buy');
+  const hCustom = enabledHashes()[0];
+  check('自定义规则·准备：保存为当前规则（买入提醒，全部股票）', !!hCustom && stored().length === 1 && stored()[0].schema === 'custom-v1', JSON.stringify(enabledHashes()));
+  await clickRole('add-rule');
+  await fire(fieldInput('threshold_pct'), 'input', '3'); await saveModal();
+  const hSurge = enabledHashes().find((h) => h !== hCustom);
+
+  const beforeCalls = siteCalls.length;
+  judgePlan = () => ({ verdict: 'triggered', reason: '按规则原文，该情境需要先核对交易计划。', used_data: ['change_pct'] });
+  const st1 = await runSim('000000', '2024-09-30');
+  const call1 = siteCalls[beforeCalls];
+  const body1 = call1 ? JSON.parse(call1.options.body) : null;
+  check('自定义规则·判定请求：发往独立路由 custom-rule-judgment，只含规则身份与最小数据（无价格/金额/完整交易明细）',
+    !!call1 && call1.url === '/functions/v1/app/api/llm/custom-rule-judgment'
+    && Object.keys(body1).sort().join() === 'data,flow_id,judgment_id,request_id,rule,scenario,stage'
+    && body1.stage === 'custom_rule_judgment'
+    && body1.rule.text === '买入前核对自己的交易计划' && body1.rule.action === 'buy' && body1.rule.schema === 'custom-v1'
+    && body1.scenario.symbol === '000000' && body1.scenario.requested_date === '2024-09-30' && body1.scenario.action === 'buy'
+    && Array.isArray(body1.data.buys) && Array.isArray(body1.data.sells) && Array.isArray(body1.data.trading_days)
+    && body1.data.buys.every((x) => /^\d{4}-\d{2}-\d{2}$/.test(x)) && body1.data.buys.length + body1.data.sells.length > 0
+    && !call1.options.body.includes('"price"') && !call1.options.body.includes('amount') && !call1.options.body.includes('trade_id'),
+    JSON.stringify(body1));
+  check('自定义规则·命中：与模板命中并存、逐条显示判断依据与使用的数据，不标注“AI 辅助分析”，并写明发送内容',
+    verdictOf(hCustom) === '命中' && verdictOf(hSurge) === '命中' && summaryOf('triggered') === '命中 2 条'
+    && ruleTxt(hCustom).includes('判断依据：按规则原文，该情境需要先核对交易计划。')
+    && ruleTxt(hCustom).includes('使用的数据：当日涨跌幅')
+    && !ruleTxt(hCustom).includes('AI 辅助分析')
+    && ruleTxt(hCustom).includes('不发送原始账单、CSV 文件、价格金额')
+    && ruleTxt(hCustom).includes('只用于复盘对照，不下单、不阻止交易'), ruleTxt(hCustom).slice(0, 500));
+
+  judgePlan = () => ({ verdict: 'not_triggered', reason: '规则条件与给定数据不符。', used_data: [] });
+  await runSim('000000', '2024-09-30');
+  check('自定义规则·未命中：仅在判定明确时显示，模板命中不受影响', verdictOf(hCustom) === '未命中' && verdictOf(hSurge) === '命中'
+    && summaryOf('not_triggered') === '未命中 1 条' && ruleTxt(hCustom).includes('判断依据：规则条件与给定数据不符。'), ruleTxt(hCustom).slice(0, 400));
+
+  judgePlan = () => ({ verdict: 'unable', reason: '规则需要持仓数据，本次未提供。', used_data: [] });
+  const stU = await runSim('000000', '2024-09-30');
+  check('自定义规则·判定无法确认：显示“无法判断”（不当作未命中）', verdictOf(hCustom) === '无法判断'
+    && ruleTxt(hCustom).includes('规则需要持仓数据，本次未提供。') && ruleTxt(hCustom).includes('本次不显示“未命中”')
+    && summaryOf('unable') === '无法判断 1 条' && !stU.includes('未命中 1 条'), ruleTxt(hCustom).slice(0, 400));
+
+  judgePlan = null;
+  siteQueue.push({ status: 503, body: { ok: false, code: 'E_MODEL_NOT_CONFIGURED', message: '模型未启用：服务端尚未配置 DASHSCOPE_API_KEY' } });
+  await runSim('000000', '2024-09-30');
+  check('自定义规则·服务失败：显示“无法判断”与原因码，规则结果不作命中判定', verdictOf(hCustom) === '无法判断'
+    && ruleTxt(hCustom).includes('E_MODEL_NOT_CONFIGURED') && ruleTxt(hCustom).includes('模型未启用'), ruleTxt(hCustom).slice(0, 400));
+
+  judgePlan = null;
+  siteQueue.push({ status: 200, body: { rawText: 'not-json' } });
+  await runSim('000000', '2024-09-30');
+  check('自定义规则·响应无效：显示“无法判断”，不当作未命中', verdictOf(hCustom) === '无法判断'
+    && ruleTxt(hCustom).includes('E_CUSTOM_RULE_JUDGMENT_RESPONSE_INVALID'), ruleTxt(hCustom).slice(0, 400));
+
+  judgePlan = null;
+  siteQueue.push(judgeReply({ verdict: 'triggered', reason: '过期运行的结果。', used_data: [], binding: { flow_id: 'custom-run-other', request_id: 'x', judgment_id: 'y', rule_id: null, rule_hash: hCustom, rule_version: 1, rule_action: 'buy', scenario_symbol: '000000', scenario_requested_date: '2024-09-30', scenario_action: 'buy' } }));
+  await runSim('000000', '2024-09-30');
+  check('自定义规则·绑定不一致：旧请求结果被丢弃，显示“无法判断”', verdictOf(hCustom) === '无法判断'
+    && ruleTxt(hCustom).includes('W_CUSTOM_RULE_JUDGMENT_BINDING_MISMATCH') && !ruleTxt(hCustom).includes('过期运行的结果'), ruleTxt(hCustom).slice(0, 400));
+
+  const staleDeferred = deferredSiteResponse({ rawText: JSON.stringify({ verdict: 'triggered', reason: '旧运行结果', used_data: [] }) });
+  judgePlan = null;
+  siteQueue.push(staleDeferred);
+  await runSim('000000', '2024-09-30');
+  check('自定义规则·判定中：请求期间显示“判定中…”', verdictOf(hCustom) === '判定中…', verdictOf(hCustom));
+  judgePlan = () => ({ verdict: 'not_triggered', reason: '新运行：明确未满足。', used_data: [] });
+  await runSim('000000', '2024-10-08');
+  check('自定义规则·情境变化：新测试采用新判定结果', verdictOf(hCustom) === '未命中' && ruleTxt(hCustom).includes('新运行：明确未满足。'), ruleTxt(hCustom).slice(0, 300));
+  staleDeferred.resolve(); await settle();
+  check('自定义规则·旧请求回包：不覆盖新测试', verdictOf(hCustom) === '未命中' && !simTxt().includes('旧运行结果'), verdictOf(hCustom));
+
+  await saveCustom('只针对 001234：买入前核对计划', 'buy', '001234');
+  const hScoped = enabledHashes().find((h) => h !== hCustom && h !== hSurge);
+  check('自定义规则·多规则：第二条自定义规则（限定 001234）保存为当前规则', !!hScoped && enabledHashes().length === 3, JSON.stringify(enabledHashes()));
+  const beforeScoped = siteCalls.length;
+  judgePlan = () => ({ verdict: 'not_triggered', reason: '全部股票规则：给定数据下明确不满足。', used_data: [] });
+  await runSim('000000', '2024-09-30');
+  check('自定义规则·范围筛选：限定 001234 的规则在 000000 情境显示“不适用”，不发起判定请求',
+    verdictOf(hScoped) === '不适用' && ruleTxt(hScoped).includes('001234')
+    && siteCalls.length === beforeScoped + 1, `${siteCalls.length - beforeScoped}`);
+  judgePlan = (req) => (req.rule.scope.kind === 'symbol'
+    ? { verdict: 'unable', reason: '规则需要持仓数据，本次未提供。', used_data: [] }
+    : { verdict: 'triggered', reason: '全部股票规则：该情境应提醒。', used_data: [] });
+  await runSim('001234', '2024-09-30');
+  check('自定义规则·单股情境：两条自定义规则分别判定（全部股票命中、限定 001234 无法判断），结果互不覆盖',
+    verdictOf(hCustom) === '命中' && verdictOf(hScoped) === '无法判断' && summaryOf('unable') === '无法判断 1 条'
+    && summaryOf('triggered') === '命中 2 条', `${verdictOf(hCustom)}|${verdictOf(hScoped)}|${verdictOf(hSurge)}`);
+
+  await setSimAction('sell');
+  const beforeSell = siteCalls.length;
+  await runSim('001234', '2024-09-30');
+  check('自定义规则·动作筛选：假如卖出时买入提醒类自定义规则显示“不适用”，不发起判定请求',
+    verdictOf(hCustom) === '不适用' && verdictOf(hScoped) === '不适用' && verdictOf(hSurge) === '不适用'
+    && siteCalls.length === beforeSell, `${verdictOf(hCustom)}|${verdictOf(hScoped)}`);
+  await setSimAction('buy');
+
+  siteResponseHook = null; judgePlan = null;
   store.delete('tm.contracts.demo'); state.contracts = defaultContracts(); state.bill = defaultBill();
 }
 

@@ -1714,6 +1714,7 @@ function simRuleOut(rule) {
   return {
     hash: rule.hash, short_hash: rule.short_hash, v: rule.v, status: rule.status, text: rule.text, template_id: rule.template_id, template_name: rule.template_name, fields_text: rule.fields_text,
     schema: rule.schema, scope: rule.scope, scope_text: rule.scope_text, timing: rule.timing, action: rule.action, action_label: actionLabel(rule.action), kind: rule.kind,
+    rule_id: rule.rule_id ?? null,
   };
 }
 
@@ -1809,9 +1810,64 @@ function simulationDisplay(result) {
   return { ...result, display_verdict };
 }
 
+// 自定义规则不走模板引擎（rule.parsed 为 null）：范围/动作不匹配直接“不适用”（不调用模型、不读行情）；
+// 适用的规则由页面层逐条请求模型辅助判定，这里只负责整理判定所需的最小情境数据（不上传价格、金额与其他标的记录）。
+const CUSTOM_CALENDAR_MAX_DAYS = 500;
+async function evaluateCustomRule(rule, { symbol, date, bill, marketSource, action }) {
+  const labels = contractSimLabels(marketSource);
+  const applies = scopeApplies(rule.scope, symbol) && actionApplies(rule.action, action);
+  const local = isLocalBill(bill);
+  const out = {
+    ok: false, label: labels.label, scopeNote: labels.scopeNote, symbol: symbol ?? null, requested_date: date ?? null, scenario_action: action,
+    rule: simRuleOut(rule),
+    verdict: null, code: null, message: '', change: null, match: null, date_mapping: null,
+    tradesSource: applies ? contractTradeSource(bill, labels.id) : null, uses_trades: false, in_market_cache: null,
+    custom: null,
+  };
+  if (!rule.integrity.ok) return { ...out, code: rule.integrity.code, message: rule.integrity.message };
+  const gated = scopeGate(out, rule, symbol, action);
+  if (gated) return gated;
+  if (local && !isConfirmedLocalBill(bill)) return { ...out, code: 'E_BILL_NOT_CONFIRMED', message: '本地账单校验未通过，禁止回退演示数据。' };
+  try {
+    const { source, trades } = await sourceTrades(bill, labels.id);
+    if (local) {
+      const boundary = localTradeBoundary(trades);
+      if (boundary.length) return { ...out, code: boundary[0].code, message: boundary.map((e) => e.message).join('；'), tradesSource: source };
+    }
+    const scope = labels.id === 'dynamic-tushare' ? contractMarketScope(trades, local) : null;
+    const market = (await loadMarket(labels.id, scope)).market;
+    out.in_market_cache = market.symbols.includes(symbol);
+    const change = dayChangePct(market, symbol, date);
+    const mapping = marketSource === 'signed-cache' ? null : dateMappingOf(date, change, market);
+    const buys = trades.filter((t) => t.side === 'buy' && t.symbol === symbol).map((t) => t.trade_date).sort();
+    const sells = trades.filter((t) => t.side === 'sell' && t.symbol === symbol).map((t) => t.trade_date).sort();
+    const anchor = [...buys, ...sells, date].sort()[0] ?? date;
+    const calendarAll = market.tradingDays.filter((d) => d >= anchor && d <= date);
+    const calendarTruncated = calendarAll.length > CUSTOM_CALENDAR_MAX_DAYS;
+    const data = {
+      symbol,
+      requested_date: date,
+      effective_date: change.complete ? change.effective_date : (mapping ? mapping.effective_date : null),
+      change_pct: change.complete ? change.change_pct : null,
+      market_label: labels.label,
+      buys,
+      sells,
+      trading_days: calendarTruncated ? calendarAll.slice(-CUSTOM_CALENDAR_MAX_DAYS) : calendarAll,
+      calendar_truncated: calendarTruncated,
+    };
+    return { ...out, ok: true, verdict: 'custom_pending', code: null, message: '', change, tradesSource: source, date_mapping: mapping, custom: { status: 'pending', data } };
+  } catch (e) {
+    const message = String(e && e.message ? e.message : e);
+    return local
+      ? { ...out, code: 'E_MARKET_SOURCE', message: `动态行情获取失败：${message}` }
+      : { ...out, code: CONTRACT_SIM_INPUT_INVALID, message: `情境输入无效：${message}` };
+  }
+}
+
 // 一次情境、所有当前规则逐条判定（各自走引擎链路，结果按规则分别返回，互不覆盖）；
 // 历史规则不参与；完整性失败的启用规则不参与判定，仅在 needs_reconfirm 中如实回传（不猜测、不改写记录）。
-// 本地账单使用动态行情并检查公司行为边界；示例账单按所选行情来源判定。
+// 模板规则走确定性引擎；自定义规则只做范围/动作筛选并整理最小情境数据（verdict=custom_pending），
+// 由页面层逐条请求模型辅助判定后再回填结果。本地账单使用动态行情并检查公司行为边界；示例账单按所选行情来源判定。
 export async function simulateContracts({ versions, symbol, date, bill, marketSource = DEFAULT_MARKET_SOURCE, action = 'buy' } = {}) {
   if (action !== 'buy' && action !== 'sell') throw new TypeError('情境动作须为 buy（假如买入）或 sell（假如卖出）');
   const { executable, needsReconfirm } = contractRuleSet(versions);
@@ -1820,11 +1876,14 @@ export async function simulateContracts({ versions, symbol, date, bill, marketSo
     template_name: r.template_name, fields_text: r.fields_text, code: r.integrity.code, message: r.integrity.message,
   }));
   const rulesUsed = executable.map((r) => ({ hash: r.hash, v: r.v, text: r.text, template_name: r.template_name, scope_text: r.scope_text, action: r.action, action_label: actionLabel(r.action) }));
-  const summary = { triggered: 0, not_triggered: 0, missing_data: 0, not_applicable: 0, error: 0 };
+  const summary = { triggered: 0, not_triggered: 0, missing_data: 0, not_applicable: 0, error: 0, unable: 0, custom_pending: 0 };
   const labels = contractSimLabels(marketSource);
   const results = [];
-  for (const rule of executable) results.push(simulationDisplay(await evaluateRuleDemo(rule, { symbol, date, bill, marketSource, action })));
-  for (const r of results) summary[r.display_verdict] += 1;
+  for (const rule of executable) {
+    if (rule.is_custom) results.push(simulationDisplay(await evaluateCustomRule(rule, { symbol, date, bill, marketSource, action })));
+    else results.push(simulationDisplay(await evaluateRuleDemo(rule, { symbol, date, bill, marketSource, action })));
+  }
+  for (const r of results) summary[r.display_verdict] = (summary[r.display_verdict] ?? 0) + 1;
   return {
     label: labels.label,
     scopeNote: labels.scopeNote,

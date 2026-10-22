@@ -54,6 +54,32 @@ export function createLocalFakeImportModel() {
       const fields = templateId === 'no_buy_back_within' ? { days: 3 } : { threshold_pct: 5 };
       return { rawText: JSON.stringify({ intent: 'contract_setup', confidence: 0.9, template_id: templateId, fields, clarify: null, unsupported: null }) };
     },
+    // 规则页自然语言识别（/api/llm/rule）：确定性草案，便于本地走查自定义规则全链路。
+    // 含「提醒/核对/检查」→ 自定义规则（动作/范围按文本推导）；文本含 [FAKE_INVALID_RESPONSE] → 无效回包。
+    async rule({ text }) {
+      await wait();
+      const t = String(text ?? '');
+      console.log(`[dev-fake] rule request chars=${t.length}`);
+      if (t.includes('[FAKE_INVALID_RESPONSE]')) return { rawText: 'not-json' };
+      if (/(提醒|核对|检查)/.test(t)) {
+        const action = t.includes('卖出') ? 'sell' : t.includes('买入') ? 'buy' : 'both';
+        const symbol = (t.match(/\d{6}/) ?? [null])[0];
+        return {
+          rawText: JSON.stringify({
+            status: 'custom', kind: 'custom', template_id: null, params: {},
+            scope: symbol ? { kind: 'symbol', symbol } : { kind: 'all', symbol: null },
+            action, needs: [], missing: [], understanding: '本地 fake：自定义提醒规则草案',
+          }),
+        };
+      }
+      return {
+        rawText: JSON.stringify({
+          status: 'template', kind: 'template', template_id: 'no_buy_on_surge',
+          params: { threshold_pct: 5 }, scope: { kind: 'all', symbol: null }, action: 'buy',
+          needs: [], missing: [], understanding: '本地 fake：模板规则草案',
+        }),
+      };
+    },
     async resultExplanation({ flow_id, request_id, rule, simulation }) {
       await wait();
       explanationCalls += 1;
@@ -85,6 +111,34 @@ export function createLocalFakeImportModel() {
           answer_text: rules.length
             ? `本次情景 ${symbol} 在 ${date} 没有匹配任何已锁定规则；已检查 ${rules.length} 条规则，其中 ${ineffective} 条不适用或数据不足。AI 只补充未命中理由，规则结果仍以本地判定为准。`
             : `本次情景 ${symbol} 在 ${date} 没有可匹配的已锁定规则；AI 只补充这一判断的理由，不会创建或保存规则。`,
+        }),
+      };
+    },
+    // 自定义规则情境判定（/api/llm/custom-rule-judgment）：服务端已校验请求并会附加 binding，这里只回判定 JSON。
+    // 规则文本含「核对」→ triggered，否则 not_triggered；[FAKE_UNABLE] → unable；[FAKE_JUDGE_INVALID] → 无效回包。
+    async customRuleJudgment({ rule, scenario, data }) {
+      await wait();
+      const hash = String(rule?.hash ?? '—').slice(0, 12);
+      console.log(`[dev-fake] custom-rule-judgment rule=${hash} symbol=${scenario?.symbol ?? '—'} date=${scenario?.requested_date ?? '—'}`);
+      const text = String(rule?.text ?? '');
+      if (text.includes('[FAKE_JUDGE_INVALID]')) return { rawText: 'not-json' };
+      if (text.includes('[FAKE_UNABLE]')) {
+        return { rawText: JSON.stringify({ verdict: 'unable', reason: '本地 fake：给定数据不足以确认这条规则的条件是否满足。', used_data: [] }) };
+      }
+      const used = [];
+      if (typeof scenario?.change_pct === 'number') used.push('change_pct');
+      if (Array.isArray(data?.buys) && data.buys.length) used.push('buys');
+      if (Array.isArray(data?.sells) && data.sells.length) used.push('sells');
+      if (Array.isArray(data?.trading_days) && data.trading_days.length) used.push('calendar');
+      const triggered = text.includes('核对');
+      const actWord = scenario?.action === 'sell' ? '卖出' : '买入';
+      return {
+        rawText: JSON.stringify({
+          verdict: triggered ? 'triggered' : 'not_triggered',
+          reason: triggered
+            ? `按规则「${text}」，${scenario?.symbol ?? '—'} 在 ${scenario?.requested_date ?? '—'} 的${actWord}情境需要先核对再操作；判定只用于提醒。`
+            : `按规则「${text}」，${scenario?.symbol ?? '—'} 在 ${scenario?.requested_date ?? '—'} 的给定数据下未满足提醒条件；判定只用于提醒。`,
+          used_data: used,
         }),
       };
     },

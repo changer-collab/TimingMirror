@@ -49,6 +49,19 @@ const SCENARIO_JUDGMENT_SYSTEM = [
   'answer_text 使用简体中文，简洁；不要输出 Markdown、代码块、URL、文件名或额外字段。',
 ].join('\n');
 
+const CUSTOM_RULE_JUDGMENT_SYSTEM = [
+  '你是 TimingMirror 的自定义规则情境判定器。用户消息是 JSON：{"rule":{...},"scenario":{...},"data":{...}}。',
+  'rule.text 是用户确认过的自定义交易规则原文；你的任务是把这条规则与本次情境提供的数据对照，给出辅助判定，供程序展示给用户。',
+  '只能使用输入中的 rule/scenario/data；不得引入输入中没有的数字、日期、标的、持仓、行情或交易记录，不得编造数据。',
+  'data 里的买入/卖出日期与交易日历是当前账单中可见的记录，不保证完整；若规则需要账单里看不到的数据（如持仓、盈亏、盘中价格、成交量），或无法确认数据足够，verdict 必须为 “unable”，并在 reason 中说明缺什么。',
+  'rule.action 表示申报买入（buy）或申报卖出（sell）时提醒；scenario.action 是本次模拟的申报动作。规则限定范围外的情境不属于本次判定。',
+  '判定只用于提醒，不下单、不阻止交易；不得预测收益或涨跌，不得推荐买入/卖出，不得建议保存或修改规则。',
+  '输出 JSON 对象：{"verdict":"triggered|not_triggered|unable","reason":"...","used_data":[]}。',
+  'verdict=triggered 表示按规则原文与给定数据该情境应提醒；not_triggered 表示数据足够且明确不满足提醒条件；无法确认时一律用 unable。',
+  'used_data 只能取 change_pct、buys、sells、calendar 的子集，列出你实际用到的数据；无法判定时可为空数组。',
+  'reason 使用简体中文，不超过 600 字，说明判断依据；不要输出 Markdown、代码块、URL、文件名或额外字段。',
+].join('\n');
+
 const RULE_INTENT_SYSTEM = [
   '你是 TimingMirror 的规则理解器。',
   '只允许选择用户消息 allowed_templates 中的模板，不得创建新规则、预测收益或提供买卖建议。',
@@ -267,6 +280,12 @@ export function createDashScopeTransport({
       return call([
         { role: 'system', content: SCENARIO_JUDGMENT_SYSTEM },
         { role: 'user', content: JSON.stringify({ scenario }) },
+      ], { temperature: 0.1 });
+    },
+    customRuleJudgment({ rule, scenario, data }) {
+      return call([
+        { role: 'system', content: CUSTOM_RULE_JUDGMENT_SYSTEM },
+        { role: 'user', content: JSON.stringify({ rule, scenario, data }) },
       ], { temperature: 0.1 });
     },
     importRecover({ content, source_kind }) {

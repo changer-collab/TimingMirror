@@ -5,12 +5,15 @@ import * as adapter from '../../demo/adapter.js';
 import { saveContractsDemo, defaultContracts } from '../../state.js';
 import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../../agent/httpTransport.js';
 import { createRuleFallback, pickScenarioForJudgment, ruleSetHash } from '../../agent/ruleFallback.js';
+import { createCustomRuleJudgment, CUSTOM_RULE_JUDGMENT_CODES } from '../../agent/customRuleJudgment.js';
 
 const VERDICT = {
   triggered: { text: '命中', kind: 'warn' },
   not_triggered: { text: '未命中', kind: 'ok' },
   missing_data: { text: '数据不足', kind: 'mode' },
   not_applicable: { text: '不适用', kind: 'mode' },
+  unable: { text: '无法判断', kind: 'mode' },
+  custom_pending: { text: '判定中…', kind: 'mode' },
 };
 // 买入后卖出提醒：账单没有“历史买入完整”依据，找不到窗口内买入时一律不显示“未命中”。
 const UNCONFIRMED_BUY_CODES = new Set(['E_BUY_HISTORY_UNCONFIRMED', 'E_BUY_OUTSIDE_WINDOW_UNCONFIRMED', 'E_SAME_DAY_BUY_UNCONFIRMED']);
@@ -19,9 +22,14 @@ const BUY_SELL_MISSING_NOTE = Object.freeze({
   E_BUY_OUTSIDE_WINDOW_UNCONFIRMED: '数据不足：当前账单里可见的最近买入已超出窗口，但可能存在未导出的窗口内买入；本次不显示“未命中”，也不作命中判定。',
   E_SAME_DAY_BUY_UNCONFIRMED: '数据不足：当前账单只有同日买入，成交先后顺序未知，且可能存在未导出的更早或窗口内买入；本次不显示“未命中”，也不作命中判定。',
 });
-const SUMMARY = [['triggered', '命中', 'warn'], ['not_triggered', '未命中', 'ok'], ['missing_data', '数据不足', 'mode'], ['not_applicable', '不适用', 'mode'], ['error', '无法判定', 'warn']];
+const SUMMARY = [['triggered', '命中', 'warn'], ['not_triggered', '未命中', 'ok'], ['missing_data', '数据不足', 'mode'], ['not_applicable', '不适用', 'mode'], ['unable', '无法判断', 'mode'], ['error', '无法判定', 'warn']];
 const SIM_CANDIDATE_LINE = '候选口径（待冻结）：规则只用于提醒，不自动交易，也不改变报告结论。';
 const ACTION_LABEL = Object.freeze({ buy: '买入提醒', sell: '卖出提醒' });
+// 自定义规则判定：与页面其他说明一致地写明发送内容；判定失败或数据不足时显示“无法判断”，不显示“未命中”。
+const CUSTOM_PENDING_NOTE = '正在结合本次情境数据判定这条自定义规则…';
+const CUSTOM_UNABLE_NOTE = '无法判断：本次不显示“未命中”，也不作命中判定。';
+const CUSTOM_DISCLOSURE = '这条自定义规则参与测试时，会把规则原文、提醒动作、适用范围、情境标的与日期、当日涨跌幅（如有）、该标的的买入与卖出日期和相关交易日历发送到站点服务端，由模型辅助理解后给出判定；不发送原始账单、CSV 文件、价格金额或其他标的的交易记录。判定只用于提醒，不下单、不阻止交易。';
+const CUSTOM_USED_DATA_LABEL = Object.freeze({ change_pct: '当日涨跌幅', buys: '买入日期', sells: '卖出日期', calendar: '交易日历' });
 const ACTION_NOTE = Object.freeze({
   buy: '涨幅超过阈值不买、卖出后 N 个交易日内不买回，归入买入提醒。',
   sell: '买入后 N 个交易日内卖出提醒，归入卖出提醒。',
@@ -43,6 +51,15 @@ function getFallbackClient() {
     });
   }
   return fallbackClient;
+}
+let customJudgeClient = null;
+function getCustomJudgeClient() {
+  if (!customJudgeClient) {
+    customJudgeClient = createCustomRuleJudgment({
+      transport: createHttpTransport({ baseUrl: SAME_ORIGIN_BASE, paths: SITE_FUNCTION_PATHS }),
+    });
+  }
+  return customJudgeClient;
 }
 const HISTORY_NOTE = '被新规则替代、手动停用的规则和旧演示记录都保留在这里，不参与测试；版本记录只追加、不删除。';
 const HISTORY_TAG = Object.freeze({ replaced: '已被替代', superseded: '已被替代', stopped: '已停用' });
@@ -599,6 +616,7 @@ export function renderContract(root, ctx) {
         if (applied) {
           set({ contracts: { sim: { ...state.contracts.sim, running: false, result, runId, fallback: null } } });
           runUnmatchedFallback({ result, versions: c.versions, runId, set, state });
+          runCustomJudgment({ result, runId, set, state });
         }
       },
     }, [c.sim.running ? '测试中…' : `测试该日${simAction === 'sell' ? '卖出' : '买入'}是否触发规则`]);
@@ -1134,6 +1152,57 @@ function setFallback(set, state, runId, fallback) {
   set({ contracts: { sim: { ...state.contracts.sim, fallback } } });
 }
 
+/* —— 自定义规则判定：范围/动作适用的自定义规则逐条请求模型辅助判定；失败一律“无法判断”，不显示“未命中”；
+      结果按规则分别回填（互不覆盖），只有绑定（运行标识 + 规则哈希/版本 + 情境）完全一致时才采用 —— */
+function resummarize(results) {
+  const summary = { triggered: 0, not_triggered: 0, missing_data: 0, not_applicable: 0, error: 0, unable: 0, custom_pending: 0 };
+  for (const r of results) summary[r.display_verdict] = (summary[r.display_verdict] ?? 0) + 1;
+  return summary;
+}
+
+function patchSimResult({ runId, set, state }, entry, patch) {
+  if (state.contracts.sim.runId !== runId) return;
+  const cur = state.contracts.sim.result;
+  if (!cur || !Array.isArray(cur.results)) return;
+  const i = cur.results.indexOf(entry);
+  if (i < 0) return;
+  const results = cur.results.slice();
+  results[i] = { ...entry, ...patch };
+  set({ contracts: { sim: { ...state.contracts.sim, result: { ...cur, results, summary: resummarize(results) } } } });
+}
+
+function runCustomJudgment({ result, runId, set, state }) {
+  if (!result || !Array.isArray(result.results)) return;
+  const pendings = result.results.filter((r) => r.display_verdict === 'custom_pending' && r.custom);
+  if (!pendings.length) return;
+  const judge = getCustomJudgeClient();
+  for (const entry of pendings) {
+    judge.judgeRule({ entry, runId })
+      .then((judged) => {
+        if (state.contracts.sim.runId !== runId) return;
+        if (judged.ok) {
+          const verdict = judged.verdict === 'triggered' ? 'triggered' : judged.verdict === 'not_triggered' ? 'not_triggered' : 'unable';
+          patchSimResult({ runId, set, state }, entry, {
+            verdict, display_verdict: verdict, code: null, message: judged.reason,
+            custom: { ...entry.custom, status: 'judged', judgment: { reason: judged.reason, used_data: judged.used_data } },
+          });
+        } else {
+          patchSimResult({ runId, set, state }, entry, {
+            verdict: 'unable', display_verdict: 'unable', code: judged.code, message: judged.message,
+            custom: { ...entry.custom, status: 'failed', failure: { code: judged.code, message: judged.message } },
+          });
+        }
+      })
+      .catch(() => {
+        patchSimResult({ runId, set, state }, entry, {
+          verdict: 'unable', display_verdict: 'unable',
+          code: CUSTOM_RULE_JUDGMENT_CODES.UNAVAILABLE, message: '自定义规则判定服务不可用',
+          custom: { ...entry.custom, status: 'failed', failure: { code: CUSTOM_RULE_JUDGMENT_CODES.UNAVAILABLE, message: '自定义规则判定服务不可用' } },
+        });
+      });
+  }
+}
+
 function runUnmatchedFallback({ result, versions, runId, set, state }) {
   if (!result) return;
   if (result.marketSourceId !== 'dynamic-tushare') {
@@ -1246,7 +1315,7 @@ function simBatch(b, fallback = null) {
   }
   const s = b.summary;
   box.append(el('div', { class: 'cv-sim-headline' }, [
-    `本次测试：${b.rules_n} 条规则中，命中 ${s.triggered} 条 / 未命中 ${s.not_triggered} 条 / 数据不足 ${s.missing_data} 条${s.not_applicable ? ` / 不适用 ${s.not_applicable} 条` : ''}${s.error ? ` / 无法判定 ${s.error} 条` : ''}`,
+    `本次测试：${b.rules_n} 条规则中，命中 ${s.triggered} 条 / 未命中 ${s.not_triggered} 条 / 数据不足 ${s.missing_data} 条${s.not_applicable ? ` / 不适用 ${s.not_applicable} 条` : ''}${s.unable ? ` / 无法判断 ${s.unable} 条` : ''}${s.custom_pending ? ` / 判定中 ${s.custom_pending} 条` : ''}${s.error ? ` / 无法判定 ${s.error} 条` : ''}`,
   ]));
   box.append(el('div', { class: 'cv-sim-used' }, [
     `本次测试使用的规则：${b.rules_used.map((r) => `${safe(r.template_name)}「${safe(r.text)}」（版本 v${safe(r.v)}${r.action_label ? `；提醒动作：${safe(r.action_label)}` : ''}${r.scope_text && r.scope_text !== '全部股票' ? `；适用范围：${safe(r.scope_text)}` : ''}）`).join('；')}`,
@@ -1297,10 +1366,51 @@ function simResult(r) {
     chip(r.scenario_action === 'sell' ? '情境：卖出' : '情境：买入', 'mode'),
     el('strong', {}, [safe(r.rule.text)]),
   ]));
-  box.append(el('div', { class: 'muted small' }, [`${safe(r.symbol)} · 申报日 ${safe(r.requested_date)} · ${safe(r.rule.template_name)} · ${r.rule.fields_text}`]));
+  box.append(el('div', { class: 'muted small' }, [`${safe(r.symbol)} · 申报日 ${safe(r.requested_date)} · ${safe(r.rule.template_name)}${r.rule.fields_text ? ` · ${r.rule.fields_text}` : ''}`]));
   if (r.date_mapping) box.append(el('div', { class: 'calc-line cv-date-mapping' }, [`申报日 ${r.date_mapping.requested_date} → ${r.date_mapping.has_price ? '实际使用交易日' : '映射交易日'} ${r.date_mapping.effective_date}：${r.date_mapping.message}`]));
   if (r.ok && r.verdict === 'not_applicable') {
     box.append(el('div', { class: 'calc-line' }, [safe(r.message)]));
+    box.append(el('div', { class: 'muted small' }, [r.label]));
+    return box;
+  }
+  // 自定义规则：判定中 / 命中 / 未命中 / 无法判断，展示与确定性判断一致（不标注“AI 辅助分析”）；
+  // 显示判断依据与实际使用的数据，并写明发送到服务端的内容。
+  if (r.custom) {
+    const j = r.custom.judgment;
+    if (r.custom.status === 'pending') {
+      box.append(el('div', { class: 'calc-line' }, [CUSTOM_PENDING_NOTE]));
+    } else if (r.custom.status === 'judged' && j) {
+      if (verdict === 'triggered') {
+        box.append(el('div', { class: 'cv-warning' }, [
+          el('strong', {}, ['规则提醒：此情境命中你确认的规则']),
+          el('div', { class: 'calc-line' }, [`规则：${safe(r.rule.text)}`]),
+          el('div', { class: 'calc-line' }, [`判断依据：${safe(j.reason)}`]),
+          el('div', { class: 'muted small' }, ['提醒：此提醒只用于复盘对照，不下单、不阻止交易。']),
+        ]));
+      } else if (verdict === 'not_triggered') {
+        box.append(el('div', { class: 'calc-line' }, [`判断依据：${safe(j.reason)}`]));
+      } else {
+        box.append(el('div', { class: 'calc-line' }, [`原因：${safe(j.reason)}`]));
+        box.append(el('div', { class: 'muted small' }, [CUSTOM_UNABLE_NOTE]));
+      }
+      box.append(el('div', { class: 'calc-line cv-custom-used' }, [`使用的数据：${j.used_data.length ? j.used_data.map((u) => CUSTOM_USED_DATA_LABEL[u] ?? u).join('、') : '仅规则原文与情境信息'}`]));
+    } else {
+      box.append(el('div', { class: 'calc-line' }, [safe(r.message) || '未提供具体原因']));
+      box.append(el('div', { class: 'muted small' }, [CUSTOM_UNABLE_NOTE]));
+      box.append(el('details', { class: 'cv-tech-note' }, [
+        el('summary', {}, ['技术详情（原因码）']),
+        el('div', { class: 'muted small' }, [safe(r.code)]),
+      ]));
+    }
+    const data = r.custom.data ?? {};
+    box.append(el('div', { class: 'muted small cv-custom-data' }, [
+      `本次判定可用数据：${safe(data.market_label)}（当日涨跌幅${data.change_pct !== null && data.change_pct !== undefined ? '可用' : '暂缺'}）；该标的账单记录：买入 ${(data.buys ?? []).length} 笔、卖出 ${(data.sells ?? []).length} 笔（只使用日期）；交易日历 ${(data.trading_days ?? []).length} 天${data.calendar_truncated ? '（超出部分未发送）' : ''}。`,
+    ]));
+    box.append(el('div', { class: 'muted small cv-custom-disclosure' }, [CUSTOM_DISCLOSURE]));
+    box.append(el('details', { class: 'cv-tech-note' }, [
+      el('summary', {}, ['技术信息（规则哈希）']),
+      el('div', { class: 'muted small cv-hash' }, [`${adapter.CONTRACT_HASH_NOTE}：${safe(r.rule.hash)}`]),
+    ]));
     box.append(el('div', { class: 'muted small' }, [r.label]));
     return box;
   }
