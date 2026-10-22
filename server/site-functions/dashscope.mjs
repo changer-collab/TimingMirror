@@ -39,6 +39,16 @@ const RESULT_EXPLANATION_SYSTEM = [
   'answer_text 使用简体中文，简洁；不要输出 Markdown、代码块、URL、文件名或额外字段。',
 ].join('\n');
 
+const SCENARIO_JUDGMENT_SYSTEM = [
+  '你是 TimingMirror 的模拟情景判断器。用户消息是 JSON：{"scenario":{...}}。',
+  '后端确定性规则已经判定：scenario.rules 中没有任何一条规则命中；你只能解释当前情景为什么没有匹配任何已锁定规则。',
+  '不得声称任何规则命中，不得创建、修改或建议保存规则，不得预测收益或涨跌，不得推荐买入/卖出，不得做组合或总收益结论。',
+  '只能使用输入中的情景事实、规则模板/参数/版本和逐项 verdict；不得引入输入中没有的数字、日期、标的或规则。',
+  '如果规则列表为空，说明当前没有已锁定规则可供匹配；如果规则数据不足，如实说明缺少什么，不猜测。',
+  '输出 JSON 对象：{"judgment":"no_match","answer_text":"..."}。',
+  'answer_text 使用简体中文，简洁；不要输出 Markdown、代码块、URL、文件名或额外字段。',
+].join('\n');
+
 const RULE_INTENT_SYSTEM = [
   '你是 TimingMirror 的规则理解器。',
   '只允许选择用户消息 allowed_templates 中的模板，不得创建新规则、预测收益或提供买卖建议。',
@@ -251,6 +261,12 @@ export function createDashScopeTransport({
       return call([
         { role: 'system', content: RESULT_EXPLANATION_SYSTEM },
         { role: 'user', content: JSON.stringify({ rule, simulation }) },
+      ], { temperature: 0.1 });
+    },
+    scenarioJudgment({ scenario }) {
+      return call([
+        { role: 'system', content: SCENARIO_JUDGMENT_SYSTEM },
+        { role: 'user', content: JSON.stringify({ scenario }) },
       ], { temperature: 0.1 });
     },
     importRecover({ content, source_kind }) {

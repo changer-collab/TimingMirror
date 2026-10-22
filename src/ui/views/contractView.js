@@ -3,6 +3,8 @@
 import { el, chip } from '../components.js';
 import * as adapter from '../../demo/adapter.js';
 import { saveContractsDemo, defaultContracts } from '../../state.js';
+import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../../agent/httpTransport.js';
+import { createRuleFallback, pickScenarioForJudgment, ruleSetHash } from '../../agent/ruleFallback.js';
 
 const VERDICT = {
   triggered: { text: '命中', kind: 'warn' },
@@ -32,6 +34,16 @@ const REPLACE_NOTE = '保存后，新规则会立即生效；当前同类型规�
 const STOP_NOTE = '停用后，该规则进入历史规则，不再参与之后的历史情境测试；可随时恢复为当前规则。';
 const RECONFIRM_NOTE = '这条规则的保存内容与当前校验标识不一致。为避免误用，它暂不参与测试。请核对后用“新增规则”重新保存，或停用该规则。';
 const EMPTY_NOTE = '暂无当前生效的规则，测试时不会产生规则提醒。点击“新增规则”开始设置。';
+
+let fallbackClient = null;
+function getFallbackClient() {
+  if (!fallbackClient) {
+    fallbackClient = createRuleFallback({
+      transport: createHttpTransport({ baseUrl: SAME_ORIGIN_BASE, paths: SITE_FUNCTION_PATHS }),
+    });
+  }
+  return fallbackClient;
+}
 const HISTORY_NOTE = '被新规则替代、手动停用的规则和旧演示记录都保留在这里，不参与测试；版本记录只追加、不删除。';
 const HISTORY_TAG = Object.freeze({ replaced: '已被替代', superseded: '已被替代', stopped: '已停用' });
 const NL_INTRO = '用一句话描述你想遵守的交易规则，系统会识别并生成规则预览；识别与关键词检查只是辅助，请对照原话核对。你确认后才会保存并启用，取消或修改描述都不会生效。';
@@ -188,7 +200,7 @@ export function renderContract(root, ctx) {
   function commitAll(recs, extra = {}) {
     if (!recs || !recs.length) return;
     simToken = null;
-    set({ contracts: { versions: [...c.versions, ...recs], sim: { ...c.sim, result: null, running: false, runId: null }, ...extra } });
+    set({ contracts: { versions: [...c.versions, ...recs], sim: { ...c.sim, result: null, running: false, runId: null, fallback: null }, ...extra } });
     saveContractsDemo();
   }
   function openEditor(mode, { rule = null, template_id = null } = {}) {
@@ -469,7 +481,7 @@ export function renderContract(root, ctx) {
           if (marketSource === o.id) return;
           simToken = null;
           simContextLoadingKey = null;
-          set({ contracts: { marketSource: o.id, simContext: null, sim: { ...state.contracts.sim, result: null, running: false, runId: null } } });
+          set({ contracts: { marketSource: o.id, simContext: null, sim: { ...state.contracts.sim, result: null, running: false, runId: null, fallback: null } } });
         },
       }, [o.label]));
     }
@@ -531,10 +543,10 @@ export function renderContract(root, ctx) {
       simContextLoadingKey = src.key;
       adapter.contractSimContext({ bill: state.bill, marketSource })
         .then((d) => {
-          if (d.error) return { simContext: d, sim: { ...state.contracts.sim, result: null, running: false, runId: null } };
+          if (d.error) return { simContext: d, sim: { ...state.contracts.sim, result: null, running: false, runId: null, fallback: null } };
           const cur = state.contracts.sim;
           const symbol = d.symbols.some((s) => s.symbol === cur.symbol) ? cur.symbol : d.symbols[0]?.symbol ?? '';
-          return { simContext: d, sim: { ...cur, symbol, date: cur.date && cur.date >= d.range.start && cur.date <= d.range.end ? cur.date : d.asOfDate, result: null, runId: null } };
+          return { simContext: d, sim: { ...cur, symbol, date: cur.date && cur.date >= d.range.start && cur.date <= d.range.end ? cur.date : d.asOfDate, result: null, runId: null, fallback: null } };
         })
         .catch((e) => ({ simContext: { error: String(e && e.message ? e.message : e), sourceKey: src.key } }))
         .then((patch) => {
@@ -566,7 +578,7 @@ export function renderContract(root, ctx) {
         onclick: () => {
           if (simAction === o.id) return;
           simToken = null;
-          set({ contracts: { sim: { ...state.contracts.sim, action: o.id, result: null, running: false, runId: null } } });
+          set({ contracts: { sim: { ...state.contracts.sim, action: o.id, result: null, running: false, runId: null, fallback: null } } });
         },
       }, [o.label]));
     }
@@ -577,12 +589,12 @@ export function renderContract(root, ctx) {
     ]));
     const symSelect = el('select', {
       class: 'input', 'data-role': 'sim-symbol',
-      onchange: (e) => { simToken = null; c.sim = { ...c.sim, symbol: e.target.value, result: null, running: false, runId: null }; paintSim(); },
+      onchange: (e) => { simToken = null; c.sim = { ...c.sim, symbol: e.target.value, result: null, running: false, runId: null, fallback: null }; paintSim(); },
     }, sc.symbols.map((s) => el('option', { value: s.symbol, selected: s.symbol === c.sim.symbol ? 'selected' : null }, [
       `${s.symbol}${s.in_bill && src.kind === 'user_bill' ? '（账单标的）' : ''}${s.in_market_cache ? '' : '（不在本次行情）'}`,
     ])));
     const dateInput = el('input', { class: 'input cv-input', type: 'date', 'data-role': 'sim-date', value: c.sim.date });
-    dateInput.addEventListener('input', (e) => { simToken = null; c.sim = { ...c.sim, date: e.target.value, result: null, running: false, runId: null }; paintSim(); });
+    dateInput.addEventListener('input', (e) => { simToken = null; c.sim = { ...c.sim, date: e.target.value, result: null, running: false, runId: null, fallback: null }; paintSim(); });
     simBtn = el('button', {
       class: 'btn primary',
       onclick: async () => {
@@ -590,10 +602,13 @@ export function renderContract(root, ctx) {
         const token = {};
         simToken = token;
         const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        set({ contracts: { sim: { ...state.contracts.sim, running: true, result: null, runId } } });
+        set({ contracts: { sim: { ...state.contracts.sim, running: true, result: null, runId, fallback: null } } });
         const result = await adapter.simulateContracts(req);
         const applied = simToken === token && adapter.contractTradeSource(state.bill, marketSource).key === src.key;
-        if (applied) set({ contracts: { sim: { ...state.contracts.sim, running: false, result, runId } } });
+        if (applied) {
+          set({ contracts: { sim: { ...state.contracts.sim, running: false, result, runId, fallback: null } } });
+          runUnmatchedFallback({ result, versions: c.versions, runId, set, state });
+        }
       },
     }, [c.sim.running ? '测试中…' : `测试该日${simAction === 'sell' ? '卖出' : '买入'}是否触发规则`]);
     sim.append(el('div', { class: 'row' }, [
@@ -615,7 +630,7 @@ export function renderContract(root, ctx) {
 
   function paintSim() {
     if (simBtn) simBtn.disabled = !!c.sim.running;
-    simResultBox.replaceChildren(...(c.sim.result ? [simBatch(c.sim.result)] : []));
+    simResultBox.replaceChildren(...(c.sim.result ? [simBatch(c.sim.result, c.sim.fallback)] : []));
   }
   paintSim();
 
@@ -1109,7 +1124,108 @@ export function renderContract(root, ctx) {
   }
 }
 
-function simBatch(b) {
+function setFallback(set, state, runId, fallback) {
+  if (state.contracts.sim.runId !== runId) return;
+  set({ contracts: { sim: { ...state.contracts.sim, fallback } } });
+}
+
+function runUnmatchedFallback({ result, versions, runId, set, state }) {
+  if (!result) return;
+  if (result.marketSourceId !== 'dynamic-tushare') {
+    setFallback(set, state, runId, { status: 'skipped', reason: 'non_dynamic_market', message: '当前不是动态行情情境：不调用 AI 判断' });
+    return;
+  }
+  const current = adapter.contractRuleSet(versions).current;
+  const picked = pickScenarioForJudgment({ simulation: result, currentRules: current });
+  if (!picked.ok) {
+    setFallback(set, state, runId, { status: 'skipped', reason: picked.code, message: picked.message });
+    return;
+  }
+  const expectedRuleSetHash = ruleSetHash(current.map((r) => r.hash));
+  setFallback(set, state, runId, {
+    status: 'pending',
+    rule_count: current.length,
+    scenario_id: `scenario-${runId}`,
+    rule_set_hash: expectedRuleSetHash,
+  });
+  getFallbackClient().judgeScenario({ simulation: result, currentRules: current, runId })
+    .then((judged) => {
+      if (state.contracts.sim.runId !== runId) return;
+      const currentNow = adapter.contractRuleSet(state.contracts.versions).current;
+      if (ruleSetHash(currentNow.map((r) => r.hash)) !== expectedRuleSetHash) {
+        setFallback(set, state, runId, { status: 'skipped', reason: 'rule_changed', message: '规则已变化：本次 AI 判断已丢弃' });
+        return;
+      }
+      setFallback(set, state, runId, judged.ok
+        ? {
+          status: 'ok',
+          rule_count: current.length,
+          scenario_id: judged.binding.scenario_id,
+          rule_set_hash: judged.binding.rule_set_hash,
+          judgment: judged.judgment,
+          answer_text: judged.answer_text,
+          request_id: judged.binding.request_id,
+        }
+        : {
+          status: 'failed',
+          rule_count: current.length,
+          scenario_id: `scenario-${runId}`,
+          rule_set_hash: expectedRuleSetHash,
+          code: judged.code,
+          message: judged.message,
+        });
+    })
+    .catch(() => {
+      setFallback(set, state, runId, {
+        status: 'failed',
+        rule_count: current.length,
+        scenario_id: `scenario-${runId}`,
+        rule_set_hash: expectedRuleSetHash,
+        code: 'W_RULE_FALLBACK_UNAVAILABLE',
+        message: 'AI 判断不可用；规则结果仍以本地判定为准',
+      });
+    });
+}
+
+function fallbackBlock(fallback) {
+  if (!fallback) return null;
+  if (fallback.status === 'pending') {
+    return el('div', { class: 'cv-ai-fallback' }, [
+      el('div', { class: 'cv-ai-fallback-head' }, ['AI 判断（未匹配已锁定规则）']),
+      el('div', { class: 'muted small' }, ['正在请求 AI 判断理由…已有规则命中时不会调用。']),
+    ]);
+  }
+  if (fallback.status === 'ok') {
+    return el('div', { class: 'cv-ai-fallback' }, [
+      el('div', { class: 'cv-ai-fallback-head' }, ['AI 判断（未匹配已锁定规则）']),
+      el('div', { class: 'calc-line' }, [safe(fallback.answer_text)]),
+      el('div', { class: 'muted small' }, ['AI 只解释未匹配原因；不改写规则、不自动保存，也不覆盖本地规则判定。']),
+      el('details', { class: 'cv-tech-note' }, [
+        el('summary', {}, ['技术详情（规则集与请求）']),
+        el('div', { class: 'muted small' }, [`规则集 ${fallback.rule_set_hash} · ${fallback.rule_count ?? 0} 条 · ${fallback.scenario_id ?? '无情景号'} · ${fallback.request_id ?? '无请求号'}`]),
+      ]),
+    ]);
+  }
+  if (fallback.status === 'failed') {
+    return el('div', { class: 'cv-ai-fallback' }, [
+      el('div', { class: 'cv-ai-fallback-head' }, ['AI 判断未生成']),
+      el('div', { class: 'calc-line' }, ['规则结果仍以本地判定为准，不会用 AI 结论覆盖。']),
+      el('details', { class: 'cv-tech-note' }, [
+        el('summary', {}, ['技术详情（原因码）']),
+        el('div', { class: 'muted small' }, [`${fallback.code ?? '—'}${fallback.message ? ` · ${fallback.message}` : ''}`]),
+      ]),
+    ]);
+  }
+  if (fallback.status === 'skipped' && fallback.reason === 'W_RULE_FALLBACK_RULE_HIT') {
+    return el('div', { class: 'cv-ai-fallback is-skipped' }, ['已有规则命中：以规则判定为准，未调用 AI 判断。']);
+  }
+  if (fallback.status === 'skipped') {
+    return el('div', { class: 'cv-ai-fallback is-skipped' }, [fallback.message || '本次不调用 AI 判断。']);
+  }
+  return null;
+}
+
+function simBatch(b, fallback = null) {
   const box = el('div', { class: 'cv-sim-batch' });
   box.append(el('div', { class: 'row' }, [el('strong', {}, [`${safe(b.symbol)} · 申报日 ${safe(b.requested_date)} · ${b.scenario_action === 'sell' ? '假如卖出' : '假如买入'}`])]));
   const reconfirmNote = b.needs_reconfirm_n
@@ -1117,6 +1233,8 @@ function simBatch(b) {
     : null;
   if (b.empty) {
     box.append(el('div', { class: 'cv-sim-empty' }, ['本次没有当前生效的规则参与判定，不会产生规则提醒（不等于“未命中”）。']));
+    const emptyFallback = fallbackBlock(fallback);
+    if (emptyFallback) box.append(emptyFallback);
     if (reconfirmNote) box.append(reconfirmNote);
     box.append(el('div', { class: 'muted small' }, [b.label]));
     return box;
@@ -1129,6 +1247,8 @@ function simBatch(b) {
     `本次测试使用的规则：${b.rules_used.map((r) => `${safe(r.template_name)}「${safe(r.text)}」（版本 v${safe(r.v)}${r.action_label ? `；提醒动作：${safe(r.action_label)}` : ''}${r.scope_text && r.scope_text !== '全部股票' ? `；适用范围：${safe(r.scope_text)}` : ''}）`).join('；')}`,
   ]));
   box.append(el('div', { class: 'row cv-sim-summary' }, SUMMARY.map(([k, label, kind]) => el('span', { class: `chip ${kind}`, 'data-verdict': k }, [`${label} ${b.summary[k] ?? 0} 条`]))));
+  const aiFallback = fallbackBlock(fallback);
+  if (aiFallback) box.append(aiFallback);
   box.append(el('div', { class: 'muted small' }, ['每种类型的当前规则在同一情境下分别判定，结果互不覆盖；历史规则不参与。买入提醒类规则只在“假如买入”情境判定，卖出提醒类规则只在“假如卖出”情境判定，另一类显示“不适用”且不读取行情或交易。涨幅规则只用行情，不追回和买入后卖出提醒读取账单交易。']));
   box.append(el('div', { class: 'muted small cv-sim-timing' }, ['这是基于日线与交易日期的历史复盘：涨幅按收盘数据计算，只能在收盘后得到，不是盘中实时提醒；账单没有成交时刻，同日买入不计为“买入后”。规则只做提醒，不下单、不阻止交易，也不是实时监控。']));
   if (reconfirmNote) box.append(reconfirmNote);

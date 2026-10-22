@@ -3,10 +3,14 @@ import { state as shared, notify, loadContractsDemo } from '../../src/state.js';
 import { getRuleAssistantClient, renderAssistantPanel } from '../../src/ui/assistantPanel.js';
 import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../../src/agent/httpTransport.js';
 import { createImportRecovery } from '../../src/agent/importRecovery.js';
+import { createChatOnline } from '../../src/agent/chatOnline.js';
 import { renderContract } from '../../src/ui/views/contractView.js';
 import { renderRealImport } from './realImport.js';
+import { getRealReportBundle, loadRealReport } from './realReport.js';
+import { ruleStateOf, loadProfile } from './profileStore.js';
+import { openRuleCandidate } from './ruleCandidates.js';
 
-const MOBILE_BREAKPOINT = 1280;
+const MOBILE_BREAKPOINT = 680;
 const OLD_CSS = '/src/ui/styles.css';
 
 // 规则视图运行在 shadow root 中。样式文本先缓存，再同步写入每个 shadow root，
@@ -91,7 +95,9 @@ const SHADOW_STYLE = `
 
 let onChangeCallback = null;
 let recoveryClient = null;
+let qaOnlineClient = null;
 let currentRoute = 'home';
+let lastMobileLayout = null;
 let demoSelected = false;
 let realRulesRequested = false;
 let rulesRestored = false;
@@ -156,6 +162,11 @@ function scrollToSimulation() {
   }
 }
 
+function getQaOnlineClient() {
+  if (!qaOnlineClient) qaOnlineClient = createChatOnline();
+  return qaOnlineClient;
+}
+
 const ctx = {
   state: shared,
   set,
@@ -163,8 +174,17 @@ const ctx = {
   importRecovery: getRecoveryClient(),
   ruleAssistantClient: getRuleAssistantClient(),
   assistantTitle: 'AI 助手',
-  assistantSubtitle: '账单、规则与结果上下文',
+  assistantSubtitle: '当前页面与已发布报告',
   assistantShowFactLink: true,
+  globalAssistant: true,
+  qaDeps: {
+    getReportBundle: (bill) => getRealReportBundle(bill),
+    loadReportBundle: (bill) => loadRealReport(bill),
+    askOnline: ({ question, review }) => getQaOnlineClient().ask({ question, review }),
+    ruleStateOf,
+    loadProfile,
+    openRuleCandidate,
+  },
   scrollToSimulation,
   setRuleModal,
 };
@@ -176,10 +196,8 @@ export function initBridge({ onChange } = {}) {
     rulesRestored = true;
   }
   loadOldCss();
-  const wide = typeof window !== 'undefined' && Number.isFinite(window.innerWidth)
-    ? window.innerWidth >= MOBILE_BREAKPOINT
-    : true;
-  shared.assistant.open = wide;
+  lastMobileLayout = mobileLayout();
+  shared.assistant.open = !lastMobileLayout;
   shared.assistant.mobileView = false;
   return { state: shared, ctx };
 }
@@ -340,8 +358,7 @@ export function mountContractView(host) {
 
 export function renderAssistant() {
   const root = document.getElementById('tm-assistant-root');
-  if (!root) return;
-  renderAssistantPanel(root, ctx);
+  if (root) renderAssistantPanel(root, ctx);
   applyAssistantShell();
 }
 
@@ -361,9 +378,10 @@ function mobileLayout() {
 export function toggleAssistant() {
   if (mobileLayout()) {
     shared.assistant.mobileView = shared.assistant.mobileView !== true;
-    shared.assistant.open = true;
+    shared.assistant.open = shared.assistant.mobileView;
   } else {
     shared.assistant.open = shared.assistant.open !== true;
+    shared.assistant.mobileView = false;
   }
   renderAssistant();
 }
@@ -395,9 +413,18 @@ export function applyAssistantShell() {
 }
 
 export function onViewportChange() {
-  if (!mobileLayout()) {
+  const mobile = mobileLayout();
+  if (lastMobileLayout === null) lastMobileLayout = mobile;
+  if (mobile !== lastMobileLayout) {
+    if (mobile) {
+      shared.assistant.mobileView = shared.assistant.open === true;
+    } else {
+      shared.assistant.open = shared.assistant.mobileView === true;
+      shared.assistant.mobileView = false;
+    }
+    lastMobileLayout = mobile;
+  } else if (!mobile) {
     shared.assistant.mobileView = false;
   }
-  applyAssistantShell();
   renderAssistant();
 }

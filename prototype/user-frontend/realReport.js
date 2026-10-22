@@ -42,9 +42,33 @@ function displayOf(fact) {
   return '—';
 }
 
-function factValue(fact) {
+export function factDisplay(fact) {
   if (fact?.key === 'heldShares' && Number.isFinite(fact.value)) return `${fact.value} 股`;
   return displayOf(fact);
+}
+
+export function factProvenance(bundle, fact) {
+  if (!bundle || !fact) return null;
+  const items = Array.isArray(bundle.provenance?.items)
+    ? bundle.provenance.items
+    : (Array.isArray(bundle.review?.provenance?.items) ? bundle.review.provenance.items : []);
+  const factId = fact.provenance_fact_id ?? fact.fact_id;
+  const item = items.find((x) => x && x.fact_id === factId);
+  if (!item) return null;
+  const verifyFacts = Array.isArray(bundle.review?.verify?.facts) ? bundle.review.verify.facts : [];
+  const verifyFact = verifyFacts.find((x) => x && (x.fact_id === factId || x.fact_id === fact.fact_id)) ?? null;
+  const verifyVerdict = verifyFact?.verdict ?? null;
+  return {
+    fact_id: item.fact_id,
+    formula_id: item.formula_id ?? fact.formula_id ?? null,
+    formula_text: item.formula_text ?? null,
+    source_refs: Array.isArray(item.source_refs) ? item.source_refs : [],
+    steps: Array.isArray(item.steps) ? item.steps.map((s) => ({ label: s.label, detail: s.detail })) : [],
+    blocked: item.blocked === true || verifyVerdict === 'fail',
+    verify_verdict: verifyVerdict,
+    verify_reasons: Array.isArray(verifyFact?.reasons) ? verifyFact.reasons : [],
+    verify_id: bundle.review?.meta?.verify_id ?? null,
+  };
 }
 
 function isDemoBundle(bundle, bill) {
@@ -308,13 +332,51 @@ function candidateSection(candidate) {
   </section>`;
 }
 
+function sourceLineText(ref) {
+  if (!ref) return '源行不可定位';
+  const row = Number.isFinite(ref.line) ? ` 第 ${ref.line} 行` : '';
+  return `${ref.file ?? '源行不可定位'}${row}（${ref.key ?? '—'}）`;
+}
+
+export function factDetail(fact, bundle) {
+  const label = FACT_LABELS[fact.key] ?? fact.key;
+  const provenance = factProvenance(bundle, fact);
+  if (!provenance) {
+    return `<details class="rp-fact-detail"><summary>${esc(label)} · 查看来源</summary><p class="rp-caption">当前事实没有可展开的计算路径。</p></details>`;
+  }
+  const refs = provenance.source_refs;
+  const shown = refs.slice(0, 8);
+  const allSources = refs.length > shown.length
+    ? `<details class="rp-more-sources"><summary>查看全部 ${refs.length} 笔来源</summary><ul>${refs.map((ref) => `<li>${esc(sourceLineText(ref))}</li>`).join('')}</ul></details>`
+    : '';
+  const review = `复核：${provenance.verify_verdict ?? '—'}${provenance.verify_id ? ` · ${provenance.verify_id}` : ''}${provenance.blocked ? ' · 路径被阻断' : ''}`;
+  const reasons = provenance.verify_reasons.length
+    ? `<p><strong>复核原因</strong> ${esc(provenance.verify_reasons.map((r) => `${r.code ?? '—'}：${r.message ?? r.kind ?? '—'}`).join('；'))}</p>`
+    : '';
+  const steps = provenance.steps.length
+    ? `<details class="rp-fact-steps"><summary>计算步骤</summary><ol>${provenance.steps.map((s) => `<li><strong>${esc(s.label ?? '步骤')}</strong>：${esc(s.detail ?? '—')}</li>`).join('')}</ol></details>`
+    : '';
+  return `<details class="rp-fact-detail">
+    <summary>${esc(label)} · 查看来源</summary>
+    <p><strong>公式</strong> ${esc(provenance.formula_id ?? '—')}${provenance.formula_text ? `：${esc(provenance.formula_text)}` : ''}</p>
+    <p><strong>成交行</strong> ${esc(shown.map(sourceLineText).join('；') || '未提供')}${refs.length > shown.length ? '（已显示前 8 笔）' : ''}</p>
+    ${allSources}
+    <p><strong>${esc(review)}</strong></p>
+    ${reasons}
+    ${steps}
+  </details>`;
+}
+
 function basisSection(bundle, demo) {
   const published = (bundle.review?.published_facts ?? []).filter((fact) => (fact.scope || 'portfolio') === 'portfolio');
-  const rows = published.filter((fact) => FACT_LABELS[fact.key]).map((fact) => `<div><dt>${esc(FACT_LABELS[fact.key])}</dt><dd>${esc(factValue(fact))}</dd></div>`).join('');
+  const facts = published.filter((fact) => FACT_LABELS[fact.key]);
+  const rows = facts.map((fact) => `<div><dt>${esc(FACT_LABELS[fact.key])}</dt><dd>${esc(factDisplay(fact))}</dd></div>`).join('');
+  const details = facts.map((fact) => factDetail(fact, bundle)).join('');
   return `<section class="report-section rp-basis-section">
     <details class="rp-basis">
       <summary><span>核对数据</span><small>${published.length} 项已复核</small><i class="rp-basis-plus" aria-hidden="true">+</i></summary>
       <dl class="rp-basis-grid">${rows}</dl>
+      <div class="rp-provenance-list">${details}</div>
       <p class="rp-caption">按成交价计算，不含费用与税费；数字由本地确定性引擎生成并复核。${demo ? '示例数据只用于演示。' : ''}</p>
     </details>
   </section>`;
@@ -325,6 +387,7 @@ function footnote(vis) {
   return `<footer class="rp-footnote">
     <p>这是一次事后对照，不预测未来，也不构成投资建议。</p>
     ${supplemental ? '<p>补充图表和规则候选为候选口径，不进入已复核事实。</p>' : ''}
+    ${vis.candidate ? '' : '<p>想把下一次的决定写成规则？<a href="#/rules">去规则页看看现有模板</a>。</p>'}
   </footer>`;
 }
 

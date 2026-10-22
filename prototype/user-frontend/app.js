@@ -404,6 +404,7 @@ import { renderRealProfile } from './realProfile.js';
     return bridge.hasRealState()
       || bridge.isDemoSelected()
       || (shared.assistant?.messages?.length ?? 0) > 0
+      || (shared.assistant?.qaMessages?.length ?? 0) > 0
       || !!shared.assistant?.draft
       || (state.chat?.messages?.length ?? 0) > 0
       || state.bill?.status !== 'idle';
@@ -795,24 +796,6 @@ import { renderRealProfile } from './realProfile.js';
         <thead><tr><th>行</th><th>日期</th><th>标的</th><th>方向</th><th class="num">价格</th><th class="num">数量</th><th class="num">费用</th><th class="num">税费</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
-    </div>`;
-  }
-
-  function importStepper() {
-    const shared = sharedState();
-    const bill = shared.bill ?? {};
-    const rec = shared.importRecovery ?? {};
-    const confirmed = bill.status === 'confirmed';
-    const active = confirmed
-      ? 3
-      : (bill.status === 'loaded' || bill.status === 'invalid' || (rec.status && rec.status !== 'idle'))
-        ? 2
-        : 1;
-    const cls = (n) => `step${n < active ? ' is-done' : ''}${n === active ? ' is-active' : ''}`;
-    return `<div class="stepper" aria-label="导入到报告的三个步骤">
-      <div class="${cls(1)}"><b>01</b><span>导入账单</span></div>
-      <div class="${cls(2)}"><b>02</b><span>逐行核对</span></div>
-      <div class="${cls(3)}"><b>03</b><span>生成报告</span></div>
     </div>`;
   }
 
