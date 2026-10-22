@@ -1128,15 +1128,14 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   const ruleCall = siteCalls[siteCalls.length - 1];
   check('自然语言·出站：只向 /functions/v1/app/api/llm/rule 发送 {"text": 规则原文}（无 CSV / 交易 / 账户字段）',
     siteCalls.length === callsBefore + 1 && ruleCall.url === '/functions/v1/app/api/llm/rule' && ruleCall.options.body === JSON.stringify({ text: '当天涨幅超过3%的股票我不买' }), JSON.stringify(ruleCall));
-  check('自然语言·预览：原话与按模板生成的规则并列，含程序生成的规则文本、类型、触发条件、关键参数、提醒内容、执行方式、程序检查；明确提示对照原话、不承诺绝不遗漏',
-    nlTxt().includes('当前系统支持执行') && nlTxt().includes('规则预览') && nlTxt().includes('你的原话：「当天涨幅超过3%的股票我不买」')
-    && nlTxt().includes('系统按模板生成的规则（请对照原话核对）：对所有股票统一生效')
-    && nlTxt().includes('按当前模板，这条规则只包含') && nlTxt().includes('请对照原话核对是否还有其他限定')
-    && nlTxt().includes('不能保证发现所有股票名称、附加条件或隐含限定') && nlTxt().includes('系统不承诺“绝不遗漏”')
+  check('自然语言·预览：含程序生成的规则文本、提醒动作、类型、适用范围、触发条件与程序检查',
+    nlTxt().includes('当前系统支持执行') && nlTxt().includes('规则预览')
+    && nlTxt().includes('提醒动作：买入提醒')
+    && nlTxt().includes('不能保证发现所有股票名称、附加条件或隐含限定')
     && nlTxt().includes('我已逐字对照原话核对')
     && nlTxt().includes('当天涨幅超过 3% 的票，我绝不买入。') && nlTxt().includes('规则类型：涨幅超阈值不买入')
-    && nlTxt().includes('触发条件：申报买入当天，该股票涨幅超过 3.0%') && nlTxt().includes('关键参数：涨幅阈值（%） = 3') && nlTxt().includes('提醒内容：申报买入时')
-    && nlTxt().includes('执行方式：历史情境测试中') && nlTxt().includes('模型理解（仅供核对，不参与判定）') && nlTxt().includes('程序检查（按原文判定，与模型结果无关）')
+    && nlTxt().includes('触发条件：申报买入当天，该股票涨幅超过 3.0%')
+    && nlTxt().includes('模型理解（仅供核对，不参与判定）') && nlTxt().includes('程序检查（按原文判定，与模型结果无关）')
     && state.contracts.versions.length === 0 && stored().length === 0, nlTxt().slice(0, 600));
   check('自然语言·核对确认：未勾选“我已核对”前确认按钮不可用（不把模型结果直接当作可启用）',
     !!roleBtn('nl-save') && roleBtn('nl-save').disabled === true && nlTxt().includes('请先勾选核对确认') && !!byRole('nl-ack'), nlTxt().slice(-300));
@@ -1147,6 +1146,27 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   await recognize('当天涨幅超过3%的股票我不买', ruleReply(surge3));
   await clickRole('nl-cancel');
   check('自然语言·取消：关闭弹窗，不写入记录', !nlPanel() && state.contracts.versions.length === 0 && stored().length === 0);
+
+  await openCustom();
+  const customReply = (action) => ruleReply({ status: 'custom', kind: 'custom', template_id: null, params: {}, scope: { kind: 'all', symbol: null }, action, needs: [], missing: [], understanding: '自定义提醒' });
+  await recognize('只针对 600519：买入前核对交易计划', customReply('buy'));
+  check('自定义规则·范围冲突：原文限定个股但识别为全部股票时禁止保存', nlTxt().includes('两者不一致') && !roleBtn('nl-save') && state.contracts.versions.length === 0, nlTxt().slice(0, 400));
+  await recognize('买入前核对自己的交易计划', customReply('buy'));
+  await clickRole('nl-action-buy');
+  check('自定义规则·动作确认：用户选择买入提醒', state.contracts.nl.actionChoice === 'buy');
+  await fire(byRole('nl-text'), 'input', '卖出前核对自己的交易计划');
+  check('自定义规则·修改描述：清除先前动作选择', state.contracts.nl.actionChoice === null && !roleBtn('nl-save'));
+  siteQueue.push(customReply('sell'));
+  await clickRole('nl-recognize'); await settle();
+  await tickAck();
+  check('自定义规则·重新识别：必须重新选择动作才能保存', state.contracts.nl.actionChoice === null
+    && nlTxt().includes('识别服务建议：卖出提醒') && roleBtn('nl-save').disabled === true);
+  await clickRole('nl-action-sell');
+  siteQueue.push(customReply('buy'));
+  await clickRole('nl-recognize'); await settle();
+  check('自定义规则·再次识别相同描述：清除旧动作与核对确认', state.contracts.nl.actionChoice === null
+    && roleBtn('nl-save').disabled === true && !state.contracts.nl.ack);
+  await clickRole('nl-cancel');
 
   await openCustom();
   await recognize('如果同一只股票连续亏损两次，提醒我暂停交易一天', ruleReply({ status: 'unsupported', template_id: null, params: {}, needs: ['trade_pnl', 'pause_trading'], missing: [], understanding: '同一股票连续两次亏损后暂停交易一天' }));
@@ -1221,7 +1241,7 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
 
   await openCustom();
   await recognize('卖出后三个交易日内不买回同一只股票', ruleReply({ status: 'template', template_id: 'no_buy_back_within', params: { threshold_pct: null, comparator: null, days: 3, day_unit: 'trading_day' }, needs: [], missing: [], understanding: '卖出后 3 个交易日内不买回' }));
-  check('自然语言·不追回：识别为“卖出后 N 个交易日内不追回”，参数 3', nlTxt().includes('规则类型：卖出后 N 个交易日内不追回') && nlTxt().includes('关键参数：不追回窗口（交易日） = 3'), nlTxt().slice(0, 300));
+  check('自然语言·不追回：识别为”卖出后 N 个交易日内不追回”，显示提醒动作与触发条件', nlTxt().includes('规则类型：卖出后 N 个交易日内不追回') && nlTxt().includes('提醒动作：买入提醒') && nlTxt().includes('触发条件'), nlTxt().slice(0, 300));
   await clickRole('nl-to-template');
   check('自然语言·在模板中调整：转入新增弹窗并预填模板与参数，未保存', !nlPanel() && !!modalNode() && fieldInput('days')?.value === '3' && liveTxt().includes('卖出后 3 个交易日内不追回同一只票。') && stored().length === 1, liveTxt().slice(0, 200));
   await clickRole('modal-cancel');
@@ -1300,8 +1320,8 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   const intent = { status: 'template', template_id: 'no_buy_on_surge', params: { threshold_pct: 3, comparator: 'gt' }, scope: { kind: 'symbol', symbol: '000000' }, needs: [], missing: [], understanding: 'x' };
   const recognize = async (text, data) => { await fire(byRole('nl-text'), 'input', text); siteQueue.push(reply(data)); await clickRole('nl-recognize'); await settle(); };
   await recognize('只针对 000000：当天涨幅超过3%不买', intent);
-  check('能力库·自然语言：预览写明适用代码，原话和完整规则均含限定，不自动生效', modalTxt().includes('适用范围：仅 000000')
-    && modalTxt().includes('只对股票代码 000000 生效') && stored().length === 5 && roleBtn('nl-save').disabled);
+  check('能力库·自然语言：预览写明适用代码与提醒动作，不自动生效', modalTxt().includes('适用范围：仅 000000')
+    && modalTxt().includes('提醒动作：买入提醒') && stored().length === 5 && roleBtn('nl-save').disabled);
   await checkbox('nl-ack');
   check('能力库·自然语言：核对原文后仍需确认范围缩小，不能只勾一次就替代', roleBtn('nl-save').disabled && !!byRole('nl-scope-ack') && modalTxt().includes('其他股票将不再有'));
   await checkbox('nl-scope-ack'); await clickRole('nl-save'); await settle();
@@ -1417,9 +1437,9 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     scope: { kind: 'all', symbol: null }, needs: [], missing: [], understanding: '买入后2个交易日内卖出同一只股票时提醒',
   }) } });
   await clickRole('nl-recognize'); await settle();
-  check('买入后卖出·自然语言：预览写明申报卖出、2 个交易日与同日不计，确认前不写入记录',
+  check('买入后卖出·自然语言：预览写明提醒动作、2 个交易日与同日不计，确认前不写入记录',
     modalTxt().includes('规则类型：买入后 N 个交易日内卖出提醒') && modalTxt().includes('买入后 2 个交易日')
-    && modalTxt().includes('申报卖出') && modalTxt().includes('同日买入不计')
+    && modalTxt().includes('提醒动作：卖出提醒') && modalTxt().includes('同日买入不计')
     && roleBtn('nl-save').disabled === true && stored().length === 2, modalTxt().slice(0, 500));
   for (const fn of byRole('nl-ack').listeners.change ?? []) await fn({ target: { checked: true } });
   await clickRole('nl-save'); await settle();

@@ -1,5 +1,5 @@
 // 新前端的真实能力桥：共享业务状态、路由映射、助手挂载与既有视图适配。
-import { state as shared, notify } from '../../src/state.js';
+import { state as shared, notify, loadContractsDemo } from '../../src/state.js';
 import { getRuleAssistantClient, renderAssistantPanel } from '../../src/ui/assistantPanel.js';
 import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../../src/agent/httpTransport.js';
 import { createImportRecovery } from '../../src/agent/importRecovery.js';
@@ -94,6 +94,7 @@ let recoveryClient = null;
 let currentRoute = 'home';
 let demoSelected = false;
 let realRulesRequested = false;
+let rulesRestored = false;
 let pendingKeys = new Set();
 let scheduled = false;
 const shadowHosts = new WeakMap();
@@ -170,6 +171,10 @@ const ctx = {
 
 export function initBridge({ onChange } = {}) {
   onChangeCallback = typeof onChange === 'function' ? onChange : null;
+  if (!rulesRestored) {
+    shared.contracts.versions = loadContractsDemo();
+    rulesRestored = true;
+  }
   loadOldCss();
   const wide = typeof window !== 'undefined' && Number.isFinite(window.innerWidth)
     ? window.innerWidth >= MOBILE_BREAKPOINT

@@ -135,6 +135,14 @@ body {
 .cv-rule-detail[open] { display: flex; flex-direction: column; gap: 6px; }
 .cv-hash-full { user-select: all; }
 .cv-group-title { font-weight: 700; font-size: 15px; }
+.cv-action-group { display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel2); margin-bottom: 12px; }
+.cv-action-group.cv-action-unknown { border-left: 4px solid var(--amber); }
+.cv-action-title { font-weight: 700; font-size: 16px; color: var(--cream); }
+.cv-action-note { font-size: 14px; color: var(--dim); }
+.cv-slot-custom { border-left: 3px solid var(--accent, #4a9eff); padding-left: 12px; }
+.cv-rule-custom { border-left: 3px solid var(--accent, #4a9eff); }
+.cv-rule-action { font-size: 14px; color: var(--cream); margin-top: 4px; }
+.cv-rule-understanding { margin-top: 4px; font-style: italic; }
 .cv-confirm { display: flex; flex-direction: column; gap: 8px; border: 1px dashed var(--line); border-radius: 8px; padding: 10px 14px; }
 .cv-reconfirm-why { font-size: 14px; color: var(--dim); }
 .cv-reconfirm-box { border-left: 4px solid var(--amber); }
