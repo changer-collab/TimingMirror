@@ -3,8 +3,12 @@ import { state as shared, notify } from '../../src/state.js';
 import { getRuleAssistantClient, renderAssistantPanel } from '../../src/ui/assistantPanel.js';
 import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../../src/agent/httpTransport.js';
 import { createImportRecovery } from '../../src/agent/importRecovery.js';
+import { createChatOnline } from '../../src/agent/chatOnline.js';
 import { renderContract } from '../../src/ui/views/contractView.js';
 import { renderRealImport } from './realImport.js';
+import { getRealReportBundle, loadRealReport } from './realReport.js';
+import { ruleStateOf, loadProfile } from './profileStore.js';
+import { openRuleCandidate } from './ruleCandidates.js';
 
 const MOBILE_BREAKPOINT = 1280;
 const OLD_CSS = '/src/ui/styles.css';
@@ -91,6 +95,7 @@ const SHADOW_STYLE = `
 
 let onChangeCallback = null;
 let recoveryClient = null;
+let qaOnlineClient = null;
 let currentRoute = 'home';
 let demoSelected = false;
 let realRulesRequested = false;
@@ -155,6 +160,11 @@ function scrollToSimulation() {
   }
 }
 
+function getQaOnlineClient() {
+  if (!qaOnlineClient) qaOnlineClient = createChatOnline();
+  return qaOnlineClient;
+}
+
 const ctx = {
   state: shared,
   set,
@@ -162,8 +172,17 @@ const ctx = {
   importRecovery: getRecoveryClient(),
   ruleAssistantClient: getRuleAssistantClient(),
   assistantTitle: 'AI 助手',
-  assistantSubtitle: '账单、规则与结果上下文',
+  assistantSubtitle: '当前页面与已发布报告',
   assistantShowFactLink: true,
+  globalAssistant: true,
+  qaDeps: {
+    getReportBundle: (bill) => getRealReportBundle(bill),
+    loadReportBundle: (bill) => loadRealReport(bill),
+    askOnline: ({ question, review }) => getQaOnlineClient().ask({ question, review }),
+    ruleStateOf,
+    loadProfile,
+    openRuleCandidate,
+  },
   scrollToSimulation,
   setRuleModal,
 };

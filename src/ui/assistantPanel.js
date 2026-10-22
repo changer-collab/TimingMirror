@@ -6,6 +6,7 @@ import { el, chip } from './components.js';
 import { createRuleAssistant } from '../agent/ruleAssistant.js';
 import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../agent/httpTransport.js';
 import { contractRuleSet } from '../demo/adapter.js';
+import { renderQaAssistant } from './qaAssistant.js';
 
 let defaultClient = null;
 let controller = null;
@@ -1067,12 +1068,15 @@ export function renderAssistantPanel(root, ctx) {
       el('button', { class: 'assistant-close', 'aria-label': '收起助手', onclick: () => controller.toggleOpen(false) }, ['×']),
     ]),
   ]));
-  card.append(el('div', { class: 'assistant-context' }, [contextLine(state)]));
-  card.append(el('div', { class: 'assistant-local-status' }, [
-    state.route === 'contract'
-      ? '在下方描述规则；保存、模拟和调整都在交易规则页完成。'
-      : '规则操作在交易规则页；这里会保留当前任务和结果。',
-  ]));
+  if (ctx.globalAssistant) card.append(renderQaAssistant(ctx));
+  if (!ctx.globalAssistant) {
+    card.append(el('div', { class: 'assistant-context' }, [contextLine(state)]));
+    card.append(el('div', { class: 'assistant-local-status' }, [
+      state.route === 'contract'
+        ? '在下方描述规则；保存、模拟和调整都在交易规则页完成。'
+        : '规则操作在交易规则页；这里会保留当前任务和结果。',
+    ]));
+  }
   if (state.assistant.marketNotice) {
     card.append(el('div', { class: 'assistant-market' }, [
       el('div', { class: 'assistant-draft-head' }, ['行情暂不可用']),
@@ -1122,7 +1126,7 @@ export function renderAssistantPanel(root, ctx) {
         : state.route === 'home'
           ? '首页不发起请求；可以继续导入账单或描述规则。'
           : '导入页只显示当前任务；规则建议不要求已有账单。';
-    card.append(el('div', { class: 'assistant-hint' }, [note]));
+    if (!ctx.globalAssistant) card.append(el('div', { class: 'assistant-hint' }, [note]));
     if (!state.assistant.draft) {
       card.append(el('button', { class: 'btn small', onclick: () => goBusiness('contract') }, ['前往交易规则']));
     }

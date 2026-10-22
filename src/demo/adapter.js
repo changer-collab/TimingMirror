@@ -809,8 +809,9 @@ function buildUserInsights({ stage, trades, closes, review }) {
    { sourceType:'local', fileName, dataMode, marketSource, supportScope, asOfDate,
      status('ok'|'partial'|'blocked'|'error'), blocked, warnings[], errors[],
      valuation, marketRange, snapshot, prices, blockedSymbols[], poolBlocked,
-     review, factsByScope{}, provenance, labels,
-     insights: { portfolio, behavior, stock_self, pgr, review_summary } } */
+     review, closes, market, factsByScope{}, provenance, labels,
+     insights: { portfolio, behavior, stock_self, pgr, review_summary } }
+   closes/market 只供同一进程内的 planner 上下文复用（同一行情实例，不额外取价）；页面不展示。 */
 export async function loadUserBillReport(bill) {
   const demo = bill?.demo === true && bill?.marketSource === 'demo-frozen';
   const out = {
@@ -834,6 +835,8 @@ export async function loadUserBillReport(bill) {
     blockedSymbols: [],
     poolBlocked: false,
     review: null,
+    closes: null,
+    market: null,
     factsByScope: {},
     provenance: null,
     labels: RESULT_LABELS,
@@ -872,6 +875,8 @@ export async function loadUserBillReport(bill) {
   }
   const review = runReview({ trades, closes, valuation: stage.val });
   out.review = review;
+  out.closes = closes;
+  out.market = stage.market;
   out.provenance = review.provenance;
 
   const byScope = {};

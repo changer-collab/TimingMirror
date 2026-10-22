@@ -66,7 +66,7 @@ export function defaultChat(contextId = null) {
 }
 
 export function defaultContracts() {
-  return { versions: [], draft: null, marketSource: 'dynamic-tushare', sim: { symbol: '', date: '', action: 'buy', result: null, running: false, runId: null }, simContext: null };
+  return { versions: [], draft: null, marketSource: 'dynamic-tushare', sim: { symbol: '', date: '', action: 'buy', result: null, running: false, runId: null, fallback: null }, simContext: null };
 }
 
 export function defaultAssistant() {
@@ -112,6 +112,12 @@ export function defaultAssistant() {
     ruleStateKey: null,
     simulationKey: null,
     marketNotice: null,
+    qaMessages: [],
+    qaInput: '',
+    qaPending: false,
+    qaRequestId: null,
+    qaContextId: null,
+    qaNotice: null,
   };
 }
 
