@@ -19,6 +19,7 @@ import {
 } from '../../server/site-functions/market.mjs';
 import { assessDynamicCacheDoc, createMarketCache } from '../../src/engine/marketCache.js';
 import { projectOnlineFacts } from '../../src/agent/onlineBoundary.js';
+import { BEHAVIOR_CANDIDATE } from '../../server/site-functions/behaviorAnalysis.mjs';
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -231,6 +232,18 @@ function streamOfChunks(chunks) {
     && sent.parameters.response_format?.type === 'json_object');
   check('DashScope transport：Authorization 仅服务端持有', String(calls[0].options.headers.Authorization).startsWith('Bearer '));
   check('DashScope transport：返回 rawText', result.rawText.includes('loss_overview'));
+  const intentMsgs = sent.input.messages;
+  check('DashScope intent：提示包含 12 类定义、口语示例与低置信度规则', intentMsgs[0].role === 'system'
+    && ['worst_trade', 'loss_overview', 'pattern_explain', 'profile', 'what_if', 'similar_context',
+      'how_to_change', 'contract_setup', 'contract_status', 'meta_calc', 'meta_trust', 'out_of_scope']
+      .every((intent) => intentMsgs[0].content.includes(intent))
+    && intentMsgs[0].content.includes('示例：')
+    && intentMsgs[0].content.includes('问：给我加一条买入前的提醒规则 → {"intent":"contract_setup"')
+    && intentMsgs[0].content.includes('问：我的提醒最近触发过几次 → {"intent":"contract_status"')
+    && intentMsgs[0].content.includes('confidence 低于 0.5'), intentMsgs[0].content);
+  check('DashScope intent：槽位只允许 symbol/trade_date，用户消息只有问题', intentMsgs[0].content.includes('slots 只能包含 symbol 和 trade_date')
+    && intentMsgs[0].content.includes('不要输出任何其他槽位')
+    && intentMsgs[1].role === 'user' && intentMsgs[1].content === QUESTION);
 
   const timeoutTransport = createDashScopeTransport({
     apiKey: 'synthetic-key-marker',
@@ -354,6 +367,38 @@ function streamOfChunks(chunks) {
   check('DashScope restate：用户消息仅 question + facts', user.role === 'user'
     && Object.keys(JSON.parse(user.content)).join(',') === 'question,facts');
   check('DashScope restate：返回 rawText', result.rawText === JSON.stringify({ answer_text: ANSWER }), result.rawText);
+}
+
+/* ==== DashScope behaviorAnalysis：提示要求原样复制 allowed_rule_candidates ==== */
+{
+  const calls = [];
+  const transport = createDashScopeTransport({
+    apiKey: 'synthetic-key-marker',
+    timeoutMs: 1000,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(JSON.stringify({ output: { choices: [{ message: { content: '{}' } }] } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  const facts = {
+    protocol: 'behavior-facts-v1',
+    allowed_rule_candidates: [{
+      candidate_id: BEHAVIOR_CANDIDATE.candidate_id,
+      template_id: BEHAVIOR_CANDIDATE.template_id,
+    }],
+  };
+  await transport.behaviorAnalysis({ facts });
+  const sent = JSON.parse(calls[0].options.body);
+  const system = sent.input.messages[0];
+  const user = sent.input.messages[1];
+  check('DashScope behaviorAnalysis：提示要求原样复制 allowed_rule_candidates', system.role === 'system'
+    && system.content.includes('allowed_rule_candidates')
+    && system.content.includes('原样复制')
+    && system.content.includes(BEHAVIOR_CANDIDATE.candidate_id)
+    && system.content.includes('数组长度、顺序'), system.content);
+  check('DashScope behaviorAnalysis：用户消息只含 facts，低温度', user.role === 'user'
+    && user.content === JSON.stringify(facts) && sent.parameters.temperature === 0.1,
+    JSON.stringify({ user: user.content, parameters: sent.parameters }));
 }
 
 /* ==== 行情路由：成功、校验、限额、错误映射（fake market transport，不联网） ==== */

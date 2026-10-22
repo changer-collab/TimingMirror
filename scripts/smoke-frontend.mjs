@@ -786,13 +786,14 @@ state.report = { scenario: 'A', symbol: 'pool' };
     const scroller = findByClass(page ?? {}, 'tm-qa-scroll')[0] ?? null;
     const dock = findByClass(page ?? {}, 'tm-qa-dock')[0] ?? null;
     const form = askForm();
-    check('问答账本·页首与空状态：账本独立滚动/输入底栏/8 个示例芯片（1 个在线）',
+    check('问答账本·页首与空状态：账本独立滚动/输入底栏/8 个示例芯片（1 个在线，标签不写 ONLINE）',
       !!page && !!ledger && ledger.attrs['data-role'] === 'qa-ledger'
       && !!scroller && !!dock && !!form && form.parentNode === dock && ledger.parentNode === scroller
       && pageVisibleTxt().includes('STEP 03 / ASK') && pageVisibleTxt().includes('问它为什么，')
       && pageVisibleTxt().includes('别问它买什么。')
       && pageVisibleTxt().includes('还没有提问。示例问法只是入口，不是全部。')
       && chips().length === 8 && chips().filter((b) => b.attrs['data-online'] === 'true').length === 1
+      && chips().every((b) => !labelOf(b).includes('ONLINE'))
       && pageVisibleTxt().includes('规则 v0 · 生效 0 条') && pageVisibleTxt().includes('原始 CSV 仅本机')
       && entries().length === 0, pageTxt().slice(0, 320));
   }
@@ -1576,9 +1577,9 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   state.route = 'contract'; state.bill = defaultBill();
   state.contracts = { ...defaultContracts(), marketSource: 'synthetic-fixture' };
   mountCycle(); await settle();
-  check('能力库：页面说明同类型只有一条当前规则，对话页不能使用限定代码的新能力，非交易日来源口径待统一',
+  check('能力库：页面说明同类型只有一条当前规则，对话页读取规则状态但不自动交易，非交易日来源口径待统一',
     texts(current).join('|').includes('无论适用全部股票还是单个股票代码')
-    && texts(current).join('|').includes('对话页目前不读取本页保存的规则')
+    && texts(current).join('|').includes('对话页会读取已生效规则来回答规则状态')
     && texts(current).join('|').includes('非交易日处理沿用各来源原有口径（待统一）'));
   await clickRole('add-rule'); await fire(fieldInput('threshold_pct'), 'input', '3'); await saveModal();
   const first = JSON.stringify(stored()[0]);

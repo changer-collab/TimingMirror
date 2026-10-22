@@ -110,45 +110,102 @@ function localAnswer({ chip, plan, text, facts = [], evidence = [], candidate = 
   };
 }
 
-function behaviorPack(bundle) {
+function behaviorData(bundle) {
   const pack = bundle?.insights?.behavior;
   if (!pack?.available || !pack.data) {
     return { ok: false, message: pack?.reason || '行为发现没有生成：不引用示例或其他账单的结论' };
   }
-  const pattern = Array.isArray(pack.data.patterns)
-    ? pack.data.patterns.find((p) => p?.pattern_id === 'chase_high_buy') ?? null
-    : null;
-  if (!pattern) return { ok: false, message: '行为发现清单中没有已实现的“追高买入”模式：不虚构其他模式' };
-  return { ok: true, data: pack.data, pattern };
+  const patterns = Array.isArray(pack.data.patterns) ? pack.data.patterns : [];
+  return { ok: true, data: pack.data, patterns };
+}
+
+function findPattern(patterns, patternId) {
+  return patterns.find((p) => p?.pattern_id === patternId) ?? null;
+}
+
+const PATTERN_HINTS = Object.freeze([
+  { pattern_id: 'sell_rebuy_within_2d', test: /(买回|又买|接回|卖[了出].{0,12}买)/u },
+  { pattern_id: 'quick_flip', test: /(快进快出|拿不住|拿不久|拿不牢|短线|刚买.{0,8}卖|买[了入].{0,8}(就|很快|马上|立刻).{0,4}卖|一买就卖)/u },
+  { pattern_id: 'overtrading', test: /(频繁|交易.{0,4}多|买卖.{0,4}多|来回|进出|手痒|管不住手|操作.{0,4}多)/u },
+  { pattern_id: 'chase_high_buy', test: /(追高|追涨|买在.{0,4}高|高点买|高位买|追着买)/u },
+]);
+
+function behaviorSelection(bundle, question) {
+  const base = behaviorData(bundle);
+  if (!base.ok) return base;
+  const hint = PATTERN_HINTS.find((item) => item.test.test(String(question ?? '')));
+  const established = base.patterns.filter((p) => p?.status === '成立');
+  if (hint) {
+    const focus = findPattern(base.patterns, hint.pattern_id);
+    if (!focus) return { ok: false, message: `行为发现清单中没有“${hint.pattern_id}”模式：不虚构其他模式` };
+    return { ok: true, data: base.data, patterns: base.patterns, focus, established };
+  }
+  return {
+    ok: true,
+    data: base.data,
+    patterns: base.patterns,
+    focus: established.length === 1 ? established[0] : null,
+    established,
+  };
 }
 
 function patternEvidenceLines(pattern, limit = 3) {
   const rows = Array.isArray(pattern?.evidence) ? pattern.evidence.slice(0, limit) : [];
   return rows.map((e) => {
-    const rise = e?.display?.rise ?? (Number.isFinite(e?.rise) ? fmtPct(e.rise) : '—');
     const source = e?.source?.line ? `（第 ${e.source.line} 行）` : '';
-    return `${e.trade_date} ${e.symbol} 买入，窗口涨幅 ${rise}${source}`;
+    if (Number.isFinite(e?.rise)) {
+      const rise = e?.display?.rise ?? fmtPct(e.rise);
+      return `${e.trade_date} ${e.symbol} 买入，窗口涨幅 ${rise}${source}`;
+    }
+    const gap = e?.display?.gap_days ?? (Number.isFinite(e?.gap_days) ? `${e.gap_days} 个交易日` : '—');
+    if (typeof e?.side_label === 'string') {
+      const prior = e.prior_side_label && e.prior_trade_date
+        ? `，距${e.prior_side_label} ${e.prior_trade_date}`
+        : '';
+      return `${e.trade_date} ${e.symbol} ${e.side_label}${prior} ${gap}${source}`;
+    }
+    return `${e?.trade_date ?? '—'} ${e?.symbol ?? '—'} 卖出，距买入 ${gap}${source}`;
   });
+}
+
+function patternSummaryValue(pattern) {
+  return `${pattern.status} · 命中 ${pattern.sample_n} 笔 / 已评估 ${pattern.evaluated_n} 笔`;
+}
+
+function patternCriterion(pattern) {
+  const rule = pattern?.rule ?? {};
+  const comparator = rule.comparator ?? '≥';
+  const threshold = rule.threshold_display ?? '—';
+  const window = String(rule.window ?? '');
+  if (pattern?.pattern_id === 'overtrading') return `完整往返 ${comparator} ${threshold}`;
+  if (pattern?.pattern_id === 'chase_high_buy' || window.includes('涨幅')) return `${window}涨幅 ${comparator} ${threshold}`;
+  return window || `交易日间隔 ${comparator} ${threshold}`;
 }
 
 function patternFacts(pattern) {
   return [
     { label: '结论', value: `${pattern.name} · ${pattern.status}` },
     { label: '样本', value: `命中 ${pattern.sample_n} 笔 / 已评估 ${pattern.evaluated_n} 笔 / 最小样本 ${pattern.min_samples} 笔` },
-    { label: '判定', value: `${pattern.rule?.window ?? '回看窗口'}涨幅 ${pattern.rule?.comparator ?? '≥'} ${pattern.rule?.threshold_display ?? '—'}` },
+    { label: '判定', value: patternCriterion(pattern) },
   ];
 }
 
-function patternTexts(pattern) {
+function otherPatternsText(others) {
+  if (!others.length) return '';
+  return `本账单同时成立：${others.map((p) => `${p.name}（命中 ${p.sample_n} 笔）`).join('、')}。`;
+}
+
+function patternTexts(pattern, others = []) {
   const evidence = patternEvidenceLines(pattern);
   const evidenceText = evidence.length ? `命中：${evidence.join('；')}。` : '没有可展示的命中成交。';
+  const othersText = otherPatternsText(others);
   if (pattern.status === '成立') {
-    return `行为发现“${pattern.name}”在当前账单成立：${pattern.rule?.window ?? '回看窗口'}涨幅 ${pattern.rule?.comparator ?? '≥'} ${pattern.rule?.threshold_display ?? '—'} 的买入命中 ${pattern.sample_n} 笔（已评估 ${pattern.evaluated_n} 笔，最小样本 ${pattern.min_samples}）。${evidenceText}这是行为发现引擎按候选阈值判定的模式，不是对你当时动机的判断。`;
+    return `行为发现“${pattern.name}”在当前账单成立：${patternCriterion(pattern)}，命中 ${pattern.sample_n} 笔（已评估 ${pattern.evaluated_n} 笔，最小样本 ${pattern.min_samples} 笔）。${evidenceText}${othersText}这是行为发现引擎按候选阈值判定的模式，不是对你当时动机的判断。`;
   }
   if (pattern.status === '不成立') {
-    return `行为发现“${pattern.name}”在当前账单不成立：已评估 ${pattern.evaluated_n} 笔，命中 ${pattern.sample_n} 笔，低于最小样本 ${pattern.min_samples}。${evidenceText}不利结论照实展示，不用其他账单补齐。`;
+    return `行为发现“${pattern.name}”在当前账单不成立：已评估 ${pattern.evaluated_n} 笔，命中 ${pattern.sample_n} 笔，未达到最小样本 ${pattern.min_samples} 笔。${evidenceText}${othersText}不利结论照实展示，不用其他账单补齐。`;
   }
-  return `行为发现“${pattern.name}”在当前账单证据不足：可评估 ${pattern.evaluated_n} 笔，低于最小样本 ${pattern.min_samples}，不下确定结论。${evidenceText}`;
+  return `行为发现“${pattern.name}”在当前账单证据不足：可评估 ${pattern.evaluated_n} 笔，低于最小样本 ${pattern.min_samples} 笔，不下确定结论。${evidenceText}${othersText}`;
 }
 
 function tradeSourceLabel(source) {
@@ -188,12 +245,40 @@ function worstTradeAnswer({ chip, bundle, bill, plan }) {
     });
   }
   const top = items[0];
+  const positive = Number(top.dragMoney) > 0;
+  if (!positive) {
+    const largest = items.reduce((a, b) => (
+      Math.abs(Number(b.dragMoney) || 0) > Math.abs(Number(a.dragMoney) || 0) ? b : a
+    ), items[0]);
+    const allZero = items.every((it) => Number(it.dragMoney) === 0);
+    const total = decomposition.total?.display ?? '—';
+    const absDrag = Number.isFinite(largest.dragMoney) ? fmtMoney(Math.abs(largest.dragMoney)) : '—';
+    if (allZero) {
+      return localAnswer({
+        chip,
+        plan,
+        text: `按当前账单报告的逐笔损耗分解，每笔卖出的差额都是 0：没有哪一笔卖出相对“买入不动”更差，也就没有“最错一笔”。组合总损耗 ${total}。这是事后对照，不评价当时的决定。`,
+        facts: [{ label: '组合损耗', value: total }],
+        notice: '逐笔差额为 0 时不评选“最错一笔”；逐笔分解未进入复核发布事实。',
+      });
+    }
+    return localAnswer({
+      chip,
+      plan,
+      text: `按当前账单报告的逐笔损耗分解，没有哪一笔卖出相对“买入不动”更差，因此没有“最错一笔”。差额绝对值最大的是 ${largest.trade_date} 卖出 ${largest.symbol} ${largest.quantity} 股：卖出价 ${priceText(largest.price)}，估值日收盘 ${priceText(largest.close)}，实际比持有到估值日多赚 ${absDrag}。组合总损耗 ${total}。这是事后对照，不评价当时的决定。`,
+      facts: [
+        { label: '成交（差额最大）', value: `${largest.trade_date} · 卖出 ${largest.symbol} × ${largest.quantity}` },
+        { label: '优于对照', value: absDrag },
+        { label: '组合损耗', value: total },
+        { label: '回源', value: tradeSourceLabel(largest.source) },
+      ],
+      evidence: [`公式：${largest.quantity} × (${priceText(largest.close)} − ${priceText(largest.price)}) = −${absDrag}（不含费用、税费与分红）`],
+      notice: '逐笔差额为负表示实际优于买入不动；没有正损耗卖出时不评选“最错一笔”。逐笔分解未进入复核发布事实。',
+    });
+  }
   const drag = moneyText(top);
   const share = shareText(top);
-  const positive = Number(top.dragMoney) > 0;
-  const label = positive ? '代价最高的一笔' : '金额最大的一笔（实际优于对照）';
-  const relation = positive ? '与买入不动相比少赚' : '与买入不动相比多赚';
-  const text = `按当前账单报告的逐笔损耗分解，${label}是 ${top.trade_date} 卖出 ${top.symbol} ${top.quantity} 股：卖出价 ${priceText(top.price)}，估值日收盘 ${priceText(top.close)}，${relation} ${drag}，占组合总损耗 ${share}。这是事后对照，不评价当时的决定；展示序不等于因果。`;
+  const text = `按当前账单报告的逐笔损耗分解，代价最高的一笔是 ${top.trade_date} 卖出 ${top.symbol} ${top.quantity} 股：卖出价 ${priceText(top.price)}，估值日收盘 ${priceText(top.close)}，与买入不动相比少赚 ${drag}，占组合总损耗 ${share}。这是事后对照，不评价当时的决定；展示序不等于因果。`;
   return localAnswer({
     chip,
     plan,
@@ -209,78 +294,145 @@ function worstTradeAnswer({ chip, bundle, bill, plan }) {
   });
 }
 
-function patternAnswer({ chip, bundle, bill, plan }) {
-  const pack = behaviorPack(bundle);
-  if (!pack.ok) return fail(QA_CHIP_CODES.BEHAVIOR_UNAVAILABLE, pack.message);
-  const pattern = pack.pattern;
+function multiPatternAnswer({ chip, plan, established }) {
+  const list = established.map((p) => `${p.name}（命中 ${p.sample_n} 笔 / 已评估 ${p.evaluated_n} 笔）`).join('、');
   return localAnswer({
     chip,
     plan,
-    text: patternTexts(pattern),
-    facts: patternFacts(pattern),
-    evidence: patternEvidenceLines(pattern, 6),
+    text: `这份账单里成立的重复模式有 ${established.length} 类：${list}。问题没有指明具体模式，因此并列展示全部成立的模式；可以指定其中一类再问。这是行为发现引擎按候选阈值判定的模式，不是对你当时动机的判断。`,
+    facts: established.slice(0, 4).map((p) => ({ label: p.name, value: patternSummaryValue(p) })),
+    evidence: established.flatMap((p) => patternEvidenceLines(p, 2)).slice(0, 4),
+    notice: '问题没有指明具体模式：不默认套用“追高买入”模板；回看窗口与阈值是候选参数。',
+  });
+}
+
+function noEstablishedPatternAnswer({ chip, plan, patterns }) {
+  const summary = patterns.length
+    ? patterns.map((p) => `${p.name}${p.status}`).join('；')
+    : '行为发现清单为空';
+  return localAnswer({
+    chip,
+    plan,
+    text: `这份账单没有成立的行为模式：${summary}。没有成立模式时不生成解释，也不用示例或别的账单补齐。`,
+    facts: patterns.slice(0, 4).map((p) => ({ label: p.name, value: patternSummaryValue(p) })),
+    evidence: [],
+    notice: '行为发现未进入复核发布事实；结论照实展示。',
+  });
+}
+
+function patternAnswer({ chip, bundle, bill, plan, question }) {
+  const pack = behaviorSelection(bundle, question);
+  if (!pack.ok) return fail(QA_CHIP_CODES.BEHAVIOR_UNAVAILABLE, pack.message);
+  const { focus, established, patterns } = pack;
+  if (!focus) {
+    return established.length > 1
+      ? multiPatternAnswer({ chip, plan, established })
+      : noEstablishedPatternAnswer({ chip, plan, patterns });
+  }
+  const others = established.filter((p) => p !== focus);
+  const mentioned = focus.status === '成立' ? [] : others;
+  const facts = patternFacts(focus);
+  if (mentioned.length) {
+    facts.push({ label: '其他成立', value: mentioned.map((p) => `${p.name}（命中 ${p.sample_n} 笔）`).join('、') });
+  }
+  return localAnswer({
+    chip,
+    plan,
+    text: patternTexts(focus, mentioned),
+    facts,
+    evidence: patternEvidenceLines(focus, 6),
     notice: '回看窗口与阈值是候选参数，不是普适标准；行为发现未进入复核发布事实。',
   });
 }
 
 function profileAnswer({ chip, bundle, bill, plan }) {
-  const pack = behaviorPack(bundle);
-  if (!pack.ok) return fail(QA_CHIP_CODES.BEHAVIOR_UNAVAILABLE, pack.message);
-  const pattern = pack.pattern;
-  const scope = pack.data.scope ?? {};
+  const base = behaviorData(bundle);
+  if (!base.ok) return fail(QA_CHIP_CODES.BEHAVIOR_UNAVAILABLE, base.message);
+  const patterns = base.patterns;
+  const scope = base.data.scope ?? {};
   const trades = Array.isArray(bill?.trades) ? bill.trades : [];
   const tradeCount = Number.isFinite(scope.trade_count) ? scope.trade_count : trades.length;
   const buyCount = Number.isFinite(scope.buy_count) ? scope.buy_count : trades.filter((t) => t.side === 'buy').length;
   const sellCount = Number.isFinite(scope.sell_count) ? scope.sell_count : trades.filter((t) => t.side === 'sell').length;
+  if (!patterns.length) {
+    return localAnswer({
+      chip,
+      plan,
+      text: `镜子不给你贴人格标签。这份账单覆盖 ${tradeCount} 笔交易（买入 ${buyCount}、卖出 ${sellCount}）；行为发现没有生成可核验的模式，因此不生成行为画像。`,
+      facts: [{ label: '账单覆盖', value: `${tradeCount} 笔 / ${buyCount} 笔买入 / ${sellCount} 笔卖出` }],
+      notice: '“我是谁”只列本账单可验证的交易行为；不用示例标签补齐。',
+    });
+  }
+  const summary = patterns.map((p) => `${p.name}${p.status}（命中 ${p.sample_n} 笔 / 已评估 ${p.evaluated_n} 笔）`).join('；');
+  const hitPatterns = patterns.filter((p) => p.status === '成立');
+  const evidence = hitPatterns.flatMap((p) => patternEvidenceLines(p, 3)).slice(0, 6);
+  const namesByStatus = (status) => {
+    const list = patterns.filter((p) => p.status === status);
+    return list.length ? list.map((p) => `${p.name}（${p.sample_n} 笔）`).join('、') : '无';
+  };
   return localAnswer({
     chip,
     plan,
-    text: `镜子不给你贴人格标签。这份账单覆盖 ${tradeCount} 笔交易（买入 ${buyCount}、卖出 ${sellCount}）。目前只实现了“追高买入”一项行为发现：结论“${pattern.status}”，命中 ${pattern.sample_n} 笔，已评估 ${pattern.evaluated_n} 笔。完整行为画像尚未实现，不用示例标签补齐。`,
+    text: `镜子不给你贴人格标签。这份账单覆盖 ${tradeCount} 笔交易（买入 ${buyCount}、卖出 ${sellCount}）。行为发现引擎检查了 ${patterns.length} 类重复模式：${summary}。${hitPatterns.length ? `成立 ${hitPatterns.length} 类。` : '当前没有成立的模式。'}完整行为画像尚未实现，不用示例标签补齐。`,
     facts: [
       { label: '账单覆盖', value: `${tradeCount} 笔 / ${buyCount} 笔买入 / ${sellCount} 笔卖出` },
-      { label: '行为发现', value: `${pattern.name} · ${pattern.status}` },
-      { label: '样本', value: `命中 ${pattern.sample_n} 笔 / 已评估 ${pattern.evaluated_n} 笔` },
+      { label: '成立的模式', value: namesByStatus('成立') },
+      { label: '证据不足', value: namesByStatus('证据不足') },
+      { label: '不成立', value: namesByStatus('不成立') },
     ],
-    evidence: patternEvidenceLines(pattern, 6),
+    evidence,
     notice: '“我是谁”只列本账单可验证的交易行为；不生成性格、风险偏好等未经实现的标签。',
   });
 }
 
 function howToChangeAnswer({ chip, bundle, bill, plan, ruleState, profile }) {
-  const pack = behaviorPack(bundle);
-  if (!pack.ok) return fail(QA_CHIP_CODES.BEHAVIOR_UNAVAILABLE, pack.message);
-  const pattern = pack.pattern;
+  const base = behaviorData(bundle);
+  if (!base.ok) return fail(QA_CHIP_CODES.BEHAVIOR_UNAVAILABLE, base.message);
   let candidatePack = null;
   try {
     candidatePack = buildRuleCandidates({
-      behavior: pack.data,
+      behavior: base.data,
       ruleState,
       profile,
     });
   } catch {
     return fail(QA_CHIP_CODES.BEHAVIOR_UNAVAILABLE, '规则候选生成失败：不生成候选，也不虚构模板或阈值。');
   }
-  const candidate = candidatePack?.candidates?.[0] ?? null;
-  const evidence = patternEvidenceLines(pattern, 6);
-  if (!candidate) {
+  const candidates = Array.isArray(candidatePack?.candidates) ? candidatePack.candidates : [];
+  const candidate = candidates.find((c) => c.status === 'available')
+    ?? candidates.find((c) => c.status === 'active')
+    ?? candidates.find((c) => c.status === 'dismissed')
+    ?? null;
+  const pattern = candidate
+    ? findPattern(base.patterns, candidate.source_pattern?.pattern_id) ?? candidate.source_pattern ?? null
+    : null;
+  if (!candidate || !pattern) {
+    const summary = base.patterns.length
+      ? `本账单的行为发现：${base.patterns.map((p) => `${p.name}${p.status}（命中 ${p.sample_n} 笔 / 已评估 ${p.evaluated_n} 笔）`).join('；')}。`
+      : '本账单没有生成可核验的行为模式。';
+    const uncovered = base.patterns.filter((p) => p.status === '成立'
+      && !candidates.some((c) => c.source_pattern?.pattern_id === p.pattern_id));
     return localAnswer({
       chip,
       plan,
-      text: `行为发现“${pattern.name}”${pattern.status}：命中 ${pattern.sample_n} 笔，已评估 ${pattern.evaluated_n} 笔。当前没有足够证据生成规则候选；镜子不替你定规矩，也不用示例候选补齐。`,
-      facts: patternFacts(pattern),
-      evidence,
-      notice: candidatePack?.notes?.[0] ?? null,
+      text: `${summary}当前没有可建立的规则候选；镜子不替你定规矩，也不用示例候选补齐。`,
+      facts: base.patterns.map((p) => ({ label: p.name, value: patternSummaryValue(p) })),
+      evidence: base.patterns.flatMap((p) => patternEvidenceLines(p, 3)).slice(0, 6),
+      notice: uncovered.length
+        ? `现有规则模板未覆盖：${uncovered.map((p) => p.name).join('、')}；该模式只做行为发现，不生成规则候选。`
+        : candidatePack?.notes?.[0] ?? null,
     });
   }
-  const actionable = candidate.status === 'available';
+  const evidence = patternEvidenceLines(pattern, 6);
   const lead = `行为发现“${pattern.name}”${pattern.status}：命中 ${pattern.sample_n} 笔，已评估 ${pattern.evaluated_n} 笔。`;
-  const text = candidate.status === 'available'
+  const actionable = candidate.status === 'available';
+  const text = actionable
     ? `${lead}下面这条候选来自本账单证据，只做模板预填；保存前由你确认或改写。`
-    : candidate.status === 'dismissed'
-      ? `${lead}这条候选已被你忽略；可在规则页恢复。`
-      : candidate.status === 'active'
-        ? `${lead}已有同类规则，不重复推荐。`
-        : candidate.reason;
+    : candidate.status === 'active'
+      ? `${lead}已有同类规则，不重复推荐；当前没有可新建的候选。`
+      : candidate.status === 'dismissed'
+        ? `${lead}这条候选已被你忽略；可在规则页恢复。当前没有可新建的候选。`
+        : `${lead}当前没有足够证据生成规则候选；镜子不替你定规矩，也不用示例候选补齐。`;
   return localAnswer({
     chip,
     plan,
@@ -294,7 +446,7 @@ function howToChangeAnswer({ chip, bundle, bill, plan, ruleState, profile }) {
   });
 }
 
-export function buildLocalChipAnswer({ chip, bundle, bill, ruleState = null, profile = null } = {}) {
+export function buildLocalChipAnswer({ chip, bundle, bill, ruleState = null, profile = null, question = null } = {}) {
   const def = findQaChip(chip);
   if (!def) return fail(QA_CHIP_CODES.UNKNOWN_CHIP, '未知的问答芯片：不生成回答');
   if (def.online) return fail(QA_CHIP_CODES.UNKNOWN_CHIP, '“组合表现”只在点击时调用既有在线复述接口，不使用本地芯片回答');
@@ -304,7 +456,7 @@ export function buildLocalChipAnswer({ chip, bundle, bill, ruleState = null, pro
   }
   const plan = buildChipPlan({ chip: def, bundle, bill });
   if (def.id === 'worst_trade') return worstTradeAnswer({ chip: def, bundle, bill, plan });
-  if (def.id === 'pattern_explain') return patternAnswer({ chip: def, bundle, bill, plan });
+  if (def.id === 'pattern_explain') return patternAnswer({ chip: def, bundle, bill, plan, question: question ?? def.question });
   if (def.id === 'profile') return profileAnswer({ chip: def, bundle, bill, plan });
   if (def.id === 'how_to_change') return howToChangeAnswer({ chip: def, bundle, bill, plan, ruleState, profile });
   return fail(QA_CHIP_CODES.UNKNOWN_CHIP, '该芯片没有本地回答实现');
