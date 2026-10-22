@@ -14,11 +14,12 @@ body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 0;
   height: calc(100vh - var(--topbar-h));
+  height: calc(100dvh - var(--topbar-h));
   transition: grid-template-columns 0.24s ease;
 }
 
 .tm-shell.assistant-open {
-  grid-template-columns: minmax(0, 1fr) clamp(320px, 25vw, 400px);
+  grid-template-columns: minmax(0, 1fr) clamp(320px, 25vw, 360px);
 }
 
 .tm-main {
@@ -29,9 +30,14 @@ body {
 }
 
 .tm-assistant {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
-  overflow-y: auto;
+  height: calc(100vh - var(--topbar-h));
+  height: calc(100dvh - var(--topbar-h));
+  max-height: calc(100dvh - var(--topbar-h));
+  overflow: hidden;
   border-left: 1px solid var(--line);
   background:
     linear-gradient(180deg, rgba(252, 253, 253, 0.94), rgba(240, 243, 243, 0.94));
@@ -50,7 +56,12 @@ body {
 }
 
 #tm-assistant-root {
-  min-height: 100%;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .tm-assistant-toggle {
@@ -198,7 +209,14 @@ body {
 
 /* 侧栏助手：复用现有 DOM 类，使用新前端变量，不加载旧全局 CSS */
 .tm-assistant .assistant-panel {
-  padding: 20px 18px 32px;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  /* Qoder Sites 在右下角注入固定水印；预留 80px 安全区，避免遮挡输入与底部操作。 */
+  padding: 20px 18px 80px;
   color: var(--ink);
   font-family: var(--font-sans);
   font-size: 14.5px;
@@ -207,9 +225,31 @@ body {
 
 .tm-assistant .assistant-card {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 16px;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tm-assistant .assistant-head,
+.tm-assistant .assistant-context,
+.tm-assistant .assistant-local-status,
+.tm-assistant .assistant-hint,
+.tm-assistant .assistant-market,
+.tm-assistant .assistant-error,
+.tm-assistant .assistant-drift,
+.tm-assistant .assistant-actions,
+.tm-assistant .assistant-input-row,
+.tm-assistant .assistant-draft,
+.tm-assistant .assistant-confirmed,
+.tm-assistant .assistant-tech,
+.tm-assistant .qa-page,
+.tm-assistant .qa-chips,
+.tm-assistant .qa-form,
+.tm-assistant .qa-fine {
+  flex: 0 0 auto;
 }
 
 .tm-assistant .assistant-head {
@@ -286,9 +326,15 @@ body {
 
 .tm-assistant .assistant-messages {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 12px;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-right: 2px;
 }
 
 .tm-assistant .assistant-msg {
@@ -505,6 +551,10 @@ body {
     position: fixed;
     inset: 0;
     z-index: 220;
+    height: 100vh;
+    height: 100dvh;
+    max-height: 100dvh;
+    overflow: hidden;
     border-left: 0;
     background: var(--sheet);
   }
@@ -1063,7 +1113,7 @@ body {
 .tm-draft-table input[data-field="tax"] { width: 58px; }
 
 /* 全局 AI 助手：页面问答 */
-.tm-assistant .qa-assistant { display: flex; flex-direction: column; gap: 14px; padding-bottom: 18px; border-bottom: 1px solid var(--line); min-width: 0; }
+.tm-assistant .qa-assistant { display: flex; flex: 1 1 auto; flex-direction: column; gap: 14px; min-width: 0; min-height: 0; overflow: hidden; padding-bottom: 0; border-bottom: 1px solid var(--line); }
 .tm-assistant .qa-page { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
 .tm-assistant .qa-page-intro { margin: 0; color: var(--ink); font-family: var(--font-serif); font-size: 15.5px; line-height: 1.7; overflow-wrap: anywhere; }
 .tm-assistant .qa-context { margin: 0; color: var(--faint); font-family: var(--font-mono); font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
@@ -1073,9 +1123,9 @@ body {
 .tm-assistant .qa-chip.is-online { border-color: var(--line-strong); color: var(--ink); }
 .tm-assistant .qa-chip.is-online::before { content: "↗"; margin-right: 4px; font-family: var(--font-mono); font-size: 8px; }
 .tm-assistant .qa-chip:disabled { opacity: 0.45; cursor: default; }
-.tm-assistant .qa-messages { min-width: 0; }
-.tm-assistant .qa-msg { font-size: 14.5px; }
-.tm-assistant .qa-msg-text { line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tm-assistant .qa-messages { flex: 1 1 auto; min-width: 0; min-height: 0; }
+.tm-assistant .qa-msg { max-width: 100%; font-size: 14.5px; }
+.tm-assistant .qa-msg-text { line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
 .tm-assistant .qa-msg-text > :not(:first-child) { margin-top: 10px; }
 .tm-assistant .qa-facts { display: grid; gap: 5px; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--line-soft); font-size: 12.5px; line-height: 1.7; white-space: normal; }
 .tm-assistant .qa-facts div { display: flex; gap: 8px; min-width: 0; }
