@@ -98,6 +98,13 @@ function shellState() {
   const messagesRule = messagesAt >= 0 ? css.slice(messagesAt, css.indexOf('}', messagesAt)) : '';
   const qaAt = css.indexOf('.tm-assistant .qa-assistant {');
   const qaRule = qaAt >= 0 ? css.slice(qaAt, css.indexOf('}', qaAt)) : '';
+  const qaFocusAt = css.indexOf('.tm-assistant .qa-input:focus');
+  const qaFocusRule = qaFocusAt >= 0 ? css.slice(qaFocusAt, css.indexOf('}', qaFocusAt)) : '';
+  let qaFocusDepth = 0;
+  for (let i = 0; i < qaFocusAt; i += 1) {
+    if (css[i] === '{') qaFocusDepth += 1;
+    else if (css[i] === '}') qaFocusDepth -= 1;
+  }
   check('断点：JS 与 CSS 统一为 680（CSS 679.98 对齐严格小于）',
     /MOBILE_BREAKPOINT = 680/.test(bridge)
     && mobileBlockAt >= 0
@@ -133,6 +140,20 @@ function shellState() {
     /height:\s*100dvh/.test(fixedRule)
     && /max-height:\s*100dvh/.test(fixedRule)
     && /overflow:\s*hidden/.test(fixedRule));
+  check('输入框焦点：focus/focus-visible 使用内嵌焦点环',
+    qaFocusAt > 0
+    && qaFocusDepth === 0
+    && /\.tm-assistant \.qa-input:focus,/.test(qaFocusRule)
+    && /\.tm-assistant \.qa-input:focus-visible/.test(qaFocusRule)
+    && /outline:\s*2px solid var\(--ink\)/.test(qaFocusRule)
+    && /outline-offset:\s*-2px/.test(qaFocusRule)
+    && !/outline:\s*none/.test(qaFocusRule));
+  check('输入框焦点：不改变尺寸/内边距并保留圆角',
+    /border-radius:\s*var\(--radius-sm\)/.test(qaFocusRule)
+    && !/(?:^|[;{])\s*(?:width|height|min-width|min-height|max-width|max-height|padding|margin|border-width|font-size|line-height|transform)\s*:/.test(qaFocusRule));
+  check('侧栏左边界：桌面保留分隔线，移动全屏单独去除',
+    /border-left:\s*1px solid var\(--line\)/.test(desktopRule)
+    && /border-left:\s*0/.test(fixedRule));
 }
 
 /* —— 桌面开合与跨断点 —— */

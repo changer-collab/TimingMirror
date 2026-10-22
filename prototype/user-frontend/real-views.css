@@ -1147,6 +1147,13 @@ body {
 .tm-assistant .qa-candidate .rp-actions { margin-top: 10px; }
 .tm-assistant .qa-form { display: flex; align-items: stretch; gap: 10px; min-width: 0; padding-top: 2px; }
 .tm-assistant .qa-input { flex: 1 1 auto; min-width: 0; min-height: 48px; max-height: 140px; resize: vertical; padding: 10px 12px; font-size: 14px; line-height: 1.6; }
+.tm-assistant .qa-input:focus,
+.tm-assistant .qa-input:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+  border-color: var(--ink);
+  border-radius: var(--radius-sm);
+}
 .tm-assistant .qa-form .btn { flex: 0 0 auto; min-height: 48px; padding: 8px 16px; font-size: 13px; }
 .tm-assistant .qa-fine { margin: 0; color: var(--faint); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
 .tm-assistant .qa-tag { display: inline-flex; margin-top: 9px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--gray); font-family: var(--font-mono); font-size: 10.5px; line-height: 1.5; }
