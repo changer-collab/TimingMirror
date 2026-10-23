@@ -60,7 +60,8 @@ check('助手侧栏：消息不再渲染技术详情折叠或计划模板',
 check('规则页：移除候选口径长技术说明、哈希算法与模型请求计数',
   !/技术说明（候选口径）|技术信息（候选哈希）|M0-C1|模型请求/.test(contractView)
   && !/参数无效 · \$\{parsed\.code\}/.test(contractView)
-  && /规则只保存在本机，不会自动交易/.test(contractView));
+  && /不会自动交易/.test(contractView)
+  && /操作复盘只使用当前生效规则/.test(contractView));
 check('规则页：NL 错误只保留可读原因，不渲染错误码/技术折叠',
   !/技术详情（错误码）|技术信息（规则哈希）|safe\(r\.code\)|safe\(r\.httpStatus\)/.test(contractView)
   && !/参数无效 · \$\{parsed\.code\}/.test(contractView));
