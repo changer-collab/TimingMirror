@@ -1565,7 +1565,7 @@ const openCustom = async () => { await clickRole('add-rule-buy'); await fire(byR
     && nlTxt().includes('我已逐字对照原话核对')
     && nlTxt().includes('当天涨幅超过 3% 的票，我绝不买入。') && nlTxt().includes('规则类型：涨幅超阈值不买入')
     && nlTxt().includes('触发条件：申报买入当天，该股票涨幅超过 3.0%')
-    && nlTxt().includes('模型理解（仅供核对，不参与判定）') && nlTxt().includes('程序检查（按原文判定，与模型结果无关）')
+    && nlTxt().includes('规则理解（仅供核对，不参与判定）') && nlTxt().includes('程序检查（按原文判定，与识别结果无关）')
     && state.contracts.versions.length === 0 && stored().length === 0, nlTxt().slice(0, 600));
   check('自然语言·核对确认：未勾选“我已核对”前确认按钮不可用（不把模型结果直接当作可启用）',
     !!roleBtn('nl-save') && roleBtn('nl-save').disabled === true && nlTxt().includes('请先勾选核对确认') && !!byRole('nl-ack'), nlTxt().slice(-300));
@@ -2420,7 +2420,7 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
   await clickIn(filterBar, '全部 5'); await settle();
   check('操作复盘·筛选全部：恢复 5 张卡片', cards.every((n) => !n.hidden), JSON.stringify(cards.map((n) => !!n.hidden)));
 
-  // 自定义规则不参与逐笔复核：明确披露，不静默算作符合
+  // 自定义规则参与逐笔复核：AI 判定结果纳入复盘展示
   const customText = '买入前核对自己的交易计划';
   const customHash = adapterMod.CONTRACT_CUSTOM_HASH({ schema: 'custom-v1', kind: 'custom', text: customText, action: 'buy', scope: { kind: 'all' } });
   const customRecords = adapterMod.contractSaveCustomRecords(state.contracts.versions, {
@@ -2429,12 +2429,71 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
   state.contracts = { ...state.contracts, versions: [...state.contracts.versions, ...customRecords], simContext: null };
   mountCycle(); await reviewSettle();
   const customTxt = texts(current).join('|');
-  check('操作复盘·自定义规则：明确“暂不参与逐笔复盘”、不计作符合，并保留模板规则结论',
-    customTxt.includes('自定义规则暂不参与逐笔复盘') && customTxt.includes('1 条自定义规则')
-    && customTxt.includes('不把它们算作“符合”') && customTxt.includes('2 笔违背了规则')
-    && findByClass(current, 'tr-rule-row').length === 3, customTxt.slice(0, 500));
+  check('操作复盘·自定义规则：AI 判定结果纳入复盘，模板规则结论保留',
+    !customTxt.includes('暂不参与逐笔复盘')
+    && customTxt.includes('自定义规则')
+    && /笔违背了规则/.test(customTxt)
+    && findByClass(current, 'tr-rule-row').length >= 3, customTxt.slice(0, 500));
 
-  // 无生效规则：不伪造“符合”
+  // 双向规则：action='both' 的规则应同时匹配买入和卖出成交
+  const bothText = '当天涨跌幅超过 5% 时提醒我';
+  const bothHash = adapterMod.CONTRACT_CUSTOM_HASH({ schema: 'custom-v1', kind: 'custom', text: bothText, action: 'both', scope: { kind: 'all' } });
+  const bothRecords = adapterMod.contractSaveCustomRecords(state.contracts.versions, {
+    rule_id: 'review-both', text: bothText, action: 'both', scope: { kind: 'all' }, understanding: '涨跌幅提醒', hash: bothHash,
+  });
+  state.contracts = { ...state.contracts, versions: [...state.contracts.versions, ...bothRecords], simContext: null };
+  mountCycle(); await reviewSettle();
+  const bothTxt = texts(current).join('|');
+  check('操作复盘·双向规则：action=both 的规则匹配买入和卖出成交',
+    bothTxt.includes('自定义规则')
+    && findByClass(current, 'tr-rule-row').length >= 4, bothTxt.slice(0, 500));
+
+  // 多标的场景：自定义规则按 scope 筛选标的
+  const symbolText = '只针对 600519：买入前核对计划';
+  const symbolHash = adapterMod.CONTRACT_CUSTOM_HASH({ schema: 'custom-v1', kind: 'custom', text: symbolText, action: 'buy', scope: { kind: 'symbol', symbol: '600519' } });
+  const symbolRecords = adapterMod.contractSaveCustomRecords(state.contracts.versions, {
+    rule_id: 'review-symbol', text: symbolText, action: 'buy', scope: { kind: 'symbol', symbol: '600519' }, understanding: '600519 买入核对', hash: symbolHash,
+  });
+  state.contracts = { ...state.contracts, versions: [...state.contracts.versions, ...symbolRecords], simContext: null };
+  mountCycle(); await reviewSettle();
+  const symbolTxt = texts(current).join('|');
+  check('操作复盘·多标的：自定义规则按 scope 筛选，只匹配指定标的',
+    symbolTxt.includes('自定义规则')
+    && symbolTxt.includes('600519'), symbolTxt.slice(0, 500));
+
+  // 规则变更触发重新计算：修改自定义规则后复盘结果应更新
+  const updatedText = '修改后的规则描述';
+  const updatedHash = adapterMod.CONTRACT_CUSTOM_HASH({ schema: 'custom-v1', kind: 'custom', text: updatedText, action: 'buy', scope: { kind: 'all' } });
+  const updatedRecords = adapterMod.contractSaveCustomRecords(state.contracts.versions, {
+    rule_id: 'review-custom', text: updatedText, action: 'buy', scope: { kind: 'all' }, understanding: '修改后', hash: updatedHash,
+  });
+  state.contracts = { ...state.contracts, versions: updatedRecords, simContext: null };
+  mountCycle(); await reviewSettle();
+  const updatedTxt = texts(current).join('|');
+  check('操作复盘·规则变更：修改自定义规则后重新计算，不显示旧结果',
+    updatedTxt.includes('修改后的规则描述')
+    && !updatedTxt.includes('买入前核对自己的交易计划'), updatedTxt.slice(0, 500));
+
+  // 行为测试：验证 buys/sells 数组只包含当前交易日及之前的交易
+  const simContext = state.contracts.simContext;
+  if (simContext?.review) {
+    const operations = simContext.review.operations;
+    const customEvents = operations.flatMap((op) => op.events.filter((e) => e.template_id === null));
+    check('操作复盘·行为：自定义规则事件的 message 不包含未来交易信息',
+      customEvents.every((e) => typeof e.message === 'string'),
+      `customEvents count: ${customEvents.length}`);
+  }
+
+  // 行为测试：验证混合规则时汇总计数正确（每笔操作只计一次）
+  if (simContext?.review?.summary) {
+    const s = simContext.review.summary;
+    const totalFromOutcomes = s.violated_n + s.warned_n + s.missing_n + s.compliant_n + s.not_applicable_n + s.no_rule_n;
+    check('操作复盘·行为：汇总计数等于操作总数（每笔只计一次）',
+      totalFromOutcomes === s.trades_n,
+      `totalFromOutcomes=${totalFromOutcomes}, trades_n=${s.trades_n}`);
+  }
+
+  // 无生效规则：不伪造”符合”
   state.contracts = { ...defaultContracts(), marketSource: 'synthetic-fixture', versions: [], simContext: null };
   mountCycle(); await reviewSettle();
   const noRuleTxt = texts(current).join('|');

@@ -207,7 +207,7 @@ function ruleDetail(rule) {
     el('summary', {}, ['查看详情']),
     rule.origin_text ? el('div', { class: 'muted small' }, [`用户原话：${safe(rule.origin_text)}`]) : null,
     rule.is_custom && rule.text ? el('div', { class: 'muted small' }, [`用户原话：${safe(rule.text)}`]) : null,
-    rule.understanding ? el('div', { class: 'muted small' }, [`AI 理解：${safe(rule.understanding)}`]) : null,
+    rule.understanding ? el('div', { class: 'muted small' }, [`规则理解：${safe(rule.understanding)}`]) : null,
     choices.length ? el('div', { class: 'muted small' }, [`保存时确认：${choices.map(([k, v]) => confirmations[`${k}:${v}`] ?? '已确认').join('；')}`]) : null,
     rule.timing ? el('div', { class: 'muted small' }, [`时间口径：${safe(rule.timing)}`]) : null,
     ...(rule.notes ?? []).map((note) => el('div', { class: 'muted small' }, [`备注：${safe(note)}`])),
@@ -297,12 +297,11 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
         ]),
       ]),
       el('div', { class: 'cv-rule-text' }, [safe(rule.text)]),
-      isCustom ? el('div', { class: 'muted small' }, ['已保存，暂不参与操作复盘。']) : null,
       isCustom ? el('div', { class: 'cv-rule-action' }, [`提醒动作：${actionLabel}`]) : null,
       rule.decision_statement ? el('div', { class: 'cv-decision cv-decision-current' }, [`决定自述：${safe(rule.decision_statement.text)}`]) : null,
       el('div', { class: 'cv-rule-scope', 'data-scope': rule.scope && rule.scope.kind === 'symbol' ? rule.scope.symbol : 'all' }, [`适用范围：${safe(rule.scope_text)}`]),
       cond ? el('div', { class: 'cv-rule-cond' }, [cond]) : null,
-      isCustom && rule.understanding ? el('div', { class: 'muted small cv-rule-understanding' }, [`AI 理解：${safe(rule.understanding)}`]) : null,
+      isCustom && rule.understanding ? el('div', { class: 'muted small cv-rule-understanding' }, [`规则理解：${safe(rule.understanding)}`]) : null,
       confirming ? el('div', { class: 'cv-confirm' }, [
         el('div', { class: 'calc-line' }, [`确认停用\u201c${safe(rule.text)}\u201d？`]),
         el('div', { class: 'muted small' }, [STOP_NOTE]),
@@ -1026,7 +1025,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
       const s = pending ? { text: '待你确认', kind: 'mode' } : NL_STATUS[r.status] ?? NL_STATUS.error;
       const nodes = [el('div', { class: 'row' }, [el('span', { class: `chip ${s.kind}`, 'data-role': 'nl-status' }, [s.text])])];
       const understanding = r.understanding
-        ? el('div', { class: 'muted small' }, [`模型理解（仅供核对，不参与判定）：${r.understanding}`])
+        ? el('div', { class: 'muted small' }, [`规则理解（仅供核对，不参与判定）：${r.understanding}`])
         : null;
       if (r.status === 'supported') {
         if (isCustom) {
@@ -1070,7 +1069,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
           ack.addEventListener('change', (e) => { c.nl = { ...c.nl, ack: !!e.target.checked }; paintNl(); });
           nodes.push(el('div', { class: 'cv-nl-warn' }, [NL_CHECK_WARNING]));
           nodes.push(el('label', { class: 'cv-nl-ack' }, [ack, el('span', {}, ['我已逐字对照原话核对：上面的预览与我的本意一致。'])]));
-          nodes.push(el('div', { class: 'muted small' }, ['保存后将按你确认的动作与适用范围生成规则；自定义规则暂不参与操作复盘，后续版本会支持。']));
+          nodes.push(el('div', { class: 'muted small' }, ['保存后将按你确认的动作与适用范围生成规则。']));
           const canSave = c.nl.ack && !!c.nl.actionChoice;
           if (!canSave) {
             const reasons = [];
@@ -1095,7 +1094,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
           understanding,
         ]));
         nodes.push(el('div', { class: 'cv-nl-checks' }, [
-          el('div', { class: 'muted small' }, ['程序检查（按原文判定，与模型结果无关）：']),
+          el('div', { class: 'muted small' }, ['程序检查（按原文判定，与识别结果无关）：']),
           el('ul', { class: 'cv-nl-list' }, r.checks.map((x) => el('li', {}, [x]))),
         ]));
         for (const item of r.confirmations) nodes.push(confirmBlock(item));
@@ -1103,7 +1102,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
         ack.addEventListener('change', (e) => { c.nl = { ...c.nl, ack: !!e.target.checked }; paintNl(); });
         nodes.push(el('div', { class: 'cv-nl-warn' }, [NL_CHECK_WARNING]));
         nodes.push(el('label', { class: 'cv-nl-ack' }, [ack, el('span', {}, ['我已逐字对照原话核对：上面的预览与我的本意一致；我理解程序检查不能保证发现所有股票名称、附加条件或隐含限定。'])]));
-        nodes.push(el('div', { class: 'muted small' }, ['最终保存与参与测试的是程序生成的规则文本与参数，而不是你的原话或模型的理解；如与本意不符，请修改描述后重新识别，或在模板中调整参数。']));
+        nodes.push(el('div', { class: 'muted small' }, ['最终保存与参与测试的是程序生成的规则文本与参数，而不是你的原话或识别的理解；如与本意不符，请修改描述后重新识别，或在模板中调整参数。']));
         const hint = {
           choice_pending: '还有待确认的理解，确认前不能保存。',
           choice_unsupported: '你选择的理解当前系统不支持，不能保存。',
