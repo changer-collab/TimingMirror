@@ -775,12 +775,13 @@ body {
 .tr-tech { padding-top: 10px; border-top: 1px solid var(--line); font-size: 12px; color: var(--faint); }
 .tr-tech > summary { cursor: pointer; width: max-content; font-size: 13px; color: var(--gray); }
 .tr-tech-body { display: flex; flex-direction: column; gap: 3px; padding-top: 8px; line-height: 1.7; }
-.tr-empty, .tr-loading, .tr-error { display: flex; flex-direction: column; gap: 8px; padding: 16px; }
-.tr-empty-title, .tr-loading strong, .tr-error strong { font-size: 16px; color: var(--cream); }
+.tr-empty, .tr-loading, .tr-error { display: flex; flex-direction: column; gap: 10px; padding: 18px 20px; border: 1px solid var(--line); border-left: 4px solid var(--amber); border-radius: 12px; background: var(--panel); }
+.tr-empty-title, .tr-loading strong, .tr-error strong { font-size: 18px; font-weight: 700; color: var(--cream); }
 .tr-empty-copy, .tr-error-copy { margin: 0; font-size: 14px; line-height: 1.75; color: var(--dim); }
-.tr-empty .btn { width: max-content; }
+.tr-empty .btn { width: max-content; margin-top: 4px; }
 .tr-filter-empty { padding: 8px 2px; }
 @media (max-width: 680px) {
+  .tr-empty, .tr-loading, .tr-error { padding: 14px; }
   .tr-stats, .tr-stats-plain { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tr-toolbar { align-items: flex-start; }
   .tr-source { width: 100%; }

@@ -212,9 +212,12 @@ function dataDisclosure(review, context, localBill) {
 
 function emptyGate() {
   return el('div', { class: 'tr-empty card' }, [
-    el('div', { class: 'tr-empty-title' }, ['先导入并确认一份账单']),
+    el('p', { class: 'tr-empty-label' }, ['NO REAL BILL / 尚未开始']),
+    el('h2', { class: 'tr-empty-title' }, ['先导入并确认一份账单。']),
     el('p', { class: 'tr-empty-copy' }, ['导入并确认账单后，这里会按真实成交逐笔对照当前规则。没有账单时不会自动加载示例数据。']),
-    el('a', { class: 'btn small', href: '#/import' }, ['去导入账单']),
+    el('div', { class: 'tr-empty-actions' }, [
+      el('a', { class: 'btn primary tr-empty-action', href: '#/import' }, ['导入账单', el('span', { class: 'arrow' }, ['→'])]),
+    ]),
   ]);
 }
 
@@ -235,6 +238,11 @@ export function renderScenarioReview(root, ctx) {
   const src = adapter.contractTradeSource(state.bill, marketSource);
   const page = el('div', { class: 'stack tr-page' });
   root.append(page);
+
+  if (!localBill && !demoAllowed) {
+    page.append(emptyGate());
+    return;
+  }
 
   page.append(el('div', { class: 'tr-toolbar' }, [
     el('div', { class: 'tr-toolbar-left' }, [
@@ -262,11 +270,6 @@ export function renderScenarioReview(root, ctx) {
         ])
         : el('span', { class: 'muted small' }, ['确认账单后获取行情']),
   ]));
-
-  if (!localBill && !demoAllowed) {
-    page.append(emptyGate());
-    return;
-  }
 
   const ruleSet = adapter.contractRuleSet(c.versions ?? []);
   const currentRules = ruleSet.current;
@@ -413,9 +416,12 @@ export function renderScenarioReview(root, ctx) {
     page.append(list, filterEmpty);
   } else {
     page.append(el('div', { class: 'tr-empty card' }, [
-      el('div', { class: 'tr-empty-title' }, ['这份账单里还没有可复盘的操作']),
+      el('p', { class: 'tr-empty-label' }, ['NO TRADES / 无可复盘操作']),
+      el('h2', { class: 'tr-empty-title' }, ['这份账单里还没有可复盘的操作。']),
       el('p', { class: 'tr-empty-copy' }, ['导入包含成交记录的账单后，这里会逐笔对照当前规则。']),
-      el('a', { class: 'btn small', href: '#/import' }, ['去导入账单']),
+      el('div', { class: 'tr-empty-actions' }, [
+        el('a', { class: 'btn primary tr-empty-action', href: '#/import' }, ['导入账单', el('span', { class: 'arrow' }, ['→'])]),
+      ]),
     ]));
   }
 
