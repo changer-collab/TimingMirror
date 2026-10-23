@@ -98,7 +98,6 @@ check('清理：首页旧横幅和短文案已移除',
       links: linksOf(html),
       cardCount: countToken(html, 'tm-bill-banner'),
       shellCount: countToken(html, 'tm-bill-banner-shell'),
-      qaShell: countToken(html, 'tm-bill-banner-shell--qa'),
     };
   });
   check('本地账单：五个页面标题与内容完全一致',
@@ -108,8 +107,9 @@ check('清理：首页旧横幅和短文案已移除',
     rendered.every((item) => JSON.stringify(item.links) === JSON.stringify(EXPECTED_LINKS)));
   check('本地账单：每个页面只有一个共享横幅外壳和一张横幅',
     rendered.every((item) => item.shellCount === 1 && item.cardCount === 1));
-  check('本地账单：仅问答页使用与 .tm-qa-inner 对齐的窄容器',
-    rendered.every((item) => (item.route === 'chat' ? item.qaShell === 1 : item.qaShell === 0)));
+  check('本地账单：五个页面使用完全相同的横幅外壳，无问答专属窄容器',
+    rendered.every((item) => item.html === rendered[0].html)
+    && !/tm-bill-banner-shell--qa/.test(app) && !/tm-bill-banner-shell--qa/.test(css));
   check('本地账单：首页不再显示旧的较少链接或旧文案',
     !rendered.find((item) => item.route === 'home').text.includes('助手都使用这笔账单')
     && rendered.find((item) => item.route === 'home').links.length === 4);
@@ -137,7 +137,6 @@ check('隐藏：未确认/非本地账单不渲染横幅',
 /* —— 横幅外壳与正文主容器使用同一布局约束 —— */
 {
   const shellRule = cssBlock('.tm-bill-banner-shell {');
-  const qaShellRule = cssBlock('.tm-bill-banner-shell.tm-bill-banner-shell--qa {');
   const bannerRule = cssBlock('.tm-bill-banner {');
   const qaInnerRule = cssBlock('.tm-qa-inner {');
   check('布局：横幅外壳使用 container，卡片不再把 container padding 覆盖成 16px',
@@ -149,12 +148,15 @@ check('隐藏：未确认/非本地账单不渲染横幅',
     && /class="container page-body"/.test(realImport)
     && /class="container report-body"/.test(realReport)
     && /class="container page-body tm-scenario-page"/.test(scenarioPage));
-  check('布局：问答横幅外壳与 .tm-qa-inner 使用同一 920px/24px 约束',
-    /max-width:\s*920px/.test(qaShellRule) && /padding-inline:\s*24px/.test(qaShellRule)
-    && /max-width:\s*920px/.test(qaInnerRule) && /padding:\s*0 24px/.test(qaInnerRule));
-  check('布局：窄屏问答横幅与 .tm-qa-inner 同步使用 14px gutter',
-    /\.tm-bill-banner-shell\.tm-bill-banner-shell--qa\s*\{\s*padding-inline:\s*14px;\s*\}/.test(css)
-    && /\.tm-qa-inner\s*\{\s*padding:\s*0 14px;\s*\}/.test(css));
+  check('布局：问答横幅不再跟随 .tm-qa-inner 收窄，正文窄宽保持不变',
+    /max-width:\s*920px/.test(qaInnerRule) && /padding:\s*0 24px/.test(qaInnerRule)
+    && !/max-width:\s*920px/.test(shellRule) && !/padding-inline/.test(shellRule));
+  check('布局：窄屏只保留问答正文 14px gutter，横幅沿用全站 container gutter',
+    /\.tm-qa-inner\s*\{\s*padding:\s*0 14px;\s*\}/.test(css)
+    && !/tm-bill-banner-shell[^{]*\{\s*padding-inline/.test(css));
+  check('布局：桌面问答横幅补偿内层滚动条占位，窄屏不补偿',
+    /@media \(min-width: 681px\)[\s\S]*body\.tm-qa-standalone \.tm-bill-banner-shell[\s\S]*padding-right:\s*calc\(var\(--gutter\) \+ var\(--tm-scrollbar-w, 0px\)\)/.test(css)
+    && /--tm-scrollbar-w/.test(app));
   check('布局：横幅卡片保留自身内边距，不承担页面 gutter',
     /padding:\s*12px 16px/.test(bannerRule));
 }

@@ -189,6 +189,15 @@ import { renderRealProfile } from './realProfile.js';
     return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   }
 
+  function calibrateScrollbarWidth() {
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:absolute;top:-9999px;left:-9999px;width:100px;height:100px;overflow:scroll;';
+    document.body.appendChild(probe);
+    const width = probe.offsetWidth - probe.clientWidth;
+    probe.remove();
+    document.documentElement.style.setProperty('--tm-scrollbar-w', `${width}px`);
+  }
+
   function scrollTop() {
     const html = document.documentElement;
     const previous = html.style.scrollBehavior;
@@ -406,8 +415,7 @@ import { renderRealProfile } from './realProfile.js';
     const summary = demo
       ? `${esc(name)}${fileLabel} · 合成账单与示例行情，仅用于演示。`
       : `${esc(name)} · 报告、问答和规则测试都使用这笔账单。`;
-    const layoutClass = state.route === 'chat' ? ' tm-bill-banner-shell--qa' : '';
-    return `<div class="container tm-bill-banner-shell${layoutClass}">
+    return `<div class="container tm-bill-banner-shell">
       <div class="tm-bill-banner" role="status">
         <div class="tm-bill-banner-main">
           <strong>${demo ? '当前是示例场景' : '当前有已确认的本地账单'}</strong>
@@ -2094,6 +2102,7 @@ import { renderRealProfile } from './realProfile.js';
     }
   }
 
+  calibrateScrollbarWidth();
   bridge.initBridge({ onChange: onSharedChange });
   render();
 })();

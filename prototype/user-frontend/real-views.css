@@ -184,9 +184,11 @@ body {
   margin-top: 18px;
 }
 
-.tm-bill-banner-shell.tm-bill-banner-shell--qa {
-  max-width: 920px;
-  padding-inline: 24px;
+/* 问答页的 .tm-main 不滚动，缺少桌面滚动条占位；补齐后卡片边界才与其他页面一致。 */
+@media (min-width: 681px) {
+  body.tm-qa-standalone .tm-bill-banner-shell {
+    padding-right: calc(var(--gutter) + var(--tm-scrollbar-w, 0px));
+  }
 }
 
 .tm-bill-banner {
@@ -768,10 +770,6 @@ body {
 
   .tm-bill-banner-shell {
     margin-top: 12px;
-  }
-
-  .tm-bill-banner-shell.tm-bill-banner-shell--qa {
-    padding-inline: 14px;
   }
 
   .tm-bill-banner {
