@@ -116,6 +116,56 @@ function actionsHTML(answer, message, actionMap, currentRuleKey) {
   return `<div class="tm-qa-actions">${buttons.join('')}</div>${staleNote}`;
 }
 
+function profileFactHTML(message) {
+  const fact = message?.profile_fact;
+  if (!fact) return '';
+  const messageId = esc(message.id ?? '');
+  if (fact.state === 'saved') {
+    const extra = fact.duplicates ? ` · 另有 ${esc(fact.duplicates)} 条已存在` : '';
+    const undo = Array.isArray(fact.ids) && fact.ids.length
+      ? `<button type="button" data-fact-action="undo" data-message-id="${messageId}">撤销</button>`
+      : '';
+    return `<div class="tm-qa-profilefact" data-role="qa-profilefact"><span>已记入画像 · ${esc(fact.count ?? 0)} 条${extra}</span>${undo}</div>`;
+  }
+  if (fact.state === 'duplicate') return '<p class="tm-qa-profilefact is-muted">这条陈述已在画像中，未重复记录。</p>';
+  if (fact.state === 'undoing') return '<p class="tm-qa-profilefact is-muted">正在撤销画像记录…</p>';
+  if (fact.state === 'undone') return '<p class="tm-qa-profilefact is-muted">已撤销这次的画像记录。</p>';
+  if (fact.state === 'undo-failed') return '<p class="tm-qa-profilefact is-warn">撤销失败，可稍后在个人中心删除。</p>';
+  if (fact.state === 'failed') return '<p class="tm-qa-profilefact is-muted">这次陈述未记入云端画像；问答结果不受影响。</p>';
+  return '';
+}
+
+function profileFactChip(result) {
+  if (!result || typeof result !== 'object') return null;
+  if (result.saved === true) {
+    const added = Array.isArray(result.result?.added) ? result.result.added : [];
+    const duplicates = Array.isArray(result.result?.duplicates) ? result.result.duplicates : [];
+    if (added.length) {
+      return {
+        state: 'saved',
+        ids: added.map((fact) => fact?.id).filter((id) => typeof id === 'string'),
+        count: added.length,
+        duplicates: duplicates.length,
+      };
+    }
+    if (duplicates.length) return { state: 'duplicate', count: duplicates.length };
+    return null;
+  }
+  if (result.code === 'E_PROFILE_FACT_NOT_EXPLICIT') return null;
+  return { state: 'failed' };
+}
+
+function patchMessage(ctx, messageId, patch) {
+  const chat = ctx?.state?.chat ?? {};
+  const messages = Array.isArray(chat.messages) ? chat.messages : [];
+  const index = messages.findIndex((message) => message?.id === messageId);
+  if (index < 0) return false;
+  const next = messages.slice();
+  next[index] = { ...next[index], ...patch };
+  ctx.set({ chat: { ...chat, messages: next } });
+  return true;
+}
+
 function answerHTML(entry, actionMap, currentRuleKey) {
   const answer = entry.answer;
   const status = statusOf(answer);
@@ -136,6 +186,7 @@ function answerHTML(entry, actionMap, currentRuleKey) {
     ${factsHTML(facts)}
     ${evidenceHTML(answer.evidence)}
     ${actionsHTML(answer, entry.message, actionMap, currentRuleKey)}
+    ${profileFactHTML(entry.message)}
     ${answer.notice ? `<p class="tm-qa-notice">${esc(answer.notice)}</p>` : ''}
   </article>`;
 }
@@ -304,6 +355,39 @@ export function renderRealChat(host, ctx) {
         messages: [...state.chat.messages, assistantMessage],
       },
     });
+    if (bill?.demo !== true && typeof ctx.qaDeps?.recordProfileFacts === 'function') {
+      Promise.resolve()
+        .then(() => ctx.qaDeps.recordProfileFacts({ message: question, contextId: messageContextId }))
+        .then((result) => {
+          const chip = profileFactChip(result);
+          if (!chip) return;
+          if (patchMessage(ctx, assistantMessage.id, { profile_fact: chip }) && chip.state === 'saved') {
+            ctx.cloudDeps?.invalidateCloudProfile?.();
+          }
+        })
+        .catch(() => { /* 画像补充失败不影响已展示的回答 */ });
+    }
+  }
+
+  async function undoProfileFacts(messageId) {
+    const messages = Array.isArray(ctx.state.chat?.messages) ? ctx.state.chat.messages : [];
+    const message = messages.find((item) => item?.id === messageId);
+    const ids = Array.isArray(message?.profile_fact?.ids) ? message.profile_fact.ids : [];
+    if (!message || !ids.length || typeof ctx.cloudDeps?.deleteFact !== 'function') return;
+    patchMessage(ctx, messageId, { profile_fact: { ...message.profile_fact, state: 'undoing' } });
+    try {
+      for (const id of ids) {
+        try {
+          await ctx.cloudDeps.deleteFact({ id });
+        } catch (error) {
+          if ((error?.upstreamCode ?? error?.code) !== 'not_found') throw error;
+        }
+      }
+      patchMessage(ctx, messageId, { profile_fact: { state: 'undone', ids: [] } });
+      ctx.cloudDeps.invalidateCloudProfile?.();
+    } catch {
+      patchMessage(ctx, messageId, { profile_fact: { ...message.profile_fact, state: 'undo-failed' } });
+    }
   }
 
   if (form && input) {
@@ -331,6 +415,11 @@ export function renderRealChat(host, ctx) {
       draft = '';
       lastScrollKey = null;
       set({ chat: { ...state.chat, messages: [], pending: false, requestId: null, contextId } });
+      return;
+    }
+    const undo = e.target.closest('[data-fact-action="undo"]');
+    if (undo && host.contains(undo)) {
+      void undoProfileFacts(undo.getAttribute('data-message-id'));
       return;
     }
     const button = e.target.closest('[data-action]');

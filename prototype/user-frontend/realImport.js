@@ -24,6 +24,9 @@ import { getPdfPageCount, renderPdfPages } from '../../src/engine/pdfRender.js';
 import { prepareImageFile } from '../../src/engine/visionImage.js';
 import { finalizeConfirmedBill } from '../../src/agent/importFinalize.js';
 import { REPORT_SCENARIOS, matchReportScenario } from '../../src/demo/reportScenarios.js';
+import {
+  getFullTradesPreference, setFullTradesPreference, billSyncStatus, cloudStatusText, cloudStatusTitle,
+} from './cloudSync.js';
 
 const FILE_ACCEPT = '.csv,.tsv,.xlsx,.pdf,.txt,.png,.jpg,.jpeg,.webp,text/csv,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/*';
 const SOURCE_LABEL = Object.freeze({ csv: 'CSV', tsv: 'TSV', xlsx: 'Excel', pdf: 'PDF', text: '粘贴文字', image: '截图', unsupported: '文件' });
@@ -534,13 +537,17 @@ function billPanelHTML(state, rec) {
   const statusTag = confirmed
     ? '<span class="status-tag ok">已确认</span>'
     : '<span class="status-tag ok">本地校验通过</span>';
+  const sync = billSyncStatus(bill);
+  const cloudTag = confirmed
+    ? `<span class="status-tag tm-cloud-chip" data-role="cloud-sync" data-context="${esc(bill.contextId ?? '')}" data-state="${esc(sync.state)}" title="${esc(cloudStatusTitle(sync))}">${esc(cloudStatusText(sync))}</span>`
+    : '<span class="status-tag">仅本机</span>';
   return `<section class="panel bill" id="bill" aria-labelledby="bill-title">
     <div class="bill-head">
       <div>
         <p class="mono-label">BILL / 交易核对</p>
         <h2 id="bill-title">已读取 ${trades.length} 笔交易。</h2>
       </div>
-      <div class="bill-tags">${statusTag}<span class="status-tag">仅本机</span></div>
+      <div class="bill-tags">${statusTag}${cloudTag}</div>
     </div>
     <div class="bill-meta">
       <span>来源 <b>${sourceLabel}</b></span>
@@ -552,10 +559,14 @@ function billPanelHTML(state, rec) {
     ${billWarningsHTML(bill)}
     ${errorLine(rec)}
     ${tradesTableHTML(trades)}
+    ${confirmed ? '' : `<label class="tm-cloud-optin">
+      <input type="checkbox" data-role="full-trades" ${getFullTradesPreference() ? 'checked' : ''}>
+      <span><strong>同时云端保存完整成交明细</strong><em>默认只同步统计与内容指纹；勾选后才上传成交行，可随时删除。</em></span>
+    </label>`}
     <div class="bill-actions">
       <div class="bill-actions-note">
         <span class="plus" aria-hidden="true">＋</span>
-        <p class="fine">确认只用于生成本地分析，不会上传文件，也不会执行交易。费用与税费按列展示；报告中的数字以已确认账单为准。</p>
+        <p class="fine">确认后生成本地报告；账单统计会同步到云端画像，原始 CSV 与文件名默认不上传。不会执行交易。</p>
       </div>
       <div class="tm-action-group">
         ${rec?.status === 'accepted' && rec.draft ? '<button class="btn btn-ghost btn-sm" type="button" data-action="return-draft">返回修改草稿</button>' : ''}
@@ -691,6 +702,8 @@ export function renderRealImport(host, ctx) {
       handlePaste(ctx, pasteInput.value);
     }
   });
+  const fullTrades = host.querySelector('[data-role="full-trades"]');
+  fullTrades?.addEventListener('change', () => setFullTradesPreference(fullTrades.checked));
 
   host.querySelectorAll('[data-action]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -710,7 +723,12 @@ export function renderRealImport(host, ctx) {
       } else if (action === 'validate') {
         validateDraft(ctx);
       } else if (action === 'confirm') {
-        finalizeConfirmedBill({ state, set: ctx.set, go: ctx.go, client: ctx.importRecovery });
+        const includeTrades = host.querySelector('[data-role="full-trades"]')?.checked === true;
+        setFullTradesPreference(includeTrades);
+        const result = finalizeConfirmedBill({ state, set: ctx.set, go: ctx.go, client: ctx.importRecovery });
+        if (result?.ok && typeof ctx.cloudDeps?.syncBill === 'function') {
+          Promise.resolve(ctx.cloudDeps.syncBill({ bill: state.bill, includeTrades })).catch(() => {});
+        }
       } else if (action === 'return-draft') {
         clearImportFeedback();
         ctx.set({ bill: freshBill({ contextId: state.bill.contextId, status: 'none', sourceType: 'local', fileName: state.bill.fileName, fileSize: state.bill.fileSize }), importRecovery: { ...state.importRecovery, status: 'draft' } });

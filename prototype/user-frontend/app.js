@@ -556,7 +556,7 @@ import { renderRealProfile } from './realProfile.js';
       intro: `<div class="report-meta">
         <div class="report-account"><span>REAL BILL / 已确认本地账单</span><span>${esc(bill.fileName || '未知文件')}</span></div>
         <dl>
-          <div><dt>数据来源</dt><dd>本机账单 · 未上传</dd></div>
+          <div><dt>数据来源</dt><dd>本机账单 · CSV 未上传</dd></div>
           <div><dt>结果</dt><dd>仅展示已复核事实</dd></div>
           <div><dt>状态</dt><dd><span class="status-dot">真实账单</span></dd></div>
         </dl>
@@ -576,7 +576,7 @@ import { renderRealProfile } from './realProfile.js';
       <section class="tm-workspace-head">
         <p class="mono-label">MY MIRROR / 个人中心</p>
         <h1>画像与规则</h1>
-        <p class="muted">画像只从已复核账单派生；规则保存在当前浏览器，操作复盘已独立为单独页面。</p>
+        <p class="muted">画像来自已复核账单与你在对话中明确说过的事实；规则保存在当前浏览器，操作复盘已独立为单独页面。</p>
       </section>
       <div id="tm-real-profile"></div>
       <section class="tm-me-rules" aria-label="规则工作区">

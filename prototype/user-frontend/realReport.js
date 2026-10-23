@@ -6,6 +6,7 @@ import { renderGhostChart } from '../../src/ui/components/ghostChart.js';
 import { buildRuleCandidates } from '../../src/engine/userProfile.js';
 import { recordReportObservation, ruleStateOf, syncBehaviorAnalysis } from './profileStore.js';
 import { openRuleCandidateInAssistant } from './ruleCandidates.js';
+import { billSyncStatus, cloudStatusText, cloudStatusTitle } from './cloudSync.js';
 import {
   behaviorAnalysisKey,
   behaviorFallbackText,
@@ -102,20 +103,25 @@ function isDemoBundle(bundle, bill) {
   return bundle?.demo === true || bill?.demo === true;
 }
 
-function sourceChips(bundle, demo) {
+function sourceChips(bundle, demo, bill = null) {
   const chips = [];
+  let cloudChip = '';
   if (demo) {
     chips.push(`示例场景 · ${bundle.demoScenario?.title || '示例报告'}`);
     chips.push('合成行情 · 非真实行情');
     if (bundle.asOfDate) chips.push(`估值日 ${bundle.asOfDate}`);
     chips.push('演示结果');
   } else {
-    chips.push('本机账单 · 未上传');
+    chips.push('CSV 未上传');
+    if (bill) {
+      const sync = billSyncStatus(bill);
+      cloudChip = `<span class="rp-chip tm-cloud-chip" data-role="cloud-sync" data-context="${esc(bill.contextId ?? '')}" data-state="${esc(sync.state)}" title="${esc(cloudStatusTitle(sync))}">${esc(cloudStatusText(sync))}</span>`;
+    }
     if (bundle.marketSource?.shortLabel) chips.push(bundle.marketSource.shortLabel);
     if (bundle.asOfDate) chips.push(`行情截至 ${bundle.asOfDate}`);
     chips.push(bundle.review?.portfolio_published === true ? '已复核' : '部分发布');
   }
-  return chips.map((text) => `<span class="rp-chip">${esc(text)}</span>`).join('');
+  return chips.map((text) => `<span class="rp-chip">${esc(text)}</span>`).join('') + cloudChip;
 }
 
 function sectionHead(title, note = '') {
@@ -554,7 +560,7 @@ function footnote(vis) {
 
 function renderBundle(host, bundle, ctx, bill) {
   const demo = isDemoBundle(bundle, bill);
-  const source = `<div class="rp-status rp-status-top">${sourceChips(bundle, demo)}</div>`;
+  const source = `<div class="rp-status rp-status-top">${sourceChips(bundle, demo, bill)}</div>`;
   const published = bundle.review?.portfolio_published === true;
   if (!published) {
     host.innerHTML = `<div class="container report-body">${source}${blockedBlock(bundle, demo)}</div>`;
@@ -569,6 +575,13 @@ function renderBundle(host, bundle, ctx, bill) {
       const observation = recordReportObservation({ bundle, bill, ruleState: ruleStateOf(ctx?.state?.contracts?.versions) });
       profile = observation.profile;
       profileKey = observation.snapshot?.profile_key ?? null;
+      const snapshot = observation.profile?.latest;
+      if (snapshot && snapshot.profile_key === profileKey && snapshot.review?.portfolio_published === true
+        && typeof ctx?.cloudDeps?.syncSnapshot === 'function') {
+        Promise.resolve(ctx.cloudDeps.syncSnapshot({ bill, snapshot }))
+          .then((result) => { if (result?.ok) ctx.cloudDeps.invalidateCloudProfile?.(); })
+          .catch(() => {});
+      }
     } catch { /* 画像记录失败不阻断报告 */ }
   }
   let candidatePack = null;

@@ -20,6 +20,8 @@ export const SITE_FUNCTION_PATHS = Object.freeze({
   customRuleJudgment: '/functions/v1/app/api/llm/custom-rule-judgment',
   importRecover: '/functions/v1/app/api/llm/import-recover',
   importVision: '/functions/v1/app/api/llm/import-vision',
+  profileSummary: '/functions/v1/app/api/llm/profile-summary',
+  profileFact: '/functions/v1/app/api/llm/profile-fact',
 });
 
 export const HTTP_TRANSPORT_CODES = Object.freeze({
@@ -67,10 +69,10 @@ function normalizePaths(paths) {
     throw new TypeError('paths 必须为对象');
   }
   const out = {};
-  for (const key of ['intent', 'restate', 'ruleIntent', 'resultExplanation', 'scenarioJudgment', 'customRuleJudgment', 'importRecover', 'importVision']) {
+  for (const key of ['intent', 'restate', 'ruleIntent', 'resultExplanation', 'scenarioJudgment', 'customRuleJudgment', 'importRecover', 'importVision', 'profileSummary', 'profileFact']) {
     const value = paths[key];
     if (value === undefined) {
-      if (key === 'ruleIntent' || key === 'resultExplanation' || key === 'scenarioJudgment' || key === 'customRuleJudgment' || key === 'importRecover' || key === 'importVision') continue;
+      if (key === 'ruleIntent' || key === 'resultExplanation' || key === 'scenarioJudgment' || key === 'customRuleJudgment' || key === 'importRecover' || key === 'importVision' || key === 'profileSummary' || key === 'profileFact') continue;
       throw new TypeError(`paths.${key} 缺失`);
     }
     if (typeof value !== 'string' || !value.startsWith('/')
@@ -94,7 +96,7 @@ export function createHttpTransport({
     throw new TypeError('fetchImpl 必须为函数');
   }
 
-  async function call(path, body, signal) {
+  async function request(path, body, signal) {
     let response;
     try {
       response = await fetchImpl(`${origin}${path}`, {
@@ -134,8 +136,15 @@ export function createHttpTransport({
       throw transportError(HTTP_TRANSPORT_CODES.JSON);
     }
     if (signal && signal.aborted) throw transportError(HTTP_TRANSPORT_CODES.ABORTED);
-    if (payload === null || typeof payload !== 'object' || Array.isArray(payload)
-      || typeof payload.rawText !== 'string') {
+    if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw transportError(HTTP_TRANSPORT_CODES.RESPONSE);
+    }
+    return payload;
+  }
+
+  async function call(path, body, signal) {
+    const payload = await request(path, body, signal);
+    if (typeof payload.rawText !== 'string') {
       throw transportError(HTTP_TRANSPORT_CODES.RESPONSE);
     }
     return { rawText: payload.rawText };
@@ -147,6 +156,14 @@ export function createHttpTransport({
     },
     restate({ question, facts, signal } = {}) {
       return call(routes.restate, { question, facts }, signal);
+    },
+    profileSummary({ digest, signal } = {}) {
+      if (!routes.profileSummary) throw transportError(HTTP_TRANSPORT_CODES.CONFIG);
+      return request(routes.profileSummary, { digest }, signal);
+    },
+    profileFact({ message, signal } = {}) {
+      if (!routes.profileFact) throw transportError(HTTP_TRANSPORT_CODES.CONFIG);
+      return request(routes.profileFact, { message }, signal);
     },
     ruleIntent({ question, stage, allowed_intents, allowed_templates, allowed_tools, context_summary, signal } = {}) {
       if (!routes.ruleIntent) throw transportError(HTTP_TRANSPORT_CODES.CONFIG);
