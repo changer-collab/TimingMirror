@@ -4,7 +4,8 @@
  *
  * 覆盖：所有页面移除“前往交易规则/前往事实问答”和自动账单确认提示；
  *       规则页不再渲染规则描述输入与“让 AI 理解”；
- *       问答输入、发送、消息与隐私提示保留；面板固定高度/底部留白与消息区承接空白的结构不变。
+ *       助手只保留页面帮助：问答页没有第二个输入框，其他页只保留一个帮助输入；
+ *       面板固定高度/底部留白与消息区承接空白的结构不变。
  * 运行：node tests/ui/assistant-sidebar-cleanup.test.mjs
  */
 import { readFileSync } from 'node:fs';
@@ -133,7 +134,7 @@ const state = {
 const ctx = {
   state,
   assistantTitle: 'AI 助手',
-  assistantSubtitle: '当前页面与已发布报告',
+  assistantSubtitle: '当前页面的说明与操作',
   globalAssistant: true,
   qaDeps: { getReportBundle: () => null },
   set(patch) {
@@ -159,20 +160,11 @@ const ROUTES = ['home', 'import', 'report', 'chat', 'contract'];
 for (const route of ROUTES) {
   const card = render(route);
   const text = allText(card);
-  const classes = childClasses(card);
   check(`侧栏·${route}：不显示两个快捷按钮与自动账单确认提示`,
     !text.includes('前往交易规则')
     && !text.includes('前往事实问答')
     && !text.includes('账单已确认导入')
-    && !nodesByClass(card, 'assistant-msg').some((node) => allText(node).includes(AUTO_NOTICE))
-    && classes.filter((name) => name === 'assistant-messages').length === 0,
-    text.slice(0, 320));
-  check(`侧栏·${route}：保留问答输入、发送与隐私提示`,
-    nodesByTag(card, 'textarea').length === 1
-    && nodesByClass(card, 'qa-input').length === 1
-    && nodesByClass(card, 'qa-form').length === 1
-    && nodesByClass(card, 'qa-form')[0].children.some((node) => allText(node).includes('发送'))
-    && text.includes('原始账单不上传'),
+    && !nodesByClass(card, 'assistant-msg').some((node) => allText(node).includes(AUTO_NOTICE)),
     text.slice(0, 320));
   check(`侧栏·${route}：不渲染规则描述模块`,
     !text.includes('描述你想设的规则')
@@ -184,13 +176,40 @@ for (const route of ROUTES) {
     text.slice(0, 320));
 }
 
+for (const route of ['home', 'import', 'report', 'contract']) {
+  const card = render(route);
+  const text = allText(card);
+  check(`侧栏·${route}：保留一个页面帮助输入与本地隐私提示`,
+    nodesByTag(card, 'textarea').length === 1
+    && nodesByClass(card, 'assistant-help-input').length === 1
+    && nodesByClass(card, 'qa-form').length === 1
+    && nodesByClass(card, 'qa-form')[0].children.some((node) => allText(node).includes('查看说明'))
+    && text.includes('页面帮助在本机回答，不发送')
+    && text.includes('账单分析请去问答页')
+    && nodesByClass(card, 'qa-chips').length === 0,
+    text.slice(0, 360));
+}
+
+{
+  const card = render('chat');
+  const text = allText(card);
+  check('侧栏·chat：不显示第二个输入框，只保留页面帮助/FAQ',
+    nodesByTag(card, 'textarea').length === 0
+    && nodesByClass(card, 'qa-form').length === 0
+    && nodesByClass(card, 'qa-help-topics').length === 1
+    && text.includes('画像怎么记录？')
+    && text.includes('这里只说明本页操作与隐私'),
+    text.slice(0, 360));
+}
+
 /* —— 规则描述模块在规则页（画像与规则 / 操作复盘的共享路由）彻底移除 —— */
 {
   const card = render('contract');
   check('规则页：侧栏不再有规则描述输入与提交按钮',
     !nodesByTag(card, 'button').some((node) => allText(node).includes('让 AI 理解'))
     && nodesByTag(card, 'textarea').length === 1
-    && nodesByTag(card, 'textarea')[0].attrs.class === 'input qa-input',
+    && nodesByClass(card, 'assistant-help-input').length === 1
+    && !nodesByTag(card, 'textarea').some((node) => node.attrs?.id === 'assistant-rule-input'),
     allText(card).slice(0, 320));
 }
 
@@ -200,15 +219,15 @@ for (const route of ROUTES) {
     ...state.assistant,
     messages: [{ role: 'assistant', kind: 'notice', text: AUTO_NOTICE }],
     qaMessages: [
-      { id: 'u1', role: 'user', text: '这笔卖出的原因是什么？', billContextId: null },
-      { id: 'a1', role: 'assistant', kind: 'notice', text: '这是已有的普通回答。', billContextId: null },
+      { id: 'u1', role: 'user', kind: 'help-user', text: '这个页面怎么用？', billContextId: null },
+      { id: 'a1', role: 'assistant', kind: 'help', text: '这是已有的页面帮助回答。', billContextId: null },
     ],
   };
   const card = render('home');
   const text = allText(card);
-  check('对话：已有用户消息与普通回答保留，自动确认提示不显示',
-    text.includes('这笔卖出的原因是什么？')
-    && text.includes('这是已有的普通回答。')
+  check('对话：已有帮助消息保留，自动确认提示不显示',
+    text.includes('这个页面怎么用？')
+    && text.includes('这是已有的页面帮助回答。')
     && !text.includes('账单已确认导入'),
     text.slice(0, 400));
 }
@@ -219,15 +238,17 @@ for (const route of ROUTES) {
   state.assistant = { ...state.assistant, qaMessages: [], qaInput: '' };
   const card = render('home');
   const form = nodesByClass(card, 'qa-form')[0];
-  const input = nodesByClass(card, 'qa-input')[0];
+  const input = nodesByClass(card, 'assistant-help-input')[0];
   input.value = '怎么开始？';
   for (const fn of form.listeners.submit ?? []) fn({ preventDefault() {} });
   await Promise.resolve();
-  check('发送：普通问答输入仍提交并生成用户消息与回答',
+  check('发送：页面帮助输入仍提交并生成帮助消息与本地回答',
     state.assistant.qaMessages.length === 2
     && state.assistant.qaMessages[0].role === 'user'
+    && state.assistant.qaMessages[0].kind === 'help-user'
     && state.assistant.qaMessages[0].text === '怎么开始？'
     && state.assistant.qaMessages[1].role === 'assistant'
+    && state.assistant.qaMessages[1].kind === 'help'
     && String(state.assistant.qaMessages[1].text).includes('导入'),
     JSON.stringify(state.assistant.qaMessages));
   const after = render('home');
@@ -284,15 +305,17 @@ for (const route of ROUTES) {
   const classes = childClasses(card);
   const qa = nodesByClass(card, 'qa-assistant')[0];
   const qaChildren = childClasses(qa);
+  const pageIndex = qaChildren.indexOf('qa-page');
+  const topicsIndex = qaChildren.indexOf('qa-help-topics');
   const messagesIndex = qaChildren.findIndex((name) => name.includes('qa-messages'));
-  const formIndex = qaChildren.findIndex((name) => name === 'qa-form');
-  check('布局：侧栏仅剩标题与问答区，被移除内容后无尾部占位按钮',
+  const formIndex = qaChildren.indexOf('qa-form');
+  check('布局：侧栏仅剩标题与页面帮助区，被移除内容后无尾部占位按钮',
     classes.length === 2 && classes[0] === 'assistant-head' && classes[1] === 'qa-assistant',
     JSON.stringify(classes));
-  check('布局：问答区顺序为页面说明/芯片/消息/输入/隐私，消息区在输入之上',
-    qaChildren[0] === 'qa-page'
-    && qaChildren[1] === 'qa-chips'
-    && messagesIndex > 1
+  check('布局：问答区顺序为页面说明/状态/帮助主题/消息/输入/隐私，消息区在输入之上',
+    pageIndex === 0
+    && topicsIndex > pageIndex
+    && messagesIndex > topicsIndex
     && formIndex > messagesIndex
     && qaChildren.at(-1) === 'qa-fine',
     JSON.stringify(qaChildren));

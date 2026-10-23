@@ -72,8 +72,13 @@ check('情境：不显示原因码与服务端拉取时间，保留数据截止/
   && /行情范围：/.test(scenarioView));
 check('研发语言：相似情境/接入措辞改成本版本可用性说明',
   /本版本暂不支持相似情境检索/.test(qaAnswer)
-  && /右侧助手也使用这份账单/.test(qaAssistant)
+  && /完整问答请在下方输入区继续/.test(qaAssistant)
+  && /完整复盘请在导入并确认后去问答页/.test(qaAssistant)
   && !/还没有接入|右侧助手也接入/.test(qaAnswer + qaAssistant));
+check('助手：只做页面帮助，不复制账单芯片/在线复述/画像记录',
+  !/QA_CHIPS|askOnline|recordProfileFacts|profileFact/.test(qaAssistant)
+  && /showInput: state\.route !== 'chat'/.test(qaAssistant)
+  && !/name="qa-input"|data-role="qa-input"/.test(qaAssistant));
 check('报告：AI 观察不再使用“规则引擎兜底/本地规则引擎”内部称呼',
   /本机规则补充/.test(realReport) && /本机规则识别/.test(realReport)
   && !/规则引擎兜底|本地规则引擎/.test(realReport));

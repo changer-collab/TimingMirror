@@ -85,7 +85,7 @@ const CANDIDATES = [
     && throwing.code === 'E_HTTP_ABORTED' && throwing.facts.length === 0, JSON.stringify(throwing));
 }
 
-/* recorder：只记录明确陈述，落库失败不影响回答 */
+/* recorder：抽取与保存分开；只有显式调用 save 才落库 */
 {
   check('记录器：缺少 saveFacts 时返回 null', createProfileFactRecorder({ transport: {} }) === null);
 
@@ -93,36 +93,40 @@ const CANDIDATES = [
   let saved = null;
   const recorder = createProfileFactRecorder({
     transport: { async profileFact() { extracted += 1; return { rawText: JSON.stringify({ facts: CANDIDATES }) }; } },
-    saveFacts: async (request) => { saved = request; return { ok: true, added: request.facts.length, duplicates: [] }; },
+    saveFacts: async (request) => { saved = request; return { ok: true, added: request.facts.map((fact, i) => ({ id: `f${i}`, ...fact })), duplicates: [] }; },
   });
 
-  const skipped = await recorder.record({ message: '帮我分析一下我的基金收益。', contextId: 'bill-1' });
-  check('记录器：问题/请求不触发模型与落库', skipped.ok === false
-    && skipped.code === 'E_PROFILE_FACT_NOT_EXPLICIT'
-    && extracted === 0 && saved === null, JSON.stringify(skipped));
+  const preview = await recorder.extract({ message: MESSAGE, contextId: 'bill-1' });
+  check('记录器：抽取只返回候选，不落库', preview.ok === true && preview.facts.length === 2
+    && extracted === 1 && saved === null, JSON.stringify({ preview, extracted, saved }));
 
-  const recorded = await recorder.record({ message: MESSAGE, contextId: 'bill-1' });
-  check('记录器：明确陈述落库并带来源', recorded.ok === true && recorded.saved === true
-    && extracted === 1
-    && saved.facts.length === 2
-    && saved.facts.every((fact) => fact.source === 'chat' && fact.source_ref === 'bill-1'), JSON.stringify(recorded));
+  const stored = await recorder.save({ facts: preview.facts, contextId: 'bill-1' });
+  check('记录器：显式保存后才落库并带来源', stored.ok === true && stored.saved === true
+    && extracted === 1 && saved.facts.length === 2
+    && saved.facts.every((fact) => fact.source === 'chat' && fact.source_ref === 'bill-1'), JSON.stringify(stored));
 
-  const noContext = await recorder.record({ message: MESSAGE });
+  const noContext = await recorder.save({ facts: preview.facts });
   check('记录器：无账单上下文时不带 source_ref', noContext.ok === true
     && saved.facts.every((fact) => !('source_ref' in fact)), JSON.stringify(noContext));
+
+  const empty = await recorder.save({ facts: [], contextId: 'bill-1' });
+  check('记录器：空候选不落库', empty.ok === false && empty.code === 'E_PROFILE_FACT_EMPTY'
+    && empty.saved === false, JSON.stringify(empty));
 
   const extractionFailed = createProfileFactRecorder({
     transport: { async profileFact() { return { rawText: 'not-json' }; } },
     saveFacts: async () => { throw new Error('不应调用'); },
   });
-  const failed = await extractionFailed.record({ message: MESSAGE });
-  check('记录器：抽取失败时跳过落库', failed.ok === false && failed.code === 'E_PROFILE_FACT_RESPONSE' && failed.saved === false, JSON.stringify(failed));
+  const failed = await extractionFailed.extract({ message: MESSAGE });
+  check('记录器：抽取失败不保存', failed.ok === false && failed.code === 'E_PROFILE_FACT_RESPONSE'
+    && failed.facts.length === 0, JSON.stringify(failed));
 
   const saveFailed = createProfileFactRecorder({
     transport: { async profileFact() { return { rawText: JSON.stringify({ facts: CANDIDATES }) }; } },
     saveFacts: async () => { const error = new Error('db down'); error.code = 'E_DATA_STATUS'; throw error; },
   });
-  const saveFailure = await saveFailed.record({ message: MESSAGE });
+  const previewOk = await saveFailed.extract({ message: MESSAGE });
+  const saveFailure = await saveFailed.save({ facts: previewOk.facts, contextId: 'bill-1' });
   check('记录器：落库失败不向上抛', saveFailure.ok === false
     && saveFailure.code === 'E_DATA_STATUS'
     && saveFailure.saved === false

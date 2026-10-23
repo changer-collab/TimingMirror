@@ -381,7 +381,7 @@ function profileAnswer({ chip, bundle, bill, plan }) {
       { label: '不成立', value: namesByStatus('不成立') },
     ],
     evidence,
-    notice: '“我是谁”只列本账单可验证的交易行为；不生成性格、风险偏好等未经实现的标签。',
+    notice: '“我是谁”只列本账单可验证的交易行为；不包含你主动记录的画像事实，也不生成性格、风险偏好等未经实现的标签。',
   });
 }
 
@@ -485,7 +485,7 @@ export function buildLocalPortfolioAnswer({ chip = 'portfolio', bundle, bill } =
     template_id: 'T-loss-overview',
     plan_id: null,
     plan_status: 'local',
-    composition_reason: '自由输入复用已发布组合四事实；在线复述仅在点击“组合表现”时调用',
+    composition_reason: '自由输入复用已发布组合四事实；在线复述仅在回答上单独选择',
     text: `按已发布事实复述：组合实际收益 ${values[0].display}，对照收益 ${values[1].display}，择时损耗 ${values[2].display}，损耗金额 ${values[3].display}。这是对已发生交易的事后对照，不是预测。`,
     facts: [
       { label: '实际收益', value: values[0].display },
@@ -495,7 +495,7 @@ export function buildLocalPortfolioAnswer({ chip = 'portfolio', bundle, bill } =
     ],
     evidence: [],
     candidate: null,
-    notice: '自由输入使用本地已发布事实；只有点击“组合表现”芯片才会请求在线复述。',
+    notice: '自由输入使用本地已发布事实；需要在线复述时，请在回答上单独选择。',
   };
 }
 

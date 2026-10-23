@@ -3,6 +3,9 @@
 import { QA_CHIPS } from '../../src/agent/qaChips.js';
 import { classifyOffline } from '../../src/agent/offlineIntent.js';
 import { isSupportedChatQuestion } from '../../src/agent/chatScope.js';
+import { isPageHelpQuestion } from '../../src/agent/pageHelp.js';
+
+export { isPageHelpQuestion };
 
 export const MIN_L2_CONFIDENCE = 0.5;
 export const QA_QUESTION_MAX = 200;
@@ -12,7 +15,7 @@ export const QA_SUGGESTIONS = Object.freeze([
     id: chip.id,
     label: chip.label,
     question: chip.question,
-    online: chip.online === true,
+    online: false,
   })),
   Object.freeze({ id: 'what_if', label: '如果没卖', question: '如果那笔卖出没发生，会怎样？', online: false }),
   Object.freeze({ id: 'meta_calc', label: '怎么算的', question: '这些数字是怎么算出来的？', online: false }),
@@ -204,7 +207,7 @@ export function createIntentRouter({ classifyIntent = null } = {}) {
         layer: 'L2',
         source: 'L2',
         ambiguous: true,
-        notice: '在线意图服务未就绪：问题文本未能匹配，账单与事实没有发送。',
+        notice: '这次没能理解问法：问题文本未能匹配，账单与事实没有发送。',
       };
     }
     const { intent, confidence } = intentJson;
@@ -226,7 +229,7 @@ export function createIntentRouter({ classifyIntent = null } = {}) {
         source: 'L2',
         confidence,
         ambiguous: true,
-        notice: '在线意图不在支持范围，没有据此回答；账单与事实没有发送。',
+        notice: '这个问题不在支持范围，没有据此回答；账单与事实没有发送。',
       };
     }
     const slots = { ...normalizeL2Slots(intentJson.slots), ...local.slots };

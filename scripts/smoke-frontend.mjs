@@ -394,6 +394,35 @@ ctx.qaDeps = {
   loadProfile: () => null,
   openRuleCandidate: (c, candidate) => { ctx.__openedCandidate = candidate; },
 };
+let profileExtractCalls = 0;
+let profileSaveCalls = 0;
+let profileDeleteCalls = 0;
+const PROFILE_CANDIDATE = Object.freeze({
+  kind: 'constraint',
+  key: 'max_position',
+  value: '仓位控制在五成以内',
+  evidence: '把仓位控制在五成以内',
+});
+ctx.qaDeps.extractProfileFacts = async () => {
+  profileExtractCalls += 1;
+  return { ok: true, facts: [PROFILE_CANDIDATE] };
+};
+ctx.qaDeps.saveProfileFacts = async ({ facts, contextId }) => {
+  profileSaveCalls += 1;
+  return {
+    ok: true,
+    facts,
+    saved: true,
+    result: {
+      added: facts.map((fact, index) => ({ id: `profile-${index}`, ...fact, source: 'chat', source_ref: contextId })),
+      duplicates: [],
+    },
+  };
+};
+ctx.cloudDeps = {
+  deleteFact: async () => { profileDeleteCalls += 1; return { ok: true, deleted: true }; },
+  invalidateCloudProfile: () => {},
+};
 
 function texts(node, out = []) {
   for (const c of node.children ?? []) {
@@ -815,17 +844,18 @@ state.report = { scenario: 'A', symbol: 'pool' };
     const scroller = findByClass(page ?? {}, 'tm-qa-scroll')[0] ?? null;
     const dock = findByClass(page ?? {}, 'tm-qa-dock')[0] ?? null;
     const form = askForm();
-    check('问答账本·页首与空状态：账本独立滚动/输入底栏/8 个示例芯片（1 个在线，标签不写 ONLINE）/无重复账单状态栏',
+    check('问答账本·页首与空状态：账本独立滚动/输入底栏/8 个本地示例芯片/发送前数据路径提示/无重复账单状态栏',
       !!page && !!ledger && ledger.attrs['data-role'] === 'qa-ledger'
       && !!scroller && !!dock && !!form && form.parentNode === dock && ledger.parentNode === scroller
       && pageVisibleTxt().includes('STEP 03 / ASK') && pageVisibleTxt().includes('问它为什么，')
       && pageVisibleTxt().includes('别问它买什么。')
       && pageVisibleTxt().includes('还没有提问。示例问法只是入口，不是全部。')
-      && chips().length === 8 && chips().filter((b) => b.attrs['data-online'] === 'true').length === 1
+      && chips().length === 8 && chips().every((b) => b.attrs['data-online'] === undefined)
       && chips().every((b) => !labelOf(b).includes('ONLINE'))
       && !pageVisibleTxt().includes('规则 v0 · 生效 0 条') && !findByClass(current, 'tm-qa-context').length
-      && pageVisibleTxt().includes('原始 CSV 仅本机')
-      && entries().length === 0, pageTxt().slice(0, 320));
+      && pageVisibleTxt().includes('本地回答不上传')
+      && pageVisibleTxt().includes('在线复述和画像记录只在你主动选择后发送')
+      && entries().length === 0, pageTxt().slice(0, 360));
   }
 
   /* 2) 本地回答：最错一笔 → 4 条事实 + 折叠证据，不发起在线请求 */
@@ -862,14 +892,22 @@ state.report = { scenario: 'A', symbol: 'pool' };
       JSON.stringify({ attrs: entry?.attrs, site: siteCalls.length - callsBeforeRefusal, market: marketCalls.length - marketsBeforeRefusal }));
   }
 
-  /* 4) 清空对话：账本与消息一起清空 */
+  /* 4) 清空对话：先说明不会删除云端画像事实，再确认清空 */
   {
     const clear = findButtons(current).find((b) => b.attrs['data-role'] === 'qa-clear');
     if (clear) clickNode(clear);
     await flush();
-    check('问答账本·清空对话：消息清空、回到空状态',
+    const warning = findByClass(current, 'tm-qa-clear-confirm')[0];
+    const confirm = findButtons(current).find((b) => b.attrs['data-role'] === 'qa-clear-confirm');
+    check('问答账本·清空对话：先提示不会删除云端画像事实，未确认前不清空',
+      !!warning && texts(warning).join('|').includes('不会删除已保存的云端画像事实')
+      && state.chat.messages.length > 0 && !!confirm, JSON.stringify({ messages: state.chat.messages.length, warning: warning ? texts(warning) : null }));
+    if (confirm) clickNode(confirm);
+    await flush();
+    check('问答账本·确认清空：消息清空、回到空状态，不删除云端画像事实',
       state.chat.messages.length === 0 && entries().length === 0
-      && pageVisibleTxt().includes('还没有提问'), JSON.stringify(state.chat));
+      && pageVisibleTxt().includes('还没有提问') && profileDeleteCalls === 0,
+      JSON.stringify({ chat: state.chat, profileDeleteCalls }));
   }
 
   /* 5) 登记式应答：不替用户决定，动作跳规则工作区 */
@@ -923,23 +961,35 @@ state.report = { scenario: 'A', symbol: 'pool' };
       JSON.stringify({ attrs: entry?.attrs, text: entry ? texts(entry).join('|').slice(0, 240) : '' }));
   }
 
-  /* 9) 组合芯片在线成功：只展示通过数字校验的复述 */
+  /* 9) 组合芯片本地回答；在线复述必须单独点击 */
   resetChat();
   siteResponse = { status: 200, body: { rawText: JSON.stringify({ answer_text: answerCsv1 }) } };
   const siteBeforeOnline = siteCalls.length;
   await askChip('组合表现');
   {
     const entry = entryOf('loss_overview');
+    const onlineAction = entry ? findButtons(entry).find((b) => labelOf(b).includes('在线复述')) : null;
+    check('问答账本·组合芯片：先给本地四事实，不自动请求在线',
+      !!entry && entry.attrs['data-state'] === 'local'
+      && texts(entry).join('|').includes('本机回答')
+      && !!onlineAction && siteCalls.length === siteBeforeOnline,
+      JSON.stringify({ attrs: entry?.attrs, calls: siteCalls.length - siteBeforeOnline }));
+
+    if (onlineAction) clickNode(onlineAction);
+    await waitForSiteCalls(siteBeforeOnline + 1);
+    await settleChat();
+    const after = entryOf('loss_overview');
+    const onlineBox = after ? findByClass(after, 'tm-qa-online')[0] : null;
     const call = siteCalls.at(-1);
     const body = call ? JSON.parse(call.options.body) : null;
-    const entryTxt = entry ? texts(entry).join('|') : '';
-    check('问答账本·在线成功：online/复述文本一致/数字校验/面板不重复账单状态栏',
-      !!entry && entry.attrs['data-state'] === 'online'
-      && entryTxt.includes(answerCsv1) && entryTxt.includes('已核对 4 个可识别数字')
-      && entryTxt.includes('在线复述')
+    const onlineTxt = onlineBox ? texts(onlineBox).join('|') : '';
+    check('问答账本·在线成功：本地答案保留，单独展示通过数字校验的复述',
+      !!after && after.attrs['data-state'] === 'local'
+      && !!onlineBox && onlineTxt.includes(answerCsv1) && onlineTxt.includes('已核对 4 个可识别数字')
+      && onlineTxt.includes('在线复述')
       && state.bill.contextId === context1 && !pageVisibleTxt().includes('chat-bill.csv')
       && siteCalls.length === siteBeforeOnline + 1,
-      JSON.stringify({ attrs: entry?.attrs, text: entryTxt.slice(0, 240), calls: siteCalls.length - siteBeforeOnline }));
+      JSON.stringify({ attrs: after?.attrs, online: onlineTxt.slice(0, 240), calls: siteCalls.length - siteBeforeOnline }));
     check('问答账本·在线出站：POST restate，body 仅 question + F-6 四事实',
       !!call && call.url === '/functions/v1/app/api/llm/restate' && call.options.method === 'POST'
       && Object.keys(body).join(',') === 'question,facts' && body.facts.length === 4
@@ -947,37 +997,47 @@ state.report = { scenario: 'A', symbol: 'pool' };
       && body.facts.every((f) => !('key' in f) && !('fact_ref' in f) && !('scope' in f))
       && body.facts.every((f) => ['%', 'pp', '元'].includes(f.unit)),
       JSON.stringify({ url: call && call.url, body }));
-    check('问答账本·在线出站不含文件名/成交/复核痕迹，请求头无 Key，pending 复位',
+    check('问答账本·在线出站不含文件名/成交/复核痕迹，请求头无 Key',
       !!body && !JSON.stringify(body).includes('chat-bill.csv') && !JSON.stringify(body).includes('T001')
       && !JSON.stringify(body).includes('provenance')
       && !Object.keys(call.options.headers).some((h) => /authorization|api[-_]?key/i.test(h))
       && state.chat.pending === false);
   }
 
-  /* 10) 伪造数字：回退本地事实，不回显候选数字 */
+  /* 10) 伪造数字：在线失败不覆盖本地答案，不回显候选数字 */
   resetChat();
   siteResponse = { status: 200, body: { rawText: JSON.stringify({ answer_text: '组合实际收益 +99.9%。' }) } };
   await askChip('组合表现');
   {
     const entry = entryOf('loss_overview');
-    check('问答账本·数字失败：回退 local + notice，页面不出现候选数字 99.9',
-      !!entry && entry.attrs['data-state'] === 'local'
-      && texts(entry).join('|').includes('在线复述未完成，已改为本地已发布事实')
+    const onlineAction = entry ? findButtons(entry).find((b) => labelOf(b).includes('在线复述')) : null;
+    if (onlineAction) clickNode(onlineAction);
+    await settleChat();
+    const after = entryOf('loss_overview');
+    const onlineBox = after ? findByClass(after, 'tm-qa-online')[0] : null;
+    check('问答账本·数字失败：本地答案保留 + 在线失败提示，页面不出现候选数字 99.9',
+      !!after && after.attrs['data-state'] === 'local' && !!onlineBox
+      && texts(onlineBox).join('|').includes('在线复述未完成')
       && !JSON.stringify(state.chat).includes('99.9') && !pageTxt().includes('99.9'),
-      JSON.stringify({ attrs: entry?.attrs, chat: JSON.stringify(state.chat).slice(0, 260) }));
+      JSON.stringify({ attrs: after?.attrs, online: onlineBox ? texts(onlineBox) : null, chat: JSON.stringify(state.chat).slice(0, 260) }));
   }
 
-  /* 11) 站点函数未就绪（503）：同样回退本地事实并说明原因 */
+  /* 11) 站点函数未就绪（503）：本地答案保留，在线失败说明原因 */
   resetChat();
   siteResponse = { status: 503, body: {} };
   await askChip('组合表现');
   {
     const entry = entryOf('loss_overview');
-    check('问答账本·服务未就绪：local 回退 + 原因，不展示模型文本',
-      !!entry && entry.attrs['data-state'] === 'local'
-      && texts(entry).join('|').includes('在线复述未完成，已改为本地已发布事实')
-      && texts(entry).join('|').includes('函数未发布'),
-      JSON.stringify({ attrs: entry?.attrs, text: entry ? texts(entry).join('|').slice(0, 260) : '' }));
+    const onlineAction = entry ? findButtons(entry).find((b) => labelOf(b).includes('在线复述')) : null;
+    if (onlineAction) clickNode(onlineAction);
+    await settleChat();
+    const after = entryOf('loss_overview');
+    const onlineBox = after ? findByClass(after, 'tm-qa-online')[0] : null;
+    check('问答账本·服务未就绪：本地答案保留，在线失败说明原因',
+      !!after && after.attrs['data-state'] === 'local' && !!onlineBox
+      && texts(onlineBox).join('|').includes('在线复述未完成')
+      && texts(onlineBox).join('|').includes('函数未发布'),
+      JSON.stringify({ attrs: after?.attrs, online: onlineBox ? texts(onlineBox) : null }));
   }
   siteResponse = { status: 200, body: { rawText: JSON.stringify({ answer_text: '' }) } };
 
@@ -991,48 +1051,36 @@ state.report = { scenario: 'A', symbol: 'pool' };
   check('问答账本·换账单：旧回答不再展示',
     !pageTxt().includes('¥127,318.00') && !pageTxt().includes(answerCsv1), pageTxt().slice(0, 300));
 
-  /* 13) 待定请求换账单：旧响应返回后不污染新上下文 */
+  /* 13) 在线 pending 时换账单：旧响应返回后不污染新上下文 */
+  await askText('组合整体表现如何？');
   const contextBeforePending = state.bill.contextId;
   const callsBeforeOld = siteCalls.length;
   const oldDeferred = deferredSiteResponse({ rawText: JSON.stringify({ answer_text: answerCsv2 }) });
   siteQueue.push(oldDeferred);
-  const oldChip = chipOf('组合表现');
-  clickNode(oldChip);
+  const pendingEntry = entryOf('loss_overview');
+  const pendingOnline = pendingEntry ? findButtons(pendingEntry).find((b) => labelOf(b).includes('在线复述')) : null;
+  if (pendingOnline) clickNode(pendingOnline);
   await waitForSiteCalls(callsBeforeOld + 1);
-  check('问答账本·待定请求：已发出、pending、入口禁用',
-    state.chat.pending === true && state.chat.contextId === contextBeforePending
-    && siteCalls.length === callsBeforeOld + 1 && chipOf('组合表现')?.disabled === true,
-    JSON.stringify(state.chat));
+  {
+    const entry = entryOf('loss_overview');
+    const onlineBox = entry ? findByClass(entry, 'tm-qa-online')[0] : null;
+    check('问答账本·在线待定：本地答案保留，在线区显示正在请求',
+      !!entry && entry.attrs['data-state'] === 'local' && !!onlineBox
+      && texts(onlineBox).join('|').includes('正在请求在线复述')
+      && state.chat.contextId === contextBeforePending
+      && siteCalls.length === callsBeforeOld + 1,
+      JSON.stringify({ state: state.chat, online: onlineBox ? texts(onlineBox) : null }));
+  }
 
   const context3 = await importChatBill('chat-bill.csv', chatCsv3);
   check('问答账本·请求未完成时换账单：清空旧聊天并生成新上下文',
     context3 !== contextBeforePending && state.bill.contextId === context3 && state.chat.contextId === context3
     && state.chat.messages.length === 0 && state.chat.pending === false, JSON.stringify(state.chat));
 
-  const callsBeforeNew = siteCalls.length;
-  const newDeferred = deferredSiteResponse({ rawText: JSON.stringify({ answer_text: answerCsv3 }) });
-  siteQueue.push(newDeferred);
-  const newChip = chipOf('组合表现');
-  clickNode(newChip);
-  await waitForSiteCalls(callsBeforeNew + 1);
-  check('问答账本·新上下文请求 pending',
-    state.chat.pending === true && state.chat.messages.length === 1 && state.chat.messages[0].role === 'user',
-    JSON.stringify(state.chat));
-
   oldDeferred.resolve();
   await settleChat();
-  check('问答账本·旧响应返回：不追加回答、不覆盖新 pending',
-    state.chat.messages.length === 1 && state.chat.messages[0].role === 'user'
-    && state.chat.pending === true && !JSON.stringify(state.chat).includes(answerCsv2), JSON.stringify(state.chat));
-
-  newDeferred.resolve();
-  await settleChat();
-  {
-    const entry = entryOf('loss_overview');
-    check('问答账本·新响应正常写回：新上下文 online 回答',
-      state.chat.pending === false && !!entry && entry.attrs['data-state'] === 'online'
-      && texts(entry).join('|').includes(answerCsv3), JSON.stringify(state.chat));
-  }
+  check('问答账本·旧在线响应返回：不写回新上下文',
+    state.chat.messages.length === 0 && !JSON.stringify(state.chat).includes(answerCsv2), JSON.stringify(state.chat));
 
   /* 14) L2 在线意图：只发送问题文本；命中后仍用本地事实回答 */
   resetChat();
@@ -1052,6 +1100,93 @@ state.report = { scenario: 'A', symbol: 'pool' };
       && !!body && Object.keys(body).join(',') === 'question' && body.question === '帮我看看这个账户',
       JSON.stringify({ attrs: entry?.attrs, url: call?.url, body, text: entryTxt.slice(0, 240), chat: state.chat }));
   }
+
+  /* 15) 画像：默认不请求；主动记入 → 授权发送 → 候选确认 → 保存/撤销 */
+  resetChat();
+  profileExtractCalls = 0;
+  profileSaveCalls = 0;
+  profileDeleteCalls = 0;
+  siteQueue.push({ status: 200, body: { rawText: JSON.stringify({ intent: 'profile', slots: {}, confidence: 0.9 }) } });
+  await askText('我希望把仓位控制在五成以内，也不做短线交易。');
+  {
+    const entry = entryOf('profile');
+    const record = entry ? findButtons(entry).find((b) => b.attrs['data-fact-action'] === 'record') : null;
+    check('问答账本·画像：普通提问不触发画像请求，回答下出现“记入画像”',
+      !!entry && !!record && profileExtractCalls === 0 && profileSaveCalls === 0
+      && texts(entry).join('|').includes('记入画像'), JSON.stringify({ entry: entry?.attrs, calls: { profileExtractCalls, profileSaveCalls } }));
+
+    if (record) clickNode(record);
+    await flush();
+    const confirmEntry = entryOf('profile');
+    const confirmBox = confirmEntry ? findByClass(confirmEntry, 'tm-qa-profilefact')[0] : null;
+    check('问答账本·画像授权：先说明将发送所选陈述，尚未抽取',
+      !!confirmBox && texts(confirmBox).join('|').includes('记入画像前确认')
+      && texts(confirmBox).join('|').includes('将把你选择的这句话发送给模型')
+      && profileExtractCalls === 0, JSON.stringify({ text: confirmBox ? texts(confirmBox) : null, calls: profileExtractCalls }));
+
+    const extract = confirmBox ? findButtons(confirmBox).find((b) => b.attrs['data-fact-action'] === 'extract') : null;
+    if (extract) clickNode(extract);
+    await flush();
+    const candidateEntry = entryOf('profile');
+    const candidateBox = candidateEntry ? findByClass(candidateEntry, 'tm-qa-profilefact')[0] : null;
+    const candidateTxt = candidateBox ? texts(candidateBox).join('|') : '';
+    check('问答账本·画像候选：抽取后展示候选事实与原文证据，未保存',
+      !!candidateBox && profileExtractCalls === 1 && profileSaveCalls === 0
+      && candidateTxt.includes('候选事实') && candidateTxt.includes('仓位控制在五成以内')
+      && candidateTxt.includes('原文：把仓位控制在五成以内'),
+      JSON.stringify({ text: candidateTxt, calls: { profileExtractCalls, profileSaveCalls } }));
+
+    const save = candidateBox ? findButtons(candidateBox).find((b) => b.attrs['data-fact-action'] === 'save') : null;
+    if (save) clickNode(save);
+    await flush();
+    const savedEntry = entryOf('profile');
+    const savedBox = savedEntry ? findByClass(savedEntry, 'tm-qa-profilefact')[0] : null;
+    const savedTxt = savedBox ? texts(savedBox).join('|') : '';
+    check('问答账本·画像保存：确认后展示实际事实、原文证据与撤销',
+      !!savedBox && profileSaveCalls === 1 && savedTxt.includes('已记入画像')
+      && savedTxt.includes('仓位控制在五成以内') && savedTxt.includes('原文：把仓位控制在五成以内')
+      && savedTxt.includes('撤销'), JSON.stringify({ text: savedTxt, calls: profileSaveCalls }));
+
+    const undo = savedBox ? findButtons(savedBox).find((b) => b.attrs['data-fact-action'] === 'undo') : null;
+    if (undo) clickNode(undo);
+    await flush();
+    const undoneEntry = entryOf('profile');
+    const undoneBox = undoneEntry ? findByClass(undoneEntry, 'tm-qa-profilefact')[0] : null;
+    check('问答账本·画像撤销：消息内撤销已保存事实',
+      !!undoneBox && profileDeleteCalls === 1 && texts(undoneBox).join('|').includes('已撤销这次的画像记录'),
+      JSON.stringify({ text: undoneBox ? texts(undoneBox) : null, calls: profileDeleteCalls }));
+  }
+  siteQueue.length = 0;
+
+  /* 16) 助手交接：只预填，不自动发送；账单变化丢弃 */
+  await importChatBill('chat-handoff.csv', chatCsv);
+  const handoffCalls = siteCalls.length;
+  ctx.takeQaHandoff = () => ({ question: '我最错的一笔是哪个？' });
+  mountCycle();
+  await flush();
+  {
+    const input = textarea();
+    check('问答账本·助手交接：预填问题并提示确认，不自动发送',
+      !!input && texts(input).join('').includes('我最错的一笔是哪个？')
+      && pageVisibleTxt().includes('已从助手带入问题，请确认后发送')
+      && state.chat.messages.length === 0 && siteCalls.length === handoffCalls,
+      JSON.stringify({ input: input ? texts(input) : null, chat: state.chat }));
+  }
+
+  ctx.takeQaHandoff = null;
+  await importChatBill('chat-handoff-2.csv', chatCsv2);
+  ctx.takeQaHandoff = () => ({ dropped: true });
+  mountCycle();
+  await flush();
+  {
+    const input = textarea();
+    check('问答账本·助手交接：账单变化时丢弃预填并提示',
+      !!input && !texts(input).join('').includes('我最错的一笔是哪个？')
+      && pageVisibleTxt().includes('账单已变化，之前从助手带入的问题已丢弃')
+      && state.chat.messages.length === 0,
+      JSON.stringify({ input: input ? texts(input) : null, chat: state.chat }));
+  }
+  ctx.takeQaHandoff = undefined;
 
   // 恢复对话前的演示账单已确认态，避免影响后续契约情境用例
   state.bill = { ...defaultBill(), status: 'confirmed' };

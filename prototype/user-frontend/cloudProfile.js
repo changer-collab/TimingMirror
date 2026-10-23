@@ -113,7 +113,7 @@ function summaryHTML(state) {
     const staleNote = state.data?.summary ? '<p class="rp-note">画像已更新，旧解读已隐藏；可重新生成。</p>' : '';
     return `<div class="rp-ai-empty">
       ${staleNote}
-      <p class="rp-note">解读只使用画像摘要里的确定性统计与你明确说过的事实，不评价交易好坏。</p>
+      <p class="rp-note">解读只使用画像摘要里的确定性统计与你主动选择记入的事实，不评价交易好坏。</p>
       <div class="rp-ai-actions">
         <button class="btn btn-outline btn-sm" type="button" data-cloud-action="summary" ${state.summaryBusy ? 'disabled' : ''}>${state.summaryBusy ? '正在生成…' : '生成 AI 解读'}</button>
         ${state.summaryError ? `<span class="rp-cloud-warn" role="alert">${esc(state.summaryError)}</span>` : ''}
@@ -168,13 +168,13 @@ function cloudSnapshotHTML(state, profile) {
 function factsHTML(data) {
   const facts = Array.isArray(data?.facts) ? data.facts : [];
   if (!facts.length) {
-    return `<p class="rp-note">还没有从对话中记录事实。你可以在问答页明确说出自己的目标、习惯或约束。</p>`;
+    return `<p class="rp-note">还没有主动记入的画像事实。你可以在问答页的回答下选择“记入画像”，确认后再保存。</p>`;
   }
   const shown = facts.slice(0, 20);
   return `<div class="rp-cloud-fact-list">${shown.map((fact) => `<article class="rp-cloud-fact" data-fact-id="${esc(fact.id)}">
     <div class="rp-cloud-fact-top"><span class="rp-cloud-kind">${esc(FACT_KIND_LABELS[fact.kind] ?? '事实')}</span><p>${esc(fact.value)}</p></div>
     ${fact.evidence ? `<p class="rp-cloud-evidence">原话：${esc(fact.evidence)}</p>` : ''}
-    <div class="rp-cloud-fact-foot"><span>${esc(fmtAt(fact.created_at))} · ${fact.source === 'manual' ? '手动记录' : '来自对话'}</span><button type="button" class="rp-cloud-delete" data-cloud-action="delete-fact" data-id="${esc(fact.id)}">删除</button></div>
+    <div class="rp-cloud-fact-foot"><span>${esc(fmtAt(fact.created_at))} · ${fact.source === 'manual' ? '手动记录' : '来自你的陈述'}</span><button type="button" class="rp-cloud-delete" data-cloud-action="delete-fact" data-id="${esc(fact.id)}">删除</button></div>
   </article>`).join('')}${facts.length > shown.length ? `<p class="rp-note">只显示最近 ${shown.length} 条，共 ${facts.length} 条。</p>` : ''}</div>`;
 }
 
@@ -232,12 +232,12 @@ function cloudHTML(state, profile) {
   const body = data
     ? `${cloudSnapshotHTML(state, profile)}
       <div class="rp-cloud-section">
-        <div class="rp-cloud-section-head"><h4>画像解读</h4><span class="rp-cloud-muted">基于已发布报告与对话事实</span></div>
+        <div class="rp-cloud-section-head"><h4>画像解读</h4><span class="rp-cloud-muted">基于已发布报告与你主动记入的事实</span></div>
         ${summaryHTML(state)}
       </div>
       <div class="rp-cloud-section">
-        <div class="rp-cloud-section-head"><h4>对话中记下的事实</h4><span class="rp-cloud-muted">${data.facts.length} 条</span></div>
-        <p class="rp-note">只记录你明确说过的陈述，可随时删除；删除后相关解读会一并隐藏。</p>
+        <div class="rp-cloud-section-head"><h4>你主动记入的事实</h4><span class="rp-cloud-muted">${data.facts.length} 条</span></div>
+        <p class="rp-note">这些只来自你的主动陈述，与报告推导的行为发现分开保存；可随时删除，删除后相关解读会一并隐藏。</p>
         ${factsHTML(data)}
       </div>
       <div class="rp-cloud-section">
@@ -251,7 +251,7 @@ function cloudHTML(state, profile) {
       <div><p class="mono-label">CLOUD / 云端画像</p><h3>跨账单记录</h3></div>
       <span class="rp-cloud-status" data-state="${statusState}">${esc(statusText)}</span>
     </div>
-    <p class="rp-note">云端保存账单统计、报告快照与对话事实；原始 CSV、文件名与成交明细默认不上传。</p>
+    <p class="rp-note">云端保存账单统计、报告快照与你主动记入的画像事实；原始 CSV、文件名与成交明细默认不上传。</p>
     ${state.notice ? `<p class="rp-cloud-notice" role="status">${esc(state.notice)}</p>` : ''}
     ${errorBanner}
     ${body}`;

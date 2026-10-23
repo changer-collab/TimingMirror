@@ -1,8 +1,14 @@
 // 独立问答页「对话账本」：问题 → 意图 → 最小事实包 → 本地/在线回答 → 证据。
-// 只渲染 qaAnswer 信封；数字只来自当前账单已发布报告，在线失败回退本地事实。
-// 无网络/DOM 之外的副作用：发送与规则打开由 ctx.qaDeps 注入。
-import { QA_SUGGESTIONS, normalizeQuestion, QA_INTENT_LABELS } from './qaIntent.js';
+// 只渲染 qaAnswer 信封；普通提问不触发画像，用户主动选择后才按“授权发送 → 候选确认 → 保存”执行。
+// 无网络/DOM 之外的副作用：发送、在线复述、画像抽取/保存与规则打开由 ctx 注入。
+import {
+  QA_SUGGESTIONS,
+  QA_INTENT_LABELS,
+  routeQuestion,
+  isPageHelpQuestion,
+} from './qaIntent.js';
 import { ruleStateKeyOf } from '../../src/agent/qaChips.js';
+import { shouldExtractProfileFacts } from '../../src/agent/profileSignals.js';
 
 const STATUS_LABELS = Object.freeze({
   local: '本机回答',
@@ -26,12 +32,22 @@ const STATUS_TITLES = Object.freeze({
   pending: '正在核对',
 });
 
+const FACT_KIND_LABELS = Object.freeze({
+  goal: '目标',
+  preference: '偏好',
+  constraint: '约束',
+  habit: '习惯',
+  risk_tolerance: '风险承受',
+});
+
 const BOUNDARY_STATES = new Set(['refusal', 'registration', 'unavailable']);
 
 let seq = 0;
 let draft = '';
 let draftContextId = null;
 let lastScrollKey = null;
+let handoffNotice = null;
+let clearArmed = false;
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
@@ -95,8 +111,139 @@ function evidenceHTML(evidence) {
   </details>`;
 }
 
-function actionsHTML(answer, message, actionMap, currentRuleKey) {
-  const actions = Array.isArray(answer.actions) ? answer.actions : [];
+function profileFactsHTML(facts, saved) {
+  const list = Array.isArray(facts) ? facts : [];
+  if (!list.length) return '';
+  const shown = list.slice(0, 3);
+  const rest = list.slice(3);
+  const row = (fact) => `
+    <li class="tm-qa-profile-fact">
+      <span class="tm-qa-profile-kind">${esc(FACT_KIND_LABELS[fact.kind] ?? '事实')}</span>
+      <strong>${esc(fact.value)}</strong>
+      ${fact.evidence ? `<span class="tm-qa-profile-evidence">原文：${esc(fact.evidence)}</span>` : ''}
+    </li>`;
+  const more = rest.length
+    ? `<details class="tm-qa-profile-more"><summary>还有 ${rest.length} 条</summary><ul>${rest.map(row).join('')}</ul></details>`
+    : '';
+  return `<ul class="tm-qa-profile-list${saved ? ' is-saved' : ''}" data-role="qa-profile-facts">${shown.map(row).join('')}</ul>${more}`;
+}
+
+function profileFactHTML(message) {
+  const fact = message?.profile_fact;
+  if (!fact) return '';
+  const messageId = esc(message.id ?? '');
+  const actions = (...items) => `<div class="tm-qa-actions">${items.join('')}</div>`;
+  if (fact.state === 'confirm') {
+    return `<div class="tm-qa-profilefact" data-role="qa-profilefact">
+      <p class="tm-qa-profilefact-head">记入画像前确认</p>
+      <blockquote class="tm-qa-profile-quote">${esc(fact.message)}</blockquote>
+      <p class="tm-qa-profilefact-note">将把你选择的这句话发送给模型，用于提取可保存的画像事实；不会上传原始 CSV 或成交明细。保存时会关联当前账单。</p>
+      ${actions(
+        `<button type="button" class="btn primary small" data-fact-action="extract" data-message-id="${messageId}">继续并提取</button>`,
+        `<button type="button" class="btn small" data-fact-action="cancel" data-message-id="${messageId}">取消</button>`,
+      )}
+    </div>`;
+  }
+  if (fact.state === 'extracting') {
+    return '<p class="tm-qa-profilefact is-muted" data-role="qa-profilefact">正在提取候选事实…</p>';
+  }
+  if (fact.state === 'candidates') {
+    return `<div class="tm-qa-profilefact" data-role="qa-profilefact">
+      <p class="tm-qa-profilefact-head">候选事实 · 请确认后保存</p>
+      ${profileFactsHTML(fact.facts, false)}
+      ${actions(
+        `<button type="button" class="btn primary small" data-fact-action="save" data-message-id="${messageId}">保存到画像</button>`,
+        `<button type="button" class="btn small" data-fact-action="cancel" data-message-id="${messageId}">取消</button>`,
+      )}
+    </div>`;
+  }
+  if (fact.state === 'empty') {
+    return `<div class="tm-qa-profilefact" data-role="qa-profilefact">
+      <p class="tm-qa-profilefact is-muted">没有找到可长期保存的画像信息。你可以换个说法再试。</p>
+      ${actions(`<button type="button" class="btn small" data-fact-action="cancel" data-message-id="${messageId}">关闭</button>`)}
+    </div>`;
+  }
+  if (fact.state === 'saving') {
+    return '<p class="tm-qa-profilefact is-muted" data-role="qa-profilefact">正在保存到画像…</p>';
+  }
+  if (fact.state === 'saved') {
+    const duplicates = fact.duplicates ? ` · 另有 ${esc(fact.duplicates)} 条已存在` : '';
+    return `<div class="tm-qa-profilefact" data-role="qa-profilefact">
+      <div class="tm-qa-profilefact-head">
+        <span>已记入画像 · ${esc(fact.facts?.length ?? 0)} 条${duplicates}</span>
+        <button type="button" class="tm-qa-profile-undo" data-fact-action="undo" data-message-id="${messageId}">撤销</button>
+      </div>
+      ${profileFactsHTML(fact.facts, true)}
+      <p class="tm-qa-profilefact-note">来自你的陈述；可到 <a href="#/me">个人中心</a> 查看和删除。</p>
+    </div>`;
+  }
+  if (fact.state === 'duplicate') {
+    return `<p class="tm-qa-profilefact is-muted" data-role="qa-profilefact">这条陈述已在画像中，未重复记录。可到 <a href="#/me">个人中心</a> 查看。</p>`;
+  }
+  if (fact.state === 'extract-failed' || fact.state === 'save-failed') {
+    const text = fact.state === 'save-failed'
+      ? '未能保存到云端画像；问答回答不受影响。'
+      : '这次没有提取成功，可以稍后重试。';
+    const retry = fact.state === 'save-failed' ? 'retry-save' : 'retry-extract';
+    return `<div class="tm-qa-profilefact" data-role="qa-profilefact">
+      <p class="tm-qa-profilefact is-warn">${text}</p>
+      ${actions(
+        `<button type="button" class="btn small" data-fact-action="${retry}" data-message-id="${messageId}">重试</button>`,
+        `<button type="button" class="btn small" data-fact-action="cancel" data-message-id="${messageId}">取消</button>`,
+      )}
+    </div>`;
+  }
+  if (fact.state === 'undoing') return '<p class="tm-qa-profilefact is-muted" data-role="qa-profilefact">正在撤销画像记录…</p>';
+  if (fact.state === 'undone') return '<p class="tm-qa-profilefact is-muted" data-role="qa-profilefact">已撤销这次的画像记录。</p>';
+  if (fact.state === 'undo-failed') {
+    return `<div class="tm-qa-profilefact" data-role="qa-profilefact">
+      <p class="tm-qa-profilefact is-warn">撤销失败，可稍后重试，或到个人中心删除。</p>
+      ${actions(`<button type="button" class="btn small" data-fact-action="undo" data-message-id="${messageId}">重试撤销</button>`)}
+    </div>`;
+  }
+  return '';
+}
+
+function profileActionHTML(message, question, allowProfile) {
+  if (!allowProfile || message?.profile_fact) return '';
+  return `<div class="tm-qa-profile-actions" data-role="qa-profile-actions">
+    <button type="button" class="btn small" data-fact-action="record" data-message-id="${esc(message?.id ?? '')}" data-question="${esc(question)}">记入画像</button>
+    <span class="tm-qa-profile-hint">仅在你主动选择并确认后发送</span>
+  </div>`;
+}
+
+function onlineHTML(message) {
+  const online = message?.online;
+  if (!online) return '';
+  if (online.status === 'pending') {
+    return '<p class="tm-qa-online is-pending" data-role="qa-online">正在请求在线复述…</p>';
+  }
+  if (online.status === 'ok') {
+    const answer = online.answer ?? {};
+    return `<section class="tm-qa-online" data-role="qa-online">
+      <div class="tm-qa-online-head"><span class="tm-qa-badge is-online">在线复述</span><span>数字已在本机核对</span></div>
+      <p class="tm-qa-text">${esc(answer.text)}</p>
+      ${evidenceHTML(answer.evidence)}
+      <p class="tm-qa-notice">在线只复述已发布四事实；失败时不会覆盖上面的本地答案。</p>
+    </section>`;
+  }
+  if (online.status === 'failed') {
+    return `<p class="tm-qa-online is-warn" data-role="qa-online">在线复述未完成：${esc(online.text)}。上面的本地答案仍然有效。</p>`;
+  }
+  return '';
+}
+
+function actionsHTML(answer, message, actionMap, currentRuleKey, question, allowOnline) {
+  const actions = Array.isArray(answer.actions) ? answer.actions.slice() : [];
+  const online = message?.online;
+  if (allowOnline && answer.status === 'local' && answer.intent === 'loss_overview'
+    && (!online || online.status === 'failed')) {
+    actions.push({
+      id: online ? 'online-retry' : 'online-restate',
+      label: online ? '重试在线复述' : '在线复述',
+      kind: 'online',
+    });
+  }
   const names = new Set(actions.map((a) => a.id));
   let stale = false;
   const buttons = [];
@@ -106,53 +253,17 @@ function actionsHTML(answer, message, actionMap, currentRuleKey) {
       if (typeof key === 'string' && key !== currentRuleKey) { stale = true; continue; }
     }
     const actionKey = `${message?.id ?? 'entry'}:${action.id}`;
-    actionMap.set(actionKey, action);
+    actionMap.set(actionKey, { ...action, question, messageId: message?.id ?? null });
     buttons.push(`<button type="button" class="tm-qa-action${action.kind === 'candidate' ? ' is-primary' : ''}" data-action="${esc(action.kind)}" data-action-key="${esc(actionKey)}">${esc(action.label)}</button>`);
   }
+  const note = actions.some((action) => action.kind === 'online')
+    ? '<p class="tm-qa-action-note">在线复述会发送问题与所需已核对数字；不会上传原始 CSV。</p>'
+    : '';
   const staleNote = stale && names.size
     ? '<p class="tm-qa-stale">规则状态已变化，原候选已失效；上方账单事实仍然有效。</p>'
     : '';
   if (!buttons.length) return staleNote;
-  return `<div class="tm-qa-actions">${buttons.join('')}</div>${staleNote}`;
-}
-
-function profileFactHTML(message) {
-  const fact = message?.profile_fact;
-  if (!fact) return '';
-  const messageId = esc(message.id ?? '');
-  if (fact.state === 'saved') {
-    const extra = fact.duplicates ? ` · 另有 ${esc(fact.duplicates)} 条已存在` : '';
-    const undo = Array.isArray(fact.ids) && fact.ids.length
-      ? `<button type="button" data-fact-action="undo" data-message-id="${messageId}">撤销</button>`
-      : '';
-    return `<div class="tm-qa-profilefact" data-role="qa-profilefact"><span>已记入画像 · ${esc(fact.count ?? 0)} 条${extra}</span>${undo}</div>`;
-  }
-  if (fact.state === 'duplicate') return '<p class="tm-qa-profilefact is-muted">这条陈述已在画像中，未重复记录。</p>';
-  if (fact.state === 'undoing') return '<p class="tm-qa-profilefact is-muted">正在撤销画像记录…</p>';
-  if (fact.state === 'undone') return '<p class="tm-qa-profilefact is-muted">已撤销这次的画像记录。</p>';
-  if (fact.state === 'undo-failed') return '<p class="tm-qa-profilefact is-warn">撤销失败，可稍后在个人中心删除。</p>';
-  if (fact.state === 'failed') return '<p class="tm-qa-profilefact is-muted">这次陈述未记入云端画像；问答结果不受影响。</p>';
-  return '';
-}
-
-function profileFactChip(result) {
-  if (!result || typeof result !== 'object') return null;
-  if (result.saved === true) {
-    const added = Array.isArray(result.result?.added) ? result.result.added : [];
-    const duplicates = Array.isArray(result.result?.duplicates) ? result.result.duplicates : [];
-    if (added.length) {
-      return {
-        state: 'saved',
-        ids: added.map((fact) => fact?.id).filter((id) => typeof id === 'string'),
-        count: added.length,
-        duplicates: duplicates.length,
-      };
-    }
-    if (duplicates.length) return { state: 'duplicate', count: duplicates.length };
-    return null;
-  }
-  if (result.code === 'E_PROFILE_FACT_NOT_EXPLICIT') return null;
-  return { state: 'failed' };
+  return `<div class="tm-qa-actions">${buttons.join('')}</div>${note}${staleNote}`;
 }
 
 function patchMessage(ctx, messageId, patch) {
@@ -166,7 +277,12 @@ function patchMessage(ctx, messageId, patch) {
   return true;
 }
 
-function answerHTML(entry, actionMap, currentRuleKey) {
+function findMessage(ctx, messageId) {
+  const messages = Array.isArray(ctx?.state?.chat?.messages) ? ctx.state.chat.messages : [];
+  return messages.find((message) => message?.id === messageId) ?? null;
+}
+
+function answerHTML(entry, actionMap, currentRuleKey, allowOnline, allowProfile) {
   const answer = entry.answer;
   const status = statusOf(answer);
   const intent = answer.intent ?? '';
@@ -185,7 +301,9 @@ function answerHTML(entry, actionMap, currentRuleKey) {
     <p class="tm-qa-text">${esc(answer.text)}</p>
     ${factsHTML(facts)}
     ${evidenceHTML(answer.evidence)}
-    ${actionsHTML(answer, entry.message, actionMap, currentRuleKey)}
+    ${actionsHTML(answer, entry.message, actionMap, currentRuleKey, entry.question, allowOnline)}
+    ${onlineHTML(entry.message)}
+    ${profileActionHTML(entry.message, entry.question, allowProfile)}
     ${profileFactHTML(entry.message)}
     ${answer.notice ? `<p class="tm-qa-notice">${esc(answer.notice)}</p>` : ''}
   </article>`;
@@ -209,7 +327,17 @@ function emptyHTML() {
   return '<p class="tm-qa-empty">还没有提问。示例问法只是入口，不是全部。</p>';
 }
 
-function headHTML(hasEntries, isDemo) {
+function clearConfirmHTML() {
+  return `<div class="tm-qa-clear-confirm" data-role="qa-clear-confirm">
+    <p>清空对话不会删除已保存的云端画像事实；你仍可到个人中心查看和删除。</p>
+    <div class="tm-qa-actions">
+      <button type="button" class="btn small" data-role="qa-clear-confirm">确认清空</button>
+      <button type="button" class="btn small" data-role="qa-clear-cancel">取消</button>
+    </div>
+  </div>`;
+}
+
+function headHTML(hasEntries, isDemo, showClearConfirm) {
   return `<header class="tm-qa-head">
     <div class="tm-qa-head-top">
       <span class="tm-qa-eyebrow">STEP 03 / ASK · 事实问答</span>
@@ -217,23 +345,36 @@ function headHTML(hasEntries, isDemo) {
     </div>
     <h1>问它为什么，<br>别问它买什么。</h1>
     <p class="tm-qa-intro">任何问法都可以。答案只来自这份${isDemo ? '示例' : ''}账单报告中已核对的数字；不荐股、不预测、不替你决定。</p>
+    ${showClearConfirm ? clearConfirmHTML() : ''}
   </header>`;
 }
 
-function askHTML(pending) {
+function privacyLine(question) {
+  const text = questionText(question);
+  if (!text) return '本地回答不上传；在线复述和画像记录只在你主动选择后发送。';
+  if (isPageHelpQuestion(text)) return '本次：页面帮助问题，不发送；请查看 AI 助手帮助。';
+  const route = routeQuestion(text);
+  if (route.intent === 'loss_overview') return '本次：本机回答，不上传。需要在线复述时，请在回答上单独选择。';
+  if (route.intent) return '本次：本机回答，不上传。';
+  return '本次：本机未匹配；发送后会先发送问题文本理解问法，不发送账单数字。';
+}
+
+function askHTML(pending, privacy, handoff) {
   return `<form class="tm-qa-ask" data-role="qa-form">
     <label class="sr-only" for="tm-qa-input">输入你的问题</label>
+    ${handoff ? `<p class="tm-qa-handoff" data-role="qa-handoff">${esc(handoff)}</p>` : ''}
     <div class="tm-qa-ask-row">
       <textarea id="tm-qa-input" data-role="qa-input" rows="2" maxlength="200" placeholder="问这份账单已经发生的事，例如：我最错的一笔是哪个？" ${pending ? 'disabled' : ''}>${esc(draft)}</textarea>
       <button class="tm-qa-send" type="submit" ${pending ? 'disabled' : ''}>发送</button>
     </div>
-    <p class="tm-qa-ask-meta">Enter 发送 · Shift+Enter 换行 · 原始 CSV 仅本机</p>
+    <p class="tm-qa-privacy" data-role="qa-send-preview">${esc(privacy)}</p>
+    <p class="tm-qa-ask-meta">Enter 发送 · Shift+Enter 换行</p>
   </form>`;
 }
 
 function suggestHTML(pending) {
   return `<div class="tm-qa-suggest" data-role="qa-chips" aria-label="示例问法">${QA_SUGGESTIONS.map((item) => `
-    <button type="button" class="tm-qa-chip${item.online ? ' is-online' : ''}" data-role="qa-chip" data-question="${esc(item.question)}" data-online="${item.online ? 'true' : 'false'}" ${pending ? 'disabled' : ''}>${esc(item.label)}</button>`).join('')}</div>`;
+    <button type="button" class="tm-qa-chip" data-role="qa-chip" data-question="${esc(item.question)}" ${pending ? 'disabled' : ''}>${esc(item.label)}</button>`).join('')}</div>`;
 }
 
 function failureAnswer({ question, contextId }) {
@@ -254,11 +395,42 @@ function failureAnswer({ question, contextId }) {
   };
 }
 
+function pageHelpAnswer() {
+  return {
+    status: 'local',
+    intent: null,
+    route: { layer: 'L3', confidence: null },
+    source: 'template',
+    text: '这是页面操作或隐私问题。请在「AI 助手」的帮助说明中查看；问答页不会把这类问题发送到在线服务。',
+    facts: [],
+    evidence: [],
+    actions: [{ id: 'assistant-help', label: '查看助手帮助', kind: 'assistant-help' }],
+    trace: { template_id: null, plan_id: null, fact_count: 0, number_check: null, elapsed_ms: 0, intent_code: 'page_help', layer_label: '页面帮助' },
+    candidate: null,
+    notice: null,
+    diagnostics: [],
+    bill_context_id: null,
+  };
+}
+
 export function renderRealChat(host, ctx) {
   if (!host) return;
   const { state, set } = ctx;
   const contextId = state.bill?.contextId ?? null;
-  if (draftContextId !== contextId) { draft = ''; draftContextId = contextId; }
+  if (draftContextId !== contextId) {
+    draft = '';
+    draftContextId = contextId;
+    handoffNotice = null;
+    clearArmed = false;
+  }
+  const incoming = typeof ctx.takeQaHandoff === 'function' ? ctx.takeQaHandoff(contextId) : null;
+  if (incoming?.dropped) {
+    handoffNotice = '账单已变化，之前从助手带入的问题已丢弃，请重新提问。';
+  } else if (incoming?.question) {
+    draft = incoming.question;
+    handoffNotice = '已从助手带入问题，请确认后发送。';
+  }
+
   const allMessages = Array.isArray(state.chat.messages) ? state.chat.messages : [];
   const messages = allMessages.filter((m) => m && (m.bill_context_id ?? null) === contextId);
   const pending = state.chat.pending === true && (state.chat.contextId ?? contextId) === contextId;
@@ -268,22 +440,25 @@ export function renderRealChat(host, ctx) {
   const actionMap = new Map();
   const lastQuestion = [...messages].reverse().find((m) => m.role === 'user')?.text ?? '';
   const isDemo = state.bill?.demo === true;
+  const confirmed = state.bill?.status === 'confirmed' && state.bill?.sourceType === 'local' && !state.bill?.blocked;
+  const allowOnline = confirmed && !isDemo;
+  const allowProfileBase = confirmed && !isDemo;
 
   const logHTML = entries.length || pending
     ? `${entries.map((entry) => (entry.answer
-      ? answerHTML(entry, actionMap, currentRuleKey)
+      ? answerHTML(entry, actionMap, currentRuleKey, allowOnline, allowProfileBase && shouldExtractProfileFacts(entry.question))
       : pendingHTML(entry.question))).join('')}${pending && !entries.some((e) => !e.answer) ? pendingHTML(lastQuestion) : ''}`
     : emptyHTML();
 
   host.innerHTML = `<div class="tm-qa-page">
     <div class="tm-qa-inner">
       <div class="tm-qa-scroll" data-role="qa-scroll">
-        ${headHTML(entries.length > 0 || pending, isDemo)}
+        ${headHTML(entries.length > 0 || pending, isDemo, clearArmed)}
         <div class="tm-qa-log" data-role="qa-ledger" aria-live="polite">${logHTML}</div>
       </div>
       <div class="tm-qa-dock" data-role="qa-dock" aria-label="提问区">
         ${suggestHTML(pending)}
-        ${askHTML(pending)}
+        ${askHTML(pending, privacyLine(draft), handoffNotice)}
       </div>
     </div>
   </div>`;
@@ -291,6 +466,7 @@ export function renderRealChat(host, ctx) {
   const form = host.querySelector('[data-role="qa-form"]');
   const input = host.querySelector('[data-role="qa-input"]');
   const scroller = host.querySelector('[data-role="qa-scroll"]');
+  const preview = host.querySelector('[data-role="qa-send-preview"]');
   const logKey = `${contextId ?? 'none'}:${messages.length}:${pending ? 'pending' : 'idle'}`;
   if (scroller && lastScrollKey !== null && lastScrollKey !== logKey) {
     requestAnimationFrame(() => {
@@ -304,18 +480,38 @@ export function renderRealChat(host, ctx) {
   }
   lastScrollKey = logKey;
 
-  async function send(raw, { preferOnline = false } = {}) {
+  function updatePreview(value) {
+    if (preview) preview.textContent = privacyLine(value);
+  }
+
+  async function send(raw) {
     const question = questionText(raw);
     if (!question || state.chat.pending) return;
     draft = '';
-    const bill = state.bill;
+    handoffNotice = null;
+    clearArmed = false;
+    const messageContextId = state.bill?.contextId ?? null;
     const requestId = `qa-${++seq}`;
-    const messageContextId = bill?.contextId ?? null;
     const isCurrent = () => state.chat.requestId === requestId && (state.bill?.contextId ?? null) === messageContextId;
     const userMessage = {
       id: `${requestId}-q`, role: 'user', kind: 'qa-user',
       text: question, bill_context_id: messageContextId,
     };
+
+    if (isPageHelpQuestion(question)) {
+      const help = pageHelpAnswer();
+      setMessages([
+        ...state.chat.messages,
+        userMessage,
+        {
+          id: requestId, role: 'assistant', kind: 'qa', text: help.text,
+          answer: { ...help, bill_context_id: messageContextId },
+          bill_context_id: messageContextId, rule_state_key: currentRuleKey,
+        },
+      ], messageContextId);
+      return;
+    }
+
     set({
       chat: {
         ...state.chat,
@@ -333,7 +529,7 @@ export function renderRealChat(host, ctx) {
       } else {
         let ruleState = null;
         try { ruleState = ctx.qaDeps.ruleStateOf?.(versions) ?? null; } catch { ruleState = null; }
-        answer = await ctx.qaDeps.askQuestion({ question, bill, ruleState, versions, preferOnline });
+        answer = await ctx.qaDeps.askQuestion({ question, bill: state.bill, ruleState, versions });
       }
     } catch {
       if (!isCurrent()) return;
@@ -355,26 +551,113 @@ export function renderRealChat(host, ctx) {
         messages: [...state.chat.messages, assistantMessage],
       },
     });
-    if (bill?.demo !== true && typeof ctx.qaDeps?.recordProfileFacts === 'function') {
-      Promise.resolve()
-        .then(() => ctx.qaDeps.recordProfileFacts({ message: question, contextId: messageContextId }))
-        .then((result) => {
-          const chip = profileFactChip(result);
-          if (!chip) return;
-          if (patchMessage(ctx, assistantMessage.id, { profile_fact: chip }) && chip.state === 'saved') {
-            ctx.cloudDeps?.invalidateCloudProfile?.();
-          }
-        })
-        .catch(() => { /* 画像补充失败不影响已展示的回答 */ });
+  }
+
+  function setMessages(messages, messageContextId = contextId) {
+    set({
+      chat: {
+        ...state.chat,
+        contextId: messageContextId,
+        pending: false,
+        requestId: null,
+        messages,
+      },
+    });
+  }
+
+  function startProfileRecord(messageId, question) {
+    const message = findMessage(ctx, messageId);
+    if (!message || !message.bill_context_id || message.bill_context_id !== state.bill?.contextId) return;
+    patchMessage(ctx, messageId, {
+      profile_fact: { state: 'confirm', message: question, facts: [] },
+    });
+  }
+
+  async function extractProfile(messageId) {
+    const current = findMessage(ctx, messageId);
+    const fact = current?.profile_fact;
+    if (!current || !fact || fact.state === 'extracting' || fact.state === 'saving') return;
+    if (!fact.message || current.bill_context_id !== state.bill?.contextId) return;
+    const requestId = `profile-${++seq}`;
+    patchMessage(ctx, messageId, { profile_fact: { ...fact, state: 'extracting', requestId } });
+    let result = null;
+    try {
+      result = typeof ctx.qaDeps?.extractProfileFacts === 'function'
+        ? await ctx.qaDeps.extractProfileFacts({ message: fact.message, contextId: current.bill_context_id })
+        : null;
+    } catch {
+      result = null;
     }
+    if (state.bill?.contextId !== current.bill_context_id) return;
+    const latest = findMessage(ctx, messageId)?.profile_fact;
+    if (!latest || latest.requestId !== requestId) return;
+    if (result?.ok && Array.isArray(result.facts) && result.facts.length) {
+      patchMessage(ctx, messageId, { profile_fact: { ...fact, state: 'candidates', requestId: null, facts: result.facts } });
+      return;
+    }
+    if (result?.ok) {
+      patchMessage(ctx, messageId, { profile_fact: { ...fact, state: 'empty', requestId: null, facts: [] } });
+      return;
+    }
+    patchMessage(ctx, messageId, { profile_fact: { ...fact, state: 'extract-failed', requestId: null, facts: [] } });
+  }
+
+  async function saveProfile(messageId) {
+    const current = findMessage(ctx, messageId);
+    const fact = current?.profile_fact;
+    if (!current || !fact || fact.state !== 'candidates' || !Array.isArray(fact.facts) || !fact.facts.length) return;
+    if (current.bill_context_id !== state.bill?.contextId) return;
+    const requestId = `profile-save-${++seq}`;
+    patchMessage(ctx, messageId, { profile_fact: { ...fact, state: 'saving', requestId } });
+    let result = null;
+    try {
+      result = typeof ctx.qaDeps?.saveProfileFacts === 'function'
+        ? await ctx.qaDeps.saveProfileFacts({ facts: fact.facts, contextId: current.bill_context_id })
+        : null;
+    } catch {
+      result = null;
+    }
+    if (state.bill?.contextId !== current.bill_context_id) return;
+    const latest = findMessage(ctx, messageId)?.profile_fact;
+    if (!latest || latest.requestId !== requestId) return;
+    if (!result?.ok) {
+      patchMessage(ctx, messageId, { profile_fact: { ...fact, state: 'save-failed', requestId: null } });
+      return;
+    }
+    const payload = result.result ?? {};
+    const added = Array.isArray(payload.added) ? payload.added : [];
+    const duplicates = Array.isArray(payload.duplicates) ? payload.duplicates : [];
+    ctx.cloudDeps?.invalidateCloudProfile?.();
+    if (added.length) {
+      patchMessage(ctx, messageId, {
+        profile_fact: {
+          state: 'saved',
+          message: fact.message,
+          facts: added,
+          ids: added.map((item) => item?.id).filter((id) => typeof id === 'string'),
+          duplicates: duplicates.length,
+          requestId: null,
+        },
+      });
+      return;
+    }
+    patchMessage(ctx, messageId, {
+      profile_fact: { ...fact, state: duplicates.length ? 'duplicate' : 'empty', requestId: null, facts: [] },
+    });
+  }
+
+  function cancelProfile(messageId) {
+    const current = findMessage(ctx, messageId);
+    if (!current?.profile_fact) return;
+    patchMessage(ctx, messageId, { profile_fact: null });
   }
 
   async function undoProfileFacts(messageId) {
-    const messages = Array.isArray(ctx.state.chat?.messages) ? ctx.state.chat.messages : [];
-    const message = messages.find((item) => item?.id === messageId);
-    const ids = Array.isArray(message?.profile_fact?.ids) ? message.profile_fact.ids : [];
+    const message = findMessage(ctx, messageId);
+    const fact = message?.profile_fact;
+    const ids = Array.isArray(fact?.ids) ? fact.ids : [];
     if (!message || !ids.length || typeof ctx.cloudDeps?.deleteFact !== 'function') return;
-    patchMessage(ctx, messageId, { profile_fact: { ...message.profile_fact, state: 'undoing' } });
+    patchMessage(ctx, messageId, { profile_fact: { ...fact, state: 'undoing' } });
     try {
       for (const id of ids) {
         try {
@@ -386,12 +669,59 @@ export function renderRealChat(host, ctx) {
       patchMessage(ctx, messageId, { profile_fact: { state: 'undone', ids: [] } });
       ctx.cloudDeps.invalidateCloudProfile?.();
     } catch {
-      patchMessage(ctx, messageId, { profile_fact: { ...message.profile_fact, state: 'undo-failed' } });
+      patchMessage(ctx, messageId, { profile_fact: { ...fact, state: 'undo-failed' } });
     }
   }
 
+  async function runOnline(question, messageId) {
+    const message = findMessage(ctx, messageId);
+    if (!message || !question || message.online?.status === 'pending') return;
+    if ((message.bill_context_id ?? null) !== (state.bill?.contextId ?? null)) return;
+    const requestId = `online-${++seq}`;
+    patchMessage(ctx, messageId, { online: { status: 'pending', requestId } });
+    let result = null;
+    try {
+      const ruleState = ctx.qaDeps?.ruleStateOf?.(versions) ?? null;
+      result = typeof ctx.qaDeps?.askQuestion === 'function'
+        ? await ctx.qaDeps.askQuestion({
+          question, bill: state.bill, ruleState, versions, preferOnline: true,
+        })
+        : null;
+    } catch {
+      result = null;
+    }
+    if ((state.bill?.contextId ?? null) !== (message.bill_context_id ?? null)) return;
+    const latest = findMessage(ctx, messageId);
+    if (!latest || latest.online?.requestId !== requestId) return;
+    if (result?.status === 'online') {
+      patchMessage(ctx, messageId, { online: { status: 'ok', answer: result } });
+      return;
+    }
+    const text = result?.notice ? String(result.notice) : '在线服务当前不可用，请稍后重试。';
+    patchMessage(ctx, messageId, { online: { status: 'failed', text } });
+  }
+
+  function clearConversation() {
+    draft = '';
+    handoffNotice = null;
+    clearArmed = false;
+    lastScrollKey = null;
+    set({
+      chat: {
+        ...state.chat,
+        messages: [],
+        pending: false,
+        requestId: null,
+        contextId,
+      },
+    });
+  }
+
   if (form && input) {
-    input.addEventListener('input', () => { draft = input.value; });
+    input.addEventListener('input', () => {
+      draft = input.value;
+      updatePreview(input.value);
+    });
     form.addEventListener('submit', (e) => {
       e.preventDefault();
       send(input.value);
@@ -407,19 +737,35 @@ export function renderRealChat(host, ctx) {
   host.onclick = (e) => {
     const chip = e.target.closest('[data-role="qa-chip"]');
     if (chip && host.contains(chip)) {
-      send(chip.getAttribute('data-question') || '', { preferOnline: chip.getAttribute('data-online') === 'true' });
+      send(chip.getAttribute('data-question') || '');
       return;
     }
     const clear = e.target.closest('[data-role="qa-clear"]');
     if (clear && host.contains(clear)) {
-      draft = '';
-      lastScrollKey = null;
-      set({ chat: { ...state.chat, messages: [], pending: false, requestId: null, contextId } });
+      clearArmed = true;
+      set({ chat: { ...state.chat } });
       return;
     }
-    const undo = e.target.closest('[data-fact-action="undo"]');
-    if (undo && host.contains(undo)) {
-      void undoProfileFacts(undo.getAttribute('data-message-id'));
+    const clearConfirm = e.target.closest('[data-role="qa-clear-confirm"]');
+    if (clearConfirm && host.contains(clearConfirm)) {
+      clearConversation();
+      return;
+    }
+    const clearCancel = e.target.closest('[data-role="qa-clear-cancel"]');
+    if (clearCancel && host.contains(clearCancel)) {
+      clearArmed = false;
+      set({ chat: { ...state.chat } });
+      return;
+    }
+    const factButton = e.target.closest('[data-fact-action]');
+    if (factButton && host.contains(factButton)) {
+      const action = factButton.getAttribute('data-fact-action');
+      const messageId = factButton.getAttribute('data-message-id');
+      if (action === 'undo') void undoProfileFacts(messageId);
+      else if (action === 'record') startProfileRecord(messageId, factButton.getAttribute('data-question') || '');
+      else if (action === 'extract' || action === 'retry-extract') void extractProfile(messageId);
+      else if (action === 'save' || action === 'retry-save') void saveProfile(messageId);
+      else if (action === 'cancel') cancelProfile(messageId);
       return;
     }
     const button = e.target.closest('[data-action]');
@@ -428,6 +774,14 @@ export function renderRealChat(host, ctx) {
     if (!action) return;
     if (action.kind === 'ask' && action.question) {
       send(action.question);
+      return;
+    }
+    if (action.kind === 'online') {
+      void runOnline(action.question, action.messageId);
+      return;
+    }
+    if (action.kind === 'assistant-help') {
+      ctx.openAssistantHelp?.();
       return;
     }
     if (action.kind === 'candidate' && action.candidate) {

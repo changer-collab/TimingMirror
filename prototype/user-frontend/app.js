@@ -595,7 +595,7 @@ import { renderRealProfile } from './realProfile.js';
       <section class="tm-workspace-head">
         <p class="mono-label">MY MIRROR / 个人中心</p>
         <h1>画像与规则</h1>
-        <p class="muted">画像来自已复核账单与你在对话中明确说过的事实；规则保存在当前浏览器，操作复盘已独立为单独页面。</p>
+        <p class="muted">画像来自已复核账单，以及你在问答页主动选择记入的事实；规则保存在当前浏览器，操作复盘已独立为单独页面。</p>
       </section>
       <div id="tm-real-profile"></div>
       <section class="tm-me-rules" aria-label="规则工作区">

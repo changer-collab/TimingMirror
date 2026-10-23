@@ -74,28 +74,30 @@ export async function extractProfileFacts({ transport, message, signal } = {}) {
   }
 }
 
-// 记录器的失败绝不向上抛：问答回答已展示，画像落库是后台补充。
+// 抽取与保存分开：先由用户授权发送并查看候选，再单独确认保存。
 export function createProfileFactRecorder({ transport = null, saveFacts = null } = {}) {
   if (typeof saveFacts !== 'function') return null;
   return Object.freeze({
-    async record({ message, contextId = null, signal } = {}) {
-      if (!shouldExtractProfileFacts(message)) {
-        return { ok: false, code: 'E_PROFILE_FACT_NOT_EXPLICIT', facts: [], saved: false };
+    async extract({ message, signal } = {}) {
+      return extractProfileFacts({ transport, message, signal });
+    },
+    async save({ facts, contextId = null, signal } = {}) {
+      if (!Array.isArray(facts) || facts.length === 0) {
+        return { ok: false, code: 'E_PROFILE_FACT_EMPTY', facts: [], saved: false };
       }
-      const extracted = await extractProfileFacts({ transport, message, signal });
-      if (!extracted.ok || extracted.facts.length === 0) {
-        return { ...extracted, saved: false };
-      }
-      const facts = extracted.facts.map((fact) => ({
-        ...fact,
+      const prepared = facts.map((fact) => ({
+        kind: fact.kind,
+        key: fact.key,
+        value: fact.value,
+        evidence: fact.evidence,
         source: 'chat',
         ...(contextId ? { source_ref: contextId } : {}),
       }));
       try {
-        const result = await saveFacts({ facts, signal });
-        return { ok: true, facts, saved: true, result };
+        const result = await saveFacts({ facts: prepared, signal });
+        return { ok: true, facts: prepared, saved: true, result };
       } catch (error) {
-        return { ok: false, code: error?.code ?? 'E_PROFILE_FACT_SAVE_FAILED', facts, saved: false };
+        return { ok: false, code: error?.code ?? 'E_PROFILE_FACT_SAVE_FAILED', facts: prepared, saved: false };
       }
     },
   });
