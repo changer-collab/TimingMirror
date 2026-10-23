@@ -1116,7 +1116,7 @@ const maxV = () => Math.max(...state.contracts.versions.map((r) => (Number.isFin
 const reload = async () => { state.contracts = { ...defaultContracts(), marketSource: state.contracts.marketSource ?? 'synthetic-fixture', versions: loadContractsDemo() }; mountCycle(); await settle(); };
 const saveModal = async () => { await clickRole('modal-save'); await settle(); };
 const nlPanel = () => findByClass(current, 'cv-nl-embedded')[0] ?? null;
-const openCustom = async () => { await clickRole('add-rule'); await fire(byRole('template'), 'change', '__custom__'); await settle(); };
+const openCustom = async () => { await clickRole('add-rule-buy'); await fire(byRole('template'), 'change', '__custom__'); await settle(); };
 {
   const adapterMod = await imp('src/demo/adapter.js');
   const viewSrc = readFileSync(join(ROOT, 'src/ui/views/contractView.js'), 'utf8');
@@ -1136,31 +1136,33 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   {
     const headVis = visibleTexts(findByClass(current, 'cv-head')[0]).join('|');
     const hist = findByClass(current, 'cv-history')[0];
-    check('默认布局：没有常驻编辑器（无弹窗 / 模板选择 / 参数输入 / 规则预览），页头为“交易规则”+ 简介 + 本地存储说明 + 主按钮“新增规则”',
+    check('默认布局：没有常驻编辑器（无弹窗 / 模板选择 / 参数输入 / 规则预览），页头为”交易规则”+ 简介',
       !modalNode() && !byRole('template') && !fieldInput('threshold_pct') && findByClass(current, 'cv-live').length === 0
-      && labelOf(roleBtn('add-rule')) === '新增规则' && String(roleBtn('add-rule').attrs.class).includes('primary')
-      && headVis.includes('交易规则') && headVis.includes('设置在操作复盘中用于提醒自己的交易规则。') && headVis.includes('规则仅保存在当前浏览器；不会自动交易，也不会改变分析报告结论。')
+      && headVis.includes('交易规则') && headVis.includes('设置在操作复盘中用于提醒自己的交易规则。')
       && !headVis.includes('技术说明') && !headVis.includes('M0-C1') && !btnOf(SIM_BTN) && !byRole('sim-symbol') && !btnOf('模拟申报买入'), headVis);
-    check('默认布局：当前生效规则（0）空状态 + 三种类型各显示“暂未设置 / 新增此类规则”；历史规则默认折叠“历史规则（0）”；无并行 / 整理 / 替换选择字样',
-      txt.includes('当前生效规则（0）') && txt.includes('暂无当前生效的规则') && slotHashes('no_buy_on_surge').length === 0
-      && texts(slotNode('no_buy_back_within')).join('|').includes('暂未设置「卖出后 N 个交易日内不追回」规则')
-      && texts(slotNode('sell_within_after_buy')).join('|').includes('暂未设置「买入后 N 个交易日内卖出提醒」规则')
-      && findButtons(current).filter((b) => labelOf(b) === '新增规则').length === 4
+    check('默认布局：当前生效规则（0）空状态 + 买入/卖出分类各显示空状态与”新增规则”按钮；历史规则默认折叠”历史规则（0）”；无并行 / 整理 / 替换选择字样',
+      txt.includes('当前生效规则（0）') && txt.includes('暂无当前生效的规则')
+      && txt.includes('暂无买入提醒') && txt.includes('暂无卖出提醒')
+      && findButtons(current).filter((b) => labelOf(b) === '新增规则').length === 2
       && hist.tagName === 'DETAILS' && hist.attrs.open === undefined && texts(hist).join('|').includes('历史规则（0）')
       && !txt.includes('同时保留') && !txt.includes('整理此组') && !txt.includes('替换旧规则（推荐）') && !txt.includes('并行'), txt.slice(0, 300));
   }
 
   /* —— 2. 新增弹窗：出现 / 预览 / 参数错误 / 取消 / Esc / 关闭 —— */
-  await clickRole('add-rule');
+  await clickRole('add-rule-buy');
   {
     const m = modalNode();
-    check('新增弹窗：出现“新增交易规则”（role=dialog、aria-modal、打开即获得焦点），背景页面设为 inert；含 3 个模板 + 自定义规则、参数、备注、实时预览，按钮“取消 / 保存并启用”',
+    check('新增弹窗：出现”新增交易规则”（role=dialog、aria-modal、打开即获得焦点），背景页面设为 inert；含买入模板 + 自定义规则、参数、备注、实时预览，按钮”取消 / 保存并启用”',
       !!m && m.attrs.role === 'dialog' && m.attrs['aria-modal'] === 'true' && globalThis.__focused === m && modalTxt().includes('新增交易规则')
-      && findByClass(current, 'cv-page')[0].attrs.inert === '' && findByTag(byRole('template'), 'option').length === 4
+      && findByClass(current, 'cv-page')[0].attrs.inert === '' && findByTag(byRole('template'), 'option').length === 3
       && findByTag(byRole('template'), 'option').some((o) => o.attrs.value === '__custom__')
       && !!fieldInput('threshold_pct') && !!byRole('note') && liveTxt().includes('当天涨幅超过 5% 的票，我绝不买入。') && liveTxt().includes('阈值：5.0%') && liveTxt().includes('提醒：申报买入时')
       && labelOf(roleBtn('modal-save')) === '保存并启用' && labelOf(roleBtn('modal-cancel')) === '取消' && roleBtn('modal-close').attrs['aria-label'] === '关闭'
       && roleBtn('modal-save').disabled === false && !modalTxt().includes('同时保留') && state.contracts.versions.length === 0, modalTxt().slice(0, 300));
+    const buyOpts = findByTag(byRole('template'), 'option').map((o) => o.attrs.value);
+    check('买入入口·模板筛选：下拉只含买入模板（涨幅超阈值不买入、卖出后不追回）+ 自定义，不含卖出模板',
+      buyOpts.includes('no_buy_on_surge') && buyOpts.includes('no_buy_back_within') && buyOpts.includes('__custom__')
+      && !buyOpts.includes('sell_within_after_buy'), JSON.stringify(buyOpts));
   }
   await fire(fieldInput('threshold_pct'), 'input', '3');
   check('弹窗·实时预览：阈值改为 3 → 预览“3% / 3.0%”，不显示哈希与技术信息',
@@ -1179,13 +1181,24 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   await clickRole('modal-cancel');
   check('弹窗·取消：关闭弹窗，不写入任何记录（内存与本地存储均为 0 条），背景恢复可操作',
     !modalNode() && state.contracts.versions.length === 0 && stored().length === 0 && findByClass(current, 'cv-page')[0].attrs.inert === undefined, String(state.contracts.versions.length));
-  await clickRole('add-rule'); await pressEsc();
+  await clickRole('add-rule-buy'); await pressEsc();
   check('弹窗·Esc：按 Esc 关闭，不写入记录', !modalNode() && state.contracts.versions.length === 0 && stored().length === 0);
-  await clickRole('add-rule'); await clickRole('modal-close');
+  await clickRole('add-rule-buy'); await clickRole('modal-close');
   check('弹窗·关闭按钮（×）：关闭，不写入记录', !modalNode() && state.contracts.versions.length === 0 && stored().length === 0);
+  await clickRole('add-rule-sell');
+  {
+    const sellOpts = findByTag(byRole('template'), 'option').map((o) => o.attrs.value);
+    check('卖出入口·模板筛选：下拉只含卖出模板（买入后卖出提醒）+ 自定义，不含买入模板',
+      !!modalNode() && modalNode().attrs.role === 'dialog' && findByTag(byRole('template'), 'option').length === 2
+      && sellOpts.includes('sell_within_after_buy') && sellOpts.includes('__custom__')
+      && !sellOpts.includes('no_buy_on_surge') && !sellOpts.includes('no_buy_back_within'), JSON.stringify(sellOpts));
+    check('卖出入口·默认模板：选中卖出模板，预览写明申报卖出',
+      fieldInput('days').value === '3' && liveTxt().includes('买入后 3 个交易日内卖出同一只票时，提醒我。') && liveTxt().includes('申报卖出时'));
+  }
+  await clickRole('modal-cancel');
 
   /* —— 3. 新增两种不同类型 → 同时生效 —— */
-  await clickRole('add-rule');
+  await clickRole('add-rule-buy');
   await fire(fieldInput('threshold_pct'), 'input', '3');
   await fire(byRole('note'), 'input', '追高总亏');
   await saveModal();
@@ -1200,7 +1213,7 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     && findButtons(ruleCardOf(hS3)).some((b) => labelOf(b) === '停用')
     && !cardVisible(hS3).includes(hS3) && !cardVisible(hS3).includes('候选哈希') && !cardVisible(hS3).includes('fnv1a64') && !cardVisible(hS3).includes('M0-C1')
     && !cardVisible(hS3).includes('涨幅阈值（%）') && !cardVisible(hS3).includes('已确认') && !cardVisible(hS3).includes('历史状态变更'), cardVisible(hS3));
-  await clickRole('add-rule');
+  await clickRole('add-rule-buy');
   {
     const sel = findByTag(byRole('template'), 'option').find((o) => o.attrs.selected === 'selected');
     check('新增弹窗：已有涨幅规则时默认选中尚未设置的“卖出后不追回”模板（默认 3 个交易日），无替换说明',
@@ -1333,7 +1346,7 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   check('旧演示记录：归入历史规则（“旧演示记录 · 未经规则引擎解析：不参与测试，不能恢复”），非对象条目被丢弃，当前规则为 0',
     state.contracts.versions.length === 1 && txt.includes('历史规则（1）') && txt.includes('旧演示记录') && txt.includes('未经规则引擎解析：不参与测试，不能恢复。')
     && txt.includes('当前生效规则（0）') && findByClass(current, 'cv-rule').length === 0 && !findButtons(findByClass(current, 'cv-history')[0]).some((b) => labelOf(b).includes('恢复')), txt.slice(0, 300));
-  await clickRole('add-rule'); await saveModal();
+  await clickRole('add-rule-buy'); await saveModal();
   check('旧演示记录后新增：版本号延续为 v2（已确认），旧记录保留', stored().length === 2 && stored()[1].v === 2 && stored()[1].status === '已确认' && stored()[0].candidateId === 'RC-1', JSON.stringify(stored()).slice(0, 200));
 
   const dup = adapterMod.previewContract({ template_id: 'no_buy_on_surge', fields: { threshold_pct: '5' } });
@@ -1342,11 +1355,11 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   await reload();
   check('早期重复记录：同一哈希的 v4/v5/v6 合并为一条当前规则（版本 v4），本地数据未删除',
     enabledHashes().join() === dup.hash && cardVisible(dup.hash).includes('版本 v4') && stored().length === 3, JSON.stringify(stored().map((r) => [r.v, r.status])));
-  await clickRole('add-rule');
+  await clickRole('add-rule-buy');
   await fire(byRole('template'), 'change', 'no_buy_on_surge');
   check('同一哈希不重复保存：新增弹窗选涨幅模板（默认 5%）与当前规则相同 → 提示"已存在完全相同的当前规则"，保存不可点（需勾选确认）', roleBtn('modal-save').disabled === true && modalTxt().includes('已存在完全相同的当前规则'), modalTxt().slice(-200));
   await clickRole('modal-cancel');
-  await clickRole('add-rule');
+  await clickRole('add-rule-buy');
   await fire(byRole('template'), 'change', 'no_buy_on_surge');
   await fire(fieldInput('threshold_pct'), 'input', '6');
   await saveModal();
@@ -1381,8 +1394,8 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     await clickRole('nl-recognize'); await settle();
   };
   const tickAck = async (checked = true) => { for (const fn of byRole('nl-ack').listeners.change ?? []) await fn({ target: { checked } }); };
-  check('自然语言·入口：页头只有“新增规则”，不再有独立“用一句话描述规则”按钮', labelOf(roleBtn('add-rule')) === '新增规则' && !roleBtn('nl-rule'));
-  await clickRole('add-rule');
+  check('自然语言·入口：买入/卖出分类各有”新增规则”按钮，不再有独立”用一句话描述规则”按钮', !!roleBtn('add-rule-buy') && !!roleBtn('add-rule-sell') && !roleBtn('nl-rule'));
+  await clickRole('add-rule-buy');
   check('自然语言·入口：规则模板下拉包含“自定义规则（用一句话描述）”，选择前不显示识别输入框',
     findByTag(byRole('template'), 'option').some((o) => o.attrs.value === '__custom__' && texts(o).join('') === '自定义规则（用一句话描述）')
     && !byRole('nl-text') && !roleBtn('nl-recognize'));
@@ -1491,8 +1504,8 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   await openCustom();
 
   await clickRole('modal-close');
-  await clickRole('add-rule');
-  check('自然语言·服务失败后：模板新增弹窗照常可用', !!modalNode() && findByTag(byRole('template'), 'option').length === 4 && !!roleBtn('modal-save'));
+  await clickRole('add-rule-buy');
+  check('自然语言·服务失败后：模板新增弹窗照常可用', !!modalNode() && findByTag(byRole('template'), 'option').length === 3 && !!roleBtn('modal-save'));
   await clickRole('modal-cancel');
 
   await openCustom();
@@ -1518,7 +1531,7 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   state.contracts = { ...defaultContracts(), marketSource: 'synthetic-fixture' }; mountCycle(); await settle();
   const original = A.previewContract({ template_id: 'no_buy_on_surge', fields: { threshold_pct: '3' } });
   const updated = A.previewContract({ template_id: 'no_buy_on_surge', fields: { threshold_pct: '3' }, scope: { kind: 'symbol', symbol: '600519' } });
-  await clickRole('add-rule'); await fire(byRole('template'), 'change', 'no_buy_on_surge'); await settle();
+  await clickRole('add-rule-buy'); await fire(byRole('template'), 'change', 'no_buy_on_surge'); await settle();
   await fire(fieldInput('threshold_pct'), 'input', '3'); await saveModal();
   await clickIn(ruleCardOf(original.hash), '编辑');
   await fire(byRole('scope-kind'), 'change', 'symbol'); await settle();
@@ -1552,15 +1565,14 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   state.route = 'contract'; state.bill = defaultBill();
   state.contracts = { ...defaultContracts(), marketSource: 'synthetic-fixture' };
   mountCycle(); await settle();
-  check('能力库：页面说明多规则共存与本机边界，不再显示跨页实现/待统一技术说明',
+  check('能力库：页面说明多规则共存，不再显示跨页实现/待统一技术说明',
     texts(current).join('|').includes('不同类型或不同股票范围的规则可以同时生效')
-    && texts(current).join('|').includes('规则只保存在本机，不会自动交易，也不会改变分析报告结论')
     && !texts(current).join('|').includes('对话页会读取已生效规则')
     && !texts(current).join('|').includes('非交易日处理沿用各来源原有口径'));
-  await clickRole('add-rule'); await fire(fieldInput('threshold_pct'), 'input', '3'); await saveModal();
+  await clickRole('add-rule-buy'); await fire(fieldInput('threshold_pct'), 'input', '3'); await saveModal();
   const first = JSON.stringify(stored()[0]);
   check('能力库：全部股票仍按 v1 保存，不增加范围字段，原哈希不变', stored()[0].schema === 'contract-v1' && !('scope' in stored()[0]) && stored()[0].hash === s3.hash);
-  await clickRole('add-rule');
+  await clickRole('add-rule-buy');
   await fire(byRole('template'), 'change', 'no_buy_on_surge'); await settle();
   await fire(fieldInput('threshold_pct'), 'input', '3');
   {
@@ -1637,7 +1649,7 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   state.route = 'contract'; state.bill = defaultBill();
   state.contracts = { ...defaultContracts(), marketSource: 'synthetic-fixture' };
   mountCycle(); await settle();
-  await clickIn(slotNode('sell_within_after_buy'), '新增规则');
+  await clickRole('add-rule-sell');
   check('买入后卖出·模板入口：默认窗口 3 个交易日，预览写明申报卖出、历史复盘、同日买入不计与只提醒',
     fieldInput('days').value === '3' && liveTxt().includes('买入后 3 个交易日内卖出同一只票时，提醒我。')
     && liveTxt().includes('申报卖出时') && liveTxt().includes('同日买入不计') && liveTxt().includes('提醒：申报卖出时'));
@@ -1647,7 +1659,7 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     && cardVisible(hBS3).includes('触发条件：买入后 3 个交易日内卖出同一标的（不含买入当天，同日买入不计）')
     && stored().length === 1 && stored()[0].schema === 'contract-v1' && stored()[0].template_id === 'sell_within_after_buy');
 
-  await clickRole('add-rule');
+  await clickRole('add-rule-buy');
   await fire(fieldInput('threshold_pct'), 'input', '3'); await saveModal();
   check('买入后卖出·混合规则：涨幅 3% 与买入后卖出同时为当前规则，分属申报买入 / 申报卖出动作',
     sameSet(enabledHashes(), [hBS3, hSurge3]) && stored().length === 2 && stored()[1].template_id === 'no_buy_on_surge');
@@ -2190,9 +2202,9 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
     JSON.stringify({ status: state.bill.status, n: state.bill.trades?.length }));
 
   state.route = 'contract'; mountCycle(); await settle();
-  await clickRole('add-rule'); await fire(byRole('template'), 'change', 'no_buy_back_within'); await fire(fieldInput('days'), 'input', '2'); await saveModal();
-  await clickRole('add-rule'); await fire(byRole('template'), 'change', 'sell_within_after_buy'); await fire(fieldInput('days'), 'input', '2'); await saveModal();
-  await clickRole('add-rule'); await fire(byRole('template'), 'change', 'no_buy_on_surge'); await fire(fieldInput('threshold_pct'), 'input', '10'); await saveModal();
+  await clickRole('add-rule-buy'); await fire(byRole('template'), 'change', 'no_buy_back_within'); await fire(fieldInput('days'), 'input', '2'); await saveModal();
+  await clickRole('add-rule-buy'); await fire(byRole('template'), 'change', 'sell_within_after_buy'); await fire(fieldInput('days'), 'input', '2'); await saveModal();
+  await clickRole('add-rule-buy'); await fire(byRole('template'), 'change', 'no_buy_on_surge'); await fire(fieldInput('threshold_pct'), 'input', '10'); await saveModal();
   check('操作复盘·规则：不追回 2 日、买入后卖出提醒 2 日、涨幅 10% 三条同时生效', enabledHashes().length === 3, JSON.stringify(enabledHashes()));
 
   // 行情失败：明确错误，不回落示例数据
