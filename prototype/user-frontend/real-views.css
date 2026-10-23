@@ -1420,19 +1420,33 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
   height: 100%;
   min-height: 0;
   overflow: hidden;
-  background: linear-gradient(180deg, #edf1ef 0%, #e9eeec 100%);
+  /* 与其他用户端页面共用 html 的页面底色 */
+  background: transparent;
   color: var(--ink);
 }
 
-.tm-qa-inner {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
+.tm-qa-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 308px;
+  gap: 18px;
+  align-items: start;
   width: 100%;
-  max-width: 920px;
-  min-height: 0;
-  margin: 0 auto;
-  padding: 0 24px;
+  max-width: 1200px;
+  margin: clamp(12px, 2.4vh, 24px) auto clamp(10px, 2vh, 20px);
+  padding: 0 clamp(14px, 2.2vw, 26px);
+}
+
+.tm-qa-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: min(680px, calc(100vh - 190px));
+  min-height: 540px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--sheet);
+  box-shadow: var(--shadow-paper);
 }
 
 .tm-qa-scroll {
@@ -1440,7 +1454,7 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
   flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
-  padding: 22px 0 18px;
+  padding: 20px 22px;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
@@ -1448,8 +1462,164 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
 
 .tm-qa-dock {
   flex: 0 0 auto;
-  padding: 8px 0 14px;
-  background: linear-gradient(180deg, rgba(233, 238, 236, 0) 0, #e9eeec 16px);
+  padding: 10px 22px 6px;
+  background: linear-gradient(180deg, rgba(249, 251, 250, 0) 0, var(--sheet) 16px);
+}
+
+.tm-qa-side {
+  position: sticky;
+  top: calc(var(--topbar-h) + 18px);
+  min-width: 0;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: linear-gradient(168deg, rgba(252, 253, 253, 0.86), rgba(236, 240, 240, 0.72));
+  box-shadow: var(--shadow-paper);
+}
+
+.tm-qa-side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  color: var(--gray);
+}
+
+.tm-qa-side-tag {
+  padding: 2px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--gray);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+}
+
+.tm-qa-side-list {
+  display: flex;
+  flex-direction: column;
+  margin: 14px 0 0;
+}
+
+.tm-qa-side-list > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.tm-qa-side-list dt {
+  color: var(--faint);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.tm-qa-side-list dd {
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--font-num);
+  font-size: 13px;
+  font-variant-numeric: lining-nums tabular-nums;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.tm-qa-side-empty {
+  margin: 18px 0 0;
+  color: var(--faint);
+  font-size: 12px;
+  line-height: 1.7;
+  text-align: center;
+}
+
+.tm-qa-side-status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  background: rgba(21, 25, 28, 0.035);
+}
+
+.tm-qa-side-status-text {
+  margin: 0;
+  color: var(--gray);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.tm-qa-side-loss {
+  color: var(--loss);
+}
+
+.tm-qa-side-note {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  background: rgba(21, 25, 28, 0.035);
+  color: var(--gray);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+
+.tm-qa-side-note strong {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.tm-qa-side-note ul {
+  margin: 5px 0 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.tm-qa-side-note li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 0;
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.tm-qa-side-note li::before {
+  content: "";
+  width: 4px;
+  height: 1px;
+  background: var(--silver);
+}
+
+.tm-qa-side-link {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  padding: 11px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--sheet);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  line-height: 1.5;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.tm-qa-side-link:hover {
+  border-color: var(--ink);
+  background: var(--sheet-2);
 }
 
 .tm-qa-head { flex: 0 0 auto; margin-bottom: 18px; }
@@ -1510,8 +1680,8 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
   gap: 4px;
   padding: 10px 12px 8px;
   border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  background: var(--sheet);
+  border-radius: var(--radius-sm);
+  background: #fff;
   box-shadow: 0 10px 24px -22px rgba(21, 25, 28, 0.6);
 }
 .tm-qa-ask-row {
@@ -1555,7 +1725,7 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
   font-size: 12.5px;
   cursor: pointer;
 }
-.tm-qa-send:hover { background: var(--dark-2, #2c3438); }
+.tm-qa-send:hover { background: var(--dark-2); }
 .tm-qa-send:disabled,
 .tm-qa-chip:disabled { opacity: 0.45; cursor: default; }
 
@@ -1576,7 +1746,7 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
   padding: 5px 11px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: var(--sheet);
+  background: #fff;
   color: var(--gray);
   font-family: var(--font-sans);
   font-size: 11.5px;
@@ -1588,6 +1758,10 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
 .tm-qa-chip.is-online {
   border-color: var(--ink);
   background: var(--ink);
+  color: var(--sheet);
+}
+.tm-qa-chip.is-online:hover {
+  background: var(--dark-2);
   color: var(--sheet);
 }
 .tm-qa-chip.is-online span {
@@ -1609,8 +1783,8 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
   position: relative;
   padding: 15px 17px 16px;
   border: 1px solid rgba(21, 25, 28, 0.22);
-  border-radius: 8px;
-  background: var(--sheet);
+  border-radius: var(--radius-sm);
+  background: #fff;
   box-shadow: 0 9px 20px -18px rgba(21, 25, 28, 0.55);
   counter-increment: qa-entry;
 }
@@ -1789,7 +1963,7 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
   padding: 5px 11px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: var(--sheet);
+  background: #fff;
   color: var(--ink-soft);
   font-family: var(--font-sans);
   font-size: 11.5px;
@@ -1838,6 +2012,10 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
   outline-offset: 2px;
 }
 
+.tm-qa-page .tm-qa-ask textarea:focus-visible {
+  outline: none;
+}
+
 @keyframes tm-qa-pulse {
   0%, 100% { opacity: 0.55; }
   50% { opacity: 1; }
@@ -1845,7 +2023,7 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
 
 @media (max-width: 900px) {
   body.tm-qa-standalone { padding-bottom: 0; overflow: hidden; }
-  .tm-qa-dock { padding-bottom: calc(62px + env(safe-area-inset-bottom, 0)); }
+  .tm-qa-layout { margin-bottom: calc(70px + env(safe-area-inset-bottom, 0)); }
 }
 
 @media (max-width: 680px) {
@@ -1853,9 +2031,22 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
     height: calc(100dvh - var(--topbar-h));
     overflow: hidden;
   }
-  .tm-qa-inner { padding: 0 14px; }
-  .tm-qa-scroll { padding: 16px 0 12px; }
-  .tm-qa-dock { padding-bottom: calc(62px + env(safe-area-inset-bottom, 0)); }
+  .tm-qa-layout {
+    grid-template-columns: minmax(0, 1fr);
+    margin: 10px 8px calc(70px + env(safe-area-inset-bottom, 0));
+    padding: 0 12px;
+  }
+  .tm-qa-main {
+    height: min(400px, calc(100dvh - 200px));
+    min-height: 300px;
+  }
+  .tm-qa-side {
+    position: static;
+    margin-top: 12px;
+  }
+  .tm-qa-scroll { padding: 16px 14px; }
+  .tm-qa-dock { padding: 8px 14px 4px; }
+  .tm-qa-side { padding: 16px; }
   .tm-qa-head { margin-bottom: 14px; }
   .tm-qa-head h1 { font-size: 27px; }
   .tm-qa-intro { font-size: 13px; }

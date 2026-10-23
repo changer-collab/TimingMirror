@@ -9,7 +9,7 @@ import { createDataClient } from '../../src/agent/dataClient.js';
 import { createProfileFactRecorder } from '../../src/agent/profileSignals.js';
 import { renderContract } from '../../src/ui/views/contractView.js';
 import { renderRealImport } from './realImport.js';
-import { getRealReportBundle, loadRealReport } from './realReport.js';
+import { getRealReportBundle, getRealReportState, loadRealReport } from './realReport.js';
 import { ruleStateOf, loadProfile } from './profileStore.js';
 import { openRuleCandidate } from './ruleCandidates.js';
 import { createQaAnswerService } from './qaAnswer.js';
@@ -237,6 +237,7 @@ const ctx = {
   globalAssistant: true,
   qaDeps: {
     getReportBundle: (bill) => getRealReportBundle(bill),
+    getReportState: (bill) => getRealReportState(bill),
     loadReportBundle: (bill) => loadRealReport(bill),
     askOnline: ({ question, review }) => getQaOnlineClient().ask({ question, review }),
     askQuestion: (args) => getQaAnswerClient().ask(args),
