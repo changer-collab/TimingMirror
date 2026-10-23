@@ -27,11 +27,11 @@ export const QA_INTENT_LABELS = Object.freeze({
   what_if: '如果没卖',
   similar_context: '相似情境',
   how_to_change: '怎么改',
-  contract_setup: '规则登记',
+  contract_setup: '设置规则',
   contract_status: '规则状态',
   meta_calc: '怎么算的',
   meta_trust: '可信度',
-  out_of_scope: '边界拒绝',
+  out_of_scope: '超出回答范围',
 });
 
 export const QA_LAYER_LABELS = Object.freeze({

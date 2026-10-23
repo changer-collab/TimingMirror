@@ -4,7 +4,6 @@ import { el, chip } from '../components.js';
 import * as adapter from '../../demo/adapter.js';
 
 const safe = (x) => (x === null || x === undefined || x === '' ? '—' : typeof x === 'object' ? JSON.stringify(x) : String(x));
-const fmtAt = (at) => { const d = new Date(at); return Number.isNaN(d.getTime()) ? safe(at) : d.toLocaleString('zh-CN'); };
 const fmtPrice = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '—');
 const fmtQty = (v) => (Number.isFinite(Number(v)) ? Number(v).toLocaleString('en-US') : '—');
 
@@ -38,6 +37,13 @@ const MISSING_COPY = Object.freeze({
 });
 
 let loadingKey = null;
+
+function marketErrorText(error) {
+  const raw = typeof error === 'string' ? error : String(error?.message ?? '');
+  if (/E_MARKET_NOT_CONFIGURED/.test(raw)) return '当前没有可用的行情服务，暂时无法完成这次复盘。';
+  if (/E_MARKET_UNAVAILABLE/.test(raw)) return '行情服务暂不可用，暂时无法完成这次复盘。';
+  return '暂时无法获取行情，未能完成这次复盘。';
+}
 
 function shortMessage(event) {
   if (event.outcome === 'missing' && MISSING_COPY[event.code]) return MISSING_COPY[event.code];
@@ -121,7 +127,6 @@ function eventRow(event, op, byTrade) {
     el('details', { class: 'tr-rule-more' }, [
       el('summary', {}, ['依据']),
       el('div', {}, [event.message]),
-      event.code ? el('div', {}, [`原因码：${event.code}`]) : null,
     ]),
   ]);
 }
@@ -198,7 +203,7 @@ function dataDisclosure(review, context, localBill) {
     el('summary', {}, ['数据与口径']),
     el('div', { class: 'tr-tech-body' }, [
       el('div', {}, [`交易来源：${context.tradesSource?.label ?? (localBill ? '本地已确认账单' : '示例账单')}`]),
-      el('div', {}, [`行情：${market?.label ?? '—'}${context.asOfDate ? ` · 截至 ${context.asOfDate}` : ''}${market?.fetchedAt ? ` · 拉取 ${fmtAt(market.fetchedAt)}` : ''}（服务端获取，非实时）`]),
+      el('div', {}, [`行情：${market?.label ?? '—'}${context.asOfDate ? ` · 截至 ${context.asOfDate}` : ''}（服务端获取，非实时）`]),
       el('div', {}, [`行情范围：${context.range?.start ?? '—'} 至 ${context.range?.end ?? '—'} · ${context.tradingDays?.length ?? 0} 个交易日`]),
       ...review.notes.map((n) => el('div', {}, [n])),
     ]),
@@ -273,8 +278,8 @@ export function renderScenarioReview(root, ctx) {
   if (context?.error && context.reviewKey === contextKey) {
     page.append(el('div', { class: 'tr-error card' }, [
       el('strong', {}, ['暂时无法复盘']),
-      el('p', { class: 'tr-error-copy' }, [context.error]),
-      el('p', { class: 'muted small' }, ['不回落示例数据，也不改用其他行情来源。请检查站点行情函数或稍后重试。']),
+      el('p', { class: 'tr-error-copy' }, [marketErrorText(context.error)]),
+      el('p', { class: 'muted small' }, ['不回落示例数据，也不改用其他行情来源。请稍后重试。']),
       el('button', {
         class: 'btn small',
         onclick: () => { loadingKey = null; set({ contracts: { simContext: null } }); },

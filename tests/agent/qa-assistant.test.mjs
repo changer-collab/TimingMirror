@@ -95,7 +95,8 @@ function chipEntry(state, ctx, id) {
   const reportCtx = makeCtx(report);
   const reportInfo = pageInfo(report, reportCtx.qaDeps);
   check('报告页：五个芯片齐全且顺序确定', reportInfo.chips.filter((c) => c.chip).map((c) => c.chip.id).join(',') === QA_CHIPS.map((c) => c.id).join(','), JSON.stringify(reportInfo.chips.map((c) => c.label)));
-  check('报告页：页面简介与当前账单上下文可见', reportInfo.intro.includes('报告页') && reportInfo.context.includes('qa-fake.csv') && reportInfo.context.includes('报告：已发布'), JSON.stringify(reportInfo));
+  check('报告页：页面简介与当前账单上下文可见，不显示规则版本内部计数', reportInfo.intro.includes('报告页') && reportInfo.context.includes('qa-fake.csv')
+    && !reportInfo.context.includes('规则版本') && !reportInfo.context.includes('报告：已发布'), JSON.stringify(reportInfo));
 
   const contract = makeState('contract');
   const contractInfo = pageInfo(contract, makeCtx(contract).qaDeps);
