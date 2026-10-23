@@ -136,7 +136,7 @@ check('校验：非对象 → 拒绝', !validateRuleJson([1]).ok && !validateRul
     && r.parsed.action === 'sell' && r.parsed.text === engine.text && r.confirmations.length === 0 && confirmationState(r, {}).ok, JSON.stringify(r).slice(0, 300));
   check('支持·买入后卖出：预览写明申报卖出、第 1 到第 N 个交易日、同日买入不计、只提醒',
     r.fullRule.includes('申报卖出时') && r.fullRule.includes('第 1 到第 3 个交易日') && r.fullRule.includes('同日买入不计')
-    && r.condition.includes('第 1 到第 3 个交易日') && r.reminder.includes('只提醒') && r.execution.includes('仅在“假如卖出”情境')
+    && r.condition.includes('第 1 到第 3 个交易日') && r.reminder.includes('只提醒') && r.execution.includes('操作复盘中（针对卖出操作）')
     && r.execution.includes('同日买入不计') && r.execution.includes('数据不足') && r.scope.kind === 'all', JSON.stringify(r));
   check('支持·买入后卖出：参数来源与范围检查如实列出“天 / 日”为待确认、关键词检查只是辅助',
     r.checks[2] === '参数在原文中找到：3个交易日' && r.checks[0].includes('不能保证识别了全部意图') && r.checks[3].includes('按全部股票生效'), JSON.stringify(r.checks));

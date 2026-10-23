@@ -643,7 +643,7 @@ export function createAssistantController({ client, state, set, go, scrollSimula
     const message = status === 'not_confirmed'
       ? '尚未记录用户确认的规则'
       : status === 'not_executed'
-        ? '尚未执行历史模拟'
+        ? '尚未执行操作复盘'
         : '当前生效规则与实际执行参数不一致，已阻断';
     patch({
       ...noticePatch,
@@ -855,7 +855,7 @@ function nextActionButtons(controller, state) {
       buttons.push(el('button', {
         class: 'btn primary small', 'data-role': 'assistant-next-sim',
         onclick: () => controller.goSimulation(),
-      }, [sim && !simStale ? '再次前往历史模拟' : '前往历史模拟']));
+      }, [sim && !simStale ? '再次前往操作复盘' : '前往操作复盘']));
     }
     buttons.push(el('button', {
       class: 'btn small', 'data-role': 'assistant-next-adjust',
@@ -1072,7 +1072,7 @@ function draftCard(controller, state) {
         ? '行情暂不可用，暂时不能生成模拟结果；你仍可以查看或修改规则。'
         : state.bill?.status === 'confirmed' && state.bill?.sourceType === 'local'
           ? '尚未模拟；到规则页点击测试后，助手会自动接收结果，不会自动发起。'
-          : '历史模拟需要先确认本地账单。',
+          : '操作复盘需要先确认本地账单。',
     ]),
     attemptFailed || attemptNotRun
       ? el('div', { class: 'assistant-check' }, [

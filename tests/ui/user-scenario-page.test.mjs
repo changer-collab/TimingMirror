@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 用户端独立历史情境测试页 / 已确认账单横幅回归（静态结构；不联网）。
+ * 用户端独立操作复盘页 / 已确认账单横幅回归（静态结构；不联网）。
  * 只检查路由、入口和渲染分支，实际交互由浏览器验证覆盖。
  * 运行：node tests/ui/user-scenario-page.test.mjs
  */
@@ -37,21 +37,21 @@ const chatPage = block(app, 'function chatPage()', '\n  function realChatPage');
 const goSimulation = block(assistant, 'function goSimulation()', '\n  function ');
 
 check('路由：scenario 在 ROUTES/TITLES',
-  /const ROUTES = \[[^\]]*'scenario'/.test(app) && /scenario: '历史情境测试 · 择时镜子'/.test(app));
-check('导航：桌面主导航包含历史情境测试，移动导航含测试入口',
-  /navLink\('scenario', '历史情境测试'\)/.test(app)
-  && /\['scenario', '测试'\]/.test(app)
-  && /aria-label="历史情境测试"/.test(app)
+  /const ROUTES = \[[^\]]*'scenario'/.test(app) && /scenario: '操作复盘 · 择时镜子'/.test(app));
+check('导航：桌面主导航包含“复盘”，移动导航含“复盘”入口',
+  /navLink\('scenario', '复盘'\)/.test(app)
+  && /\['scenario', '复盘'\]/.test(app)
+  && /aria-label="操作复盘"/.test(app)
   && /grid-template-columns: repeat\(6, 1fr\)/.test(styles));
 check('路由：render 分支挂载独立 scenario 视图',
   /state\.route === 'scenario'\) html = scenarioPage\(\)/.test(app)
   && /mountScenarioView\(document\.getElementById\('tm-real-scenario'\)\)/.test(app));
 check('入口：规则工作区提供 #/scenario 链接',
-  /href="#\/scenario"/.test(mePage) && /打开历史情境测试/.test(mePage));
+  /href="#\/scenario"/.test(mePage) && /打开操作复盘/.test(mePage));
 check('入口：规则页卡片不再重复测试按钮',
   !/href="#\/scenario"/.test(contract));
 check('页面：scenario 有独立标题/返回规则管理链接',
-  /title: '历史情境测试'/.test(scenarioPage) && /href="#\/me"/.test(scenarioPage));
+  /title: '操作复盘'/.test(scenarioPage) && /href="#\/me"/.test(scenarioPage));
 check('规则页：scenario 委托到操作复盘视图，不再渲染假设测试区',
   /if \(section === 'scenario'\) \{\s*renderScenarioReview\(root, ctx\);\s*return;/.test(contract)
   && /export function renderScenarioReview/.test(reviewView));
@@ -66,7 +66,7 @@ check('操作复盘：不再出现“假如买入/假如卖出”表单',
 check('桥接：mountScenarioView 使用 scenario-only 渲染',
   /export function mountScenarioView/.test(bridge) && /section: 'scenario'/.test(bridge)
   && /route === 'me' \|\| route === 'scenario' \? 'contract' : route/.test(bridge));
-check('助手：前往历史模拟切到 scenario，不回到规则页',
+check('助手：前往操作复盘切到 scenario，不回到规则页',
   /go\('scenario'\)/.test(goSimulation) && /scrollSimulation/.test(goSimulation)
   && !/go\('contract'\)/.test(goSimulation));
 check('横幅：无确认账单/me 页面隐藏',
@@ -77,7 +77,7 @@ check('横幅：示例/本地文案和链接区分',
   && /报告、问答和规则测试都使用这笔账单。/.test(banner)
   && /demo \? '换个场景' : '更换账单'/.test(banner)
   && /!demo && state\.route !== 'scenario'/.test(banner));
-check('横幅：报告/事实问答/历史测试页接入，规则页不接入',
+check('横幅：报告/事实问答/操作复盘页接入，规则页不接入',
   /confirmedBillBanner\(\)\}\$\{realReportPage\(\)\}/.test(reportPage)
   && /confirmedBillBanner\(\)\}\$\{realChatPage\(\)\}/.test(chatPage)
   && /confirmedBillBanner\(\)/.test(scenarioPage)

@@ -546,7 +546,7 @@ const orderOf = (...classes) => classes.map((cls) => pageOf().children.findIndex
     && !plainVis.includes('S1 口径') && !/CALC_[A-Z_]+_V1/.test(plainVis) && !/第 \d+ 行/.test(plainVis) && !!techNode && techNode.tagName === 'DETAILS'
     && texts(techNode).join('|').includes('S1 口径') && texts(techNode).join('|').includes('公式编号') && /第 \d+ 行/.test(texts(techNode).join('|')), plainVis.slice(0, 300));
 }
-const wiringOk = (t) => !t.includes('契约匹配') && !t.includes('未接线') && t.includes('契约页已接入候选模板与历史情境模拟') && t.includes('契约不会自动改变本报告结论')
+const wiringOk = (t) => !t.includes('契约匹配') && !t.includes('未接线') && t.includes('契约页已接入候选模板与操作复盘') && t.includes('契约不会自动改变本报告结论')
   && t.includes('未接入：实时/分钟级行情') && t.includes('最新已收盘日线') && t.includes('对话页事实回跳') && t.includes('尚未完成真实服务验证');
 check('报告·演示：底部不再写“契约匹配未接线”，如实说明契约页已接入且不改报告结论，实时/分钟级行情、事实回跳与真实服务验证仍未接入', wiringOk(txt), txt.slice(-300));
 const demoFacts = () => findByClass(current, 'rp-fact');
@@ -1135,7 +1135,7 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     check('默认布局：没有常驻编辑器（无弹窗 / 模板选择 / 参数输入 / 规则预览），页头为“交易规则”+ 简介 + 本地存储说明 + 主按钮“新增规则”',
       !modalNode() && !byRole('template') && !fieldInput('threshold_pct') && findByClass(current, 'cv-live').length === 0
       && labelOf(roleBtn('add-rule')) === '新增规则' && String(roleBtn('add-rule').attrs.class).includes('primary')
-      && headVis.includes('交易规则') && headVis.includes('设置在历史情境测试中用于提醒自己的交易规则。') && headVis.includes('规则仅保存在当前浏览器；不会自动交易，也不会改变分析报告结论。')
+      && headVis.includes('交易规则') && headVis.includes('设置在操作复盘中用于提醒自己的交易规则。') && headVis.includes('规则仅保存在当前浏览器；不会自动交易，也不会改变分析报告结论。')
       && headVis.includes('技术说明（候选口径）') && !headVis.includes('M0-C1') && !btnOf(SIM_BTN) && !byRole('sim-symbol') && !btnOf('模拟申报买入'), headVis);
     check('默认布局：当前生效规则（0）空状态 + 三种类型各显示“暂未设置 / 新增此类规则”；历史规则默认折叠“历史规则（0）”；无并行 / 整理 / 替换选择字样',
       txt.includes('当前生效规则（0）') && txt.includes('暂无当前生效的规则') && slotHashes('no_buy_on_surge').length === 0
@@ -1250,7 +1250,7 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     await clickIn(ruleCardOf(hS4), '停用'); await clickIn(ruleCardOf(hS4), '确认停用'); await settle();
     check('停用涨幅 4%：进入历史，不追回 3 日不受影响',
       !enabledHashes().includes(hS4) && enabledHashes().join() === hB3 && stored().length === n0 + 1, JSON.stringify(enabledHashes()));
-    check('恢复提示：历史 4% 显示”恢复后，该规则重新参与情境测试”', histVisible(hS4).includes('恢复后，该规则重新参与情境测试'), histVisible(hS4));
+    check('恢复提示：历史 4% 显示”恢复后，该规则重新参与操作复盘”', histVisible(hS4).includes('恢复后，该规则重新参与操作复盘'), histVisible(hS4));
     await clickIn(histOf(hS4), '恢复为当前规则'); await settle();
     const restoreRec = stored().at(-1);
     check('恢复历史规则：4%（v5）重新成为当前（追加”经恢复”状态记录）',
@@ -1272,7 +1272,7 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
     const n2 = stored().length;
     await clickIn(ruleCardOf(hB3), '停用');
     check('停用确认：先出现简短确认（说明进入历史规则、不再参与测试、可恢复），未写入记录',
-      stored().length === n2 && cardVisible(hB3).includes('确认停用\u201c卖出后 3 个交易日内不追回同一只票。\u201d？') && cardVisible(hB3).includes('停用后，该规则进入历史规则，不再参与之后的历史情境测试；可随时恢复为当前规则。'), cardVisible(hB3));
+      stored().length === n2 && cardVisible(hB3).includes('确认停用\u201c卖出后 3 个交易日内不追回同一只票。\u201d？') && cardVisible(hB3).includes('停用后，该规则进入历史规则，不再参与之后的操作复盘；可随时恢复为当前规则。'), cardVisible(hB3));
     await clickIn(ruleCardOf(hB3), '取消');
     check('停用确认：取消后恢复原状，不写入记录', stored().length === n2 && enabledHashes().includes(hB3) && !cardVisible(hB3).includes('确认停用'), cardVisible(hB3));
     await disableRule(hB3);
@@ -1443,7 +1443,7 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   check('自然语言·疑似账户信息：本地拦截，不发送请求', siteCalls.length === beforeSensitive && nlTxt().includes('疑似账号') && !roleBtn('nl-save'), nlTxt().slice(0, 300));
   await recognize('当天涨幅超过3%的股票我不买', { status: 503, body: { ok: false, code: 'E_MODEL_NOT_CONFIGURED', message: '模型未启用' } });
   check('自然语言·服务失败：提示原因（DEEPSEEK_API_KEY 未配置）与已有功能不受影响，无确认按钮',
-    nlTxt().includes('识别未完成') && nlTxt().includes('DEEPSEEK_API_KEY') && nlTxt().includes('已有规则、模板新增与历史情境测试不受影响') && !roleBtn('nl-save'), nlTxt().slice(0, 300));
+    nlTxt().includes('识别未完成') && nlTxt().includes('DEEPSEEK_API_KEY') && nlTxt().includes('已有规则、模板新增与操作复盘不受影响') && !roleBtn('nl-save'), nlTxt().slice(0, 300));
   await recognize('当天涨幅超过3%的股票我不买', { status: 404, body: {} });
   check('自然语言·函数未发布：HTTP 404 → 说明原因', nlTxt().includes('HTTP 404') && !roleBtn('nl-save'), nlTxt().slice(0, 300));
 
