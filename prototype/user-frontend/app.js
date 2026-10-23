@@ -288,10 +288,6 @@ import { renderRealProfile } from './realProfile.js';
         ${navLink('scenario', '复盘')}
       </nav>
       <div class="topbar-right">
-        <nav class="view-switch" aria-label="界面视图">
-          <a class="view-option tm-dev-link" href="../../" title="打开开发者视图（独立页面）" data-developer-link>开发者</a>
-          <span class="view-option is-active" aria-current="page">用户端</span>
-        </nav>
         <button id="assistant-toggle" class="tm-assistant-toggle" type="button" aria-controls="tm-assistant" aria-expanded="false">AI 助手</button>
         <span class="proto-chip tm-mode-chip ${statusInfo.tone}">${statusInfo.text}</span>
         <a class="btn btn-primary btn-sm" href="#/import">进入账本 <span class="arrow">→</span></a>
@@ -449,17 +445,6 @@ import { renderRealProfile } from './realProfile.js';
     return sessionStatusInfo().text;
   }
 
-  function hasSessionState() {
-    const shared = sharedState();
-    return bridge.hasRealState()
-      || bridge.isDemoSelected()
-      || (shared.assistant?.messages?.length ?? 0) > 0
-      || (shared.assistant?.qaMessages?.length ?? 0) > 0
-      || !!shared.assistant?.draft
-      || (state.chat?.messages?.length ?? 0) > 0
-      || state.bill?.status !== 'idle';
-  }
-
   function enterDemoRoute(route) {
     if (!bridge.enterDemo()) {
       showToast('已有真实导入任务，示例视图不会覆盖当前账单。');
@@ -471,20 +456,6 @@ import { renderRealProfile } from './realProfile.js';
       render();
     }
     showToast('已进入示例模式；示例数据不会写入真实账单。');
-  }
-
-  function confirmDeveloperExit(href) {
-    const leave = () => { location.href = href; };
-    if (!hasSessionState()) { leave(); return; }
-    showModal({
-      title: '离开新前端？',
-      subtitle: 'DEVELOPER VIEW / 调试入口',
-      body: '<p>开发者视图是独立页面。离开后，当前助手对话、规则草案、导入草稿和真实账单状态不会跨页面保留；只有导入预算可能留在本标签页。</p><p class="fine">建议先完成当前导入或复制需要保留的内容。</p>',
-      actions: [
-        { label: '留在此页', className: 'btn-outline' },
-        { label: '仍要离开', className: 'btn-ghost danger', onClick: leave },
-      ],
-    });
   }
 
   function emptyStatePage(route) {
@@ -2075,12 +2046,6 @@ import { renderRealProfile } from './realProfile.js';
   /* ---------- global events ---------- */
 
   document.addEventListener('click', (e) => {
-    const developer = e.target.closest('[data-developer-link]');
-    if (developer) {
-      e.preventDefault();
-      confirmDeveloperExit(developer.getAttribute('href') || '../../');
-      return;
-    }
     const demo = e.target.closest('[data-demo-link], [data-demo-route]');
     if (demo) {
       e.preventDefault();
