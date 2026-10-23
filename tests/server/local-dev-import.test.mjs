@@ -12,6 +12,7 @@ const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: 
 
 const BASE = 'https://timingmirror.example/functions/v1/app/api/llm/import-recover';
 const VISION_BASE = 'https://timingmirror.example/functions/v1/app/api/llm/import-vision';
+const INTENT_BASE = 'https://timingmirror.example/functions/v1/app/api/llm/intent';
 const VALID_CONTENT = '日期,标的,方向,价格,数量\n2024-09-24,600519,买入,100.00,100';
 
 async function invoke(handler, { content = VALID_CONTENT, stage = 'bill_extract', source_kind = 'csv', method = 'POST' } = {}) {
@@ -19,6 +20,18 @@ async function invoke(handler, { content = VALID_CONTENT, stage = 'bill_extract'
     method,
     headers: { 'Content-Type': 'application/json' },
     body: method === 'POST' ? JSON.stringify({ content, stage, source_kind }) : undefined,
+  }));
+  const text = await response.text();
+  let json = null;
+  try { json = JSON.parse(text); } catch { /* 非 JSON */ }
+  return { status: response.status, text, json };
+}
+
+async function invokeIntent(handler, question) {
+  const response = await handler(new Request(INTENT_BASE, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question }),
   }));
   const text = await response.text();
   let json = null;
@@ -72,6 +85,30 @@ async function invokeVision(handler, { images = [{ mime: 'image/jpeg', data_base
 
   const get = await invoke(handler, { method: 'GET' });
   check('dev-fake：GET 405', get.status === 405 && get.json.code === SITE_FUNCTION_CODES.METHOD, get.text);
+}
+
+/* ==== 本地意图 fake：走真实 handler 的 L2 与 schema 分支 ==== */
+{
+  const handler = createHandler({ transport: createLocalFakeImportModel() });
+  const cases = [
+    ['我的提醒最近触发过几次', 'contract_status'],
+    ['给我加一条买入前的提醒规则', 'contract_setup'],
+    ['如果那天我没有卖出 000001，会差多少', 'what_if'],
+    ['大盘下周会往上还是往下', 'out_of_scope'],
+  ];
+  for (const [question, expected] of cases) {
+    const result = await invokeIntent(handler, question);
+    const raw = result.json && typeof result.json.rawText === 'string' ? JSON.parse(result.json.rawText) : null;
+    check(`dev-fake intent：${question} → ${expected}`, result.status === 200
+      && raw?.intent === expected && raw.confidence === 0.9, result.text);
+  }
+  const low = await invokeIntent(handler, '帮我看看这个账户 [FAKE_INTENT_LOW]');
+  const lowRaw = low.json && typeof low.json.rawText === 'string' ? JSON.parse(low.json.rawText) : null;
+  check('dev-fake intent：低置信度标记返回 0.2', low.status === 200 && lowRaw?.confidence === 0.2, low.text);
+
+  const invalid = await invokeIntent(handler, '[FAKE_INTENT_INVALID]');
+  check('dev-fake intent：非法回包由服务端 schema 拦截为 502', invalid.status === 502
+    && invalid.json.code === SITE_FUNCTION_CODES.MODEL_RESPONSE, invalid.text);
 }
 
 const failed = results.filter((r) => !r.ok);

@@ -176,6 +176,32 @@ const RULE_SYSTEM = [
   'status 为 “custom” 时：kind 必须为 “custom”，template_id 必须为 null，params 为空对象，action 为你识别的提醒动作（无法确定时留空）。',
 ].join('\n');
 
+const PROFILE_SUMMARY_SYSTEM = [
+  '你是 TimingMirror 的画像解读助手。输入是一份 JSON 画像摘要，包含确定性统计和用户明确陈述的目标/偏好/约束。',
+  '任务：用简体中文写一段容易理解的分析，帮用户看懂自己的择时行为。只做解释，不预测后市，不推荐股票，不承诺收益。',
+  '硬性要求：',
+  '- 只能引用输入中出现的数字、日期、标签和事实；不得自行计算或编造新的数字、日期、股票代码或金额。',
+  '- 不评价人格，不使用“你总是/你一定/必然”等绝对化表述；区分“数据显示”和“可能”。',
+  '- headline 不超过 24 字；summary 不超过 240 字。',
+  '- strengths、blind_spots、next_actions 各 0-3 条，每条不超过 60 字；next_actions 只写可执行的行为提醒，不写买卖建议。',
+  '- data_limits 0-3 条，每条不超过 80 字，说明样本量、缺失数据或推断边界。',
+  '- confidence 只能取 low、medium、high；账单少于 3 份或交易少于 20 笔时不得高于 medium。',
+  '- 只输出 JSON 对象，不要 Markdown、解释或额外字段。字段固定为：schema_version（必须为 1）、headline、summary、strengths、blind_spots、next_actions、confidence、data_limits。',
+].join('\n');
+
+const PROFILE_FACT_SYSTEM = [
+  '你是 TimingMirror 的画像事实抽取器。输入是一条用户在问答页发送的消息。',
+  '只抽取用户明确陈述的、与投资或交易有关的长期目标、偏好、约束、自述习惯或风险承受度。',
+  '不得抽取：提问、假设、举例、引用他人、否定句、一次性的交易计划、具体持仓或金额、情绪化表达、对助手的指令。',
+  '每条事实的规则：',
+  '- kind 只能是 goal、preference、constraint、habit、risk_tolerance 之一。',
+  '- key 为英文小写 slug，例如 drawdown_limit。',
+  '- value 为不超过 240 字节的中文概括，不得包含账号、手机号、身份证、密码等敏感信息。',
+  '- evidence 必须是用户原话中逐字连续的一段（不超过 120 字），不得改写、拼接或补全。',
+  '如果没有符合条件的内容，输出 {"facts":[]}。最多 3 条，按确定性从高到低排列。',
+  '只输出 JSON 对象，字段固定为 {"facts":[{"kind":"...","key":"...","value":"...","evidence":"..."}]}，不要 Markdown 或解释。',
+].join('\n');
+
 export const MODEL_PROMPTS = Object.freeze({
   intent: INTENT_SYSTEM,
   restate: RESTATE_SYSTEM,
@@ -188,6 +214,8 @@ export const MODEL_PROMPTS = Object.freeze({
   importVisionSystem: IMPORT_VISION_SYSTEM,
   importVisionUser: IMPORT_VISION_USER_TEXT,
   rule: RULE_SYSTEM,
+  profileSummary: PROFILE_SUMMARY_SYSTEM,
+  profileFact: PROFILE_FACT_SYSTEM,
 });
 
 export class ModelTransportError extends Error {

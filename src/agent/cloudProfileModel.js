@@ -1,0 +1,185 @@
+// 云端账单/事实/摘要的前端归一化（纯函数）：只保留页面会用到的字段，拒绝非法结构。
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const PROFILE_KEY_RE = /^[0-9a-f]{8}$/u;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/u;
+const MODES = new Set(['summary', 'full']);
+const FACT_KINDS = new Set(['goal', 'preference', 'constraint', 'habit', 'risk_tolerance']);
+const SUMMARY_CONFIDENCE = new Set(['high', 'medium', 'low']);
+
+function isObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function text(value, max = 2000) {
+  return typeof value === 'string' ? value.trim().slice(0, max) : '';
+}
+
+function finite(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function dateText(value) {
+  const date = text(value, 10);
+  return DATE_RE.test(date) ? date : null;
+}
+
+function metadataView(value) {
+  const source = isObject(value) ? value : {};
+  return {
+    trades_count: finite(source.trades_count),
+    warnings_count: finite(source.warnings_count),
+    date_from: dateText(source.date_from),
+    date_to: dateText(source.date_to),
+    symbol_count: finite(source.symbol_count),
+  };
+}
+
+function snapshotView(value) {
+  if (!isObject(value)) return null;
+  if (typeof value.profile_key !== 'string' || !PROFILE_KEY_RE.test(value.profile_key)) return null;
+  if (!isObject(value.bill) || !Number.isInteger(value.bill.trade_count)) return null;
+  if (value.review?.portfolio_published !== true) return null;
+  return {
+    version: Number.isInteger(value.version) ? value.version : 1,
+    at: text(value.at, 64) || null,
+    profile_key: value.profile_key,
+    bill: {
+      trade_count: value.bill.trade_count,
+      first_date: dateText(value.bill.first_date),
+      last_date: dateText(value.bill.last_date),
+    },
+    outcome: isObject(value.outcome) ? {
+      actual_ret: finite(value.outcome.actual_ret),
+      ghost_ret: finite(value.outcome.ghost_ret),
+      drag: finite(value.outcome.drag),
+      drag_money: finite(value.outcome.drag_money),
+      display: isObject(value.outcome.display) ? {
+        actual_ret: text(value.outcome.display.actual_ret, 32) || '—',
+        ghost_ret: text(value.outcome.display.ghost_ret, 32) || '—',
+        drag: text(value.outcome.display.drag, 32) || '—',
+        drag_money: text(value.outcome.display.drag_money, 32) || '—',
+      } : null,
+    } : null,
+    review: { portfolio_published: true },
+    pgr: isObject(value.pgr) ? { pgr: finite(value.pgr.pgr), plr: finite(value.pgr.plr) } : null,
+    rules: isObject(value.rules) ? {
+      version_count: finite(value.rules.version_count) ?? 0,
+      active_count: finite(value.rules.active_count) ?? 0,
+    } : null,
+    behavior: isObject(value.behavior) ? {
+      patterns: Array.isArray(value.behavior.patterns)
+        ? value.behavior.patterns.filter(isObject).map((pattern) => ({
+          pattern_id: text(pattern.pattern_id, 64),
+          name: text(pattern.name, 60),
+          status: text(pattern.status, 16),
+          sample_n: finite(pattern.sample_n),
+        })).filter((pattern) => pattern.name)
+        : [],
+    } : null,
+    dimensions: Array.isArray(value.dimensions)
+      ? value.dimensions.filter(isObject).map((row) => ({
+        key: text(row.key, 32),
+        label: text(row.label, 32),
+        value: text(row.value, 120),
+        note: text(row.note, 200),
+      })).filter((row) => row.key && row.label)
+      : [],
+    tags: Array.isArray(value.tags)
+      ? value.tags.filter(isObject).map((tag) => ({
+        tag_id: text(tag.tag_id, 64),
+        label: text(tag.label, 40),
+        evidence: text(tag.evidence, 120),
+      })).filter((tag) => tag.tag_id && tag.label)
+      : [],
+  };
+}
+
+export function normalizeCloudBills(payload) {
+  const rows = Array.isArray(payload?.bills) ? payload.bills : [];
+  return rows
+    .filter((row) => isObject(row) && typeof row.id === 'string' && UUID_RE.test(row.id))
+    .map((row) => ({
+      id: row.id,
+      imported_at: text(row.imported_at, 64) || null,
+      effective_date: dateText(row.effective_date),
+      payload_mode: MODES.has(row.payload_mode) ? row.payload_mode : 'summary',
+      has_payload: row.has_payload === true,
+      metadata: metadataView(row.metadata),
+      snapshot: snapshotView(row.snapshot),
+      snapshot_at: text(row.snapshot_at, 64) || null,
+    }))
+    .sort((a, b) => String(b.imported_at ?? '').localeCompare(String(a.imported_at ?? '')));
+}
+
+export function normalizeCloudFacts(payload) {
+  const rows = Array.isArray(payload?.facts) ? payload.facts : [];
+  return rows
+    .filter((row) => isObject(row) && typeof row.id === 'string' && UUID_RE.test(row.id))
+    .filter((row) => FACT_KINDS.has(row.kind) && text(row.value))
+    .map((row) => ({
+      id: row.id,
+      kind: row.kind,
+      key: text(row.key, 64) || null,
+      value: text(row.value, 240),
+      evidence: text(row.evidence, 120) || null,
+      source: row.source === 'manual' ? 'manual' : 'chat',
+      created_at: text(row.created_at, 64) || null,
+    }));
+}
+
+// 本机没有画像时，用云端最近一次已发布报告快照提供只读画像；不合并多份快照。
+export function cloudProfileFromBills(bills) {
+  const rows = (Array.isArray(bills) ? bills : [])
+    .filter((bill) => bill?.snapshot && bill.snapshot.review?.portfolio_published === true)
+    .sort((a, b) => String(b.imported_at ?? '').localeCompare(String(a.imported_at ?? '')));
+  if (!rows.length) return null;
+  const latest = rows[0].snapshot;
+  return {
+    version: latest.version ?? 1,
+    observations: rows.length,
+    latest,
+    history: rows.map((row) => ({
+      at: row.snapshot.at ?? row.imported_at,
+      profile_key: row.snapshot.profile_key,
+      trade_count: row.snapshot.bill.trade_count,
+    })),
+    trend: null,
+  };
+}
+
+function boundedList(value, max, length) {
+  return Array.isArray(value)
+    ? value.map((item) => text(item, length)).filter(Boolean).slice(0, max)
+    : [];
+}
+
+export function validSummaryValue(value) {
+  if (!isObject(value)) return null;
+  const headline = text(value.headline, 24);
+  const summary = text(value.summary, 240);
+  if (!headline || !summary) return null;
+  return {
+    schema_version: Number.isInteger(value.schema_version) ? value.schema_version : 1,
+    headline,
+    summary,
+    strengths: boundedList(value.strengths, 3, 60),
+    blind_spots: boundedList(value.blind_spots, 3, 60),
+    next_actions: boundedList(value.next_actions, 3, 60),
+    confidence: SUMMARY_CONFIDENCE.has(value.confidence) ? value.confidence : 'low',
+    data_limits: boundedList(value.data_limits, 3, 80),
+  };
+}
+
+export function summaryResponseView(payload) {
+  if (!isObject(payload) || payload.ok !== true) return null;
+  const summary = validSummaryValue(payload.summary);
+  if (!summary) return null;
+  return {
+    source: payload.source === 'ai' ? 'ai' : 'template',
+    source_hash: typeof payload.source_hash === 'string' && /^[0-9a-f]{64}$/u.test(payload.source_hash)
+      ? payload.source_hash
+      : null,
+    fallback_reason: text(payload.fallback_reason, 120) || null,
+    summary,
+  };
+}

@@ -269,6 +269,50 @@ try {
     && body.flow_id === 'import-flow-x-001' && body.request_id === 'import-req-x-2');
 }
 
+/* ==== 站点 profileSummary/profileFact：结构化 JSON 响应 ==== */
+{
+  const calls = [];
+  const siteTransport = createHttpTransport({
+    baseUrl: SAME_ORIGIN_BASE,
+    paths: SITE_FUNCTION_PATHS,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      const payload = url.endsWith('/profile-summary')
+        ? { ok: true, source: 'template', source_hash: 'a'.repeat(64), summary: { schema_version: 1 }, fallback_reason: 'model_not_configured' }
+        : { ok: true, facts: [{ kind: 'goal', key: 'holding_horizon', value: '希望减少短线交易', evidence: '我希望减少短线交易' }] };
+      return new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  const summary = await siteTransport.profileSummary({ digest: { profile_key: 'abcd1234' } });
+  check('站点 profileSummary：固定同源路径 + 只发送 digest', calls[0].url === '/functions/v1/app/api/llm/profile-summary'
+    && Object.keys(JSON.parse(calls[0].options.body)).join(',') === 'digest'
+    && summary.source === 'template'
+    && summary.source_hash === 'a'.repeat(64)
+    && summary.fallback_reason === 'model_not_configured', JSON.stringify(summary));
+  const facts = await siteTransport.profileFact({ message: '我希望减少短线交易' });
+  check('站点 profileFact：固定同源路径 + 只发送 message', calls[1].url === '/functions/v1/app/api/llm/profile-fact'
+    && Object.keys(JSON.parse(calls[1].options.body)).join(',') === 'message'
+    && facts.facts?.length === 1
+    && facts.facts[0].evidence === '我希望减少短线交易', JSON.stringify(facts));
+
+  const rawOnly = createHttpTransport({
+    baseUrl: SAME_ORIGIN_BASE,
+    paths: SITE_FUNCTION_PATHS,
+    fetchImpl: async () => new Response(JSON.stringify({ ok: true, facts: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+  });
+  let rawError = null;
+  try { await rawOnly.restate({ question: QUESTION, facts: FACTS }); } catch (error) { rawError = error; }
+  check('站点 restate：结构化响应仍要求 rawText', rawError && rawError.code === HTTP_TRANSPORT_CODES.RESPONSE, rawError && rawError.message);
+
+  const noPaths = createHttpTransport({
+    baseUrl: SAME_ORIGIN_BASE,
+    fetchImpl: async () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+  });
+  let configError = null;
+  try { await noPaths.profileSummary({ digest: {} }); } catch (error) { configError = error; }
+  check('profileSummary：未配置路径时 E_HTTP_CONFIG', configError && configError.code === HTTP_TRANSPORT_CODES.CONFIG, configError && configError.message);
+}
+
 /* ==== intent/restate 成功 + 实际 HTTP 请求白名单 ==== */
 {
   const proxyTransport = createFakeTransport();
