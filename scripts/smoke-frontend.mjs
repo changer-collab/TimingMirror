@@ -1589,12 +1589,12 @@ const openCustom = async () => { await clickRole('add-rule-buy'); await fire(byR
   siteQueue.push(customReply('sell'));
   await clickRole('nl-recognize'); await settle();
   await tickAck();
-  check('自定义规则·重新识别：必须重新选择动作才能保存', state.contracts.nl.actionChoice === null
-    && nlTxt().includes('识别服务建议：卖出提醒') && roleBtn('nl-save').disabled === true);
+  check('自定义规则·重新识别：自动选中建议动作', state.contracts.nl.actionChoice === 'sell'
+    && roleBtn('nl-save').disabled !== true);
   await clickRole('nl-action-sell');
   siteQueue.push(customReply('buy'));
   await clickRole('nl-recognize'); await settle();
-  check('自定义规则·再次识别相同描述：清除旧动作与核对确认', state.contracts.nl.actionChoice === null
+  check('自定义规则·再次识别相同描述：自动选中动作但需重新核对', state.contracts.nl.actionChoice === 'buy'
     && roleBtn('nl-save').disabled === true && !state.contracts.nl.ack);
   await clickRole('nl-cancel');
 

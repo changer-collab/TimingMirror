@@ -920,7 +920,8 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
         if (nlToken !== token || !stillCustom()) return;
         nlToken = null;
         if (flowCounts) c.nl = { ...c.nl, ...flowCounts };
-        c.nl = { ...c.nl, text, flowId, status: 'done', result, choices: {}, ack: false, actionChoice: null };
+        const defaultAction = result.is_custom && (result.action === 'buy' || result.action === 'sell' || result.action === 'both') ? result.action : null;
+        c.nl = { ...c.nl, text, flowId, status: 'done', result, choices: {}, ack: false, actionChoice: defaultAction };
         set({ contracts: { nl: c.nl } });
       },
     }, [loading ? '识别中…' : '识别规则']);
@@ -1022,7 +1023,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     function nlResult(r) {
       const isCustom = r.is_custom === true;
       const pending = r.status === 'supported' && !isCustom && !adapter.contractNlSaveState(c.versions, r, { choices: c.nl.choices, ack: true }).confirm.ok;
-      const s = isCustom ? { text: '自定义规则：暂不参与操作复盘', kind: 'mode' } : pending ? { text: '待你确认', kind: 'mode' } : NL_STATUS[r.status] ?? NL_STATUS.error;
+      const s = pending ? { text: '待你确认', kind: 'mode' } : NL_STATUS[r.status] ?? NL_STATUS.error;
       const nodes = [el('div', { class: 'row' }, [el('span', { class: `chip ${s.kind}`, 'data-role': 'nl-status' }, [s.text])])];
       const understanding = r.understanding
         ? el('div', { class: 'muted small' }, [`模型理解（仅供核对，不参与判定）：${r.understanding}`])

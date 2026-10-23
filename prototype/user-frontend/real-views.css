@@ -1539,7 +1539,7 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
 
 .tm-qa-dock {
   flex: 0 0 auto;
-  padding: 10px 22px 6px;
+  padding: 10px 22px 20px;
   background: linear-gradient(180deg, rgba(249, 251, 250, 0) 0, var(--sheet) 16px);
 }
 
