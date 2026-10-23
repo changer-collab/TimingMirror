@@ -12,7 +12,7 @@ const ISSUE_TEXT = Object.freeze({
   E_SYMBOL_FORMAT: '标的需为 6 位数字代码，请保留前导零',
   E_SIDE_VALUE: '方向只能是买入或卖出',
   E_PRICE_VALUE: '价格需为大于 0 的数字',
-  E_PRICE_PRECISION: '价格最多 2 位小数，系统不会自动四舍五入',
+  E_PRICE_PRECISION: '价格最多 2 位有效小数（尾随零不计），系统不会自动四舍五入',
   E_QTY_INTEGER: '数量需为正整数',
   E_MONEY_VALUE: '费用、税费需为不小于 0 的数字',
   E_MONEY_PRECISION: '费用、税费最多 2 位小数',
@@ -185,8 +185,18 @@ function aiTradeToFields(trade) {
   };
 }
 
-/** AI 结果 → 草稿；本地已识别行保留并在疑似重复时默认不重复计入。 */
-export function buildAiDraft({ aiTrades = [], unresolved = [], localDraft = null, sourceFile = '', requestId = null } = {}) {
+/** AI 结果 → 草稿；本地已识别行保留。视觉重复行只警示、不自动取消勾选。 */
+export function buildAiDraft({
+  aiTrades = [],
+  unresolved = [],
+  localDraft = null,
+  sourceFile = '',
+  requestId = null,
+  duplicatePolicy = 'exclude',
+  nonTradePolicy = 'draft',
+} = {}) {
+  const warnOnly = duplicatePolicy === 'warn';
+  const unresolvedNonTrades = nonTradePolicy === 'unresolved';
   const localRows = Array.isArray(localDraft?.rows)
     ? localDraft.rows.filter((r) => r.source === 'local' || r.source === 'manual')
     : [];
@@ -207,6 +217,13 @@ export function buildAiDraft({ aiTrades = [], unresolved = [], localDraft = null
       extraUnresolved.push({ row: line, reason: 'AI 返回了一行没有交易字段的内容；可能是余额、合计或汇总，未计入草稿' });
       return;
     }
+    if (unresolvedNonTrades && !fields.side) {
+      extraUnresolved.push({
+        row: line,
+        reason: '没有明确的买入/卖出方向；可能是证券转银行、利息等非交易记录，也可能是方向未识别；未计入交易草稿，请核对原图',
+      });
+      return;
+    }
     const checked = validateFields(fields, sourceFile, line);
     const issues = [...checked.issues, ...(Array.isArray(trade.issues) ? trade.issues : [])];
     if (Number.isFinite(trade.confidence) && trade.confidence < 0.5) issues.push('AI 识别置信度较低，请逐项核对');
@@ -224,9 +241,16 @@ export function buildAiDraft({ aiTrades = [], unresolved = [], localDraft = null
     const key = fingerprint(fields);
     if (key && known.has(key)) {
       row.duplicateOf = known.get(key);
-      row.include = false;
-      row.issues = [`疑似与${known.get(key)}重复，默认不导入`, ...row.issues];
-      if (row.status === 'valid') row.status = 'duplicate';
+      if (warnOnly) {
+        // 相同日期/代码/方向/价格/数量可能是真实多笔，也可能只是重叠片段重复；只警示，不自动取消勾选。
+        row.duplicateWarn = true;
+        row.issues = [`与${known.get(key)}字段相同，可能是真实多笔或重叠片段重复；请核对后决定是否保留`, ...row.issues];
+        if (row.status === 'valid') row.status = 'needs_review';
+      } else {
+        row.include = false;
+        row.issues = [`疑似与${known.get(key)}重复，默认不导入`, ...row.issues];
+        if (row.status === 'valid') row.status = 'duplicate';
+      }
     } else if (key && row.status !== 'invalid') {
       known.set(key, `AI 草稿第 ${index + 1} 行`);
     }
@@ -269,6 +293,15 @@ export function removeRow(draft, rowId) {
 
 export function refreshRowStatus(row, sourceFile) {
   const checked = validateFields(row.fields, sourceFile, row.line ?? 2);
+  if (row.duplicateOf && row.duplicateWarn) {
+    return {
+      ...row,
+      trade: checked.trade,
+      status: checked.status === 'valid' ? 'needs_review' : checked.status,
+      issues: [`与${row.duplicateOf}字段相同，可能是真实多笔或重叠片段重复；请核对后决定是否保留`, ...checked.issues],
+      warnings: checked.warnings,
+    };
+  }
   if (row.duplicateOf && checked.status === 'valid') {
     return {
       ...row,

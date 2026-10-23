@@ -75,7 +75,7 @@ export function normalizeCustomRuleJudgmentRequest(body) {
   if (!isText(text, CUSTOM_RULE_JUDGMENT_MAX_TEXT_CHARS)) {
     return fail(CUSTOM_RULE_JUDGMENT_CODES.REQUEST_INVALID, 'rule.text 为空或过长');
   }
-  if (!['buy', 'sell'].includes(raw.action)) {
+  if (!['buy', 'sell', 'both'].includes(raw.action)) {
     return fail(CUSTOM_RULE_JUDGMENT_CODES.REQUEST_INVALID, 'rule.action 非法');
   }
   const scope = normalizeScope(raw.scope);

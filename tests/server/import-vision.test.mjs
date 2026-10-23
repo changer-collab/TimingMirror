@@ -146,6 +146,10 @@ async function invoke(handler, body, { method = 'POST' } = {}) {
     && !JSON.stringify(body).includes('file_name') && !JSON.stringify(body).includes('scan.pdf'));
   check('DashScope vision：系统提示明确忽略余额/合计且不猜默认值', body.input.messages[0].content.includes('余额')
     && body.input.messages[0].content.includes('合计') && body.input.messages[0].content.includes('不猜测'));
+  const prompt = body.input.messages[0].content;
+  check('DashScope vision：交割单提示覆盖日期/代码拆分/价格量拆分/金额/非交易记录',
+    ['成交日期', '交收日期', '名称/代码', '成交价/量', '成交额', '清算额', '负金额', '证券转银行', '银证转账', 'unresolved']
+      .every((keyword) => prompt.includes(keyword)), prompt);
 }
 
 const failed = results.filter((r) => !r.ok);

@@ -1,11 +1,14 @@
 // 账单导入补救（客户端编排；接口候选，未冻结）
 // 链路：用户点击 → 本地内容检查 → 文本识别请求 → 本地结构与字段校验 → 可编辑草稿。
-// Flow 生命周期：首个真实模型请求才创建 flow；同一 flow 最多 2 次请求（含失败/重试）；
+// Flow 生命周期：首个真实模型请求才创建 flow；同一 flow 最多 2 次计入预算的模型响应；
+//       网络失败、客户端超时、5xx 和请求体过大退回本次计数，允许用户重试；
 //       重新上传、切页、助手开合、草稿清空与刷新都不结束/重建 flow；只有本地账单正式确认后
 //       才通过 completeFlow 收口，下一次请求才创建新 flow。一个标签页同时只有一个活动 flow。
 // 服务端是无状态的：只校验单次请求形状与响应结构，不接收/不计数 flow_id/request_id；
 //       flow_id、request_id、预算计数与 trace 由本模块维护（与现有规则助手相同）。
 // 边界：不读取凭证；不发送原始文件/文件名；不自动分批调用。
+// 超时口径：Qoder Sites MCP 与仓库文档未暴露函数 wall-clock 上限；站点日志实测 11.7s 成功，
+//       因此视觉客户端只保守设为 20s（服务端 DeepSeek 仍为 15s），不假设 60s 可用。
 import { hashQuestion } from './planner.js';
 import { exportImportTraceJsonl } from './traceAudit.js';
 import {
@@ -17,6 +20,7 @@ import {
 export const IMPORT_RECOVERY_STAGE = 'bill_extract';
 export const IMPORT_RECOVERY_MAX_MODEL_CALLS = 2;
 export const IMPORT_RECOVERY_TIMEOUT_MS = 8000;
+export const IMPORT_VISION_TIMEOUT_MS = 20000;
 export const IMPORT_RECOVERY_MAX_CONTENT_CHARS = 15000;
 export const IMPORT_RECOVERY_MAX_TRADES = 500;
 export const IMPORT_RECOVERY_SESSION_KEY = 'tm.importRecovery.session';
@@ -28,10 +32,35 @@ export const IMPORT_RECOVERY_CODES = Object.freeze({
   LOCAL_BLOCKED: 'W_IMPORT_RECOVERY_LOCAL_BLOCKED',
   SOURCE_UNSUPPORTED: 'W_IMPORT_RECOVERY_SOURCE_UNSUPPORTED',
   MODEL_TIMEOUT: 'W_IMPORT_RECOVERY_MODEL_TIMEOUT',
+  MODEL_TIMEOUT_SERVER: 'W_IMPORT_RECOVERY_MODEL_TIMEOUT_SERVER',
   MODEL_UNAVAILABLE: 'W_IMPORT_RECOVERY_MODEL_UNAVAILABLE',
+  MODEL_NOT_CONFIGURED: 'W_IMPORT_RECOVERY_MODEL_NOT_CONFIGURED',
+  MODEL_RATE_LIMITED: 'W_IMPORT_RECOVERY_MODEL_RATE_LIMITED',
   MODEL_RESPONSE: 'E_IMPORT_RECOVERY_MODEL_RESPONSE',
+  REQUEST_TOO_LARGE: 'W_IMPORT_RECOVERY_REQUEST_TOO_LARGE',
+  REQUEST_INVALID: 'W_IMPORT_RECOVERY_REQUEST_INVALID',
   BUDGET_EXHAUSTED: 'W_IMPORT_RECOVERY_BUDGET_EXHAUSTED',
   EMPTY_RESULT: 'W_IMPORT_RECOVERY_EMPTY_RESULT',
+});
+
+const SITE_FAILURE_CODES = Object.freeze({
+  BODY_TOO_LARGE: 'E_FUNCTION_BODY_TOO_LARGE',
+  BODY_INVALID: 'E_FUNCTION_BODY_INVALID',
+  REQUEST_INVALID: 'E_FUNCTION_REQUEST_INVALID',
+  UNKNOWN_FIELD: 'E_FUNCTION_UNKNOWN_FIELD',
+  JSON_INVALID: 'E_FUNCTION_JSON_INVALID',
+  CONTENT_TYPE: 'E_FUNCTION_CONTENT_TYPE',
+  MODEL_NOT_CONFIGURED: 'E_MODEL_NOT_CONFIGURED',
+  MODEL_AUTH_FAILED: 'E_MODEL_AUTH_FAILED',
+  MODEL_FORBIDDEN: 'E_MODEL_FORBIDDEN',
+  MODEL_RATE_LIMITED: 'E_MODEL_RATE_LIMITED',
+  MODEL_UNAVAILABLE: 'E_MODEL_UNAVAILABLE',
+  MODEL_TIMEOUT: 'E_MODEL_TIMEOUT',
+  MODEL_RESPONSE: 'E_MODEL_RESPONSE_INVALID',
+  IMPORT_RECOVER_REQUEST_INVALID: 'E_IMPORT_RECOVER_REQUEST_INVALID',
+  IMPORT_RECOVER_RESPONSE: 'E_IMPORT_RECOVER_RESPONSE_INVALID',
+  IMPORT_VISION_REQUEST_INVALID: 'E_IMPORT_VISION_REQUEST_INVALID',
+  IMPORT_VISION_RESPONSE: 'E_IMPORT_VISION_RESPONSE_INVALID',
 });
 
 const LOCAL_BLOCKED_PATTERNS = Object.freeze([
@@ -44,6 +73,98 @@ const clone = (v) => (v === null || v === undefined ? v : JSON.parse(JSON.string
 
 function failure(code, message, extra = {}) {
   return { ok: false, code, message, ...extra };
+}
+
+/* 把一次失败映射成用户可理解、可重试的类别；技术失败由调用方退回预算。 */
+export function classifyRequestFailure(call = {}) {
+  const status = Number.isInteger(call.upstream_status) ? call.upstream_status : null;
+  const upstream = typeof call.upstream_code === 'string' ? call.upstream_code : '';
+  if (call.code === IMPORT_RECOVERY_CODES.MODEL_TIMEOUT) {
+    return {
+      status: 'timeout',
+      code: IMPORT_RECOVERY_CODES.MODEL_TIMEOUT,
+      message: 'AI 识别超时（本机等待上限）；未生成草稿，可重试或手动修改',
+      retryable: true,
+    };
+  }
+  if (status === 413 || upstream === SITE_FAILURE_CODES.BODY_TOO_LARGE || upstream === SITE_FAILURE_CODES.BODY_INVALID) {
+    return {
+      status: 'too_large',
+      code: IMPORT_RECOVERY_CODES.REQUEST_TOO_LARGE,
+      message: '图片请求体过大；请删除部分图片或降低清晰度后重试',
+      retryable: true,
+    };
+  }
+  if (status === 504 || upstream === SITE_FAILURE_CODES.MODEL_TIMEOUT) {
+    return {
+      status: 'timeout',
+      code: IMPORT_RECOVERY_CODES.MODEL_TIMEOUT_SERVER,
+      message: 'AI 识别服务端超时；未生成草稿，可重试或手动修改',
+      retryable: true,
+    };
+  }
+  if (status === 429 || upstream === SITE_FAILURE_CODES.MODEL_RATE_LIMITED) {
+    return {
+      status: 'unavailable',
+      code: IMPORT_RECOVERY_CODES.MODEL_RATE_LIMITED,
+      message: 'AI 识别请求过于频繁；未生成草稿，请稍后重试或手动修改',
+      retryable: true,
+    };
+  }
+  if (upstream === SITE_FAILURE_CODES.IMPORT_VISION_RESPONSE
+    || upstream === SITE_FAILURE_CODES.IMPORT_RECOVER_RESPONSE
+    || upstream === SITE_FAILURE_CODES.MODEL_RESPONSE) {
+    return {
+      status: 'clarify',
+      code: IMPORT_RECOVERY_CODES.MODEL_RESPONSE,
+      message: 'AI 返回的内容未通过结构校验；未生成草稿，可重试或手动修改',
+      retryable: true,
+    };
+  }
+  if (status === 400
+    || upstream === SITE_FAILURE_CODES.IMPORT_VISION_REQUEST_INVALID
+    || upstream === SITE_FAILURE_CODES.IMPORT_RECOVER_REQUEST_INVALID
+    || upstream === SITE_FAILURE_CODES.REQUEST_INVALID
+    || upstream === SITE_FAILURE_CODES.UNKNOWN_FIELD
+    || upstream === SITE_FAILURE_CODES.JSON_INVALID
+    || upstream === SITE_FAILURE_CODES.CONTENT_TYPE) {
+    return {
+      status: 'invalid',
+      code: IMPORT_RECOVERY_CODES.REQUEST_INVALID,
+      message: '识别请求未通过服务端校验；请调整图片或重新选择后重试',
+      retryable: true,
+    };
+  }
+  if (upstream === SITE_FAILURE_CODES.MODEL_NOT_CONFIGURED) {
+    return {
+      status: 'unavailable',
+      code: IMPORT_RECOVERY_CODES.MODEL_NOT_CONFIGURED,
+      message: 'AI 识别服务尚未配置模型；未生成草稿，请手动修改或联系管理员',
+      retryable: false,
+    };
+  }
+  if (upstream === SITE_FAILURE_CODES.MODEL_AUTH_FAILED || upstream === SITE_FAILURE_CODES.MODEL_FORBIDDEN) {
+    return {
+      status: 'unavailable',
+      code: IMPORT_RECOVERY_CODES.MODEL_UNAVAILABLE,
+      message: 'AI 识别服务鉴权失败；未生成草稿，请联系管理员或手动修改',
+      retryable: false,
+    };
+  }
+  if (upstream === SITE_FAILURE_CODES.MODEL_UNAVAILABLE) {
+    return {
+      status: 'unavailable',
+      code: IMPORT_RECOVERY_CODES.MODEL_UNAVAILABLE,
+      message: 'AI 识别当前不可用；未生成草稿，可重试或手动修改',
+      retryable: true,
+    };
+  }
+  return {
+    status: 'unavailable',
+    code: IMPORT_RECOVERY_CODES.MODEL_UNAVAILABLE,
+    message: 'AI 识别当前不可用；未生成草稿，可重试或手动修改',
+    retryable: true,
+  };
 }
 
 function localGate({ content, sourceKind }) {
@@ -276,6 +397,7 @@ function traceFor(flow) {
 export function createImportRecovery({
   transport,
   timeoutMs = IMPORT_RECOVERY_TIMEOUT_MS,
+  visionTimeoutMs = IMPORT_VISION_TIMEOUT_MS,
   maxModelCalls = IMPORT_RECOVERY_MAX_MODEL_CALLS,
   now = () => Date.now(),
   storage = (typeof sessionStorage !== 'undefined' ? sessionStorage : null),
@@ -285,6 +407,7 @@ export function createImportRecovery({
   }
   if (!Number.isInteger(maxModelCalls) || maxModelCalls <= 0) throw new TypeError('maxModelCalls 必须为正整数');
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new TypeError('timeoutMs 必须为正数');
+  if (!Number.isFinite(visionTimeoutMs) || visionTimeoutMs <= 0) throw new TypeError('visionTimeoutMs 必须为正数');
 
   const sessionTag = Math.random().toString(36).slice(2, 8) || 'local';
   let seq = 0;
@@ -377,6 +500,7 @@ export function createImportRecovery({
       message,
       model_calls: flow ? flow.model_calls : 0,
       budget_max: maxModelCalls,
+      remaining: flow ? Math.max(0, flow.budget_max - flow.model_calls) : maxModelCalls,
       outbound: flow ? flow.outbound : false,
       flow: flow ? clone(flow) : null,
       trace: flow ? traceFor(flow) : null,
@@ -435,18 +559,21 @@ export function createImportRecovery({
     flow.ended_at = null;
     inFlight = true;
     persist();
+    const requestTimeoutMs = modality === 'vision' ? visionTimeoutMs : timeoutMs;
     for (let attempt = 1; flow.model_calls < flow.budget_max; attempt++) {
       const rid = (attempt === 1 && typeof requestId === 'string' && requestId !== '')
         ? requestId
         : `import-req-${flow.flow_id}-${flow.requests.length + 1}`;
-      flow.model_calls += 1;
       flow.outbound = true;
       persist();
       const call = await invokeWithTimeout(transportFn, {
         ...request,
         flow_id: flow.flow_id,
         request_id: rid,
-      }, timeoutMs);
+      }, requestTimeoutMs);
+      // 只有拿到 2xx 响应才计入预算；网络失败、超时、5xx、413 不消耗，允许用户重试。
+      const counted = call.ok === true;
+      if (counted) flow.model_calls = Math.min(flow.budget_max, flow.model_calls + 1);
       const record = {
         request_id: rid,
         attempt,
@@ -455,35 +582,36 @@ export function createImportRecovery({
         image_count: flow.image_count,
         page_count: flow.page_count,
         input_bytes: flow.input_bytes,
+        timeout_ms: requestTimeoutMs,
         latency_ms: call.latencyMs ?? null,
         status: call.ok ? 'ok' : 'failed',
         code: call.ok ? null : call.code,
         upstream_code: call.ok ? null : (call.upstream_code ?? null),
         upstream_status: call.ok ? null : (call.upstream_status ?? null),
+        counted,
       };
       flow.requests.push(record);
       persist();
       if (!call.ok) {
-        const code = call.code === IMPORT_RECOVERY_CODES.MODEL_TIMEOUT
-          ? IMPORT_RECOVERY_CODES.MODEL_TIMEOUT
-          : IMPORT_RECOVERY_CODES.MODEL_UNAVAILABLE;
-        return finish(flow, code === IMPORT_RECOVERY_CODES.MODEL_TIMEOUT ? 'timeout' : 'unavailable', code,
-          code === IMPORT_RECOVERY_CODES.MODEL_TIMEOUT
-            ? 'AI 识别超时；没有生成草稿，请重试或手动修改'
-            : 'AI 识别当前不可用；没有生成草稿，请稍后重试或手动修改',
-          { upstream: { code: call.upstream_code ?? null, status: call.upstream_status ?? null } });
+        const failure = classifyRequestFailure(call);
+        return finish(flow, failure.status, failure.code, failure.message, {
+          upstream: { code: call.upstream_code ?? null, status: call.upstream_status ?? null },
+          retryable: failure.retryable,
+        });
       }
       const checked = validateRecoveryResponse(call.response && call.response.rawText);
       if (!checked.ok) {
         if (flow.model_calls < flow.budget_max) continue;
-        return finish(flow, 'clarify', checked.code, 'AI 返回的内容未通过结构校验；请重试或手动修改');
+        return finish(flow, 'clarify', checked.code,
+          `AI 返回的内容未通过结构校验；本次识别次数已用完（${flow.model_calls}/${flow.budget_max}），可结束本次识别后重新开始或手动修改`,
+          { retryable: false });
       }
       flow.draft = { trades: checked.trades, unresolved: checked.unresolved };
       return finish(flow, 'draft', null, `AI 已整理出 ${checked.trades.length} 条交易草稿；尚未导入，请逐行核对`,
         { draft: clone(flow.draft) });
     }
     return finish(flow, 'budget_exhausted', IMPORT_RECOVERY_CODES.BUDGET_EXHAUSTED,
-      '本次导入任务的模型请求次数已用完；可以继续手动修改草稿或使用常规解析，不会再调用模型');
+      `本次导入任务的模型请求次数已用完（${flow.model_calls}/${flow.budget_max}）；可以结束本次识别后重新开始，或继续手动修改草稿`);
   }
 
   async function requestRecovery({ content = '', sourceKind = 'text', requestId = null } = {}) {
@@ -542,7 +670,7 @@ export function createImportRecovery({
       },
       contentHash: hashQuestion(JSON.stringify({
         sourceKind,
-        images: checked.images.map((image) => [image.mime, image.bytes, image.pageNumber]),
+        images: checked.images.map((image) => [image.mime, image.bytes, image.pageNumber, image.segmentIndex ?? null, image.sourceY ?? null]),
         pageRange: normalizePageRange(pageRange),
       })),
       traceMeta: {

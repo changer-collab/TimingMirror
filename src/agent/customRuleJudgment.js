@@ -38,7 +38,7 @@ export function buildCustomRuleJudgmentRequest({ entry, runId, requestId = null 
   if (!isHash(rule.hash) || !Number.isInteger(rule.v) || rule.v < 1
     || (ruleId !== null && !isTraceId(ruleId))
     || typeof rule.text !== 'string' || rule.text.trim() === '' || [...rule.text].length > 200
-    || !['buy', 'sell'].includes(rule.action)) {
+    || !['buy', 'sell', 'both'].includes(rule.action)) {
     return failure(CUSTOM_RULE_JUDGMENT_CODES.REQUEST_INVALID, '自定义规则身份字段未通过本地检查');
   }
   const scope = rule.scope?.kind === 'symbol'

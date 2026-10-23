@@ -1083,12 +1083,46 @@ body {
 }
 
 .tm-thumb {
+  position: relative;
   width: 96px;
   margin: 0;
   padding: 5px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--sheet);
+}
+
+.tm-thumb-remove {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--sheet);
+  color: var(--ink-soft);
+  font-size: 14px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.tm-thumb-remove:hover {
+  border-color: var(--ink-soft);
+  color: var(--ink);
+}
+
+.tm-thumb-remove:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+.tm-unresolved {
+  margin: 6px 0;
+  padding-left: 18px;
+  color: var(--gray);
+  font-size: 12px;
 }
 
 .tm-thumb img {
@@ -1539,7 +1573,7 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
 
 .tm-qa-dock {
   flex: 0 0 auto;
-  padding: 10px 22px 6px;
+  padding: 10px 22px 20px;
   background: linear-gradient(180deg, rgba(249, 251, 250, 0) 0, var(--sheet) 16px);
 }
 

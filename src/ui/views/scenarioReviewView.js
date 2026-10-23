@@ -64,7 +64,6 @@ function habitDetail(h) {
 function headlineOf(review, customN = 0) {
   const s = review.summary;
   if (!s.trades_n) return [el('span', {}, ['这份账单里还没有可复盘的操作。'])];
-  if (!s.rules_n && customN) return [`${s.trades_n} 笔操作，`, el('strong', {}, [`${customN} 条自定义规则暂未纳入逐笔复核`]), '。'];
   if (!s.rules_n) return [`${s.trades_n} 笔操作，`, el('strong', {}, ['还没有可对照的规则']), '。'];
   if (s.violated_n) return [`${s.trades_n} 笔操作，`, el('strong', {}, [`${s.violated_n} 笔违背了规则`]), '。'];
   if (s.missing_n) return [`${s.trades_n} 笔操作，`, el('strong', { class: 'ok' }, ['暂未发现违背规则的操作']), `；${s.missing_n} 笔无法确认。`];
@@ -275,7 +274,7 @@ export function renderScenarioReview(root, ctx) {
   const currentRules = ruleSet.current;
   const customRules = ruleSet.customCurrent ?? [];
   const customN = customRules.length;
-  const contextKey = `${src.key}|${currentRules.map((r) => r.hash).join('|')}`;
+  const contextKey = `${src.key}|${currentRules.map((r) => r.hash).join('|')}|${customRules.map((r) => r.hash).join('|')}`;
   const context = c.simContext;
 
   if (context?.error && context.reviewKey === contextKey) {
@@ -294,7 +293,7 @@ export function renderScenarioReview(root, ctx) {
   if (!context || context.sourceKey !== src.key || context.reviewKey !== contextKey || (!context.error && !context.review)) {
     page.append(el('div', { class: 'tr-loading card' }, [
       el('strong', {}, [localBill ? '正在获取账单与 Tushare 动态行情…' : '正在获取示例账单与行情…']),
-      el('div', { class: 'muted small' }, [`交易来源：${src.label}。行情与规则复核都在本地完成，原始 CSV 不上传。`]),
+      el('div', { class: 'muted small' }, [`交易来源：${src.label}。`]),
     ]));
     if (loadingKey !== contextKey) {
       loadingKey = contextKey;
@@ -350,14 +349,6 @@ export function renderScenarioReview(root, ctx) {
     s.no_rule_n ? el('p', { class: 'tr-note' }, [`${s.no_rule_n} 笔操作不在当前规则覆盖范围内，未参与复核。`]) : null,
   ]));
 
-  if (customN) {
-    page.append(el('div', { class: 'tr-notice' }, [
-      el('strong', {}, ['自定义规则暂不参与逐笔复盘。']),
-      el('span', {}, [`${customN} 条自定义规则需要按原话逐笔判断，当前版本只对模板规则给出确定性结论；这里不把它们算作“符合”。`]),
-      el('a', { class: 'text-link', href: '#/me' }, ['查看规则 →']),
-    ]));
-  }
-
   if (review.habits.length) {
     page.append(el('aside', { class: 'tr-habits' }, [
       el('span', { class: 'tr-habits-label' }, ['画像同时看到']),
@@ -375,7 +366,7 @@ export function renderScenarioReview(root, ctx) {
     ]));
   }
 
-  if (!s.rules_n && !customN) page.append(emptyNoRules());
+  if (!s.rules_n) page.append(emptyNoRules());
 
   const byTrade = new Map(review.operations.map((op) => [op.trade_id, op]));
   const cards = [];

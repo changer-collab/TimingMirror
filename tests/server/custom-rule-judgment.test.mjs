@@ -96,8 +96,26 @@ const judgeTransport = (verdict = 'triggered', reason = '按规则原文与给�
 /* —— unable 也是合法判定（数据不足的保守结论） —— */
 {
   const out = await post(requestBody(), judgeTransport('unable', '规则需要持仓数据，本次未提供。', []));
-  check('unable：200 并原样回传（客户端显示“无法判断”）', out.status === 200
+  check('unable：200 并原样回传（客户端显示”无法判断”）', out.status === 200
     && JSON.parse(out.payload.rawText).verdict === 'unable', JSON.stringify(out.payload));
+}
+
+/* —— 双向规则（both）：服务端须接受 rule.action='both'，binding 原样回传 —— */
+{
+  let received = null;
+  const transport = {
+    async customRuleJudgment(req) {
+      received = req;
+      return { rawText: JSON.stringify({ verdict: 'triggered', reason: '双向规则命中', used_data: ['change_pct'] }) };
+    },
+  };
+  const body = requestBody({ rule: { ...requestBody().rule, action: 'both' } });
+  const out = await post(body, transport);
+  const raw = out.payload?.rawText ? JSON.parse(out.payload.rawText) : null;
+  check('双向规则 both：200，服务端接受 rule.action=both 并透传给模型', out.status === 200
+    && received?.rule.action === 'both'
+    && received?.scenario.action === 'buy', JSON.stringify({ sent: body.rule.action, received: received?.rule.action, scenarioAction: received?.scenario.action }));
+  check('双向规则 both：binding.rule_action=both', raw?.binding?.rule_action === 'both', JSON.stringify(raw?.binding));
 }
 
 /* —— 非法请求：400 且不调用模型 —— */
@@ -108,7 +126,7 @@ const judgeTransport = (verdict = 'triggered', reason = '按规则原文与给�
     ['未知字段', requestBody({ extra: 1 })],
     ['stage 错误', requestBody({ stage: 'scenario_judgment' })],
     ['规则文本超长', requestBody({ rule: { ...requestBody().rule, text: '长'.repeat(201) } })],
-    ['规则动作用 both', requestBody({ rule: { ...requestBody().rule, action: 'both' } })],
+    ['规则动作非法', requestBody({ rule: { ...requestBody().rule, action: 'hold' } })],
     ['范围缺 symbol', requestBody({ rule: { ...requestBody().rule, scope: { kind: 'symbol' } } })],
     ['scope 带非法代码', requestBody({ rule: { ...requestBody().rule, scope: { kind: 'symbol', symbol: '60051' } } })],
     ['version 非法', requestBody({ rule: { ...requestBody().rule, version: 0 } })],
