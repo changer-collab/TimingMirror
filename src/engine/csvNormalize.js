@@ -13,7 +13,9 @@ const KNOWN_COLUMNS = new Set(EXPECTED_HEADER);
 export const CSV_HEADER = Object.freeze([...EXPECTED_HEADER]);
 
 const isNumeric = (s) => /^-?\d+(\.\d+)?$/.test(s);
-const overPrecision = (s) => /\.\d{3,}$/.test(s);
+// 尾随零不增加有效精度：10.1100 → 10.11；但不做四舍五入，10.1150 仍是 3 位有效小数。
+const trimTrailingFractionZeros = (s) => String(s).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+const overPrecision = (s) => /\.\d{3,}$/.test(trimTrailingFractionZeros(s));
 
 const emptyResult = (sourceFile) => ({
   schema_version: 'candidate-3',
@@ -71,12 +73,12 @@ export function normalizeRows({ header, rows }, sourceFile = '', { skipQuantityC
     const side = sideRaw === '买入' ? 'buy' : sideRaw === '卖出' ? 'sell' : null;
     if (!side) errs.push(['E_SIDE_VALUE', `方向：${sideRaw}`]);
     if (!isNumeric(pRaw) || Number(pRaw) <= 0) errs.push(['E_PRICE_VALUE', `价格：${pRaw}`]);
-    else if (overPrecision(pRaw)) errs.push(['E_PRICE_PRECISION', `价格超 2 位小数（不自动舍入，需修正后重新导入）：${pRaw}`]);
+    else if (overPrecision(pRaw)) errs.push(['E_PRICE_PRECISION', `价格超 2 位有效小数（尾随零不计，不自动舍入，需修正后重新导入）：${pRaw}`]);
     if (!/^\d+$/.test(qRaw) || Number(qRaw) <= 0) errs.push(['E_QTY_INTEGER', `数量：${qRaw}`]);
     for (const [field, raw] of [['费用', feeRaw], ['税费', taxRaw]]) {
       if (raw === '') continue;
       if (!isNumeric(raw) || Number(raw) < 0) errs.push(['E_MONEY_VALUE', `${field}：${raw}`]);
-      else if (overPrecision(raw)) errs.push(['E_MONEY_PRECISION', `${field}超 2 位小数（不自动舍入，需修正后重新导入）：${raw}`]);
+      else if (overPrecision(raw)) errs.push(['E_MONEY_PRECISION', `${field}超 2 位有效小数（尾随零不计，不自动舍入，需修正后重新导入）：${raw}`]);
     }
 
     if (errs.length) { errs.forEach(([code, message]) => errors.push({ line, code, message })); return; }

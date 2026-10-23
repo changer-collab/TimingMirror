@@ -314,20 +314,82 @@ function makePdf({ text = 'date,symbol,side,price,quantity\n2024-09-24,600519,bu
   };
   const client = createImportRecovery({ transport, timeoutMs: 1000, storage: null });
   const failed = await client.requestRecovery({ content: CSV, sourceKind: 'csv' });
-  check('错误返回：保留服务端错误码，且本次失败也计入 flow 预算', failed.ok === false
-    && failed.status === 'unavailable'
+  check('错误返回：保留服务端错误码，技术失败不消耗预算且可重试', failed.ok === false
+    && failed.status === 'clarify'
+    && failed.code === IMPORT_RECOVERY_CODES.MODEL_RESPONSE
+    && failed.retryable === true
     && failed.upstream?.code === 'E_IMPORT_RECOVER_RESPONSE_INVALID'
     && failed.upstream?.status === 502
-    && failed.model_calls === 1
-    && client.getTrace().messages[1].calls[0].upstream_code === 'E_IMPORT_RECOVER_RESPONSE_INVALID',
+    && failed.model_calls === 0
+    && client.getTrace().messages[1].calls[0].upstream_code === 'E_IMPORT_RECOVER_RESPONSE_INVALID'
+    && client.getTrace().messages[1].calls[0].counted === false,
   JSON.stringify(failed));
   const retried = await client.requestRecovery({ content: CSV, sourceKind: 'csv' });
-  check('错误重试：同一 flow 第二次仍失败，预算耗尽', retried.ok === false
-    && retried.model_calls === 2 && calls.length === 2
-    && client.getSession().model_calls === 2, JSON.stringify(retried));
-  const exhausted = await client.requestRecovery({ content: CSV, sourceKind: 'csv' });
-  check('错误重试：耗尽后不再出站', exhausted.code === IMPORT_RECOVERY_CODES.BUDGET_EXHAUSTED
-    && calls.length === 2, JSON.stringify(exhausted));
+  check('错误重试：同一 flow 第二次仍失败，预算仍为 0/2、仍可重试', retried.ok === false
+    && retried.model_calls === 0 && calls.length === 2
+    && client.getSession().model_calls === 0 && retried.retryable === true, JSON.stringify(retried));
+  const third = await client.requestRecovery({ content: CSV, sourceKind: 'csv' });
+  check('错误重试：技术失败不会耗尽预算，第三次仍出站', third.ok === false
+    && calls.length === 3 && third.model_calls === 0, JSON.stringify(third));
+}
+
+/* —— 视觉失败分类：413 / 504 / 502 / 本机超时；技术失败不消耗预算 —— */
+{
+  const images = [{ mime: 'image/jpeg', data_base64: 'AAAA', bytes: 3, width: 1, height: 1 }];
+  const makeClient = (error) => createImportRecovery({
+    transport: {
+      async importRecover() { return { rawText: AI_BODY }; },
+      async importVision() { throw error; },
+    },
+    timeoutMs: 1000,
+    visionTimeoutMs: 1000,
+    storage: null,
+  });
+  const tooLarge = Object.assign(new Error('too large'), { status: 413, upstreamCode: 'E_FUNCTION_BODY_TOO_LARGE' });
+  const largeResult = await makeClient(tooLarge).requestVision({ images, sourceKind: 'image' });
+  check('视觉 413：映射为请求体过大，不消耗预算', largeResult.ok === false
+    && largeResult.code === IMPORT_RECOVERY_CODES.REQUEST_TOO_LARGE
+    && largeResult.retryable === true && largeResult.model_calls === 0
+    && largeResult.upstream?.status === 413, JSON.stringify(largeResult));
+
+  const serverTimeout = Object.assign(new Error('timeout'), { status: 504, upstreamCode: 'E_MODEL_TIMEOUT' });
+  const timeoutResult = await makeClient(serverTimeout).requestVision({ images, sourceKind: 'image' });
+  check('视觉 504：映射为服务端超时，不消耗预算且可重试', timeoutResult.ok === false
+    && timeoutResult.code === IMPORT_RECOVERY_CODES.MODEL_TIMEOUT_SERVER
+    && timeoutResult.message.includes('服务端超时')
+    && timeoutResult.retryable === true && timeoutResult.model_calls === 0, JSON.stringify(timeoutResult));
+
+  const unavailable = Object.assign(new Error('unavailable'), { status: 502, upstreamCode: 'E_MODEL_UNAVAILABLE' });
+  const unavailableResult = await makeClient(unavailable).requestVision({ images, sourceKind: 'image' });
+  check('视觉 502 模型不可用：映射为不可用，不消耗预算', unavailableResult.ok === false
+    && unavailableResult.code === IMPORT_RECOVERY_CODES.MODEL_UNAVAILABLE
+    && unavailableResult.model_calls === 0, JSON.stringify(unavailableResult));
+
+  let calls = 0;
+  const timeoutClient = createImportRecovery({
+    transport: {
+      async importRecover() { return { rawText: AI_BODY }; },
+      async importVision() {
+        calls += 1;
+        if (calls === 1) return new Promise(() => {});
+        return { rawText: AI_BODY };
+      },
+    },
+    timeoutMs: 1000,
+    visionTimeoutMs: 30,
+    storage: null,
+  });
+  const clientTimeout = await timeoutClient.requestVision({ images, sourceKind: 'image' });
+  check('视觉本机超时：映射为超时、不消耗预算、记录 counted=false', clientTimeout.ok === false
+    && clientTimeout.code === IMPORT_RECOVERY_CODES.MODEL_TIMEOUT
+    && clientTimeout.model_calls === 0
+    && timeoutClient.getTrace().messages[1].calls[0].counted === false
+    && timeoutClient.getTrace().messages[1].calls[0].timeout_ms === 30,
+  JSON.stringify(clientTimeout));
+  const retried = await timeoutClient.requestVision({ images, sourceKind: 'image' });
+  check('视觉超时后可重试：第二次成功只计 1 次', retried.ok === true
+    && retried.model_calls === 1 && timeoutClient.getSession().model_calls === 1,
+  JSON.stringify(retried));
 }
 
 {
@@ -342,12 +404,12 @@ function makePdf({ text = 'date,symbol,side,price,quantity\n2024-09-24,600519,bu
   const client = createImportRecovery({ transport, timeoutMs: 1000, storage: null });
   const first = client.requestRecovery({ content: CSV, sourceKind: 'csv' });
   const second = await client.requestRecovery({ content: CSV, sourceKind: 'csv' });
-  check('并发：第二次点击不发送请求、不改变预算', second.ok === false
-    && second.status === 'busy' && calls.length === 1 && client.getSession().model_calls === 1,
+  check('并发：第二次点击不发送请求、进行中不提前计预算', second.ok === false
+    && second.status === 'busy' && calls.length === 1 && client.getSession().model_calls === 0,
   JSON.stringify({ second, calls: calls.length }));
   resolveFirst({ rawText: AI_BODY });
   const firstResult = await first;
-  check('并发：首次请求完成后仍只计 1 次', firstResult.ok === true
+  check('并发：首次请求完成后计 1 次', firstResult.ok === true
     && calls.length === 1 && client.getSession().model_calls === 1, JSON.stringify(firstResult));
 }
 
@@ -476,6 +538,86 @@ function makePdf({ text = 'date,symbol,side,price,quantity\n2024-09-24,600519,bu
     && selectedAi.normalized.trades.length === 2
     && selectedAi.normalized.trades.filter((t) => t.trade_date === '2024-09-24').length === 1,
   JSON.stringify(selectedAi.normalized.trades));
+}
+
+{
+  const repeatedBuy = { ...AI_TRADE, date: '2024-09-24', side: '买入', price: '100.00', quantity: '100', fee: '5.00', tax: '0.00' };
+  const visionDraft = buildAiDraft({
+    aiTrades: [repeatedBuy, { ...repeatedBuy }],
+    unresolved: [],
+    sourceFile: 'vision.png',
+    duplicatePolicy: 'warn',
+  });
+  const aiRows = visionDraft.rows.filter((row) => row.source === 'ai');
+  check('视觉重复：字段相同不自动取消勾选，只标记待核对', aiRows.length === 2
+    && aiRows.every((row) => row.include !== false)
+    && aiRows[1].duplicateWarn === true && aiRows[1].duplicateOf
+    && aiRows[1].status === 'needs_review'
+    && aiRows[1].issues.some((issue) => issue.includes('真实多笔')), JSON.stringify(aiRows));
+  const visionNormalized = draftToNormalized(visionDraft, 'vision.png');
+  check('视觉重复：默认保留两笔，避免误删合法重复成交', visionNormalized.ok === true
+    && visionNormalized.normalized.trades.length === 2, JSON.stringify(visionNormalized.normalized));
+  const refreshed = refreshRowStatus(aiRows[1], 'vision.png');
+  check('视觉重复：编辑后仍保留待核对提示，不退化为“默认不导入”', refreshed.status === 'needs_review'
+    && refreshed.issues.some((issue) => issue.includes('真实多笔')), JSON.stringify(refreshed));
+}
+
+{
+  const transfer = {
+    date: '2026-10-09', symbol: '--', side: null, price: '0.0000', quantity: '0',
+    fee: null, tax: null, confidence: 0.9, issues: [],
+  };
+  const transferDraft = buildAiDraft({
+    aiTrades: [transfer],
+    unresolved: [],
+    sourceFile: 'vision.png',
+    nonTradePolicy: 'unresolved',
+  });
+  check('视觉非交易：无买卖方向的记录进入 unresolved，不生成交易行', transferDraft.rows.length === 0
+    && transferDraft.unresolved.length === 1
+    && transferDraft.unresolved[0].reason.includes('非交易记录'), JSON.stringify(transferDraft));
+}
+
+{
+  const scaleDraft = buildLocalDraft(parseDelimitedText('日期,标的,方向,价格,数量\n2024-09-24,000001,买入,10.1100,100\n'), 'scale.csv');
+  const scaleNormalized = draftToNormalized(scaleDraft, 'scale.csv');
+  check('价格尾随零：草稿保留原始文本 10.1100，校验通过', scaleDraft.rows[0].fields.price === '10.1100'
+    && scaleDraft.rows[0].status === 'valid', JSON.stringify(scaleDraft.rows[0]));
+  check('价格尾随零：最终账本数值为 10.11，没有四舍五入', scaleNormalized.ok === true
+    && scaleNormalized.normalized.trades[0].price === 10.11, JSON.stringify(scaleNormalized.normalized));
+}
+
+{
+  const sampleRows = [
+    ['2026-09-28', '603336', '卖出', '10.1100', '1800'],
+    ['2026-09-29', '603336', '买入', '9.8900', '1800'],
+    ['2026-09-30', '603336', '卖出', '9.9300', '900'],
+    ['2026-09-30', '603336', '买入', '9.9000', '900'],
+    ['2026-10-08', '603336', '卖出', '9.9500', '1800'],
+    ['2026-10-12', '603967', '买入', '12.2500', '1300'],
+    ['2026-10-15', '603967', '卖出', '12.0200', '1300'],
+  ].map(([date, symbol, side, price, quantity]) => ({
+    date, symbol, side, price, quantity, fee: null, tax: null, confidence: 0.9, issues: [],
+  }));
+  const transfer = {
+    date: '2026-10-09', symbol: '--', side: null, price: '0.0000', quantity: '0',
+    fee: null, tax: null, confidence: 0.9, issues: [],
+  };
+  // 契约回放：字段形状与模型响应经服务器/客户端校验后的 trades 一致；不是模型识别成功证据。
+  const sampleDraft = buildAiDraft({
+    aiTrades: [...sampleRows, transfer],
+    unresolved: [],
+    sourceFile: '交割单截图',
+    duplicatePolicy: 'warn',
+    nonTradePolicy: 'unresolved',
+  });
+  const sampleSummary = draftSummary(sampleDraft);
+  const sampleNormalized = draftToNormalized(sampleDraft, '交割单截图');
+  check('样例契约回放：七行均为可编辑草稿，非交易行进 unresolved', sampleDraft.rows.length === 7
+    && sampleSummary.valid === 7 && sampleDraft.unresolved.length === 1, JSON.stringify(sampleSummary));
+  check('样例契约回放：持仓校验只阻止最终入账，不丢弃草稿', sampleNormalized.ok === false
+    && sampleNormalized.code === 'E_QTY_EXCEEDS' && sampleDraft.rows.length === 7
+    && sampleDraft.rows.every((row) => row.include !== false), JSON.stringify(sampleNormalized));
 }
 
 {

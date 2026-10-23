@@ -82,6 +82,16 @@ for (const [file, expFile] of [
   const pMsgs = p.errors.map((e) => e.message).join('|');
   check('Q4 不自动舍入：错误信息保留原始串 96.123/5.005/1.234', pMsgs.includes('96.123') && pMsgs.includes('5.005') && pMsgs.includes('1.234'), pMsgs);
 
+  // Q4 补充：尾随零是无损 scale，不算有效精度；真三/四位小数仍阻断
+  const trailing = normalizeRows(parseCsvText('日期,标的,方向,价格,数量,费用,税费\n2024-09-24,000001,买入,10.1100,100,5.0000,1.0000\n2024-09-25,000001,买入,9.8900,100,5.0000,1.0000\n2024-09-26,000001,买入,12.2500,100,5.0000,1.0000\n'), 'trailing-zero.csv');
+  check('Q4 尾随零：10.1100/9.8900/12.2500 与费用尾随零可无损规范化', trailing.blocked === false
+    && eqArr(trailing.trades.map((t) => t.price), [10.11, 9.89, 12.25])
+    && eqArr(trailing.trades.map((t) => t.fee), [5, 5, 5]), JSON.stringify(trailing.errors));
+  const truePrecision = normalizeRows(parseCsvText('日期,标的,方向,价格,数量,费用,税费\n2024-09-24,000001,买入,10.1150,100,5.0050,1.0000\n'), 'true-precision.csv');
+  check('Q4 真超精度：10.1150 不四舍五入、仍报价格精度', truePrecision.blocked === true
+    && truePrecision.errors.some((e) => e.code === 'E_PRICE_PRECISION' && e.message.includes('10.1150')), JSON.stringify(truePrecision.errors));
+  check('Q4 真超精度：费用 5.0050 仍报费用精度', truePrecision.errors.some((e) => e.code === 'E_MONEY_PRECISION' && e.message.includes('5.0050')), JSON.stringify(truePrecision.errors));
+
   // Q5：未知列忽略并列出列名
   const u = run('unknown-columns.csv');
   const unk = u.warnings.filter((w) => w.code === 'W_UNKNOWN_COLUMN').map((w) => w.column);
