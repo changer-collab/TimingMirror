@@ -427,6 +427,7 @@ export function createHandler({
       const sourceHash = await profileDigestHash(validated.digest);
       let summary = null;
       let fallbackReason = null;
+      let fallbackDetail = null;
       if (transport === null) {
         fallbackReason = 'model_not_configured';
       } else if (typeof transport.profileSummary !== 'function') {
@@ -436,10 +437,14 @@ export function createHandler({
           const result = await transport.profileSummary({ digest: validated.digest });
           if (!isPlainObject(result) || typeof result.rawText !== 'string') {
             fallbackReason = 'model_response_invalid';
+            fallbackDetail = 'invalid_shape';
           } else {
             const checked = validateProfileSummaryResponse(result.rawText, validated.digest);
             if (checked.ok) summary = checked.value;
-            else fallbackReason = 'model_response_invalid';
+            else {
+              fallbackReason = 'model_response_invalid';
+              fallbackDetail = checked.detail ?? 'invalid_shape';
+            }
           }
         } catch (error) {
           fallbackReason = error && error.code === SITE_FUNCTION_CODES.MODEL_TIMEOUT ? 'model_timeout' : 'model_unavailable';
@@ -451,6 +456,7 @@ export function createHandler({
         source_hash: sourceHash,
         summary: summary ?? buildProfileSummaryFallback(validated.digest),
         fallback_reason: summary ? null : fallbackReason,
+        fallback_detail: summary ? null : fallbackDetail,
       });
     }
 

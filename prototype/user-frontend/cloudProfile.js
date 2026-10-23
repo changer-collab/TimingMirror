@@ -4,7 +4,8 @@ import {
   buildProfileDigest, profileDigestHash, profileSummaryIsFresh,
 } from '../../src/agent/profileDigest.js';
 import {
-  cloudProfileFromBills, normalizeCloudBills, normalizeCloudFacts, summaryResponseView, validSummaryValue,
+  cloudProfileFromBills, normalizeCloudBills, normalizeCloudFacts, summaryFallbackText,
+  summaryResponseView, validSummaryValue,
 } from '../../src/agent/cloudProfileModel.js';
 import { markCloudBillRemoved } from './cloudSync.js';
 
@@ -126,7 +127,7 @@ function summaryHTML(state) {
       ? '本地模板'
       : '已保存解读';
   const sourceNote = state.summarySource === 'template'
-    ? `<p class="rp-ai-fallback">模型暂不可用，本次由本地模板生成。${state.summaryFallback ? ' ' : ''}${esc(state.summaryFallback ?? '')}</p>`
+    ? `<p class="rp-ai-fallback">本次由本地模板生成。${esc(summaryFallbackText(state.summaryFallback))}</p>`
     : '';
   const saveNote = state.summarySaved
     ? '已保存到云端'

@@ -9,6 +9,18 @@ export const PROFILE_SUMMARY_CODES = Object.freeze({
   RESPONSE: 'E_PROFILE_SUMMARY_RESPONSE_INVALID',
 });
 
+// 只用于诊断校验失败类型；不含模型原文，也不回传任何用户数据。
+export const PROFILE_SUMMARY_DETAILS = Object.freeze({
+  INVALID_JSON: 'invalid_json',
+  INVALID_SHAPE: 'invalid_shape',
+  INVALID_VERSION: 'invalid_version',
+  INVALID_TEXT: 'invalid_text',
+  UNSAFE_CONTENT: 'unsafe_content',
+  INVESTMENT_ADVICE: 'investment_advice',
+  UNLISTED_NUMBER: 'unlisted_number',
+  UNLISTED_DATE: 'unlisted_date',
+});
+
 const REQUEST_KEYS = new Set(['digest']);
 const DIGEST_KEYS = new Set(['profile_key', 'bills', 'metrics', 'behavior', 'rules', 'facts', 'limits']);
 const BILL_KEYS = new Set(['count', 'date_from', 'date_to']);
@@ -34,14 +46,24 @@ const UNSAFE_RE = /(https?:\/\/|www\.|成交明细|原始账单|账户|银行卡
 const ADVICE_RE = /(建议买入|建议卖出|买入建议|卖出建议|荐股|目标价|保证收益|稳赚|必涨|必跌)/u;
 const DATE_TOKEN_RE = /(\d{4})\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})\s*日?/gu;
 const NUMBER_RE = /[+-]?\d+(?:\.\d+)?/gu;
+const CONTROL_OR_SPACE_RE = /[\u0000-\u001f\u007f]+/gu;
+const FULLWIDTH_DIGIT_RE = /[\uff10-\uff19]/gu;
+const NUMERIC_SYMBOL_RE = /[\uff0b\uff0d\uff0e\u2212]/gu;
+const THOUSANDS_SEPARATOR_RE = /(?<=\d)[,，](?=\d{3}(?!\d))/gu;
+const ITEM_TEXT_KEYS = Object.freeze(['text', 'value', 'label', 'content', 'description', 'tip', 'item']);
+const CONFIDENCE_ALIASES = new Map([
+  ['高', 'high'], ['较高', 'high'],
+  ['中', 'medium'], ['中等', 'medium'],
+  ['低', 'low'], ['偏低', 'low'],
+]);
 const MAX_DIGEST_BYTES = 16 * 1024;
 
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const textBytes = (value) => new TextEncoder().encode(value).byteLength;
 const charLength = (value) => [...value].length;
 
-function fail(code, message) {
-  return { ok: false, code, message };
+function fail(code, message, detail = null) {
+  return { ok: false, code, message, ...(detail === null ? {} : { detail }) };
 }
 
 function boundedText(value, maxChars) {
@@ -49,6 +71,61 @@ function boundedText(value, maxChars) {
   const trimmed = value.trim();
   if (!trimmed || CONTROL_RE.test(trimmed) || charLength(trimmed) > maxChars) return null;
   return trimmed;
+}
+
+// 模型输出允许换行/制表等空白，统一压成单行；其他控制字符也替换为空格。
+function cleanText(value) {
+  if (typeof value !== 'string') return '';
+  return value.replace(CONTROL_OR_SPACE_RE, ' ').replace(/\s+/gu, ' ').trim();
+}
+
+// 超长文本在标点处截断；没有标点时避开数字 token，避免截出半个数字再触发数字校验。
+function fitText(value, maxChars) {
+  const chars = [...value];
+  if (chars.length <= maxChars) return value;
+  const limit = Math.max(1, maxChars - 1);
+  let cut = limit;
+  const minCut = Math.floor(limit * 0.6);
+  for (let index = limit - 1; index >= minCut; index--) {
+    if (/[，。；、！？,.;!?]/u.test(chars[index])) {
+      cut = index + 1;
+      break;
+    }
+  }
+  while (cut > 0 && /[0-9.,+\-%]/u.test(chars[cut - 1])) cut--;
+  if (cut <= 0) cut = limit;
+  return `${chars.slice(0, cut).join('').trimEnd()}…`;
+}
+
+function summaryObject(value) {
+  if (!isObject(value)) return null;
+  if (SUMMARY_KEYS.some((key) => Object.hasOwn(value, key))) return value;
+  for (const nested of Object.values(value)) {
+    if (isObject(nested) && SUMMARY_KEYS.some((key) => Object.hasOwn(nested, key))) return nested;
+  }
+  return value;
+}
+
+function normalizeSchemaVersion(value) {
+  if (value === undefined || value === null) return PROFILE_SUMMARY_VERSION;
+  const numeric = typeof value === 'string' ? Number(value.trim()) : value;
+  return numeric === PROFILE_SUMMARY_VERSION ? PROFILE_SUMMARY_VERSION : null;
+}
+
+function normalizeConfidence(value) {
+  if (typeof value !== 'string') return 'low';
+  const key = value.trim().toLowerCase();
+  if (CONFIDENCE_LEVELS.includes(key)) return key;
+  return CONFIDENCE_ALIASES.get(key) ?? 'low';
+}
+
+function extractItemText(value) {
+  if (typeof value === 'string') return value;
+  if (!isObject(value)) return '';
+  for (const key of ITEM_TEXT_KEYS) {
+    if (typeof value[key] === 'string') return value[key];
+  }
+  return '';
 }
 
 function optionalNumber(value, { min = -1e9, max = 1e9, integer = false } = {}) {
@@ -215,108 +292,141 @@ export function confidenceCap(digest) {
   return 'low';
 }
 
+function addAllowedNumber(values, value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return;
+  // 模型常把比率换算成百分比并保留 1 位小数；允许 0-6 位小数的舍入版本与绝对值。
+  for (const base of [value, value * 100]) {
+    for (let decimals = 0; decimals <= 6; decimals++) {
+      const rounded = Number(base.toFixed(decimals));
+      values.add(rounded);
+      values.add(-rounded);
+    }
+  }
+  values.add(value);
+  values.add(-value);
+}
+
 function allowedNumbers(digest) {
-  const values = new Set();
-  const add = (value) => {
-    if (typeof value !== 'number' || !Number.isFinite(value)) return;
-    values.add(value);
-    values.add(Number((value * 100).toFixed(1)));
-  };
-  add(digest.bills.count);
-  for (const key of METRIC_KEYS) add(digest.metrics[key]);
-  add(digest.rules.total);
-  add(digest.rules.kept);
-  add(digest.rules.warned);
+  // 0/3/20 是产品固定的计数与样本门槛，不属于用户数据。
+  const values = new Set([0, 3, 20]);
+  addAllowedNumber(values, digest.bills.count);
+  for (const key of METRIC_KEYS) addAllowedNumber(values, digest.metrics[key]);
+  addAllowedNumber(values, digest.rules.total);
+  addAllowedNumber(values, digest.rules.kept);
+  addAllowedNumber(values, digest.rules.warned);
   for (const text of [
     ...digest.behavior.tags, ...digest.behavior.patterns,
     ...digest.facts.map((fact) => fact.value), ...digest.limits,
     digest.bills.date_from, digest.bills.date_to,
   ]) {
     if (typeof text !== 'string') continue;
-    for (const match of text.matchAll(NUMBER_RE)) values.add(Number(match[0]));
-  }
-  for (const date of [digest.bills.date_from, digest.bills.date_to]) {
-    if (date) values.add(Number(date.slice(0, 4)));
+    for (const match of text.matchAll(NUMBER_RE)) addAllowedNumber(values, Number(match[0]));
   }
   return values;
 }
 
-function validateNumbers(text, digest) {
+function normalizeNumericText(value) {
+  return value
+    .replace(FULLWIDTH_DIGIT_RE, (digit) => String.fromCharCode(digit.charCodeAt(0) - 0xfee0))
+    .replace(NUMERIC_SYMBOL_RE, (symbol) => {
+      if (symbol === '\uff0e') return '.';
+      if (symbol === '\uff0b') return '+';
+      return '-';
+    })
+    .replace(THOUSANDS_SEPARATOR_RE, '');
+}
+
+function validateNumbers(value, digest) {
   const allowed = allowedNumbers(digest);
   const dates = [digest.bills.date_from, digest.bills.date_to].filter(Boolean);
+  const text = normalizeNumericText(value);
   let stripped = text;
   for (const match of text.matchAll(DATE_TOKEN_RE)) {
     const month = String(Number(match[2])).padStart(2, '0');
     const day = String(Number(match[3])).padStart(2, '0');
     const date = `${match[1]}-${month}-${day}`;
-    if (!dates.includes(date)) return { ok: false, message: '解读包含未提供的日期' };
-    stripped = stripped.replace(match[0], ' ');
+    if (!dates.includes(date)) {
+      return { ok: false, detail: PROFILE_SUMMARY_DETAILS.UNLISTED_DATE, message: '解读包含未提供的日期' };
+    }
+    stripped = stripped.replaceAll(match[0], ' ');
   }
   for (const match of stripped.matchAll(NUMBER_RE)) {
-    const value = Number(match[0]);
-    if (!allowed.has(value)) return { ok: false, message: '解读包含未提供的数字' };
+    const number = Number(match[0]);
+    if (!allowed.has(number)) {
+      return { ok: false, detail: PROFILE_SUMMARY_DETAILS.UNLISTED_NUMBER, message: '解读包含未提供的数字' };
+    }
   }
   return { ok: true };
 }
 
 function validateText(value, maxChars, label) {
-  const text = boundedText(value, maxChars);
-  if (!text) return { ok: false, message: `${label} 非法` };
-  if (UNSAFE_RE.test(text)) return { ok: false, message: `${label} 包含越界内容` };
-  if (ADVICE_RE.test(text)) return { ok: false, message: `${label} 包含投资建议` };
-  return { ok: true, value: text };
+  if (typeof value !== 'string') {
+    return { ok: false, detail: PROFILE_SUMMARY_DETAILS.INVALID_TEXT, message: `${label} 非法` };
+  }
+  const text = cleanText(value);
+  if (!text) return { ok: false, detail: PROFILE_SUMMARY_DETAILS.INVALID_TEXT, message: `${label} 非法` };
+  if (UNSAFE_RE.test(text)) {
+    return { ok: false, detail: PROFILE_SUMMARY_DETAILS.UNSAFE_CONTENT, message: `${label} 包含越界内容` };
+  }
+  if (ADVICE_RE.test(text)) {
+    return { ok: false, detail: PROFILE_SUMMARY_DETAILS.INVESTMENT_ADVICE, message: `${label} 包含投资建议` };
+  }
+  return { ok: true, value: fitText(text, maxChars) };
 }
 
 function validateItems(value, { maxItems, maxChars, label }) {
-  if (!Array.isArray(value) || value.length > maxItems) return { ok: false, message: `${label} 数量非法` };
+  if (value === undefined || value === null) return { ok: true, value: [] };
+  const items = Array.isArray(value) ? value : [value];
   const output = [];
-  for (const item of value) {
-    const checked = validateText(item, maxChars, label);
-    if (!checked.ok) return checked;
+  for (const item of items.slice(0, maxItems)) {
+    const checked = validateText(extractItemText(item), maxChars, label);
+    if (!checked.ok) {
+      if (checked.detail === PROFILE_SUMMARY_DETAILS.INVALID_TEXT) continue;
+      return checked;
+    }
     output.push(checked.value);
   }
   return { ok: true, value: output };
 }
 
 export function validateProfileSummaryValue(value, digest) {
-  if (!isObject(value)) return fail(PROFILE_SUMMARY_CODES.RESPONSE, '解读必须为对象');
-  const keys = Object.keys(value);
-  if (keys.length !== SUMMARY_KEYS.length || SUMMARY_KEYS.some((key) => !Object.hasOwn(value, key))) {
-    return fail(PROFILE_SUMMARY_CODES.RESPONSE, '解读字段非法');
+  const summary = summaryObject(value);
+  if (!summary) return fail(PROFILE_SUMMARY_CODES.RESPONSE, '解读必须为对象', PROFILE_SUMMARY_DETAILS.INVALID_SHAPE);
+  const schemaVersion = normalizeSchemaVersion(summary.schema_version);
+  if (schemaVersion === null) {
+    return fail(PROFILE_SUMMARY_CODES.RESPONSE, '解读版本非法', PROFILE_SUMMARY_DETAILS.INVALID_VERSION);
   }
-  if (value.schema_version !== PROFILE_SUMMARY_VERSION) {
-    return fail(PROFILE_SUMMARY_CODES.RESPONSE, '解读版本非法');
-  }
-  const headline = validateText(value.headline, 24, 'headline');
-  if (!headline.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, headline.message);
-  const summary = validateText(value.summary, 240, 'summary');
-  if (!summary.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, summary.message);
-  const strengths = validateItems(value.strengths, { maxItems: 3, maxChars: 60, label: 'strengths' });
-  if (!strengths.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, strengths.message);
-  const blindSpots = validateItems(value.blind_spots, { maxItems: 3, maxChars: 60, label: 'blind_spots' });
-  if (!blindSpots.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, blindSpots.message);
-  const nextActions = validateItems(value.next_actions, { maxItems: 3, maxChars: 60, label: 'next_actions' });
-  if (!nextActions.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, nextActions.message);
-  const dataLimits = validateItems(value.data_limits, { maxItems: 3, maxChars: 80, label: 'data_limits' });
-  if (!dataLimits.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, dataLimits.message);
-  if (!CONFIDENCE_LEVELS.includes(value.confidence)) {
-    return fail(PROFILE_SUMMARY_CODES.RESPONSE, 'confidence 非法');
-  }
-  const allText = [headline.value, summary.value, ...strengths.value, ...blindSpots.value, ...nextActions.value, ...dataLimits.value].join('\n');
+  const summaryText = validateText(summary.summary, 240, 'summary');
+  if (!summaryText.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, summaryText.message, summaryText.detail);
+  const headlineSource = typeof summary.headline === 'string' && cleanText(summary.headline)
+    ? summary.headline
+    : summaryText.value;
+  const headline = validateText(headlineSource, 24, 'headline');
+  if (!headline.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, headline.message, headline.detail);
+  const strengths = validateItems(summary.strengths, { maxItems: 3, maxChars: 60, label: 'strengths' });
+  if (!strengths.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, strengths.message, strengths.detail);
+  const blindSpots = validateItems(summary.blind_spots, { maxItems: 3, maxChars: 60, label: 'blind_spots' });
+  if (!blindSpots.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, blindSpots.message, blindSpots.detail);
+  const nextActions = validateItems(summary.next_actions, { maxItems: 3, maxChars: 60, label: 'next_actions' });
+  if (!nextActions.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, nextActions.message, nextActions.detail);
+  const dataLimits = validateItems(summary.data_limits, { maxItems: 3, maxChars: 80, label: 'data_limits' });
+  if (!dataLimits.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, dataLimits.message, dataLimits.detail);
+  const confidence = normalizeConfidence(summary.confidence);
+  const allText = [headline.value, summaryText.value, ...strengths.value, ...blindSpots.value, ...nextActions.value, ...dataLimits.value].join('\n');
   const numbers = validateNumbers(allText, digest);
-  if (!numbers.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, numbers.message);
+  if (!numbers.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, numbers.message, numbers.detail);
   const cap = confidenceCap(digest);
-  const confidence = CONFIDENCE_LEVELS.indexOf(value.confidence) > CONFIDENCE_LEVELS.indexOf(cap) ? cap : value.confidence;
+  const boundedConfidence = CONFIDENCE_LEVELS.indexOf(confidence) > CONFIDENCE_LEVELS.indexOf(cap) ? cap : confidence;
   return {
     ok: true,
     value: {
-      schema_version: PROFILE_SUMMARY_VERSION,
+      schema_version: schemaVersion,
       headline: headline.value,
-      summary: summary.value,
+      summary: summaryText.value,
       strengths: strengths.value,
       blind_spots: blindSpots.value,
       next_actions: nextActions.value,
-      confidence,
+      confidence: boundedConfidence,
       data_limits: dataLimits.value,
     },
   };
@@ -328,7 +438,7 @@ export function validateProfileSummaryResponse(rawText, digest) {
   try {
     parsed = JSON.parse(rawText);
   } catch {
-    return fail(PROFILE_SUMMARY_CODES.RESPONSE, '解读响应不是合法 JSON');
+    return fail(PROFILE_SUMMARY_CODES.RESPONSE, '解读响应不是合法 JSON', PROFILE_SUMMARY_DETAILS.INVALID_JSON);
   }
   return validateProfileSummaryValue(parsed, digest);
 }

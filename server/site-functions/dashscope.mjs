@@ -182,9 +182,12 @@ const PROFILE_SUMMARY_SYSTEM = [
   '硬性要求：',
   '- 只能引用输入中出现的数字、日期、标签和事实；不得自行计算或编造新的数字、日期、股票代码或金额。',
   '- 不评价人格，不使用“你总是/你一定/必然”等绝对化表述；区分“数据显示”和“可能”。',
-  '- headline 不超过 24 字；summary 不超过 240 字。',
+  '- headline 不超过 24 字；summary 不超过 240 字，写成单段，不要换行。',
   '- strengths、blind_spots、next_actions 各 0-3 条，每条不超过 60 字；next_actions 只写可执行的行为提醒，不写买卖建议。',
   '- data_limits 0-3 条，每条不超过 80 字，说明样本量、缺失数据或推断边界。',
+  '- 引用负数时保留负号；金额保留 digest 原值（可加千分位）；比率可以换算成百分比并保留 1 位小数，不做其他换算。',
+  '- 不要提及 digest 未提供的股票数量、持仓天数或其他统计量；样本门槛只能引用 3 份账单 / 20 笔交易。',
+  '- strengths、blind_spots、next_actions、data_limits 的每一项必须是单个字符串，不要输出对象、编号或换行。',
   '- confidence 只能取 low、medium、high；账单少于 3 份或交易少于 20 笔时不得高于 medium。',
   '- 只输出 JSON 对象，不要 Markdown、解释或额外字段。字段固定为：schema_version（必须为 1）、headline、summary、strengths、blind_spots、next_actions、confidence、data_limits。',
 ].join('\n');

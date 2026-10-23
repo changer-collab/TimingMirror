@@ -13,6 +13,7 @@ import { createHandler, SITE_FUNCTION_CODES } from '../../server/site-functions/
 import { DATA_CODES } from '../../server/site-functions/dataApi.mjs';
 import {
   PROFILE_SUMMARY_CODES,
+  PROFILE_SUMMARY_DETAILS,
   buildProfileSummaryFallback,
   normalizeProfileSummaryRequest,
   profileDigestHash,
@@ -56,6 +57,37 @@ const VALID_SUMMARY = Object.freeze({
   next_actions: ['核对每笔交易的入场理由'],
   confidence: 'high',
   data_limits: ['PGR/PLR 为候选口径'],
+});
+
+// 与线上 2026-10-23 的账单一致：模型会把 -0.0798 写成 -7.98%、0.3333 写成 33.33%、-26044 写成 -26,044。
+const PRECISE_DIGEST = Object.freeze({
+  profile_key: 'abcd1234',
+  bills: { count: 1, date_from: '2025-01-02', date_to: '2025-12-30' },
+  metrics: {
+    actual_return: -0.01903930620189409,
+    benchmark_return: -0.07982132271600673,
+    drag_pp: -0.060782016514112636,
+    drag_amount: -26044,
+    trade_count: 8,
+    win_rate: null,
+    pgr: 1,
+    plr: 0.3333333333333333,
+  },
+  behavior: { tags: ['盈利时更愿卖出'], patterns: [] },
+  rules: { total: 2, kept: 2, warned: 0 },
+  facts: [],
+  limits: ['账单样本少于 3 份', '交易样本少于 20 笔'],
+});
+
+const PRECISE_SUMMARY = Object.freeze({
+  schema_version: 1,
+  headline: '样本偏少，先看止盈倾向',
+  summary: '账单覆盖 2025-01-02 至 2025-12-30，共 1 份、8 笔交易；实际收益 -1.90%，基准收益 -7.98%，拖累 -6.08%，金额 -26,044。行为标签为“盈利时更愿卖出”，PGR 100.00%、PLR 33.33%。2 条规则均保留。',
+  strengths: ['2 条规则均保留'],
+  blind_spots: ['样本少，暂不形成稳定结论'],
+  next_actions: ['交易前记录卖出理由'],
+  confidence: 'medium',
+  data_limits: ['账单少于 3 份、交易少于 20 笔'],
 });
 
 const USER_A = 'user-a';
@@ -128,23 +160,108 @@ async function invokeData(handler, path, { method = 'GET', body, userId = USER_A
   check('解读：合法输出通过（数字均来自 digest）', good.ok
     && good.value.confidence === 'high', JSON.stringify(good));
 
+  const precise = validateProfileSummaryValue(PRECISE_SUMMARY, PRECISE_DIGEST);
+  check('解读：接受百分比合理舍入与千分位', precise.ok
+    && precise.value.confidence === 'medium', JSON.stringify(precise));
+
+  const magnitude = validateProfileSummaryValue({
+    ...PRECISE_SUMMARY,
+    summary: '实际亏损 1.9%，对照亏损 7.98%，择时拖累 6.1 个百分点，金额 26,044 元。',
+  }, PRECISE_DIGEST);
+  check('解读：接受描述幅度时的绝对值', magnitude.ok, JSON.stringify(magnitude));
+
+  const unicodeMinus = validateProfileSummaryValue({
+    ...PRECISE_SUMMARY,
+    summary: '实际收益 −1.9%，基准收益 −8.0%，拖累 −6.1%。',
+  }, PRECISE_DIGEST);
+  check('解读：接受 Unicode 负号', unicodeMinus.ok, JSON.stringify(unicodeMinus));
+
   const warn = validateProfileSummaryValue({ ...VALID_SUMMARY, summary: '实际收益 +9.9%，明显更高。' }, DIGEST);
-  check('解读：拒绝 digest 之外的数字', !warn.ok && warn.code === PROFILE_SUMMARY_CODES.RESPONSE, JSON.stringify(warn));
+  check('解读：拒绝 digest 之外的数字', !warn.ok
+    && warn.code === PROFILE_SUMMARY_CODES.RESPONSE
+    && warn.detail === PROFILE_SUMMARY_DETAILS.UNLISTED_NUMBER, JSON.stringify(warn));
 
   const date = validateProfileSummaryValue({ ...VALID_SUMMARY, summary: '2026-03-01 之后收益转负。' }, DIGEST);
-  check('解读：拒绝未提供的日期', !date.ok, JSON.stringify(date));
+  check('解读：拒绝未提供的日期', !date.ok
+    && date.detail === PROFILE_SUMMARY_DETAILS.UNLISTED_DATE, JSON.stringify(date));
 
   const advice = validateProfileSummaryValue({ ...VALID_SUMMARY, next_actions: ['建议买入宽基指数'] }, DIGEST);
-  check('解读：拒绝投资建议', !advice.ok, JSON.stringify(advice));
+  check('解读：拒绝投资建议', !advice.ok
+    && advice.detail === PROFILE_SUMMARY_DETAILS.INVESTMENT_ADVICE, JSON.stringify(advice));
 
   const unsafe = validateProfileSummaryValue({ ...VALID_SUMMARY, summary: '详见 https://example.com/report。' }, DIGEST);
-  check('解读：拒绝 URL', !unsafe.ok, JSON.stringify(unsafe));
+  check('解读：拒绝 URL', !unsafe.ok
+    && unsafe.detail === PROFILE_SUMMARY_DETAILS.UNSAFE_CONTENT, JSON.stringify(unsafe));
 
   const extra = validateProfileSummaryValue({ ...VALID_SUMMARY, extra: 'x' }, DIGEST);
-  check('解读：拒绝额外字段', !extra.ok, JSON.stringify(extra));
+  check('解读：忽略额外字段', extra.ok && !Object.hasOwn(extra.value, 'extra'), JSON.stringify(extra));
 
-  const longHeadline = validateProfileSummaryValue({ ...VALID_SUMMARY, headline: '超'.repeat(25) }, DIGEST);
-  check('解读：headline 超长拒绝', !longHeadline.ok, JSON.stringify(longHeadline));
+  const wrapped = validateProfileSummaryValue({ profile_summary: { ...VALID_SUMMARY, extra: 'x' } }, DIGEST);
+  check('解读：接受单层包装对象', wrapped.ok, JSON.stringify(wrapped));
+
+  const multiline = validateProfileSummaryValue({
+    ...VALID_SUMMARY,
+    headline: '第一行\n第二行',
+    summary: '第一段\n\n第二段',
+  }, DIGEST);
+  check('解读：换行归一为空格', multiline.ok
+    && !/[\r\n]/u.test(multiline.value.headline)
+    && !/[\r\n]/u.test(multiline.value.summary), JSON.stringify(multiline));
+
+  const stringItems = validateProfileSummaryValue({
+    ...VALID_SUMMARY,
+    strengths: '交易记录完整可复核',
+    blind_spots: [{ text: '短线交易次数偏多' }],
+  }, DIGEST);
+  check('解读：数组项接受字符串或对象文本', stringItems.ok
+    && stringItems.value.strengths.length === 1
+    && stringItems.value.blind_spots.length === 1, JSON.stringify(stringItems));
+
+  const longHeadline = validateProfileSummaryValue({ ...VALID_SUMMARY, headline: '超'.repeat(40) }, DIGEST);
+  check('解读：headline 超长截断而非整段回退', longHeadline.ok
+    && [...longHeadline.value.headline].length <= 24
+    && longHeadline.value.headline.endsWith('…'), JSON.stringify(longHeadline));
+
+  const longItem = validateProfileSummaryValue({
+    ...VALID_SUMMARY,
+    next_actions: ['核对每笔交易的入场理由'.repeat(10)],
+  }, DIGEST);
+  check('解读：列表项超长截断而非整段回退', longItem.ok
+    && longItem.value.next_actions.length === 1
+    && [...longItem.value.next_actions[0]].length <= 60
+    && longItem.value.next_actions[0].endsWith('…'), JSON.stringify(longItem));
+
+  const manyItems = validateProfileSummaryValue({
+    ...VALID_SUMMARY,
+    strengths: ['交易记录完整', '规则保留', '账单区间清晰', '第四条', '第五条'],
+  }, DIGEST);
+  check('解读：列表项过多时截取前 3 条', manyItems.ok
+    && manyItems.value.strengths.length === 3, JSON.stringify(manyItems));
+
+  const stringVersion = validateProfileSummaryValue({ ...VALID_SUMMARY, schema_version: '1' }, DIGEST);
+  check('解读：schema_version 字符串 1 可接受', stringVersion.ok, JSON.stringify(stringVersion));
+
+  const noVersion = { ...VALID_SUMMARY };
+  delete noVersion.schema_version;
+  const missingVersion = validateProfileSummaryValue(noVersion, DIGEST);
+  check('解读：缺失 schema_version 时补 1', missingVersion.ok
+    && missingVersion.value.schema_version === 1, JSON.stringify(missingVersion));
+
+  const aliasConfidence = validateProfileSummaryValue({ ...VALID_SUMMARY, confidence: '中等' }, DIGEST);
+  check('解读：置信度中文别名归一', aliasConfidence.ok
+    && aliasConfidence.value.confidence === 'medium', JSON.stringify(aliasConfidence));
+
+  const noConfidence = { ...VALID_SUMMARY };
+  delete noConfidence.confidence;
+  const missingConfidence = validateProfileSummaryValue(noConfidence, DIGEST);
+  check('解读：缺失置信度降为 low', missingConfidence.ok
+    && missingConfidence.value.confidence === 'low', JSON.stringify(missingConfidence));
+
+  const noHeadline = { ...VALID_SUMMARY };
+  delete noHeadline.headline;
+  const missingHeadline = validateProfileSummaryValue(noHeadline, DIGEST);
+  check('解读：缺失 headline 时由 summary 生成', missingHeadline.ok
+    && missingHeadline.value.headline.length > 0, JSON.stringify(missingHeadline));
 
   const cappedDigest = {
     ...DIGEST,
@@ -205,13 +322,23 @@ async function invokeData(handler, path, { method = 'GET', body, userId = USER_A
     && Object.keys(calls[0]).join(',') === 'digest'
     && JSON.stringify(calls[0].digest) === JSON.stringify(DIGEST), JSON.stringify(calls[0]));
 
+  const rounded = createHandler({
+    transport: { async profileSummary() { return { rawText: JSON.stringify(PRECISE_SUMMARY) }; } },
+  });
+  const roundedResponse = await invokeModel(rounded, '/api/llm/profile-summary', { digest: PRECISE_DIGEST });
+  check('Handler 解读：线上口径的合理舍入 → source=ai', roundedResponse.status === 200
+    && roundedResponse.json?.source === 'ai'
+    && roundedResponse.json?.fallback_detail === null
+    && roundedResponse.json.summary.headline === PRECISE_SUMMARY.headline, JSON.stringify(roundedResponse.json));
+
   const invalidNumber = createHandler({
     transport: { async profileSummary() { return { rawText: JSON.stringify({ ...VALID_SUMMARY, summary: '实际收益 +9.9%。' }) }; } },
   });
   const invalidNumberResponse = await invokeModel(invalidNumber, '/api/llm/profile-summary', { digest: DIGEST });
   check('Handler 解读：越界数字 → 200 template + model_response_invalid', invalidNumberResponse.status === 200
     && invalidNumberResponse.json?.source === 'template'
-    && invalidNumberResponse.json?.fallback_reason === 'model_response_invalid', JSON.stringify(invalidNumberResponse.json));
+    && invalidNumberResponse.json?.fallback_reason === 'model_response_invalid'
+    && invalidNumberResponse.json?.fallback_detail === PROFILE_SUMMARY_DETAILS.UNLISTED_NUMBER, JSON.stringify(invalidNumberResponse.json));
 
   const timeout = createHandler({
     transport: {
