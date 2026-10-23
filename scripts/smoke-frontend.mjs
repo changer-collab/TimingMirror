@@ -1567,10 +1567,13 @@ const openCustom = async () => { await clickRole('add-rule-buy'); await fire(byR
     && nlTxt().includes('触发条件：申报买入当天，该股票涨幅超过 3.0%')
     && nlTxt().includes('规则理解（仅供核对，不参与判定）') && nlTxt().includes('程序检查（按原文判定，与识别结果无关）')
     && state.contracts.versions.length === 0 && stored().length === 0, nlTxt().slice(0, 600));
-  check('自然语言·核对确认：未勾选“我已核对”前确认按钮不可用（不把模型结果直接当作可启用）',
-    !!roleBtn('nl-save') && roleBtn('nl-save').disabled === true && nlTxt().includes('请先勾选核对确认') && !!byRole('nl-ack'), nlTxt().slice(-300));
-  await tickAck();
-  check('自然语言·勾选后：确认按钮可用，提示将生成 v1', roleBtn('nl-save').disabled === false && nlTxt().includes('确认后生成版本 v1'), nlTxt().slice(-300));
+  check('自然语言·核对确认：识别后复选框默认选中，确认按钮可用；取消勾选后确认按钮不可用',
+    nlTxt().includes('我已逐字对照原话核对') && state.contracts.nl.ack === true
+    && roleBtn('nl-save').disabled !== true, nlTxt().slice(0, 300));
+  state.contracts.nl = { ...state.contracts.nl, ack: false }; mountCycle();
+  check('自然语言·取消核对：复选框取消后确认按钮不可用',
+    roleBtn('nl-save').disabled === true && state.contracts.nl.ack === false);
+  state.contracts.nl = { ...state.contracts.nl, ack: true }; mountCycle();
   await fire(byRole('nl-text'), 'input', '当天涨幅超过4%的股票我不买');
   check('自然语言·修改描述：旧预览作废、确认按钮消失，不写入记录', findByClass(nlPanel(), 'cv-nl-preview').length === 0 && !nlTxt().includes('当前系统支持执行') && !roleBtn('nl-save') && state.contracts.versions.length === 0, nlTxt().slice(-200));
   await recognize('当天涨幅超过3%的股票我不买', ruleReply(surge3));
@@ -1594,8 +1597,8 @@ const openCustom = async () => { await clickRole('add-rule-buy'); await fire(byR
   await clickRole('nl-action-sell');
   siteQueue.push(customReply('buy'));
   await clickRole('nl-recognize'); await settle();
-  check('自定义规则·再次识别相同描述：自动选中动作但需重新核对', state.contracts.nl.actionChoice === 'buy'
-    && roleBtn('nl-save').disabled === true && !state.contracts.nl.ack);
+  check('自定义规则·再次识别相同描述：自动选中动作且复选框默认选中', state.contracts.nl.actionChoice === 'buy'
+    && roleBtn('nl-save').disabled !== true && state.contracts.nl.ack === true);
   await clickRole('nl-cancel');
 
   await openCustom();
@@ -1822,11 +1825,10 @@ const openCustom = async () => { await clickRole('add-rule-buy'); await fire(byR
     scope: { kind: 'all', symbol: null }, needs: [], missing: [], understanding: '买入后2个交易日内卖出同一只股票时提醒',
   }) } });
   await clickRole('nl-recognize'); await settle();
-  check('买入后卖出·自然语言：预览写明提醒动作、2 个交易日与同日不计，确认前不写入记录',
+  check('买入后卖出·自然语言：预览写明提醒动作、2 个交易日与同日不计，复选框默认选中',
     modalTxt().includes('规则类型：买入后 N 个交易日内卖出提醒') && modalTxt().includes('买入后 2 个交易日')
     && modalTxt().includes('提醒动作：卖出提醒') && modalTxt().includes('同日买入不计')
-    && roleBtn('nl-save').disabled === true && stored().length === 2, modalTxt().slice(0, 500));
-  for (const fn of byRole('nl-ack').listeners.change ?? []) await fn({ target: { checked: true } });
+    && state.contracts.nl.ack === true && stored().length === 2, modalTxt().slice(0, 500));
   await clickRole('nl-save'); await settle();
   check('买入后卖出·自然语言确认后保存：生成新版本 v3，旧版本 v1 进入历史（替代），保留原话与所选理解',
     enabledHashes().includes(hBS2) && !enabledHashes().includes(hBS3) && stored().length === 4

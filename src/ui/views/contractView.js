@@ -376,7 +376,6 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
       }
       if (customs) {
         groupNodes.push(...customs.map((r) => el('div', { class: 'cv-slot cv-slot-custom', 'data-rule-id': r.rule_id, 'data-action': action }, [
-          el('div', { class: 'cv-group-title' }, ['自定义规则']),
           currentCard(r),
         ])));
       }
@@ -920,7 +919,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
         nlToken = null;
         if (flowCounts) c.nl = { ...c.nl, ...flowCounts };
         const defaultAction = result.is_custom && (result.action === 'buy' || result.action === 'sell' || result.action === 'both') ? result.action : null;
-        c.nl = { ...c.nl, text, flowId, status: 'done', result, choices: {}, ack: false, actionChoice: defaultAction };
+        c.nl = { ...c.nl, text, flowId, status: 'done', result, choices: {}, ack: true, actionChoice: defaultAction };
         set({ contracts: { nl: c.nl } });
       },
     }, [loading ? '识别中…' : '识别规则']);
