@@ -1,29 +1,29 @@
 // 独立问答页「对话账本」：问题 → 意图 → 最小事实包 → 本地/在线回答 → 证据。
 // 只渲染 qaAnswer 信封；数字只来自当前账单已发布报告，在线失败回退本地事实。
 // 无网络/DOM 之外的副作用：发送与规则打开由 ctx.qaDeps 注入。
-import { QA_SUGGESTIONS, normalizeQuestion, QA_INTENT_LABELS, QA_LAYER_LABELS } from './qaIntent.js';
+import { QA_SUGGESTIONS, normalizeQuestion, QA_INTENT_LABELS } from './qaIntent.js';
 import { ruleStateKeyOf } from '../../src/agent/qaChips.js';
 import { fmtMoney } from '../../src/engine/display.js';
 
 const STATUS_LABELS = Object.freeze({
-  local: '已校验',
-  online: '在线复述 · 已校验',
-  clarify: '待澄清',
-  refusal: '边界拦截',
-  registration: '登记式应答',
-  unavailable: '未接入',
-  error: '未回答',
-  pending: '处理中',
+  local: '本机回答',
+  online: '在线复述',
+  clarify: '需要补充信息',
+  refusal: '本次暂时无法回答',
+  registration: '需要你确认',
+  unavailable: '本版本暂不支持',
+  error: '本次暂时无法回答',
+  pending: '正在核对',
 });
 
 const STATUS_TITLES = Object.freeze({
-  local: '本地已复核事实',
-  online: '在线复述，数字已本地校验',
-  clarify: '需要补充指代',
-  refusal: '边界拦截',
-  registration: '不替你决定',
-  unavailable: '未给出结论',
-  error: '未回答',
+  local: '基于这份账单的本机回答',
+  online: '在线复述，数字已在本机核对',
+  clarify: '需要补充信息',
+  refusal: '超出本版本可回答范围',
+  registration: '需要你确认后继续',
+  unavailable: '本版本暂不支持',
+  error: '本次暂时无法回答',
   pending: '正在核对',
 });
 
@@ -117,32 +117,54 @@ function actionsHTML(answer, message, actionMap, currentRuleKey) {
   return `<div class="tm-qa-actions">${buttons.join('')}</div>${staleNote}`;
 }
 
-function traceHTML(answer) {
-  const trace = answer.trace ?? {};
-  const rows = [];
-  if (trace.intent_code) rows.push(['意图', trace.intent_code]);
-  if (trace.layer_label) rows.push(['路由', trace.layer_label]);
-  if (Number.isFinite(trace.elapsed_ms)) rows.push(['耗时', `${trace.elapsed_ms} ms（实测）`]);
-  if (answer.route?.layer === 'L2' && Number.isFinite(answer.route?.confidence)) {
-    rows.push(['意图置信度', answer.route.confidence.toFixed(2)]);
+function profileFactHTML(message) {
+  const fact = message?.profile_fact;
+  if (!fact) return '';
+  const messageId = esc(message.id ?? '');
+  if (fact.state === 'saved') {
+    const extra = fact.duplicates ? ` · 另有 ${esc(fact.duplicates)} 条已存在` : '';
+    const undo = Array.isArray(fact.ids) && fact.ids.length
+      ? `<button type="button" data-fact-action="undo" data-message-id="${messageId}">撤销</button>`
+      : '';
+    return `<div class="tm-qa-profilefact" data-role="qa-profilefact"><span>已记入画像 · ${esc(fact.count ?? 0)} 条${extra}</span>${undo}</div>`;
   }
-  if (trace.template_id) rows.push(['模板', trace.template_id]);
-  if (trace.plan_id) rows.push(['计划', trace.plan_id]);
-  if (trace.number_check) rows.push(['数字校验', trace.number_check]);
-  if (!rows.length) return '';
-  return `<details class="tm-qa-trace">
-    <summary>如何得出</summary>
-    <dl class="tm-qa-trace-list">${rows.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
-  </details>`;
+  if (fact.state === 'duplicate') return '<p class="tm-qa-profilefact is-muted">这条陈述已在画像中，未重复记录。</p>';
+  if (fact.state === 'undoing') return '<p class="tm-qa-profilefact is-muted">正在撤销画像记录…</p>';
+  if (fact.state === 'undone') return '<p class="tm-qa-profilefact is-muted">已撤销这次的画像记录。</p>';
+  if (fact.state === 'undo-failed') return '<p class="tm-qa-profilefact is-warn">撤销失败，可稍后在个人中心删除。</p>';
+  if (fact.state === 'failed') return '<p class="tm-qa-profilefact is-muted">这次陈述未记入云端画像；问答结果不受影响。</p>';
+  return '';
 }
 
-function diagnosticsHTML(answer) {
-  const diagnostics = Array.isArray(answer.diagnostics) ? answer.diagnostics : [];
-  if (answer.status !== 'error' || !diagnostics.length) return '';
-  return `<details class="tm-qa-error-detail">
-    <summary>技术详情（错误码）</summary>
-    <dl>${diagnostics.map((d) => `<div><dt>${esc(d.code)}</dt><dd>${esc(d.message)}</dd></div>`).join('')}</dl>
-  </details>`;
+function profileFactChip(result) {
+  if (!result || typeof result !== 'object') return null;
+  if (result.saved === true) {
+    const added = Array.isArray(result.result?.added) ? result.result.added : [];
+    const duplicates = Array.isArray(result.result?.duplicates) ? result.result.duplicates : [];
+    if (added.length) {
+      return {
+        state: 'saved',
+        ids: added.map((fact) => fact?.id).filter((id) => typeof id === 'string'),
+        count: added.length,
+        duplicates: duplicates.length,
+      };
+    }
+    if (duplicates.length) return { state: 'duplicate', count: duplicates.length };
+    return null;
+  }
+  if (result.code === 'E_PROFILE_FACT_NOT_EXPLICIT') return null;
+  return { state: 'failed' };
+}
+
+function patchMessage(ctx, messageId, patch) {
+  const chat = ctx?.state?.chat ?? {};
+  const messages = Array.isArray(chat.messages) ? chat.messages : [];
+  const index = messages.findIndex((message) => message?.id === messageId);
+  if (index < 0) return false;
+  const next = messages.slice();
+  next[index] = { ...next[index], ...patch };
+  ctx.set({ chat: { ...chat, messages: next } });
+  return true;
 }
 
 function answerHTML(entry, actionMap, currentRuleKey) {
@@ -150,8 +172,6 @@ function answerHTML(entry, actionMap, currentRuleKey) {
   const status = statusOf(answer);
   const intent = answer.intent ?? '';
   const facts = Array.isArray(answer.facts) ? answer.facts : [];
-  const routeLayer = answer.route?.layer ?? 'L3';
-  const layerLabel = QA_LAYER_LABELS[routeLayer] ?? QA_LAYER_LABELS.L3;
   const boundary = BOUNDARY_STATES.has(status) ? ' is-boundary' : '';
   return `<article class="tm-qa-entry${boundary}" data-role="qa-entry" data-intent="${esc(intent || 'none')}" data-state="${esc(status)}">
     ${entry.question ? `<header class="tm-qa-entry-head">
@@ -160,7 +180,6 @@ function answerHTML(entry, actionMap, currentRuleKey) {
     </header>` : ''}
     <div class="tm-qa-route">
       <span class="tm-qa-intent">${esc(intentLabelOf(intent))}</span>
-      <span class="tm-qa-layer">${esc(layerLabel)}</span>
       <span class="tm-qa-factcount">${facts.length} 条事实</span>
       <span class="tm-qa-badge is-${esc(status)}" title="${esc(STATUS_TITLES[status] ?? '')}">${esc(badgeOf(status))}</span>
     </div>
@@ -168,9 +187,8 @@ function answerHTML(entry, actionMap, currentRuleKey) {
     ${factsHTML(facts)}
     ${evidenceHTML(answer.evidence)}
     ${actionsHTML(answer, entry.message, actionMap, currentRuleKey)}
+    ${profileFactHTML(entry.message)}
     ${answer.notice ? `<p class="tm-qa-notice">${esc(answer.notice)}</p>` : ''}
-    ${traceHTML(answer)}
-    ${diagnosticsHTML(answer)}
   </article>`;
 }
 
@@ -182,44 +200,14 @@ function pendingHTML(question) {
     </header>
     <div class="tm-qa-route">
       <span class="tm-qa-intent">正在核对</span>
-      <span class="tm-qa-layer">本地</span>
       <span class="tm-qa-badge is-pending">${esc(badgeOf('pending'))}</span>
     </div>
-    <p class="tm-qa-text">正在核对这份账单的已复核事实…</p>
+    <p class="tm-qa-text">正在核对这份账单的报告数字…</p>
   </article>`;
 }
 
 function emptyHTML() {
   return '<p class="tm-qa-empty">还没有提问。示例问法只是入口，不是全部。</p>';
-}
-
-function contextHTML(state, ctx) {
-  const bill = state.bill ?? {};
-  const isDemo = bill.demo === true;
-  const fileName = isDemo
-    ? (bill.demoScenario?.title || bill.fileName || '示例账单')
-    : (bill.fileName || '已确认本地账单');
-  let reportStatus = '报告按需读取';
-  try {
-    const bundle = ctx.qaDeps?.getReportBundle?.(bill);
-    if (bundle?.review) {
-      reportStatus = bundle.review.portfolio_published === true ? '已发布' : '组合未发布';
-    }
-  } catch { /* 缓存读取失败时按需读取 */ }
-  const versions = Array.isArray(state.contracts?.versions) ? state.contracts.versions : [];
-  let active = 0;
-  try { active = ctx.qaDeps?.ruleStateOf?.(versions)?.active_count ?? 0; } catch { active = 0; }
-  return `<div class="tm-qa-context">
-    <span class="tm-qa-context-tag">${isDemo ? '示例账单' : '已确认本地账单'}</span>
-    <span class="tm-qa-context-item">${esc(fileName)}</span>
-    <span class="tm-qa-context-sep" aria-hidden="true">·</span>
-    <span class="tm-qa-context-item">报告 ${esc(reportStatus)}</span>
-    <span class="tm-qa-context-sep" aria-hidden="true">·</span>
-    <span class="tm-qa-context-item">规则 v${versions.length} · 生效 ${active} 条</span>
-    <span class="tm-qa-context-sep" aria-hidden="true">·</span>
-    <span class="tm-qa-context-item">原始 CSV 仅本机</span>
-    <a class="tm-qa-context-link" href="#/import">${isDemo ? '换个场景' : '换一份账单'}</a>
-  </div>`;
 }
 
 function headHTML(hasEntries, isDemo) {
@@ -229,7 +217,7 @@ function headHTML(hasEntries, isDemo) {
       <span class="tm-qa-head-right">${hasEntries ? '<button type="button" class="tm-qa-clear" data-role="qa-clear">清空对话</button>' : ''}<span class="tm-qa-step">04 / QA</span></span>
     </div>
     <h1>问它为什么，<br>别问它买什么。</h1>
-    <p class="tm-qa-intro">任何问法都可以。答案只来自这份${isDemo ? '示例' : ''}账单的已复核事实；不荐股、不预测、不替你决定。</p>
+    <p class="tm-qa-intro">任何问法都可以。答案只来自这份${isDemo ? '示例' : ''}账单报告中已核对的数字；不荐股、不预测、不替你决定。</p>
   </header>`;
 }
 
@@ -356,7 +344,6 @@ export function renderRealChat(host, ctx) {
     : emptyHTML();
 
   host.innerHTML = `<div class="tm-qa-page">
-    ${contextHTML(state, ctx)}
     <div class="tm-qa-layout">
       <div class="tm-qa-main">
         <div class="tm-qa-scroll" data-role="qa-scroll">
@@ -439,6 +426,39 @@ export function renderRealChat(host, ctx) {
         messages: [...state.chat.messages, assistantMessage],
       },
     });
+    if (bill?.demo !== true && typeof ctx.qaDeps?.recordProfileFacts === 'function') {
+      Promise.resolve()
+        .then(() => ctx.qaDeps.recordProfileFacts({ message: question, contextId: messageContextId }))
+        .then((result) => {
+          const chip = profileFactChip(result);
+          if (!chip) return;
+          if (patchMessage(ctx, assistantMessage.id, { profile_fact: chip }) && chip.state === 'saved') {
+            ctx.cloudDeps?.invalidateCloudProfile?.();
+          }
+        })
+        .catch(() => { /* 画像补充失败不影响已展示的回答 */ });
+    }
+  }
+
+  async function undoProfileFacts(messageId) {
+    const messages = Array.isArray(ctx.state.chat?.messages) ? ctx.state.chat.messages : [];
+    const message = messages.find((item) => item?.id === messageId);
+    const ids = Array.isArray(message?.profile_fact?.ids) ? message.profile_fact.ids : [];
+    if (!message || !ids.length || typeof ctx.cloudDeps?.deleteFact !== 'function') return;
+    patchMessage(ctx, messageId, { profile_fact: { ...message.profile_fact, state: 'undoing' } });
+    try {
+      for (const id of ids) {
+        try {
+          await ctx.cloudDeps.deleteFact({ id });
+        } catch (error) {
+          if ((error?.upstreamCode ?? error?.code) !== 'not_found') throw error;
+        }
+      }
+      patchMessage(ctx, messageId, { profile_fact: { state: 'undone', ids: [] } });
+      ctx.cloudDeps.invalidateCloudProfile?.();
+    } catch {
+      patchMessage(ctx, messageId, { profile_fact: { ...message.profile_fact, state: 'undo-failed' } });
+    }
   }
 
   if (form && input) {
@@ -466,6 +486,11 @@ export function renderRealChat(host, ctx) {
       draft = '';
       lastScrollKey = null;
       set({ chat: { ...state.chat, messages: [], pending: false, requestId: null, contextId } });
+      return;
+    }
+    const undo = e.target.closest('[data-fact-action="undo"]');
+    if (undo && host.contains(undo)) {
+      void undoProfileFacts(undo.getAttribute('data-message-id'));
       return;
     }
     const button = e.target.closest('[data-action]');

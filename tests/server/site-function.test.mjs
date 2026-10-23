@@ -20,6 +20,7 @@ import {
 import { assessDynamicCacheDoc, createMarketCache } from '../../src/engine/marketCache.js';
 import { projectOnlineFacts } from '../../src/agent/onlineBoundary.js';
 import { BEHAVIOR_CANDIDATE } from '../../server/site-functions/behaviorAnalysis.mjs';
+import { validateChatIntentResponse } from '../../server/site-functions/chatIntent.mjs';
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -102,6 +103,49 @@ function streamOfChunks(chunks) {
   check('站点路由：未知路径 404', unknown.status === 404 && unknown.json.code === SITE_FUNCTION_CODES.NOT_FOUND);
   const get = await invoke(handler, '/api/llm/intent', { method: 'GET', body: undefined });
   check('站点路由：GET 405', get.status === 405 && get.json.code === SITE_FUNCTION_CODES.METHOD);
+}
+
+/* ==== 意图响应 schema：服务端规范化，异常回包不进入客户端 ==== */
+{
+  const direct = validateChatIntentResponse('```json\n{"intent":"what_if","slots":{"symbol":"000001","trade_date":"2024-9-3"},"confidence":0.92}\n```');
+  check('意图 schema：代码块 + 日期补零 → 规范化',
+    direct.ok && direct.value.intent === 'what_if' && direct.value.slots.trade_date === '2024-09-03'
+    && direct.value.slots.symbol === '000001' && direct.value.confidence === 0.92, JSON.stringify(direct));
+
+  const noSlots = validateChatIntentResponse('{"intent":"profile","confidence":0.7}');
+  check('意图 schema：缺省 slots → 空对象',
+    noSlots.ok && Object.keys(noSlots.value.slots).length === 0, JSON.stringify(noSlots));
+
+  const invalids = [
+    ['未知意图', '{"intent":"market_forecast","slots":{},"confidence":0.9}'],
+    ['置信度越界', '{"intent":"profile","slots":{},"confidence":1.2}'],
+    ['顶层额外字段', '{"intent":"profile","slots":{},"confidence":0.9,"reason":"x"}'],
+    ['槽位额外字段', '{"intent":"what_if","slots":{"pattern":"chase"},"confidence":0.9}'],
+    ['非法日期', '{"intent":"what_if","slots":{"trade_date":"2024-02-30"},"confidence":0.9}'],
+    ['非法代码', '{"intent":"what_if","slots":{"symbol":"12345"},"confidence":0.9}'],
+    ['非 JSON', 'not-json'],
+  ];
+  for (const [name, raw] of invalids) {
+    check(`意图 schema：${name} → 拒绝`, validateChatIntentResponse(raw).ok === false, raw);
+  }
+
+  const okTransport = createFakeTransport({
+    intent: async () => ({ rawText: '{"intent":"what_if","slots":{"symbol":"000001","trade_date":"2024-9-30"},"confidence":0.9}' }),
+  });
+  const ok = await invoke(createHandler({ transport: okTransport }), '/api/llm/intent', {
+    body: { question: '如果那天没卖 000001 会怎样' },
+  });
+  const okJson = ok.json ? JSON.parse(ok.json.rawText) : null;
+  check('站点 intent：合法回包按规范化 JSON 返回', ok.status === 200 && okJson?.intent === 'what_if'
+    && okJson.slots.symbol === '000001' && okJson.slots.trade_date === '2024-09-30'
+    && Object.keys(okJson).join(',') === 'intent,slots,confidence', ok.text);
+
+  const badTransport = createFakeTransport({
+    intent: async () => ({ rawText: '{"intent":"market_forecast","slots":{},"confidence":0.9}' }),
+  });
+  const bad = await invoke(createHandler({ transport: badTransport }), '/api/llm/intent', { body: { question: QUESTION } });
+  check('站点 intent：非法 schema → 502 且不转发正文', bad.status === 502
+    && bad.json?.code === SITE_FUNCTION_CODES.MODEL_RESPONSE && !bad.text.includes('market_forecast'), bad.text);
 }
 
 /* ==== 默认未配置模型 ==== */

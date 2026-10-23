@@ -6,6 +6,7 @@ import {
   loadProfile, recordReportObservation, recordCandidateEvent, ruleStateOf, syncRuleUsage,
 } from './profileStore.js';
 import { openRuleCandidate } from './ruleCandidates.js';
+import { mountCloudProfile } from './cloudProfile.js';
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
@@ -29,9 +30,21 @@ function emptyState(reason = '先导入并确认一份本地账单，画像才�
     <p class="mono-label">PROFILE / 本地画像</p>
     <h2>先有账单，再有画像。</h2>
     <p class="rp-note">${esc(reason)}</p>
-    <p class="rp-note">没有账单时不会用示例数据填充；画像只保存在当前浏览器，不含成交明细、文件名或 CSV。</p>
+    <p class="rp-note">没有账单时不会用示例数据填充；本地画像只保存在当前浏览器，云端只保存账单统计、报告快照与你在对话中明确说过的事实。</p>
     <a class="btn btn-outline" href="#/import">去导入账单</a>
   </section>`;
+}
+
+function mountCloud(host, ctx, profile = null) {
+  if (typeof ctx?.cloudDeps?.listBills !== 'function') return;
+  const section = document.createElement('section');
+  section.className = 'rp-profile rp-cloud-profile';
+  section.setAttribute('aria-label', '云端画像');
+  const inner = document.createElement('div');
+  inner.setAttribute('data-role', 'cloud-profile');
+  section.append(inner);
+  host.append(section);
+  mountCloudProfile(inner, ctx, { profile });
 }
 
 function dimensionCards(snapshot) {
@@ -178,8 +191,9 @@ function renderProfile(host, ctx, bundle, bill) {
 
   if (!shown) {
     host.innerHTML = emptyState(published
-      ? '本次报告没有生成可用的画像快照。'
+      ? '本次报告没有可用于画像的统计。'
       : '当前账单组合结果未发布，还没有可展示的历史画像；修复账单并打开报告页后才会记录。');
+    mountCloud(host, ctx);
     return;
   }
 
@@ -191,7 +205,7 @@ function renderProfile(host, ctx, bundle, bill) {
       profile,
     });
   } catch {
-    pack = { candidates: [], notes: ['规则候选生成失败：不生成候选。'] };
+    pack = { candidates: [], notes: ['这次暂时没有可生成的规则候选。'] };
   }
   const candidates = pack.candidates ?? [];
   const banner = published
@@ -203,13 +217,13 @@ function renderProfile(host, ctx, bundle, bill) {
       <div>
         <p class="mono-label">PROFILE / 本地画像</p>
         <h2>你的交易习惯，正在被连续记录。</h2>
-        <p class="rp-note">只从已复核报告、行为发现与规则使用记录派生；只保存在当前浏览器，不含成交明细、文件名或 CSV。</p>
+        <p class="rp-note">只从已复核报告、行为发现与规则使用记录派生；本地画像不含成交明细、文件名或 CSV。云端只保存账单统计、报告快照与对话事实。</p>
       </div>
       <div class="rp-profile-stat"><strong>${esc(profile.observations ?? 0)}</strong><span>次观察</span></div>
     </div>
     ${banner}
     ${observationLine(observation, profile, published)}
-    <p class="rp-note rp-profile-meta">画像快照：${esc(fmtAt(shown.at))} · 账单覆盖 ${esc(shown.bill?.trade_count ?? '—')} 笔 / ${esc(shown.bill?.symbol_count ?? '—')} 只标的</p>
+    <p class="rp-note rp-profile-meta">画像更新于：${esc(fmtAt(shown.at))} · 账单覆盖 ${esc(shown.bill?.trade_count ?? '—')} 笔 / ${esc(shown.bill?.symbol_count ?? '—')} 只标的</p>
     ${dimensionCards(shown)}
     ${tagsBlock(shown)}
     ${trendBlock(profile)}
@@ -218,6 +232,7 @@ function renderProfile(host, ctx, bundle, bill) {
   </section>`;
 
   bindActions(host, ctx, candidates, () => renderProfile(host, ctx, bundle, bill));
+  mountCloud(host, ctx, profile);
 }
 
 export function renderRealProfile(host, ctx) {
@@ -225,6 +240,7 @@ export function renderRealProfile(host, ctx) {
   const bill = ctx?.state?.bill;
   if (!bill || bill.status !== 'confirmed' || bill.sourceType !== 'local') {
     host.innerHTML = emptyState();
+    mountCloud(host, ctx);
     return;
   }
   if (bill.demo === true) {
@@ -237,6 +253,7 @@ export function renderRealProfile(host, ctx) {
     return;
   }
   host.innerHTML = '<section class="rp-profile"><p class="rp-loading">正在根据已确认账单生成画像…</p></section>';
+  mountCloud(host, ctx, loadProfile());
   loadRealReport(bill)
     .then((bundle) => {
       const target = document.getElementById('tm-real-profile');
@@ -248,5 +265,6 @@ export function renderRealProfile(host, ctx) {
       if (!target) return;
       const message = String(error && error.message ? error.message : error);
       target.innerHTML = `<section class="rp-profile"><p class="mono-label">PROFILE / 本地画像</p><h2>画像暂不可用</h2><p class="rp-note">${esc(message)}</p><p class="rp-note">画像只从已复核报告派生，行情或复核失败时不会用示例数据补齐。</p></section>`;
+      mountCloud(target, ctx, loadProfile());
     });
 }

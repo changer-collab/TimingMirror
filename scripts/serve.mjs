@@ -11,6 +11,7 @@ import { createHandler } from '../server/site-functions/handler.mjs';
 import { createModelTransport } from '../server/site-functions/provider.mjs';
 import { createTushareMarketTransport } from '../server/site-functions/market.mjs';
 import { createLocalFakeImportModel } from './local-fake-import-model.mjs';
+import { createDevUserContext, createMemorySupabase } from './dev-memory-supabase.mjs';
 
 const ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), '..'));
 const PORT = Number(process.argv.find((a) => a.startsWith('--port='))?.split('=')[1] ?? process.env.PORT ?? 5180);
@@ -22,6 +23,11 @@ const tushareToken = (process.env.TUSHARE_TOKEN ?? '').trim();
 const deepseekKey = (process.env.DEEPSEEK_API_KEY ?? '').trim();
 const deepseekModel = (process.env.DEEPSEEK_MODEL ?? '').trim();
 const usingFakeModel = deepseekKey === '';
+// 本地联调专用：账单/画像走内存库，身份头由本进程注入；重启即清空，不能当作线上存储。
+const devUserId = (process.env.TM_DEV_USER_ID ?? '').trim() || 'dev-local-user';
+const devSupabase = createMemorySupabase();
+const devUserContext = createDevUserContext({ userId: devUserId });
+const isDataPath = (pathname) => /\/api\/(?:bills|profile)(?:\/|$)/u.test(pathname);
 const appHandler = createHandler({
   transport: usingFakeModel
     ? createLocalFakeImportModel()
@@ -79,12 +85,14 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ ok: false, code: 'E_FUNCTION_BODY_TOO_LARGE', message: '请求体超过大小限制' }));
         return;
       }
+      const headers = new Headers({ 'content-type': req.headers['content-type'] ?? '' });
+      if (isDataPath(url.pathname)) headers.set('x-qoder-user-context', devUserContext);
       const request = new Request(`http://localhost:${PORT}${url.pathname}${url.search}`, {
         method: req.method,
-        headers: { 'content-type': req.headers['content-type'] ?? '' },
+        headers,
         body,
       });
-      const response = await appHandler(request);
+      const response = await appHandler(request, { supabase: devSupabase });
       if (usingFakeModel && (url.pathname.endsWith('/api/llm/import-recover') || url.pathname.endsWith('/api/llm/import-vision'))) {
         console.log(`[dev-fake] ${url.pathname.split('/').pop()} ${req.method} → ${response.status}`);
       }
@@ -118,7 +126,8 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`TimingMirror dev server → http://localhost:${PORT}`);
   console.log(usingFakeModel
-    ? '本地 fake 模型已启用：import-recover、import-vision、rule-intent、behavior-analysis、result-explanation、restate（不调用真实模型；行情仍需 TUSHARE_TOKEN）'
+    ? '本地 fake 模型已启用：intent、restate、import-recover、import-vision、rule-intent、behavior-analysis、result-explanation、profile-summary、profile-fact（不调用真实模型；行情仍需 TUSHARE_TOKEN）'
     : '已读取开发机 DEEPSEEK_API_KEY，模型请求将调用 DeepSeek');
   if (tushareToken === '') console.log('行情未启用：未配置 TUSHARE_TOKEN');
+  console.log(`账单/画像：本地内存库（dev 用户 ${devUserId}，重启清空；线上以 Gateway 身份为准）`);
 });

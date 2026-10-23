@@ -180,14 +180,19 @@ body {
   color: var(--faint);
 }
 
-.tm-real-home-banner {
+.tm-bill-banner-shell {
+  margin-top: 18px;
+}
+
+.tm-bill-banner {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 16px;
-  margin-top: 18px;
+  justify-content: space-between;
+  gap: 10px 18px;
   padding: 12px 16px;
   border: 1px solid var(--line);
+  border-left: 3px solid var(--ink);
   border-radius: var(--radius-sm);
   background: var(--sheet);
   box-shadow: var(--shadow-paper);
@@ -195,8 +200,32 @@ body {
   color: var(--gray);
 }
 
-.tm-real-home-banner strong {
+.tm-bill-banner-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 5px 12px;
+  min-width: 0;
+}
+
+.tm-bill-banner-main strong {
   color: var(--ink);
+}
+
+.tm-bill-banner-main span {
+  overflow-wrap: anywhere;
+}
+
+.tm-bill-banner-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.tm-bill-banner-links .text-link {
+  font-size: 12.5px;
+  white-space: nowrap;
 }
 
 .tm-real-import-wrap {
@@ -732,8 +761,13 @@ body {
     display: none;
   }
 
-  .tm-real-home-banner {
+  .tm-bill-banner-shell {
     margin-top: 12px;
+  }
+
+  .tm-bill-banner {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .tm-demo-strip {
@@ -1371,8 +1405,13 @@ body {
    ============================================================ */
 body.tm-qa-standalone .tm-main { overflow: hidden; }
 body.tm-qa-standalone .site-footer { display: none; }
-body.tm-qa-standalone #app { height: 100%; min-height: 0; }
-body.tm-qa-standalone #tm-real-chat { height: 100%; min-height: 0; }
+body.tm-qa-standalone #app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 0; }
 
 .tm-qa-page {
   --tm-qa-ok: #2f6b33;
@@ -1384,38 +1423,6 @@ body.tm-qa-standalone #tm-real-chat { height: 100%; min-height: 0; }
   /* 与其他用户端页面共用 html 的页面底色 */
   background: transparent;
   color: var(--ink);
-}
-
-.tm-qa-context {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 10px;
-  padding: 9px 24px;
-  border-bottom: 1px solid var(--line);
-  background: rgba(249, 251, 250, 0.72);
-  color: var(--faint);
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1.6;
-}
-
-.tm-qa-context-tag {
-  padding: 2px 8px;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  color: var(--ink);
-  font-size: 10px;
-  letter-spacing: 0.04em;
-}
-
-.tm-qa-context-item { overflow-wrap: anywhere; }
-.tm-qa-context-sep { color: var(--line-strong); }
-.tm-qa-context-link {
-  margin-left: auto;
-  color: var(--ink);
-  text-decoration: underline;
-  text-underline-offset: 3px;
 }
 
 .tm-qa-layout {
@@ -2024,8 +2031,6 @@ body.tm-qa-standalone #tm-real-chat { height: 100%; min-height: 0; }
     height: calc(100dvh - var(--topbar-h));
     overflow: hidden;
   }
-  .tm-qa-context { padding: 8px 14px; gap: 5px 8px; }
-  .tm-qa-context-link { width: 100%; margin-left: 0; }
   .tm-qa-layout {
     grid-template-columns: minmax(0, 1fr);
     margin: 10px 8px calc(70px + env(safe-area-inset-bottom, 0));
@@ -2061,3 +2066,55 @@ body.tm-qa-standalone #tm-real-chat { height: 100%; min-height: 0; }
 @media (prefers-reduced-motion: reduce) {
   .tm-qa-badge.is-pending { animation: none; }
 }
+
+/* 云端同步状态与对话画像事实 */
+
+.tm-cloud-chip { white-space: nowrap; }
+.tm-cloud-chip[data-state="synced"] { border-color: rgba(47, 107, 51, 0.35); color: #2f6b33; }
+.tm-cloud-chip[data-state="pending"] { color: var(--gray); }
+.tm-cloud-chip[data-state="failed"] { border-color: rgba(196, 64, 44, 0.3); color: var(--loss); }
+
+.tm-cloud-optin {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: var(--sheet-2);
+  cursor: pointer;
+}
+.tm-cloud-optin input { flex: 0 0 auto; margin-top: 3px; accent-color: var(--ink); }
+.tm-cloud-optin span { display: grid; gap: 2px; }
+.tm-cloud-optin strong { color: var(--ink-soft); font-size: 12.5px; font-weight: 500; }
+.tm-cloud-optin em { color: var(--gray); font-size: 11.5px; font-style: normal; line-height: 1.6; }
+
+.tm-qa-profilefact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 11px 0 0;
+  padding: 7px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: var(--sheet-2);
+  color: var(--gray);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.tm-qa-profilefact button {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-soft);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.tm-qa-profilefact.is-muted { color: var(--faint); }
+.tm-qa-profilefact.is-warn { border-color: rgba(196, 64, 44, 0.35); color: var(--loss); }

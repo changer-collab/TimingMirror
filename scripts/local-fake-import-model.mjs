@@ -25,6 +25,35 @@ function behaviorFakeObservation(facts) {
   }
   return observations;
 }
+// 本地意图映射：只用于走查 L2 与澄清分支，不代表模型准确率；也覆盖固定评测集，便于离线回归。
+const FAKE_INTENT_RULES = Object.freeze([
+  { intent: 'out_of_scope', test: /(荐股|推荐.*(股票|标的|基金)|买什么|卖不卖|该买|该卖|能不能买|可以买吗|能买吗|抄底|逃顶|会涨|会跌|会不会涨|会不会跌|涨不涨|跌不跌|预测|目标价|明天买|明天卖|后市|涨停|翻倍|挑.*(?:票|股)|赚钱的票|大盘.*(?:涨|跌|往上|往下)|会往上|会往下)/u },
+  { intent: 'worst_trade', test: /(最错|最伤|最亏|最差|后悔|代价最高|亏损最大|亏最多|哪笔亏)/u },
+  { intent: 'what_if', test: /(如果|要是|假如|假设|倘若|平行推演).*(没卖|没买|不卖|不买|没有卖|没有买|没发生|会差|结果)|(?:没卖|没买|不卖|不买|没有卖|没有买).*(?:会怎样|会差|结果|多少)/u },
+  { intent: 'contract_status', test: /(?:规则|止损|止盈|提醒|规矩).*(?:守得住|守住|生效|有效|被触发|触发过|触发了|触发几次|触发了几次|违反|状态|表现)|守约/u },
+  { intent: 'contract_setup', test: /(帮我定|定个|立规矩|设提醒|设个规则|定规则|加一条|限制自己|提醒规则|仓位建议|帮我设|设置.*规则)/u },
+  { intent: 'meta_calc', test: /(怎么算|如何算|怎么计算|如何计算|口径|公式|怎么得出来|从哪来|来源)/u },
+  { intent: 'meta_trust', test: /(可信|靠谱|准确|复核|验证|对不对|有没有错|算错|放心|稳吗|可靠)/u },
+  { intent: 'how_to_change', test: /(怎么改|如何改|怎么避免|如何避免|下次.*(?:不|怎么|如何)|改进|怎么才能|如何能|有什么办法|不想再|我该怎么做|该怎么办)/u },
+  { intent: 'pattern_explain', test: /(追高|追涨|买在高点|高点买入|栽跟头|同一个错误|反复|手痒|拿不住|刚买就卖|频繁|为什么一|为什么会)/u },
+  { intent: 'profile', test: /(我是谁|我的风格|交易风格|画像|我的习惯|性格|我是什么样|操作特点|哪种交易者|属于哪种)/u },
+  { intent: 'similar_context', test: /(类似|相似|历史上|以前.*(?:遇到|情况|时候)|过往|更早.*记录|一样的局面|跨账单)/u },
+  { intent: 'loss_overview', test: /(整体|组合|账户|持仓|总体|收益|盈亏|亏损|赚|表现|概括|结果)/u },
+]);
+
+function fakeIntentSlots(text) {
+  const slots = {};
+  const symbol = text.match(/(?:^|[^\d])(\d{6})(?!\d)/u);
+  if (symbol) slots.symbol = symbol[1];
+  const date = text.match(/(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?/u);
+  if (date) {
+    const month = String(Number(date[2])).padStart(2, '0');
+    const day = String(Number(date[3])).padStart(2, '0');
+    slots.trade_date = `${date[1]}-${month}-${day}`;
+  }
+  return slots;
+}
+
 const FIXED_TRADES = [
   {
     date: '2024-09-24', symbol: '600519', side: '买入', price: '100.00', quantity: '100',
@@ -55,6 +84,25 @@ export function createLocalFakeImportModel() {
         return { rawText: JSON.stringify({ trades: [], unresolved: [{ row: 2, reason: '日期无法确定（本地 fake）' }] }) };
       }
       return { rawText: JSON.stringify({ trades: FIXED_TRADES, unresolved: [] }) };
+    },
+    // 问答意图（/api/llm/intent）：确定性映射，便于本地走查 L2、低置信度与非法回包分支。
+    // [FAKE_INTENT_INVALID] → 非 JSON；[FAKE_INTENT_LOW] → 置信度 0.2。
+    async intent({ question }) {
+      await wait();
+      const text = String(question ?? '');
+      console.log(`[dev-fake] intent request chars=${text.length}`);
+      if (text.includes('[FAKE_INTENT_INVALID]')) return { rawText: 'not-json' };
+      if (text.includes('[FAKE_INTENT_LOW]')) {
+        return { rawText: JSON.stringify({ intent: 'loss_overview', slots: fakeIntentSlots(text), confidence: 0.2 }) };
+      }
+      const rule = FAKE_INTENT_RULES.find((item) => item.test.test(text));
+      return {
+        rawText: JSON.stringify({
+          intent: rule?.intent ?? 'loss_overview',
+          slots: fakeIntentSlots(text),
+          confidence: rule ? 0.9 : 0.35,
+        }),
+      };
     },
     async vision({ images, source_kind, flow_id, request_id }) {
       await wait();
@@ -200,6 +248,74 @@ export function createLocalFakeImportModel() {
         ? `已核对事实：${displays.join('、')}。这是对已发生交易的事后复述，不预测、不推荐。`
         : '当前没有可复述的已核对事实。';
       return { rawText: JSON.stringify({ answer_text: answer }) };
+    },
+    // 画像解读（/api/llm/profile-summary）：只用摘要中已有的数字，便于本地验证缓存与展示。
+    async profileSummary({ digest }) {
+      await wait();
+      const metrics = digest?.metrics ?? {};
+      const count = digest?.bills?.count ?? 0;
+      const pct = (value) => `${value >= 0 ? '+' : ''}${(value * 100).toFixed(1)}%`;
+      const headline = metrics.drag_pp === null || metrics.drag_pp === undefined
+        ? '先积累更多样本'
+        : metrics.drag_pp > 0.005 ? '择时拖累了收益' : '择时影响有限';
+      const parts = [`已记录 ${count} 份账单、${metrics.trade_count ?? 0} 笔交易。`];
+      if (metrics.actual_return !== null && metrics.actual_return !== undefined) {
+        parts.push(`实际收益 ${pct(metrics.actual_return)}。`);
+      }
+      if (metrics.drag_pp !== null && metrics.drag_pp !== undefined) {
+        parts.push(`择时差异 ${pct(metrics.drag_pp)}。`);
+      }
+      if (Array.isArray(digest?.behavior?.tags) && digest.behavior.tags.length) {
+        parts.push(`行为标签：${digest.behavior.tags.join('、')}。`);
+      }
+      return {
+        rawText: JSON.stringify({
+          schema_version: 1,
+          headline,
+          summary: parts.join(''),
+          strengths: (digest?.behavior?.tags ?? []).slice(0, 2),
+          blind_spots: count < 3 ? ['样本仍然有限，结论可能随账单增加而变化。'] : [],
+          next_actions: ['下次交易前先写下理由，并在复盘时核对。'],
+          confidence: count >= 3 ? 'high' : count >= 1 ? 'medium' : 'low',
+          data_limits: count < 3 ? [`当前只有 ${count} 份账单，不足以形成稳定结论。`] : [],
+        }),
+      };
+    },
+    // 对话画像事实（/api/llm/profile-fact）：本地按句子做保守抽取，证据保留原句。
+    async profileFact({ message }) {
+      await wait();
+      const text = String(message ?? '');
+      console.log(`[dev-fake] profile-fact request chars=${text.length}`);
+      if (text.includes('[FAKE_FACT_INVALID]')) return { rawText: 'not-json' };
+      if (text.includes('[FAKE_NO_FACTS]')) return { rawText: JSON.stringify({ facts: [] }) };
+      const sentences = text.split(/[。！？!?\n]/u).map((s) => s.trim()).filter(Boolean);
+      const facts = [];
+      for (const sentence of sentences) {
+        if (!/投资|交易|股票|基金|仓位|回撤|风险|收益|亏损|止损|止盈|持有|买入|卖出|理财|资金|纪律|目标|计划/u.test(sentence)) continue;
+        if (/[？?]$/u.test(sentence)) continue;
+        let kind = null;
+        let key = null;
+        if (/回撤|亏损|风险/u.test(sentence) && /\d/u.test(sentence)) {
+          kind = 'risk_tolerance';
+          key = 'drawdown_limit';
+        } else if (/目标|希望|计划|长期/u.test(sentence)) {
+          kind = 'goal';
+          key = 'investment_goal';
+        } else if (/不能|不碰|限制|只用|只做/u.test(sentence)) {
+          kind = 'constraint';
+          key = 'trading_constraint';
+        } else if (/喜欢|偏好|倾向/u.test(sentence)) {
+          kind = 'preference';
+          key = 'investment_preference';
+        } else if (/我一般|我通常|总是|习惯|经常/u.test(sentence)) {
+          kind = 'habit';
+          key = 'trading_habit';
+        }
+        if (!kind || [...sentence].length > 120) continue;
+        facts.push({ kind, key, value: sentence, evidence: sentence });
+        if (facts.length >= 3) break;
+      }
+      return { rawText: JSON.stringify({ facts }) };
     },
   });
 }

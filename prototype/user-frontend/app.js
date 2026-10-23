@@ -93,13 +93,14 @@ import { renderRealProfile } from './realProfile.js';
     evidence: false,
   };
 
-  const ROUTES = ['home', 'import', 'report', 'chat', 'me'];
+  const ROUTES = ['home', 'import', 'report', 'chat', 'scenario', 'me'];
   const ROUTE_ALIASES = { rules: 'me', contract: 'me' };
   const TITLES = {
     home: '择时镜子 TimingMirror · 把交易照见成证据',
     import: '导入账单 · 择时镜子',
     report: '报告 · 择时镜子',
     chat: '问镜子 · 择时镜子',
+    scenario: '操作复盘 · 择时镜子',
     me: '个人中心 · 择时镜子',
   };
 
@@ -188,6 +189,34 @@ import { renderRealProfile } from './realProfile.js';
     return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   }
 
+  function calibrateScrollbarWidth() {
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:absolute;top:-9999px;left:-9999px;width:100px;height:100px;overflow:scroll;';
+    document.body.appendChild(probe);
+    const width = probe.offsetWidth - probe.clientWidth;
+    probe.remove();
+    document.documentElement.style.setProperty('--tm-scrollbar-w', `${width}px`);
+  }
+
+  function alignChatBanner() {
+    if (state.route !== 'chat' || !document.body.classList.contains('tm-qa-standalone')) return;
+    const shell = document.querySelector('#app > .tm-bill-banner-shell');
+    const main = document.getElementById('tm-main');
+    if (!shell || !main) return;
+    const style = getComputedStyle(shell);
+    const rootStyle = getComputedStyle(document.documentElement);
+    const scrollbar = parseFloat(rootStyle.getPropertyValue('--tm-scrollbar-w')) || 0;
+    const maxWidth = parseFloat(style.maxWidth);
+    const paddingLeft = parseFloat(style.paddingLeft) || 0;
+    const available = Math.max(0, main.clientWidth - scrollbar);
+    const width = Math.min(available, Number.isFinite(maxWidth) ? maxWidth : available);
+    const left = Math.max(0, (available - width) / 2);
+    shell.style.width = `${width}px`;
+    shell.style.marginLeft = `${left}px`;
+    shell.style.marginRight = '0';
+    shell.style.paddingRight = `${paddingLeft}px`;
+  }
+
   function scrollTop() {
     const html = document.documentElement;
     const previous = html.style.scrollBehavior;
@@ -256,6 +285,7 @@ import { renderRealProfile } from './realProfile.js';
         ${navLink('import', '导入')}
         ${navLink('report', '报告')}
         ${navLink('chat', '问答')}
+        ${navLink('scenario', '复盘')}
       </nav>
       <div class="topbar-right">
         <nav class="view-switch" aria-label="界面视图">
@@ -277,11 +307,13 @@ import { renderRealProfile } from './realProfile.js';
       ['import', '导入'],
       ['report', '报告'],
       ['chat', '问答'],
+      ['scenario', '复盘'],
       ['me', '我的'],
     ];
     mobileNavEl.innerHTML = mobile.map(([route, label]) => {
       const current = state.route === route ? ' aria-current="page"' : '';
-      return `<a href="#/${route}"${current}>${label}</a>`;
+      const aria = route === 'scenario' ? ' aria-label="操作复盘"' : '';
+      return `<a href="#/${route}"${current}${aria}>${label}</a>`;
     }).join('');
 
     const footerNote = statusInfo.tone === 'real'
@@ -304,6 +336,7 @@ import { renderRealProfile } from './realProfile.js';
               <li><a href="#/import">导入账单</a></li>
               <li><a href="#/report" data-demo-link data-demo-route="report">示例报告</a></li>
               <li><a href="#/chat">问镜子</a></li>
+              <li><a href="#/scenario">操作复盘</a></li>
               <li><a href="#/me">个人中心</a></li>
             </ul>
           </div>
@@ -333,7 +366,7 @@ import { renderRealProfile } from './realProfile.js';
         </div>
         <div class="page-head-grid">
           <h1>${title}</h1>
-          <div class="page-intro">${intro}</div>
+          <div class="page-intro${intro.includes('class="report-meta"') ? ' page-intro-wide' : ''}">${intro}</div>
         </div>
         <div class="page-head-rule" aria-hidden="true"></div>
       </div>
@@ -378,6 +411,38 @@ import { renderRealProfile } from './realProfile.js';
     if (bridge.hasRealState()) return importStatusText();
     if (bridge.isDemoSelected()) return { text: '示例模式', tone: 'demo' };
     return { text: '空状态', tone: 'empty' };
+  }
+
+  function confirmedBillBanner() {
+    const bill = sharedState().bill ?? {};
+    if (state.route === 'me' || bill.status !== 'confirmed' || bill.sourceType !== 'local') return '';
+    const demo = !!bill.demo;
+    const name = demo ? (bill.demoScenario?.title || '示例场景') : (bill.fileName || '本地账单');
+    const fileLabel = bill.fileName && bill.fileName !== name ? ` · ${esc(bill.fileName)}` : '';
+    const links = demo
+      ? [
+        ...(state.route !== 'report' ? ['<a class="text-link" href="#/report">查看示例报告 →</a>'] : []),
+        ...(state.route !== 'chat' ? ['<a class="text-link" href="#/chat">去示例问答 →</a>'] : []),
+        '<a class="text-link" href="#/import">换个场景 →</a>',
+      ]
+      : [
+        '<a class="text-link" href="#/report">查看报告 →</a>',
+        '<a class="text-link" href="#/chat">去事实问答 →</a>',
+        '<a class="text-link" href="#/scenario">历史情境测试 →</a>',
+        '<a class="text-link" href="#/import">更换账单 →</a>',
+      ];
+    const summary = demo
+      ? `${esc(name)}${fileLabel} · 合成账单与示例行情，仅用于演示。`
+      : `${esc(name)} · 报告、问答和规则测试都使用这笔账单。`;
+    return `<div class="container tm-bill-banner-shell">
+      <div class="tm-bill-banner" role="status">
+        <div class="tm-bill-banner-main">
+          <strong>${demo ? '当前是示例场景' : '当前有已确认的本地账单'}</strong>
+          <span>${summary}</span>
+        </div>
+        <div class="tm-bill-banner-links">${links.join('')}</div>
+      </div>
+    </div>`;
   }
 
   function modeChipText() {
@@ -510,7 +575,7 @@ import { renderRealProfile } from './realProfile.js';
       intro: `<div class="report-meta">
         <div class="report-account"><span>REAL BILL / 已确认本地账单</span><span>${esc(bill.fileName || '未知文件')}</span></div>
         <dl>
-          <div><dt>数据来源</dt><dd>本机账单 · 未上传</dd></div>
+          <div><dt>数据来源</dt><dd>本机账单 · CSV 未上传</dd></div>
           <div><dt>结果</dt><dd>仅展示已复核事实</dd></div>
           <div><dt>状态</dt><dd><span class="status-dot">真实账单</span></dd></div>
         </dl>
@@ -530,29 +595,39 @@ import { renderRealProfile } from './realProfile.js';
       <section class="tm-workspace-head">
         <p class="mono-label">MY MIRROR / 个人中心</p>
         <h1>画像与规则</h1>
-        <p class="muted">画像只从已复核账单派生；规则保存在当前浏览器，历史情境测试在规则工作区最上方。</p>
+        <p class="muted">画像来自已复核账单与你在对话中明确说过的事实；规则保存在当前浏览器，操作复盘已独立为单独页面。</p>
       </section>
       <div id="tm-real-profile"></div>
       <section class="tm-me-rules" aria-label="规则工作区">
         <div class="tm-me-rules-head">
-          <p class="mono-label">RULES WORKSPACE / 规则工作区</p>
-          <p class="muted">保存、停用与版本记录都由你确认；不会自动交易。</p>
+          <div>
+            <p class="mono-label">RULES WORKSPACE / 规则工作区</p>
+            <p class="muted">保存、停用与版本记录都由你确认；不会自动交易。</p>
+          </div>
+          <a class="text-link" href="#/scenario">打开操作复盘 →</a>
         </div>
         <div id="tm-real-rules"></div>
       </section>
     </div>`;
   }
 
+  function scenarioPage() {
+    return `${confirmedBillBanner()}
+    ${pageHead({
+      code: 'RULES / REVIEW',
+      title: '操作复盘',
+      intro: `<p>按账单里的每一笔真实操作，逐笔对照当前规则。画像只描述交易习惯，不参与判定。</p>`,
+      right: '<span class="sample-tag">按真实操作复盘</span><a class="text-link" href="#/me">返回规则管理</a>',
+    })}
+    <div class="container page-body tm-scenario-page">
+      <div id="tm-real-scenario"></div>
+    </div>`;
+  }
+
   /* ---------- home ---------- */
 
   function homePage() {
-    const sharedBill = sharedState().bill;
-    const realBanner = isConfirmedLocal()
-      ? (sharedBill.demo
-        ? `<div class="container tm-real-home-banner"><strong>当前是示例场景。</strong><span>${esc(sharedBill.demoScenario?.title || '示例报告')} · 示例交易与 Tushare 历史行情快照，仅用于演示。</span><a class="text-link" href="#/report">查看示例报告 →</a><a class="text-link" href="#/import">换个场景 →</a></div>`
-        : `<div class="container tm-real-home-banner"><strong>当前有已确认的本地账单。</strong><span>${esc(sharedBill.fileName || '本地账单')} · 报告、问答和助手都使用这笔账单。</span><a class="text-link" href="#/report">查看真实报告 →</a><a class="text-link" href="#/chat">去事实问答 →</a></div>`)
-      : '';
-    return `${realBanner}<div class="home">
+    return `${confirmedBillBanner()}<div class="home">
       <section class="hero">
         <div class="container hero-grid">
           <div class="hero-copy reveal">
@@ -846,7 +921,7 @@ import { renderRealProfile } from './realProfile.js';
   }
 
   function importPage() {
-    return '<div id="tm-real-import"></div>';
+    return `${confirmedBillBanner()}<div id="tm-real-import"></div>`;
   }
 
   /* ---------- report ---------- */
@@ -970,14 +1045,14 @@ import { renderRealProfile } from './realProfile.js';
 
   function reportPage() {
     const mode = pageMode('report');
-    if (mode === 'real') return realReportPage();
+    if (mode === 'real') return `${confirmedBillBanner()}${realReportPage()}`;
     if (mode === 'empty') return emptyStatePage('report');
     const chart = buildChart();
     const localNotice = (state.bill.source === 'local' && (state.bill.confirmed || state.bill.status === 'loaded'))
       ? `<div class="notice" role="status"><div>你导入的「${esc(state.bill.fileName)}」已通过本机基础校验（${state.bill.trades.length} 笔交易）。本原型尚未接入计算引擎，<strong>报告数字仍为示例数据</strong>，这里只演示从导入、核对到报告的完整流程。</div></div>`
       : '';
 
-    return `${pageHead({
+    return `${confirmedBillBanner()}${pageHead({
       code: 'STEP 02 / REPORT',
       title: '同一把尺，<br>量出差距。',
       intro: `<div class="report-meta">
@@ -1275,7 +1350,7 @@ import { renderRealProfile } from './realProfile.js';
 
   function chatPage() {
     const mode = pageMode('chat');
-    if (mode === 'real') return realChatPage();
+    if (mode === 'real') return `${confirmedBillBanner()}${realChatPage()}`;
     if (mode === 'empty') return emptyStatePage('chat');
     const messages = state.chat.messages.map(messageHTML).join('');
     const typing = state.chat.pending
@@ -1287,7 +1362,7 @@ import { renderRealProfile } from './realProfile.js';
       return `<button type="button" data-question="${esc(q)}"${online ? ' class="is-online" title="调用站点后端复述，数字仍在本机核对"' : ''}${state.chat.pending ? ' disabled' : ''}>${esc(q)}</button>`;
     }).join('');
 
-    return `${pageHead({
+    return `${confirmedBillBanner()}${pageHead({
       code: 'STEP 03 / ASK',
       title: '问它为什么，<br>别问它买什么。',
       intro: `<p>镜子只复述这份账单里的事实，并把每个回答的来处摆出来。它不预测涨跌，不推荐标的，也不替你做决定。</p>
@@ -1967,6 +2042,7 @@ import { renderRealProfile } from './realProfile.js';
     else if (state.route === 'import') html = importPage();
     else if (state.route === 'report') html = reportPage();
     else if (state.route === 'chat') html = chatPage();
+    else if (state.route === 'scenario') html = scenarioPage();
     else if (state.route === 'me') html = mePage();
     app.innerHTML = html;
 
@@ -1986,10 +2062,14 @@ import { renderRealProfile } from './realProfile.js';
       renderRealProfile(document.getElementById('tm-real-profile'), bridge.getCtx());
       bridge.mountContractView(document.getElementById('tm-real-rules'));
     }
+    if (state.route === 'scenario') {
+      bridge.mountScenarioView(document.getElementById('tm-real-scenario'));
+    }
 
     bridge.bindAssistantToggle();
     bridge.renderAssistant();
     bridge.applyAssistantShell();
+    alignChatBanner();
   }
 
   /* ---------- global events ---------- */
@@ -2042,6 +2122,12 @@ import { renderRealProfile } from './realProfile.js';
     }
   }
 
+  calibrateScrollbarWidth();
   bridge.initBridge({ onChange: onSharedChange });
+  if (typeof ResizeObserver === 'function') {
+    const main = document.getElementById('tm-main');
+    if (main) new ResizeObserver(() => alignChatBanner()).observe(main);
+  }
+  window.addEventListener('resize', alignChatBanner);
   render();
 })();

@@ -24,6 +24,9 @@ import { getPdfPageCount, renderPdfPages } from '../../src/engine/pdfRender.js';
 import { prepareImageFile } from '../../src/engine/visionImage.js';
 import { finalizeConfirmedBill } from '../../src/agent/importFinalize.js';
 import { REPORT_SCENARIOS, matchReportScenario } from '../../src/demo/reportScenarios.js';
+import {
+  getFullTradesPreference, setFullTradesPreference, billSyncStatus, cloudStatusText, cloudStatusTitle,
+} from './cloudSync.js';
 
 const FILE_ACCEPT = '.csv,.tsv,.xlsx,.pdf,.txt,.png,.jpg,.jpeg,.webp,text/csv,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/*';
 const SOURCE_LABEL = Object.freeze({ csv: 'CSV', tsv: 'TSV', xlsx: 'Excel', pdf: 'PDF', text: '粘贴文字', image: '截图', unsupported: '文件' });
@@ -416,13 +419,11 @@ function billWarningsHTML(bill) {
 
 function details(rec) {
   const text = String(rec.content ?? '');
-  const trace = rec.trace;
   return `<details class="tm-import-details">
     <summary>原文与识别信息</summary>
     <div class="tm-details-body">
-      <p>${esc(SOURCE_LABEL[rec.sourceKind] || '文件')} · ${rec.fileName ? esc(rec.fileName) : '未选择文件'} · 模型请求 ${rec.modelCalls ?? 0}/${rec.budgetMax ?? 2}${rec.flowId ? ` · 任务 ${esc(rec.flowId)}` : ''}</p>
-      ${text ? `<pre class="tm-original">${esc(text.slice(0, 4000))}${text.length > 4000 ? '\n…' : ''}</pre>` : '<p class="tm-note">没有保留可展开的识别文字。</p>'}
-      ${trace ? `<p class="tm-tech">trace：${esc((trace.messages ?? []).map((m) => m.type).join(' → '))} · flow ${esc(trace.flow_id ?? '—')}</p>` : ''}
+      <p>${esc(SOURCE_LABEL[rec.sourceKind] || '文件')} · ${rec.fileName ? esc(rec.fileName) : '未选择文件'}</p>
+      <pre class="tm-original">${esc(text.slice(0, 4000))}${text.length > 4000 ? '\n…' : ''}</pre>
     </div>
   </details>`;
 }
@@ -436,7 +437,7 @@ function aiButton(state, rec) {
   const canText = ['csv', 'tsv', 'xlsx', 'pdf', 'text'].includes(rec.sourceKind) && text.length > 0;
   const canVision = imageCount > 0 && rec.vision?.status === 'ready';
   if (!canText && !canVision) return '';
-  if (rec.budgetExhausted) return `<p class="tm-note">本次导入任务的模型请求次数已用完；仍可手动修改或重新解析。</p>`;
+  if (rec.budgetExhausted) return `<p class="tm-note">本次 AI 识别次数已用完；仍可手动修改或重新解析。</p>`;
   const label = imageCount ? `让 AI 识别这 ${imageCount} 张图` : (rec.modelCalls > 0 ? `再次让 AI 识别（剩 ${Math.max(0, rec.budgetMax - rec.modelCalls)} 次）` : '让 AI 帮我识别');
   return `<div class="tm-ai-row"><button class="btn btn-primary" type="button" data-action="${imageCount ? 'ai-vision' : 'ai-text'}">${label}</button><span class="tm-note">${sendNotice(rec)}</span></div>`;
 }
@@ -506,7 +507,6 @@ function draftPanelHTML(state, rec) {
       <span>文件 <b class="file-line">${esc(rec.fileName || '粘贴文字')}</b></span>
       <span>期间 <b>${range}</b></span>
       <span>标的 <b>${symbols} 个</b></span>
-      <span>模型请求 <b>${rec.modelCalls ?? 0}/${rec.budgetMax ?? 2}</b></span>
     </div>
     <p class="tm-note">已选 ${summary.included} 行 · 可导入 ${summary.valid} 行${summary.duplicate ? ` · 疑似重复 ${summary.duplicate}` : ''}</p>
     ${rec.notice ? `<div class="bill-warning" role="status"><strong>${esc(rec.notice)}</strong><span>导入前仍需要你逐行核对并校验。</span></div>` : ''}
@@ -537,13 +537,17 @@ function billPanelHTML(state, rec) {
   const statusTag = confirmed
     ? '<span class="status-tag ok">已确认</span>'
     : '<span class="status-tag ok">本地校验通过</span>';
+  const sync = billSyncStatus(bill);
+  const cloudTag = confirmed
+    ? `<span class="status-tag tm-cloud-chip" data-role="cloud-sync" data-context="${esc(bill.contextId ?? '')}" data-state="${esc(sync.state)}" title="${esc(cloudStatusTitle(sync))}">${esc(cloudStatusText(sync))}</span>`
+    : '<span class="status-tag">仅本机</span>';
   return `<section class="panel bill" id="bill" aria-labelledby="bill-title">
     <div class="bill-head">
       <div>
         <p class="mono-label">BILL / 交易核对</p>
         <h2 id="bill-title">已读取 ${trades.length} 笔交易。</h2>
       </div>
-      <div class="bill-tags">${statusTag}<span class="status-tag">仅本机</span></div>
+      <div class="bill-tags">${statusTag}${cloudTag}</div>
     </div>
     <div class="bill-meta">
       <span>来源 <b>${sourceLabel}</b></span>
@@ -555,10 +559,14 @@ function billPanelHTML(state, rec) {
     ${billWarningsHTML(bill)}
     ${errorLine(rec)}
     ${tradesTableHTML(trades)}
+    ${confirmed ? '' : `<label class="tm-cloud-optin">
+      <input type="checkbox" data-role="full-trades" ${getFullTradesPreference() ? 'checked' : ''}>
+      <span><strong>同时云端保存完整成交明细</strong><em>默认只同步统计与内容指纹；勾选后才上传成交行，可随时删除。</em></span>
+    </label>`}
     <div class="bill-actions">
       <div class="bill-actions-note">
         <span class="plus" aria-hidden="true">＋</span>
-        <p class="fine">确认只用于生成本地分析，不会上传文件，也不会执行交易。费用与税费按列展示；报告中的数字以已确认账单为准。</p>
+        <p class="fine">确认后生成本地报告；账单统计会同步到云端画像，原始 CSV 与文件名默认不上传。不会执行交易。</p>
       </div>
       <div class="tm-action-group">
         ${rec?.status === 'accepted' && rec.draft ? '<button class="btn btn-ghost btn-sm" type="button" data-action="return-draft">返回修改草稿</button>' : ''}
@@ -587,7 +595,6 @@ function visionPanelHTML(state, rec) {
     <div class="bill-meta">
       <span>来源 <b>${vision.kind === 'pdf_scan' ? '扫描 PDF' : '截图'}</b></span>
       <span>文件 <b class="file-line">${esc(rec.fileName || vision.fileName || '—')}</b></span>
-      <span>模型请求 <b>${rec.modelCalls ?? 0}/${rec.budgetMax ?? 2}</b></span>
     </div>
     ${errorLine(rec)}
     ${imageStrip(vision)}
@@ -634,7 +641,7 @@ export function renderRealImport(host, ctx) {
   const rec = state.importRecovery ?? defaultImportRecovery();
   const bill = state.bill ?? {};
   const hasSource = !!(rec.fileName || bill.fileName);
-  const hasDetails = hasSource && (String(rec.content ?? '').trim() || rec.trace || rec.draft);
+  const hasDetails = hasSource && String(rec.content ?? '').trim();
   host.innerHTML = `${pageHeadHTML()}
     <div class="container page-body">
       <div class="import-grid">
@@ -695,6 +702,8 @@ export function renderRealImport(host, ctx) {
       handlePaste(ctx, pasteInput.value);
     }
   });
+  const fullTrades = host.querySelector('[data-role="full-trades"]');
+  fullTrades?.addEventListener('change', () => setFullTradesPreference(fullTrades.checked));
 
   host.querySelectorAll('[data-action]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -714,7 +723,12 @@ export function renderRealImport(host, ctx) {
       } else if (action === 'validate') {
         validateDraft(ctx);
       } else if (action === 'confirm') {
-        finalizeConfirmedBill({ state, set: ctx.set, go: ctx.go, client: ctx.importRecovery });
+        const includeTrades = host.querySelector('[data-role="full-trades"]')?.checked === true;
+        setFullTradesPreference(includeTrades);
+        const result = finalizeConfirmedBill({ state, set: ctx.set, go: ctx.go, client: ctx.importRecovery });
+        if (result?.ok && typeof ctx.cloudDeps?.syncBill === 'function') {
+          Promise.resolve(ctx.cloudDeps.syncBill({ bill: state.bill, includeTrades })).catch(() => {});
+        }
       } else if (action === 'return-draft') {
         clearImportFeedback();
         ctx.set({ bill: freshBill({ contextId: state.bill.contextId, status: 'none', sourceType: 'local', fileName: state.bill.fileName, fileSize: state.bill.fileSize }), importRecovery: { ...state.importRecovery, status: 'draft' } });

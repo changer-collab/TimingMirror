@@ -85,10 +85,9 @@ function pageContext(state, deps) {
   const confirmed = isConfirmedLocal(bill);
   const bundle = typeof deps?.getReportBundle === 'function' ? deps.getReportBundle(bill) : null;
   const published = bundle?.review?.portfolio_published === true;
-  const versions = Array.isArray(state.contracts?.versions) ? state.contracts.versions.length : 0;
-  const report = published ? '已发布' : (bundle ? '未发布/阻断' : '尚未载入');
+  const report = published ? null : (bundle ? '未发布/阻断' : '尚未载入');
   const asOf = bundle?.asOfDate ?? bill.supportScope?.asOfDate ?? null;
-  return `当前页：${PAGE_LABEL[state.route] ?? '页面'} · 账单：${confirmed ? (bill.fileName || '已确认本地账单') : '未确认'} · 报告：${report}${asOf ? ` · 行情截止：${asOf}` : ''}${versions ? ` · 规则版本：${versions}` : ''}`;
+  return `当前页：${PAGE_LABEL[state.route] ?? '页面'} · 账单：${confirmed ? (bill.fileName || '已确认本地账单') : '未确认'}${report ? ` · 报告：${report}` : ''}${asOf ? ` · 行情截止：${asOf}` : ''}`;
 }
 
 function chipEntry(chip) {
@@ -117,7 +116,7 @@ export function pageInfo(state, deps) {
   if (state.route === 'chat') {
     return {
       intro: confirmed
-        ? '当前是事实问答页。右侧助手也接入这份账单的五个问题和页面 FAQ；「组合表现」会请求在线复述。'
+        ? '当前是事实问答页。右侧助手也使用这份账单的五个问题和页面 FAQ；「组合表现」会请求在线复述。'
         : '当前是事实问答页。先导入并确认账单，才能基于已发布报告回答。',
       context,
       chips: confirmed ? [...QA_CHIPS.map(chipEntry), ...FAQ.chat.map(faqEntry)] : FAQ.reportEmpty.map(faqEntry),
@@ -175,7 +174,7 @@ function localFailure(text, code = null, link = null) {
     role: 'assistant',
     kind: 'notice',
     text,
-    tag: '本地暂不可用',
+    tag: '本次暂时无法回答',
     tone: 'warn',
     detail: code ? `原因：${code}` : null,
     link,
@@ -190,7 +189,7 @@ function onlineFailure(result) {
     role: 'assistant',
     kind: 'notice',
     text: CHAT_ONLINE_FALLBACK_TEXT,
-    tag: '在线复述已兜底',
+    tag: '在线复述未完成',
     tone: 'warn',
     detail: `原因：${chatFailureText(code)}（${String(code)}）${result?.message ? `；${result.message}` : ''}`,
     link: code === 'W_QA_REPORT_NOT_READY' || code === 'W_CHAT_REVIEW_UNAVAILABLE' ? { href: '#/report', label: '打开报告页' } : null,
@@ -204,7 +203,7 @@ function onlineSuccess(result) {
     kind: 'online',
     online: true,
     text: result.text,
-    tag: '在线复述 · 本机数字校验通过',
+    tag: '在线复述 · 数字已在本机核对',
     detail: `${numberCheckDetail(result.number_check)}；仅表示可识别数字子集检查通过，不代表事实含义正确。`,
   };
 }
@@ -220,7 +219,6 @@ function chipMessage(chip, answer, state) {
     answer,
     tag: '本地事实 · 无模型请求',
     tone: 'ok',
-    detail: `计划模板：${answer.template_id ?? '—'}（${answer.plan_status ?? '—'}）；只读取当前账单报告缓存，不执行模型或行情请求。`,
   };
 }
 
@@ -314,12 +312,6 @@ function messageNode(message, ctx) {
     el('a', { class: 'qa-link', href: message.link.href }, [message.link.label]),
   ]));
   if (message.tag) box.append(el('div', { class: 'qa-tag' }, [message.tag]));
-  if (message.detail) {
-    box.append(el('details', { class: 'assistant-tech' }, [
-      el('summary', {}, ['技术详情']),
-      el('div', { class: 'assistant-tech-body' }, [message.detail]),
-    ]));
-  }
   return box;
 }
 
@@ -477,7 +469,7 @@ export async function sendText(ctx, raw) {
   }
   if (state.route === 'contract') {
     appendLocal(ctx, text, localNotice(
-      '当前是规则页。新增或修改规则请使用下方“让 AI 理解”输入框；账单问题请点上方芯片，或到报告页自由提问。',
+      '当前是规则页。新增、修改或保存规则请在规则工作区操作；账单问题请点上方芯片，或到报告页自由提问。',
       '页面提示',
       'W_QA_RULE_PAGE',
     ), contextId);
@@ -578,7 +570,7 @@ export function renderQaAssistant(ctx) {
   });
   root.append(form);
   root.append(el('p', { class: 'qa-fine' }, [
-    '本地问题不请求模型；只有点击「组合表现」或报告/规则页自由提问才会请求在线复述。原始账单不上传。',
+    '本地问题不请求模型；只有点击「组合表现」或在报告/问答页自由提问才会请求在线复述。原始账单不上传。',
   ]));
   return root;
 }

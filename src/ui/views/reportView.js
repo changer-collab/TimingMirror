@@ -9,7 +9,7 @@ import { el } from '../components.js';
 import * as demo from '../../demo/adapter.js';
 import { renderGhostChart } from '../components/ghostChart.js';
 
-const WIRING_NOTE = '契约页已接入候选模板与历史情境模拟（候选口径，哈希待 M0-C1 冻结），契约不会自动改变本报告结论。未接入：实时/分钟级行情（示例账单与本地账单均走最新已收盘日线，非实时）、对话页事实回跳；在线问答仅接站点同源复述边界，尚未完成真实服务验证。';
+const WIRING_NOTE = '契约页已接入候选模板与操作复盘（候选口径，哈希待 M0-C1 冻结），契约不会自动改变本报告结论。未接入：实时/分钟级行情（示例账单与本地账单均走最新已收盘日线，非实时）、对话页事实回跳；在线问答仅接站点同源复述边界，尚未完成真实服务验证。';
 const NO_TRADE_ADVICE = '不要据此作交易判断。';
 const CORPORATE_ACTION_NOTICE = '公司行为限制：v1 不自动识别送转、拆合股、配股等股数事件；涉及相关区间的账单可能估值不准确，请核对后再使用。';
 

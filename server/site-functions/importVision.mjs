@@ -1,4 +1,4 @@
-// 视觉识别补救阶段（Qwen3-VL 图片批次）· 服务端无状态校验。
+// 视觉识别阶段（DeepSeek 多模态图片批次；DashScope 仅保留人工回滚）· 服务端无状态校验。
 // 只接受 JPEG/PNG Base64 图片；不接受文件名、URL、账单正文或 flow 状态。
 // flow_id/request_id 仅用于审计透传；本函数不计数、不强制配额。
 import { validateImportRecoverResponse } from './importRecover.mjs';

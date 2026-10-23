@@ -1,6 +1,7 @@
 // 站点 Edge Function 的 HTTP handler（Web Request/Response；可注入 fake transport）。
-// 路由由平台挂在 /functions/v1/app 下；这里按 /api/llm/intent、/api/llm/restate、/api/llm/rule、/api/llm/rule-intent、/api/llm/result-explanation、/api/llm/scenario-judgment、/api/llm/custom-rule-judgment、/api/llm/import-recover、/api/llm/import-vision 与 /api/market/snapshot 后缀分派。
-// 不记录 question/facts/text/rawText/行情请求，不返回上游原始错误或 token。
+// 路由由平台挂在 /functions/v1/app 下；这里按 /api/llm/intent、/api/llm/restate、/api/llm/rule、/api/llm/rule-intent、/api/llm/result-explanation、/api/llm/scenario-judgment、/api/llm/custom-rule-judgment、/api/llm/import-recover、/api/llm/import-vision、/api/market/snapshot 与 /api/bills、/api/profile 后缀分派。
+// 不记录 question/facts/text/rawText/行情请求/账单内容，不返回上游原始错误或 token。
+import { dataMethodNotAllowed, handleDataRequest, resolveDataRoute } from './dataApi.mjs';
 import { projectFacts } from './validation.mjs';
 import { DYNAMIC_CACHE_ARTIFACT, MARKET_MAX_RANGE_DAYS, MARKET_MAX_SYMBOLS, isMarketDate } from './market.mjs';
 import {
@@ -18,6 +19,19 @@ import {
   normalizeImportVisionRequest,
   validateImportVisionResponse,
 } from './importVision.mjs';
+import {
+  PROFILE_SUMMARY_CODES,
+  buildProfileSummaryFallback,
+  normalizeProfileSummaryRequest,
+  profileDigestHash,
+  validateProfileSummaryResponse,
+} from './profileSummary.mjs';
+import {
+  PROFILE_FACT_CODES,
+  normalizeProfileFactRequest,
+  validateProfileFactResponse,
+} from './profileFact.mjs';
+import { validateChatIntentResponse } from './chatIntent.mjs';
 import {
   RESULT_EXPLANATION_CODES,
   normalizeResultExplanationRequest,
@@ -67,6 +81,10 @@ export const SITE_FUNCTION_CODES = Object.freeze({
   IMPORT_RECOVER_RESPONSE: IMPORT_RECOVER_CODES.RESPONSE,
   IMPORT_VISION_REQUEST_INVALID: IMPORT_VISION_CODES.REQUEST_INVALID,
   IMPORT_VISION_RESPONSE: IMPORT_VISION_CODES.RESPONSE,
+  PROFILE_SUMMARY_REQUEST_INVALID: PROFILE_SUMMARY_CODES.REQUEST_INVALID,
+  PROFILE_SUMMARY_RESPONSE: PROFILE_SUMMARY_CODES.RESPONSE,
+  PROFILE_FACT_REQUEST_INVALID: PROFILE_FACT_CODES.REQUEST_INVALID,
+  PROFILE_FACT_RESPONSE: PROFILE_FACT_CODES.RESPONSE,
   RESULT_EXPLANATION_REQUEST_INVALID: RESULT_EXPLANATION_CODES.REQUEST_INVALID,
   RESULT_EXPLANATION_RESPONSE: RESULT_EXPLANATION_CODES.RESPONSE,
   SCENARIO_JUDGMENT_REQUEST_INVALID: SCENARIO_JUDGMENT_CODES.REQUEST_INVALID,
@@ -106,6 +124,10 @@ const MESSAGES = Object.freeze({
   [SITE_FUNCTION_CODES.IMPORT_RECOVER_RESPONSE]: '账单识别响应未通过服务端校验',
   [SITE_FUNCTION_CODES.IMPORT_VISION_REQUEST_INVALID]: '图片识别请求未通过服务端校验',
   [SITE_FUNCTION_CODES.IMPORT_VISION_RESPONSE]: '图片识别响应未通过服务端校验',
+  [SITE_FUNCTION_CODES.PROFILE_SUMMARY_REQUEST_INVALID]: '画像解读请求未通过服务端校验',
+  [SITE_FUNCTION_CODES.PROFILE_SUMMARY_RESPONSE]: '画像解读响应未通过服务端校验',
+  [SITE_FUNCTION_CODES.PROFILE_FACT_REQUEST_INVALID]: '画像事实请求未通过服务端校验',
+  [SITE_FUNCTION_CODES.PROFILE_FACT_RESPONSE]: '画像事实响应未通过服务端校验',
   [SITE_FUNCTION_CODES.RESULT_EXPLANATION_REQUEST_INVALID]: '结果解释请求未通过服务端校验',
   [SITE_FUNCTION_CODES.RESULT_EXPLANATION_RESPONSE]: '结果解释响应未通过服务端校验',
   [SITE_FUNCTION_CODES.SCENARIO_JUDGMENT_REQUEST_INVALID]: '情景判断请求未通过服务端校验',
@@ -282,6 +304,8 @@ export function createHandler({
   marketTransport = null,
   maxBodyBytes = 64 * 1024,
   maxVisionBodyBytes = 8 * 1024 * 1024,
+  now = () => new Date().toISOString(),
+  randomUUID = () => crypto.randomUUID(),
 } = {}) {
   if (!Number.isInteger(maxBodyBytes) || maxBodyBytes <= 0) {
     throw new TypeError('maxBodyBytes 必须为正整数');
@@ -289,7 +313,7 @@ export function createHandler({
   if (!Number.isInteger(maxVisionBodyBytes) || maxVisionBodyBytes <= 0) {
     throw new TypeError('maxVisionBodyBytes 必须为正整数');
   }
-  return async function handler(request) {
+  return async function handler(request, { supabase = null } = {}) {
     let url;
     try {
       url = new URL(request.url);
@@ -297,6 +321,12 @@ export function createHandler({
       return errorResponse(400, SITE_FUNCTION_CODES.REQUEST_INVALID);
     }
     const path = url.pathname;
+    const dataRoute = resolveDataRoute(path, request.method);
+    if (dataRoute) {
+      if (dataRoute.methodNotAllowed) return dataMethodNotAllowed(dataRoute.allow);
+      if (!dataRoute.kind) return errorResponse(404, SITE_FUNCTION_CODES.NOT_FOUND);
+      return handleDataRequest({ request, supabase, route: dataRoute, now, randomUUID });
+    }
     const stage = path.endsWith('/api/llm/rule-intent')
       ? 'ruleIntent'
       : path.endsWith('/api/llm/custom-rule-judgment')
@@ -311,7 +341,11 @@ export function createHandler({
               ? 'importRecover'
               : path.endsWith('/api/llm/import-vision')
                 ? 'importVision'
-                : path.endsWith('/api/llm/intent')
+                : path.endsWith('/api/llm/profile-summary')
+                  ? 'profileSummary'
+                  : path.endsWith('/api/llm/profile-fact')
+                    ? 'profileFact'
+                    : path.endsWith('/api/llm/intent')
                   ? 'intent'
                   : path.endsWith('/api/llm/restate')
                     ? 'restate'
@@ -385,6 +419,49 @@ export function createHandler({
         ? buildAiBehaviorAnalysis(aiValue, facts)
         : buildBehaviorFallback(facts, fallbackReason ?? 'model_unavailable');
       return jsonResponse(200, { ok: true, analysis });
+    }
+
+    if (stage === 'profileSummary') {
+      const validated = normalizeProfileSummaryRequest(body);
+      if (!validated.ok) return errorResponse(400, SITE_FUNCTION_CODES.PROFILE_SUMMARY_REQUEST_INVALID);
+      const sourceHash = await profileDigestHash(validated.digest);
+      let summary = null;
+      let fallbackReason = null;
+      if (transport === null) {
+        fallbackReason = 'model_not_configured';
+      } else if (typeof transport.profileSummary !== 'function') {
+        fallbackReason = 'model_unavailable';
+      } else {
+        try {
+          const result = await transport.profileSummary({ digest: validated.digest });
+          if (!isPlainObject(result) || typeof result.rawText !== 'string') {
+            fallbackReason = 'model_response_invalid';
+          } else {
+            const checked = validateProfileSummaryResponse(result.rawText, validated.digest);
+            if (checked.ok) summary = checked.value;
+            else fallbackReason = 'model_response_invalid';
+          }
+        } catch (error) {
+          fallbackReason = error && error.code === SITE_FUNCTION_CODES.MODEL_TIMEOUT ? 'model_timeout' : 'model_unavailable';
+        }
+      }
+      return jsonResponse(200, {
+        ok: true,
+        source: summary ? 'ai' : 'template',
+        source_hash: sourceHash,
+        summary: summary ?? buildProfileSummaryFallback(validated.digest),
+        fallback_reason: summary ? null : fallbackReason,
+      });
+    }
+
+    if (stage === 'profileFact') {
+      const validated = normalizeProfileFactRequest(body);
+      if (!validated.ok) return errorResponse(400, SITE_FUNCTION_CODES.PROFILE_FACT_REQUEST_INVALID);
+      const result = await callTransport(transport, 'profileFact', { message: validated.message });
+      if (!result.ok) return errorResponse(result.status, result.code);
+      const checked = validateProfileFactResponse(result.rawText, validated.message);
+      if (!checked.ok) return errorResponse(502, SITE_FUNCTION_CODES.PROFILE_FACT_RESPONSE);
+      return jsonResponse(200, { ok: true, facts: checked.facts });
     }
 
     let requestBody;
@@ -540,6 +617,11 @@ export function createHandler({
 
     const result = await callTransport(transport, stage, requestBody);
     if (!result.ok) return errorResponse(result.status, result.code);
+    if (stage === 'intent') {
+      const checked = validateChatIntentResponse(result.rawText);
+      if (!checked.ok) return errorResponse(502, SITE_FUNCTION_CODES.MODEL_RESPONSE);
+      return jsonResponse(200, { rawText: JSON.stringify(checked.value) });
+    }
     return jsonResponse(200, stage === 'rule'
       ? { rawText: result.rawText, protocol: RULE_INTENT_PROTOCOL }
       : { rawText: result.rawText });

@@ -5,12 +5,16 @@ import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../.
 import { createImportRecovery } from '../../src/agent/importRecovery.js';
 import { createChatOnline } from '../../src/agent/chatOnline.js';
 import { createOnlineBoundary } from '../../src/agent/onlineBoundary.js';
+import { createDataClient } from '../../src/agent/dataClient.js';
+import { createProfileFactRecorder } from '../../src/agent/profileSignals.js';
 import { renderContract } from '../../src/ui/views/contractView.js';
 import { renderRealImport } from './realImport.js';
 import { getRealReportBundle, getRealReportState, loadRealReport } from './realReport.js';
 import { ruleStateOf, loadProfile } from './profileStore.js';
 import { openRuleCandidate } from './ruleCandidates.js';
 import { createQaAnswerService } from './qaAnswer.js';
+import { syncBill, syncSnapshotWithBill } from './cloudSync.js';
+import { invalidateCloudProfile } from './cloudProfile.js';
 
 const MOBILE_BREAKPOINT = 680;
 const OLD_CSS = '/src/ui/styles.css';
@@ -100,6 +104,9 @@ let recoveryClient = null;
 let qaOnlineClient = null;
 let qaAnswerClient = null;
 let qaIntentBoundary = null;
+let dataClient = null;
+let profileFactTransport = null;
+let profileFactRecorder = null;
 let currentRoute = 'home';
 let lastMobileLayout = null;
 let demoSelected = false;
@@ -161,7 +168,7 @@ export function go(route) {
 }
 
 function scrollToSimulation() {
-  const host = document.getElementById('tm-real-rules');
+  const host = document.getElementById('tm-real-scenario') ?? document.getElementById('tm-real-rules');
   const node = host?.shadowRoot?.querySelector?.('[data-role="sim-section"]');
   if (node && typeof node.scrollIntoView === 'function') {
     node.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -196,6 +203,28 @@ function getQaAnswerClient() {
   return qaAnswerClient;
 }
 
+function getDataClient() {
+  if (!dataClient) dataClient = createDataClient();
+  return dataClient;
+}
+
+function getProfileFactTransport() {
+  if (!profileFactTransport) {
+    profileFactTransport = createHttpTransport({ baseUrl: SAME_ORIGIN_BASE, paths: SITE_FUNCTION_PATHS });
+  }
+  return profileFactTransport;
+}
+
+function getProfileFactRecorder() {
+  if (!profileFactRecorder) {
+    profileFactRecorder = createProfileFactRecorder({
+      transport: getProfileFactTransport(),
+      saveFacts: ({ facts, signal }) => getDataClient().saveFacts({ facts, signal }),
+    });
+  }
+  return profileFactRecorder;
+}
+
 const ctx = {
   state: shared,
   set,
@@ -205,7 +234,6 @@ const ctx = {
   ruleAssistantClient: getRuleAssistantClient(),
   assistantTitle: 'AI 助手',
   assistantSubtitle: '当前页面与已发布报告',
-  assistantShowFactLink: true,
   globalAssistant: true,
   qaDeps: {
     getReportBundle: (bill) => getRealReportBundle(bill),
@@ -213,9 +241,30 @@ const ctx = {
     loadReportBundle: (bill) => loadRealReport(bill),
     askOnline: ({ question, review }) => getQaOnlineClient().ask({ question, review }),
     askQuestion: (args) => getQaAnswerClient().ask(args),
+    recordProfileFacts: (args) => getProfileFactRecorder()?.record(args),
     ruleStateOf,
     loadProfile,
     openRuleCandidate,
+  },
+  cloudDeps: {
+    syncBill: ({ bill, includeTrades }) => syncBill({
+      bill,
+      includeTrades,
+      saveBill: (args) => getDataClient().saveBill(args),
+    }),
+    syncSnapshot: ({ bill, snapshot }) => syncSnapshotWithBill({
+      bill,
+      snapshot,
+      saveBill: (args) => getDataClient().saveBill(args),
+      saveSnapshot: (args) => getDataClient().saveSnapshot(args),
+    }),
+    listBills: (args) => getDataClient().listBills(args),
+    getProfile: (args) => getDataClient().getProfile(args),
+    deleteBill: (args) => getDataClient().deleteBill(args),
+    deleteFact: (args) => getDataClient().deleteFact(args),
+    saveProfileSummary: (args) => getDataClient().saveProfileSummary(args),
+    requestProfileSummary: ({ digest, signal } = {}) => getProfileFactTransport().profileSummary({ digest, signal }),
+    invalidateCloudProfile,
   },
   scrollToSimulation,
   isOverlayLayout: mobileLayout,
@@ -242,7 +291,7 @@ export function getCtx() { return ctx; }
 
 export function setRoute(route) {
   currentRoute = route;
-  shared.route = route === 'me' ? 'contract' : route;
+  shared.route = route === 'me' || route === 'scenario' ? 'contract' : route;
   if (route !== 'me') setRuleModal(null);
 }
 
@@ -381,6 +430,11 @@ export function mountImportView(host) {
 export function mountContractView(host) {
   if (!host) return;
   renderInShadow(host, renderContract);
+}
+
+export function mountScenarioView(host) {
+  if (!host) return;
+  renderInShadow(host, (root, ctx) => renderContract(root, ctx, { section: 'scenario' }));
 }
 
 export function renderAssistant() {

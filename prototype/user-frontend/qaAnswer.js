@@ -29,6 +29,28 @@ const PUBLISHED_INTENTS = new Set([
   'how_to_change', 'what_if', 'meta_calc', 'meta_trust',
 ]);
 
+const FACT_LABELS = Object.freeze({
+  buyCost: '买入成本',
+  sellProceeds: '卖出所得',
+  actualValue: '期末实际价值',
+  ghostValue: '一直持有价值',
+  actualRet: '实际收益',
+  ghostRet: '一直持有收益',
+  dragMoney: '择时差额',
+  drag: '择时差',
+});
+
+const FACT_FORMULAS = Object.freeze({
+  buyCost: '买入成本 = 每笔买入价格 × 数量后加总',
+  sellProceeds: '卖出所得 = 每笔卖出价格 × 数量后加总',
+  actualValue: '期末实际价值 = 持仓数量 × 估值日收盘价',
+  ghostValue: '一直持有价值 = 不动持仓数量 × 估值日收盘价',
+  actualRet: '实际收益 = 期末实际价值 ÷ 买入成本 − 1',
+  ghostRet: '一直持有收益 = 一直持有价值 ÷ 买入成本 − 1',
+  dragMoney: '择时差额 = 一直持有价值 − 期末实际价值',
+  drag: '择时差 = 一直持有收益 − 实际收益',
+});
+
 const SUGGESTION_ACTIONS = Object.freeze({
   worst: QA_SUGGESTIONS.find((s) => s.id === 'worst_trade'),
   pattern: QA_SUGGESTIONS.find((s) => s.id === 'pattern_explain'),
@@ -58,7 +80,7 @@ function rulesAction(label = '去规则工作区') {
 }
 
 function simulationAction() {
-  return { id: 'open-simulation', label: '先看历史情境', kind: 'simulation' };
+  return { id: 'open-simulation', label: '先看操作复盘', kind: 'simulation' };
 }
 
 function intentLabelOf(intent) {
@@ -349,19 +371,17 @@ function answerMetaCalc({ route, bundle, bill, elapsedMs }) {
     const item = provById.get(f.fact_id);
     return item && item.blocked !== true;
   });
-  const formulaIds = new Set(traceable.map((f) => f.formula_id ?? provById.get(f.fact_id)?.formula_id).filter(Boolean));
-  const attempts = Number.isFinite(review?.meta?.recompute_attempts) ? review.meta.recompute_attempts : 0;
-  const statusText = { published: '已发布', degraded: '降级发布', blocked: '未发布' }[review?.status] ?? String(review?.status ?? '未知');
   const ordered = [...traceable].sort((a, b) => (a.scope === 'portfolio' ? 0 : 1) - (b.scope === 'portfolio' ? 0 : 1));
-  const evidence = ordered.slice(0, 4).map((f) => {
-    const item = provById.get(f.fact_id);
-    const refs = Array.isArray(item?.source_refs) ? item.source_refs.length : 0;
-    return {
-      label: `${f.scope}.${f.key}`,
-      detail: `${item?.formula_id ?? f.formula_id ?? '—'} · ${item?.unit ?? '—'} · 回源 ${refs} 条`,
-    };
-  });
-  const text = `这次答复里的数字只来自复核通过并已发布的 ${traceable.length} 条事实，涉及 ${formulaIds.size} 个公式。每条事实在计算路径里都有口径、批次与逐批回源步骤；复核状态为“${statusText}”，本次重算 ${attempts} 次。这里只展示索引，不重算数字。`;
+  const evidence = ordered.slice(0, 4).map((f) => ({
+    label: f.symbol
+      ? `${f.symbol} · ${FACT_LABELS[f.key] ?? '数字'}`
+      : (FACT_LABELS[f.key] ?? '数字'),
+    detail: FACT_FORMULAS[f.key]
+      ? `公式：${FACT_FORMULAS[f.key]}`
+      : '来源：报告页的计算路径',
+  }));
+  const missing = published.length - traceable.length;
+  const text = `这次回答只使用当前报告中已核对并发布的 ${traceable.length} 条数字；没有重新计算。每条数字都能在报告页展开到公式和成交来源。${missing ? `另有 ${missing} 条数字本次未纳入回答。` : ''}`;
   return makeEnvelope({
     status: 'local',
     intent: 'meta_calc',
@@ -369,15 +389,13 @@ function answerMetaCalc({ route, bundle, bill, elapsedMs }) {
     source: 'local',
     text,
     facts: [
-      { label: '可回源事实', value: `${traceable.length} / ${published.length} 条` },
-      { label: '公式', value: `${formulaIds.size} 个` },
-      { label: '复核状态', value: statusText, tone: review?.status === 'published' ? 'ok' : 'neutral' },
-      { label: '重算次数', value: `${attempts} 次` },
+      { label: '可用数字', value: `${traceable.length} 条` },
+      ...(missing ? [{ label: '未纳入本次回答', value: `${missing} 条`, tone: 'loss' }] : []),
     ],
     evidence,
     actions: [reportAction('查看计算路径'), askAction('qa-trust', '这些数可信吗', '这些数可信吗？')],
     trace: { template_id: 'T-meta-calc' },
-    notice: '证据只列公式、单位与回源条数；逐批明细与源行在报告页。',
+    notice: '完整成交行和逐批明细在报告页。',
     bill,
     elapsedMs,
   });
@@ -388,12 +406,10 @@ function answerMetaTrust({ route, bundle, bill, elapsedMs }) {
   const degraded = Array.isArray(review.degraded) ? review.degraded : [];
   const blocked = Array.isArray(review.blocked_facts) ? review.blocked_facts : [];
   const blockedSymbols = Array.isArray(review.blocked_symbols) ? review.blocked_symbols : [];
-  const attempts = Number.isFinite(review.meta?.recompute_attempts) ? review.meta.recompute_attempts : 0;
-  const verifyText = review.meta?.verify_id ? '已生成复核标识' : '未生成复核标识';
-  const statusText = { published: '已发布', degraded: '降级发布', blocked: '未发布' }[review.status] ?? String(review.status);
-  const text = `这份报告的组合结果${review.portfolio_published === true ? '已通过独立复核并发布' : '未发布'}，复核状态为“${statusText}”。有 ${degraded.length} 条降级提示、${blocked.length} 条事实被扣发、${blockedSymbols.length} 个标的缺价或被阻断；${verifyText}，重算 ${attempts} 次。${degraded.length ? '降级项只影响对应作用域，已发布事实仍按原口径展示。' : '没有降级项。'}`;
+  const published = review.portfolio_published === true;
+  const text = `这份报告的组合结果${published ? '已发布' : '尚未发布'}。${blocked.length ? `有 ${blocked.length} 条数字未纳入回答；` : ''}${degraded.length ? `有 ${degraded.length} 条数据提示；` : ''}${blockedSymbols.length ? `${blockedSymbols.length} 个标的缺价。` : ''}${degraded.length ? '数据提示只说明缺口，已发布的数字仍按原口径展示。' : '当前没有数据提示。'}`;
   const evidence = degraded.slice(0, 4).map((d) => ({
-    label: String(d.code ?? '复核提示'),
+    label: '数据提示',
     detail: String(d.message ?? ''),
   }));
   return makeEnvelope({
@@ -403,15 +419,14 @@ function answerMetaTrust({ route, bundle, bill, elapsedMs }) {
     source: 'local',
     text,
     facts: [
-      { label: '复核状态', value: statusText, tone: statusText === '已发布' ? 'ok' : 'neutral' },
-      { label: '组合发布', value: review.portfolio_published === true ? '已发布' : '未发布', tone: review.portfolio_published === true ? 'ok' : 'loss' },
-      { label: '扣发事实', value: `${blocked.length} 条`, tone: blocked.length ? 'loss' : 'ok' },
-      { label: '降级/缺价', value: `${degraded.length} 条 / ${blockedSymbols.length} 个`, tone: degraded.length || blockedSymbols.length ? 'loss' : 'ok' },
+      { label: '组合结果', value: published ? '已发布' : '未发布', tone: published ? 'ok' : 'loss' },
+      { label: '未纳入回答', value: `${blocked.length} 条`, tone: blocked.length ? 'loss' : 'ok' },
+      { label: '数据提示/缺价', value: `${degraded.length} 条 / ${blockedSymbols.length} 个`, tone: degraded.length || blockedSymbols.length ? 'loss' : 'ok' },
     ],
     evidence,
     actions: [reportAction('打开报告 · 证据')],
     trace: { template_id: 'T-meta-trust' },
-    notice: '阻断事实不会进入回答；降级项与重算记录只用于说明复核过程。',
+    notice: '未纳入回答的数字不会用替代数据补齐；数据提示只说明缺口。',
     bill,
     elapsedMs,
   });
@@ -441,7 +456,7 @@ function answerContractStatus({ route, versions, bill, bundle, elapsedMs }) {
       intent: 'contract_status',
       route,
       source: 'local',
-      text: '当前没有生效规则，所以还不能回放“守不守得住”。可以在规则工作区登记一条，保存与版本都由你确认；登记后我再用这份账单做历史情境复核。',
+      text: '当前没有生效规则，所以还不能回放“守不守得住”。可以在规则工作区登记一条，保存与版本都由你确认；登记后我再用这份账单做操作复盘。',
       facts: [{ label: '生效规则', value: '0 条' }],
       actions: [rulesAction(), simulationAction()],
       trace: { template_id: 'T-contract-status' },
@@ -507,7 +522,7 @@ function answerContractSetup({ route, bill, elapsedMs }) {
     intent: 'contract_setup',
     route,
     source: 'template',
-    text: '我不能替你定止损、止盈或买卖阈值——这是你的决定。你可以在规则工作区选一个模板，登记阈值与适用范围；保存、版本和停用都由你确认。登记后我可以用历史情境回放，看看它在这份账单上会触发几次。',
+    text: '我不能替你定止损、止盈或买卖阈值——这是你的决定。你可以在规则工作区选一个模板，登记阈值与适用范围；保存、版本和停用都由你确认。登记后我可以用操作复盘，看看它在这份账单上会触发几次。',
     actions: [rulesAction('去规则工作区'), simulationAction()],
     trace: { template_id: 'T-contract-setup' },
     notice: '不内联保存、不自动生成规则；保存必须由你在规则页确认。',
@@ -522,10 +537,10 @@ function answerSimilarContext({ route, bill, elapsedMs }) {
     intent: 'similar_context',
     route,
     source: 'template',
-    text: '相似情境检索还没有接入：当前没有历史行情检索，也没有跨账单的情境匹配。我不会用示例或别的账单补一个“类似情况”。可以先看这份账单的行为发现与单笔反事实。',
+    text: '本版本暂不支持相似情境检索：当前没有历史行情检索，也没有跨账单的情境匹配。我不会用示例或别的账单补一个“类似情况”。可以先看这份账单的行为发现与单笔反事实。',
     actions: [askAction('qa-pattern', '为什么说我追高', SUGGESTION_ACTIONS.pattern.question), askAction('qa-what-if', '如果那笔卖出没发生', SUGGESTION_ACTIONS.whatIf.question), reportAction()],
     trace: { template_id: 'T-similar-context' },
-    notice: '未接入的能力如实说明，不生成替代结论。',
+    notice: '本版本暂不支持的能力会如实说明，不生成替代结论。',
     bill,
     elapsedMs,
   });

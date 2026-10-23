@@ -29,6 +29,7 @@ import { computePGR } from '../engine/pgr.js';
 import { DEMO_REPORT_MARKET_SOURCE, getReportScenario, loadReportScenarioMarket } from './reportScenarios.js';
 import { CONTRACT_CODES, CONTRACT_TEMPLATES, dayChangePct, matchContract, canonicalHash, HASH_ALGORITHM } from '../engine/contractMatch.js';
 import { buildRuleLedger } from '../engine/ruleLedger.js';
+import { buildTradeReview } from '../engine/tradeReview.js';
 import {
   parseRuleSpec, scopeApplies, notApplicableMessage, scopeLabel, normalizeScope,
   actionApplies, notApplicableActionMessage, actionLabel, RULE_SCHEMA_V1, RULE_SCHEMA_V2, RULE_SPEC_CODES, RULE_CAPABILITIES,
@@ -1737,6 +1738,9 @@ export async function contractSimContext({ bill, marketSource = DEFAULT_MARKET_S
     const mkt = await loadMarket(labels.id, scope);
     const market = mkt.market;
     const symbols = [...billSymbols, ...market.symbols.filter((s) => !billSymbols.includes(s))];
+    const rules = contractRuleSet(versions).current;
+    const ledger = buildRuleLedger({ rules, trades, market });
+    const patterns = trades.length ? buildPatternList({ trades, market }) : null;
     return {
       ...meta,
       marketSource: marketMeta(mkt),
@@ -1748,7 +1752,9 @@ export async function contractSimContext({ bill, marketSource = DEFAULT_MARKET_S
       tradingDays: [...market.tradingDays],
       sells: trades.filter((t) => t.side === 'sell').map((t) => ({ trade_id: t.trade_id, symbol: t.symbol, trade_date: t.trade_date })),
       buys: trades.filter((t) => t.side === 'buy').map((t) => ({ trade_id: t.trade_id, symbol: t.symbol, trade_date: t.trade_date })),
-      ledger: buildRuleLedger({ rules: contractRuleSet(versions).current, trades, market }),
+      ledger,
+      patterns,
+      review: buildTradeReview({ trades, ledger, patterns, market }),
     };
   } catch (e) {
     return { ...meta, error: String(e && e.message ? e.message : e) };

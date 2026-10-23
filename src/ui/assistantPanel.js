@@ -1,7 +1,6 @@
 // 右侧常驻助手（首版规则闭环 UI；接口候选，未冻结）
 // 页面：报告/规则/导入显示；分析问答页保留原入口，不再复制一个聊天系统。
-// 首版 AI 动作只在规则页：用户主动点击“让 AI 理解”才发起规则 intent；
-// 草案送入现有规则页弹窗，由用户确认/保存；历史模拟复用规则页触发。
+// 规则描述入口只在规则工作区；侧栏保留问答、草案与结果状态，不重复规则输入。
 import { el, chip } from './components.js';
 import { createRuleAssistant } from '../agent/ruleAssistant.js';
 import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../agent/httpTransport.js';
@@ -105,6 +104,14 @@ function marketNoticeFromState(state) {
 
 function sameNotice(a, b) {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
+
+const AUTO_BILL_NOTICE_PREFIX = '账单已确认导入：';
+
+function isAutoBillNotice(message) {
+  return message?.kind === 'notice'
+    && typeof message.text === 'string'
+    && message.text.startsWith(AUTO_BILL_NOTICE_PREFIX);
 }
 
 function scrollToSimulation() {
@@ -364,8 +371,11 @@ export function createAssistantController({ client, state, set, go, scrollSimula
       return;
     }
     if (state.assistant.mobileView) patch({ mobileView: false });
-    go('contract');
-    scrollSimulation();
+    go('scenario');
+    const schedule = typeof requestAnimationFrame === 'function'
+      ? (fn) => requestAnimationFrame(() => requestAnimationFrame(fn))
+      : (fn) => setTimeout(fn, 0);
+    schedule(scrollSimulation);
   }
 
   function returnToRuleEdit() {
@@ -633,7 +643,7 @@ export function createAssistantController({ client, state, set, go, scrollSimula
     const message = status === 'not_confirmed'
       ? '尚未记录用户确认的规则'
       : status === 'not_executed'
-        ? '尚未执行历史模拟'
+        ? '尚未执行操作复盘'
         : '当前生效规则与实际执行参数不一致，已阻断';
     patch({
       ...noticePatch,
@@ -845,7 +855,7 @@ function nextActionButtons(controller, state) {
       buttons.push(el('button', {
         class: 'btn primary small', 'data-role': 'assistant-next-sim',
         onclick: () => controller.goSimulation(),
-      }, [sim && !simStale ? '再次前往历史模拟' : '前往历史模拟']));
+      }, [sim && !simStale ? '再次前往操作复盘' : '前往操作复盘']));
     }
     buttons.push(el('button', {
       class: 'btn small', 'data-role': 'assistant-next-adjust',
@@ -883,11 +893,10 @@ function simulationCounts(simulation) {
 function simulationDetailNodes(simulation) {
   const results = Array.isArray(simulation?.results) ? simulation.results : [];
   return results
-    .filter((r) => r && (r.code || r.message || r.display_verdict || r.verdict))
+    .filter((r) => r && (r.message || r.display_verdict || r.verdict))
     .map((r) => el('div', { class: 'muted small' }, [
       [
-        r.display_verdict ?? r.verdict ?? (r.ok ? 'completed' : 'error'),
-        r.code ? `（${r.code}）` : '',
+        r.display_verdict ?? r.verdict ?? (r.ok ? '完成' : '无法判定'),
         r.message ? ` · ${r.message}` : '',
       ].join(''),
     ]));
@@ -948,7 +957,6 @@ function explanationBlock(controller, state, simulation, attempt) {
     const failed = state.assistant.resultExplanationAttempt;
     nodes.push(el('div', { class: 'assistant-check bad' }, [
       failed.status === 'stale' ? '旧 AI 解释已失效' : 'AI 解释未生成',
-      failed.code ? `（${failed.code}）` : '',
       failed.message ? ` · ${failed.message}` : '',
       el('div', { class: 'muted small' }, ['本地摘要仍然有效；未生成模型解释。']),
     ]));
@@ -1037,7 +1045,6 @@ function draftCard(controller, state) {
     ]) : attemptFailed || attemptNotRun ? el('div', { class: 'assistant-sim' }, [
       el('div', { class: 'assistant-check bad' }, [
         attemptFailed ? '本次模拟执行失败' : '本次模拟未执行',
-        attempt.error?.code ? `（${attempt.error.code}）` : '',
         attempt.error?.message ? ` · ${attempt.error.message}` : '',
         attempt.context?.date ? el('div', { class: 'muted small' }, [`本次对象：${simulationContextText(attempt)}`]) : null,
         attempt.summary ? el('div', { class: 'muted small' }, [simulationCounts(attempt)]) : null,
@@ -1062,7 +1069,7 @@ function draftCard(controller, state) {
         ? '行情暂不可用，暂时不能生成模拟结果；你仍可以查看或修改规则。'
         : state.bill?.status === 'confirmed' && state.bill?.sourceType === 'local'
           ? '尚未模拟；到规则页点击测试后，助手会自动接收结果，不会自动发起。'
-          : '历史模拟需要先确认本地账单。',
+          : '操作复盘需要先确认本地账单。',
     ]),
     attemptFailed || attemptNotRun
       ? el('div', { class: 'assistant-check' }, [
@@ -1089,60 +1096,6 @@ function draftCard(controller, state) {
   return card;
 }
 
-function techLine(label, value) {
-  return el('div', { class: 'assistant-tech-line' }, [`${label}：${textOf(value)}`]);
-}
-
-function technicalDetails(state) {
-  const a = state.assistant;
-  const trace = a.trace;
-  const saved = a.semanticConfirmation?.saved_rule ?? null;
-  const current = a.currentRule;
-  const plan = a.plan;
-  const sim = a.simulation;
-  const attempt = a.simulationAttempt;
-  const consistency = a.consistency;
-  const last = a.lastAttempt;
-  if (!a.flowId && !a.draft && !last) return null;
-  const requestIds = trace?.messages?.[0]?.request_ids ?? [];
-  const lines = [
-    techLine('任务编号', a.flowId ?? '未生成'),
-    techLine('请求编号', requestIds.join('、') || a.requestId || '无'),
-    techLine('模型请求', `${a.modelCalls ?? 0}/${a.budgetMax ?? 2}`),
-    techLine('是否出站', a.outbound ? '是' : '否'),
-    techLine('计划', plan ? `${plan.plan_id} · ${plan.status}` : '未生成'),
-    techLine('草案来源', a.draft?.origin === CANDIDATE_ORIGIN ? '报告行为证据（确定性）' : (a.draft ? 'AI 规则理解' : '—')),
-    techLine('草案哈希', a.draft?.hash ?? '—'),
-    techLine('保存规则哈希', saved ? `${saved.hash}（v${saved.version ?? '—'}）` : '—'),
-    techLine('当前规则哈希', current ? `${current.hash}（v${current.version ?? '—'}）` : '—'),
-    techLine('模拟执行规则', sim?.rule_hash ? `${sim.rule_hash}（v${sim.rule_version ?? '—'}）` : '—'),
-    techLine('模拟状态', sim ? `${sim.status ?? 'completed'}${sim.stale ? '（已失效）' : ''}` : '未执行'),
-    techLine('本次模拟尝试', attempt ? `${attempt.status}${attempt.error?.code ? ` · ${attempt.error.code}` : ''}` : '无'),
-    techLine('模拟失效', sim?.stale ? `是（${sim.stale_reason ?? '规则变化'}）` : '否'),
-    techLine('核对状态', consistency
-      ? `${consistency.status} · ${consistency.binding ?? '无绑定'} · 覆盖=${consistency.semantic_confirmation_covers_rule} · 独立复核=${consistency.independent_review}`
-      : '未运行'),
-    techLine('结果解释', a.resultExplanation
-      ? `ok · ${a.resultExplanation.binding?.simulation_result_id ?? '—'}`
-      : (a.resultExplanationAttempt
-        ? `${a.resultExplanationAttempt.status} · ${a.resultExplanationAttempt.code ?? '—'}`
-        : '未生成')),
-    techLine('结果解释绑定', a.resultExplanation?.binding
-      ? `${a.resultExplanation.binding.rule_hash} · v${a.resultExplanation.binding.rule_version} · ${a.resultExplanation.binding.simulation_result_id}`
-      : '—'),
-    techLine('上次请求', last
-      ? `${last.status ?? '—'} · ${last.code ?? '—'} · ${last.modelCalls ?? 0}/${last.budgetMax ?? 2}`
-      : '无'),
-    techLine('trace', trace ? trace.messages.map((m) => m.type).join(' → ') : '未生成'),
-  ];
-  if (a.error?.code) lines.push(techLine('错误码', a.error.code));
-  if (a.marketNotice) lines.push(techLine('行情错误', `${a.marketNotice.code} · ${a.marketNotice.message}`));
-  return el('details', { class: 'assistant-tech' }, [
-    el('summary', {}, ['开发调试（技术信息）']),
-    el('div', { class: 'assistant-tech-body' }, lines),
-  ]);
-}
-
 let syncScheduled = false;
 function scheduleAssistantSync() {
   if (syncScheduled || !controller) return;
@@ -1166,10 +1119,6 @@ export function renderAssistantPanel(root, ctx) {
     });
   }
   scheduleAssistantSync();
-  const goBusiness = (route) => {
-    if (state.assistant.mobileView) ctx.set({ assistant: { ...state.assistant, mobileView: false } });
-    ctx.go(route);
-  };
   root.className = 'assistant-panel';
   const card = el('div', {
     class: 'assistant-card',
@@ -1189,66 +1138,26 @@ export function renderAssistantPanel(root, ctx) {
   if (!ctx.globalAssistant) {
     card.append(el('div', { class: 'assistant-context' }, [contextLine(state)]));
     card.append(el('div', { class: 'assistant-local-status' }, [
-      state.route === 'contract'
-        ? '在下方描述规则；保存、模拟和调整都在交易规则页完成。'
-        : '规则操作在交易规则页；这里会保留当前任务和结果。',
+      '规则操作在交易规则页；这里会保留当前任务和结果。',
     ]));
   }
   if (state.assistant.marketNotice) {
     card.append(el('div', { class: 'assistant-market' }, [
       el('div', { class: 'assistant-draft-head' }, ['行情暂不可用']),
       el('div', {}, ['现在无法生成有效的模拟结果。你可以继续查看或修改规则；系统不会用静态或合成行情替代。']),
-      el('details', { class: 'assistant-tech' }, [
-        el('summary', {}, ['技术详情（行情错误）']),
-        el('div', { class: 'assistant-tech-body' }, [
-          techLine('错误码', state.assistant.marketNotice.code),
-          techLine('原始信息', state.assistant.marketNotice.message),
-        ]),
-      ]),
       !state.assistant.draft ? el('div', { class: 'row assistant-actions' }, [
         el('button', {
           class: 'btn small', 'data-role': 'assistant-market-rules',
-          onclick: () => goBusiness('contract'),
+          onclick: () => {
+            if (state.assistant.mobileView) ctx.set({ assistant: { ...state.assistant, mobileView: false } });
+            ctx.go('contract');
+          },
         }, ['查看/新增规则']),
       ]) : null,
     ]));
   }
 
-  if (state.route === 'contract') {
-    const input = el('textarea', {
-      class: 'input assistant-input',
-      id: 'assistant-rule-input',
-      rows: '2',
-      maxlength: '240',
-      placeholder: '例如：当天涨幅超过 5% 的票我绝不买入',
-      'aria-describedby': 'assistant-rule-hint',
-    });
-    input.value = state.assistant.input ?? '';
-    input.addEventListener('input', (e) => { state.assistant.input = e.target.value; });
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-        e.preventDefault();
-        controller.submit(input.value);
-      }
-    });
-    card.append(el('div', { class: 'assistant-input-field' }, [
-      el('label', { class: 'assistant-input-label', for: 'assistant-rule-input' }, ['描述你想设的规则']),
-      input,
-      el('div', { class: 'assistant-hint', id: 'assistant-rule-hint' }, [
-        'Enter 发送，Shift+Enter 换行；只支持两种规则。点击后才会发送问题与最小上下文。',
-      ]),
-      el('div', { class: 'assistant-input-row' }, [
-        el('button', {
-          class: 'btn primary small', 'data-role': 'assistant-submit',
-          disabled: state.assistant.pending ? 'disabled' : null,
-          onclick: () => controller.submit(input.value),
-        }, [state.assistant.pending ? '理解中…' : '让 AI 理解']),
-      ]),
-    ]));
-    if (ctx.assistantShowFactLink) {
-      card.append(el('button', { class: 'btn small', onclick: () => goBusiness('chat') }, ['前往事实问答']));
-    }
-  } else {
+  if (!ctx.globalAssistant && state.route !== 'contract') {
     const note = state.assistant.draft
       ? '草案已保留在助手中；切页或关闭助手不会保存，也不会丢失。'
       : state.route === 'report'
@@ -1258,13 +1167,7 @@ export function renderAssistantPanel(root, ctx) {
           : state.route === 'home'
             ? '首页不发起请求；可以继续导入账单或描述规则。'
             : '导入页只显示当前任务；规则建议不要求已有账单。';
-    if (!ctx.globalAssistant) card.append(el('div', { class: 'assistant-hint' }, [note]));
-    if (!state.assistant.draft) {
-      card.append(el('button', { class: 'btn small', onclick: () => goBusiness('contract') }, ['前往交易规则']));
-    }
-    if (ctx.assistantShowFactLink && state.route !== 'chat') {
-      card.append(el('button', { class: 'btn small', onclick: () => goBusiness('chat') }, ['前往事实问答']));
-    }
+    card.append(el('div', { class: 'assistant-hint' }, [note]));
   }
 
   if (state.assistant.staleNotice) card.append(el('div', { class: 'assistant-drift' }, [state.assistant.staleNotice]));
@@ -1274,7 +1177,6 @@ export function renderAssistantPanel(root, ctx) {
       || (state.assistant.messages ?? []).some((m) => m.role === 'user');
     card.append(el('div', { class: 'assistant-error', role: 'alert' }, [
       el('div', {}, [state.assistant.error.message ?? '操作未完成，请稍后重试。']),
-      last?.code ? el('div', { class: 'muted small' }, [`${last.status ?? 'failed'} · ${last.code}`]) : null,
       last ? el('div', { class: 'row assistant-actions' }, [
         el('button', {
           class: 'btn small', 'data-role': 'assistant-retry',
@@ -1302,6 +1204,7 @@ export function renderAssistantPanel(root, ctx) {
     'aria-label': '助手消息',
   });
   for (const m of state.assistant.messages ?? []) {
+    if (isAutoBillNotice(m)) continue;
     messages.append(el('div', { class: `assistant-msg ${m.role === 'user' ? 'user' : 'assistant'}` }, [m.text]));
   }
   if (messages.children.length) card.append(messages);
@@ -1309,7 +1212,5 @@ export function renderAssistantPanel(root, ctx) {
   const draft = draftCard(controller, state);
   if (draft) card.append(draft);
 
-  const tech = technicalDetails(state);
-  if (tech) card.append(tech);
   root.replaceChildren(card);
 }

@@ -1,0 +1,20 @@
+[
+  {
+    "table": "bills",
+    "principal": "anonymous",
+    "actions": ["select", "insert", "update", "delete"],
+    "template": "public"
+  },
+  {
+    "table": "profile_facts",
+    "principal": "anonymous",
+    "actions": ["select", "insert", "delete"],
+    "template": "public"
+  },
+  {
+    "table": "profiles",
+    "principal": "anonymous",
+    "actions": ["select", "insert", "update"],
+    "template": "public"
+  }
+]

@@ -95,7 +95,8 @@ function chipEntry(state, ctx, id) {
   const reportCtx = makeCtx(report);
   const reportInfo = pageInfo(report, reportCtx.qaDeps);
   check('报告页：五个芯片齐全且顺序确定', reportInfo.chips.filter((c) => c.chip).map((c) => c.chip.id).join(',') === QA_CHIPS.map((c) => c.id).join(','), JSON.stringify(reportInfo.chips.map((c) => c.label)));
-  check('报告页：页面简介与当前账单上下文可见', reportInfo.intro.includes('报告页') && reportInfo.context.includes('qa-fake.csv') && reportInfo.context.includes('报告：已发布'), JSON.stringify(reportInfo));
+  check('报告页：页面简介与当前账单上下文可见，不显示规则版本内部计数', reportInfo.intro.includes('报告页') && reportInfo.context.includes('qa-fake.csv')
+    && !reportInfo.context.includes('规则版本') && !reportInfo.context.includes('报告：已发布'), JSON.stringify(reportInfo));
 
   const contract = makeState('contract');
   const contractInfo = pageInfo(contract, makeCtx(contract).qaDeps);
@@ -230,8 +231,12 @@ function chipEntry(state, ctx, id) {
   let ruleAsks = 0;
   const ruleCtx = makeCtx(rulePage, { askOnline: async () => { ruleAsks += 1; return { ok: true, text: 'x', number_check: {} }; } });
   await sendText(ruleCtx, '我的规则会命中吗？');
-  check('规则页自由文本：本地引导使用规则输入/芯片，不误发复述', ruleAsks === 0
-    && rulePage.assistant.qaMessages.at(-1)?.detail === 'W_QA_RULE_PAGE', JSON.stringify(rulePage.assistant.qaMessages.at(-1)));
+  const ruleNotice = rulePage.assistant.qaMessages.at(-1);
+  check('规则页自由文本：引导到规则工作区/芯片，不指向已移除的侧栏输入，不误发复述', ruleAsks === 0
+    && ruleNotice?.detail === 'W_QA_RULE_PAGE'
+    && ruleNotice.text.includes('规则工作区')
+    && !ruleNotice.text.includes('让 AI 理解')
+    && !ruleNotice.text.includes('下方'), JSON.stringify(ruleNotice));
 
   const chatPage = makeState('chat');
   let chatAsks = 0;

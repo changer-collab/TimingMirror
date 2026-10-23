@@ -75,7 +75,7 @@
 - `tests/ui/qa-answer.test.mjs`：9 类回答、登记/未接入/拒绝/澄清、在线成功与回退、隐私断言，39 项。
 - `scripts/build-site.mjs`：`npm run build:site` 生成专用 `dist/`（复制 `src`、`prototype`、`m0`、`data/market-cache.json`，根入口跳转用户端）；`dist/` 已 gitignore。
 - `docs/yinchen/qa-ledger-implementation-2026-10-22.md`：本文。
-- `docs/yinchen/qoder-site-deploy-2026-10-22.md`：Qoder Site 重新部署参数与 Secret 配置说明。
+- `docs/yinchen/qoder-site-deploy-2026-10-23.md`：Qoder Site 重新部署参数与 Secret 配置说明。
 
 修改：
 
@@ -259,4 +259,4 @@ smoke 对话段覆盖：
 - 接入 `similar_context` 的历史检索前，继续保持“未接入”而不是用别的账单补数。
 - 补充 `what_if` 的自然语言指代与多笔替换。
 - 有真实模型与行情环境后，补一次独立问答页的真实在线复述与失败回退 E2E。
-- Qoder Site 重新部署使用独立的 `dist/` 构建产物（`npm run build:site`），部署参数与 Secret 配置见 `docs/yinchen/qoder-site-deploy-2026-10-22.md`；本轮未执行 prepare/publish、未读取 Secret。
+- Qoder Site 重新部署使用独立的 `dist/` 构建产物（`npm run build:site`），部署参数与 Secret 配置见 `docs/yinchen/qoder-site-deploy-2026-10-23.md`；本轮未执行 prepare/publish、未读取 Secret。

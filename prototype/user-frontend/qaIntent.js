@@ -27,11 +27,11 @@ export const QA_INTENT_LABELS = Object.freeze({
   what_if: '如果没卖',
   similar_context: '相似情境',
   how_to_change: '怎么改',
-  contract_setup: '规则登记',
+  contract_setup: '设置规则',
   contract_status: '规则状态',
   meta_calc: '怎么算的',
   meta_trust: '可信度',
-  out_of_scope: '边界拒绝',
+  out_of_scope: '超出回答范围',
 });
 
 export const QA_LAYER_LABELS = Object.freeze({
@@ -76,6 +76,8 @@ const L1_RULES = Object.freeze([
   {
     intent: 'contract_setup',
     test: /(止损|止盈|帮我定|定个|立规矩|设提醒|设个规则|定规则|仓位建议|帮我设)/u,
+    // 提到止损/止盈但问的是既有规则的状态时，交给 contract_status，不当作新建规则。
+    exclude: /(?:规则|止损|止盈|提醒|规矩).*(?:守得住|守住|生效|有效|被触发|触发过|触发了|触发几次|触发了几次|违反|状态|表现)/u,
   },
   {
     intent: 'what_if',
@@ -150,6 +152,7 @@ export function routeQuestion(raw) {
   }
   const slots = extractSlots(question);
   for (const rule of L1_RULES) {
+    if (rule.exclude && rule.exclude.test(question)) continue;
     if (rule.test.test(question)) {
       const result = {
         intent: rule.intent,
@@ -205,14 +208,25 @@ export function createIntentRouter({ classifyIntent = null } = {}) {
       };
     }
     const { intent, confidence } = intentJson;
-    if (typeof confidence !== 'number' || confidence < MIN_L2_CONFIDENCE) {
+    if (typeof confidence !== 'number' || !Number.isFinite(confidence)
+      || confidence < MIN_L2_CONFIDENCE || confidence > 1) {
       return {
         ...local,
         layer: 'L2',
         source: 'L2',
         confidence: Number.isFinite(confidence) ? confidence : null,
         ambiguous: true,
-        notice: `在线意图置信度不足${Number.isFinite(confidence) ? `（${confidence.toFixed(2)}）` : ''}，没有据此猜测；账单与事实没有发送。`,
+        notice: '这次没能确定你的问法，没有据此猜测；账单与事实没有发送。',
+      };
+    }
+    if (!Object.prototype.hasOwnProperty.call(QA_INTENT_LABELS, intent)) {
+      return {
+        ...local,
+        layer: 'L2',
+        source: 'L2',
+        confidence,
+        ambiguous: true,
+        notice: '在线意图不在支持范围，没有据此回答；账单与事实没有发送。',
       };
     }
     const slots = { ...normalizeL2Slots(intentJson.slots), ...local.slots };
