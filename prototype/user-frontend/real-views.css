@@ -1542,9 +1542,7 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
   gap: 18px;
   align-items: start;
   width: 100%;
-  max-width: 1200px;
-  margin: clamp(12px, 2.4vh, 24px) auto clamp(10px, 2vh, 20px);
-  padding: 0 clamp(14px, 2.2vw, 26px);
+  margin-top: clamp(12px,2.4vh,24px);
 }
 
 .tm-qa-main {
@@ -2231,8 +2229,7 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
   }
   .tm-qa-layout {
     grid-template-columns: minmax(0, 1fr);
-    margin: 10px 8px calc(70px + env(safe-area-inset-bottom, 0));
-    padding: 0 12px;
+    margin-top:clamp(12px,2.4vh,24px);
   }
   .tm-qa-main {
     height: min(400px, calc(100dvh - 200px));
