@@ -19,9 +19,15 @@ import {
   draftSummary,
   draftRowStatusText,
 } from '../../src/engine/importDraft.js';
-import { IMPORT_VISION_MAX_IMAGES, validateVisionInput } from '../../src/agent/importVision.js';
+import {
+  IMPORT_VISION_MAX_IMAGES,
+  validateVisionInput,
+  removeVisionImage,
+  removeVisionSource,
+  visionStatusTitle,
+} from '../../src/agent/importVision.js';
 import { getPdfPageCount, renderPdfPages } from '../../src/engine/pdfRender.js';
-import { prepareImageFile } from '../../src/engine/visionImage.js';
+import { prepareImageFiles } from '../../src/engine/visionImage.js';
 import { finalizeConfirmedBill } from '../../src/agent/importFinalize.js';
 import { REPORT_SCENARIOS, matchReportScenario } from '../../src/demo/reportScenarios.js';
 import {
@@ -163,6 +169,29 @@ function freshBill(fields = {}) {
   return { ...defaultBill(), ...fields };
 }
 
+function budgetText(rec) {
+  const used = Number.isInteger(rec?.modelCalls) ? rec.modelCalls : 0;
+  const max = Number.isInteger(rec?.budgetMax) ? rec.budgetMax : 2;
+  return `已用 ${used}/${max} 次，剩余 ${Math.max(0, max - used)} 次`;
+}
+
+function imageCountText(vision) {
+  const count = Array.isArray(vision?.images) ? vision.images.length : 0;
+  if (vision?.kind === 'pdf_scan') return `${count} 页`;
+  const segmented = (vision?.images ?? []).some((image) => Number.isInteger(image.segmentCount) && image.segmentCount > 1);
+  return segmented ? `${count} 个图片片段` : `${count} 张截图`;
+}
+
+function aiDraftNotice(trades, unresolved, duplicates = 0) {
+  const tradeCount = Array.isArray(trades) ? trades.length : 0;
+  const unresolvedCount = Array.isArray(unresolved) ? unresolved.length : 0;
+  if (tradeCount > 0) {
+    return `AI 返回 ${tradeCount} 条交易草稿${duplicates ? `，其中 ${duplicates} 条疑似重复` : ''}${unresolvedCount ? `，另有 ${unresolvedCount} 条未确定记录` : ''}`;
+  }
+  if (unresolvedCount > 0) return `AI 没有整理出交易；有 ${unresolvedCount} 条记录需要人工确认`;
+  return 'AI 没有整理出新的交易。';
+}
+
 function loadedBillFields(bill) {
   return {
     trades: bill.trades,
@@ -238,7 +267,7 @@ function errorLine(rec) {
 }
 
 function sendNotice(rec) {
-  if (rec?.vision?.images?.length) return `将发送所选 ${rec.vision.images.length} 张压缩图片；原始文件不会上传。`;
+  if (rec?.vision?.images?.length) return `将发送所选 ${imageCountText(rec.vision)}（压缩图）；原始文件不会上传。`;
   if (String(rec?.content ?? '').trim()) return '将发送提取出的文字；原始文件不会上传。';
   return '只有你点击识别时才会发送内容；原始文件不会上传。';
 }
@@ -327,9 +356,22 @@ function sampleCardHTML() {
   </aside>`;
 }
 
-function imageStrip(vision) {
+function imageStrip(vision, { pending = false } = {}) {
   if (!vision?.images?.length) return '';
-  const images = vision.images.map((image) => `<figure class="tm-thumb"><img src="data:${image.mime};base64,${image.data_base64}" alt="${image.pageNumber ? `第 ${image.pageNumber} 页` : '截图'}"><figcaption>${image.pageNumber ? `第 ${image.pageNumber} 页` : fmtSize(image.bytes)}</figcaption></figure>`).join('');
+  const removable = vision.kind !== 'pdf_scan';
+  const images = vision.images.map((image, index) => {
+    const segmented = Number.isInteger(image.segmentCount) && image.segmentCount > 1;
+    const label = segmented
+      ? `第 ${image.segmentIndex}/${image.segmentCount} 段`
+      : (image.pageNumber ? `第 ${image.pageNumber} 页` : fmtSize(image.bytes));
+    const sourceIndex = Number.isInteger(image.sourceIndex) ? image.sourceIndex : null;
+    const firstOfSource = segmented ? image.segmentIndex === 1 : true;
+    const deleteLabel = segmented ? `删除这张来源图（${image.segmentCount} 段）` : `删除第 ${index + 1} 张图片`;
+    const remove = removable && firstOfSource
+      ? `<button class="tm-thumb-remove" type="button" data-action="remove-image" ${sourceIndex !== null ? `data-source-index="${sourceIndex}"` : `data-index="${index}"`} aria-label="${deleteLabel}" ${pending ? 'disabled' : ''}>×</button>`
+      : '';
+    return `<figure class="tm-thumb">${remove}<img src="data:${image.mime};base64,${image.data_base64}" alt="${esc(label)}"><figcaption>${esc(label)}</figcaption></figure>`;
+  }).join('');
   return `<div class="tm-thumb-strip">${images}</div>`;
 }
 
@@ -437,9 +479,13 @@ function aiButton(state, rec) {
   const canText = ['csv', 'tsv', 'xlsx', 'pdf', 'text'].includes(rec.sourceKind) && text.length > 0;
   const canVision = imageCount > 0 && rec.vision?.status === 'ready';
   if (!canText && !canVision) return '';
-  if (rec.budgetExhausted) return `<p class="tm-note">本次 AI 识别次数已用完；仍可手动修改或重新解析。</p>`;
-  const label = imageCount ? `让 AI 识别这 ${imageCount} 张图` : (rec.modelCalls > 0 ? `再次让 AI 识别（剩 ${Math.max(0, rec.budgetMax - rec.modelCalls)} 次）` : '让 AI 帮我识别');
-  return `<div class="tm-ai-row"><button class="btn btn-primary" type="button" data-action="${imageCount ? 'ai-vision' : 'ai-text'}">${label}</button><span class="tm-note">${sendNotice(rec)}</span></div>`;
+  if (rec.budgetExhausted) {
+    return `<p class="tm-note">本次 AI 识别次数已用完（${budgetText(rec)}）。${imageCount ? '可在下方结束本次识别后重新开始，' : ''}或手动修改。</p>`;
+  }
+  const label = imageCount
+    ? `让 AI 识别这 ${imageCountText(rec.vision)}`
+    : (rec.modelCalls > 0 ? `再次让 AI 识别（剩余 ${Math.max(0, rec.budgetMax - rec.modelCalls)} 次）` : '让 AI 帮我识别');
+  return `<div class="tm-ai-row"><button class="btn btn-primary" type="button" data-action="${imageCount ? 'ai-vision' : 'ai-text'}">${label}</button><span class="tm-note">${sendNotice(rec)} · ${budgetText(rec)}</span></div>`;
 }
 
 function pendingPanelHTML(rec) {
@@ -451,7 +497,8 @@ function pendingPanelHTML(rec) {
       </div>
       <div class="bill-tags"><span class="status-tag">进行中</span></div>
     </div>
-    <p class="tm-note">${rec.vision?.images?.length ? `正在识别所选 ${rec.vision.images.length} 张图片。` : '正在识别提取出的文字。'}完成后会直接显示可编辑交易表。</p>
+    <p class="tm-note">${rec.vision?.images?.length ? `正在识别所选 ${imageCountText(rec.vision)}。` : '正在识别提取出的文字。'}完成后会直接显示可编辑交易表。</p>
+    <p class="tm-note">本次识别${budgetText(rec)}。</p>
     ${errorLine(rec)}
   </section>`;
 }
@@ -485,6 +532,29 @@ function errorPanelHTML(state, rec) {
   </div>`;
 }
 
+function unresolvedPanelHTML(rec) {
+  const items = rec?.draft?.unresolved ?? rec?.unresolved ?? [];
+  if (!items.length) return '';
+  const rows = items.map((item) => `<li>${item.row ? `记录 ${esc(item.row)} · ` : ''}${esc(item.reason)}</li>`).join('');
+  return `<div class="bill-warning" role="status">
+    <strong>${items.length} 条记录未进入交易草稿</strong>
+    <ul class="tm-unresolved">${rows}</ul>
+    <span>它们可能是证券转银行、利息、汇总等非买卖记录；请核对原图后手动处理。</span>
+  </div>`;
+}
+
+function validationErrorsHTML(rec) {
+  const errors = Array.isArray(rec?.validationErrors) ? rec.validationErrors : [];
+  if (!errors.length) return '';
+  const shown = errors.slice(0, 10);
+  const items = shown.map((error) => `<li>${error.line ? `第 ${error.line} 行 · ` : ''}${esc(error.message)}</li>`).join('');
+  return `<div class="bill-warning" role="alert">
+    <strong>最终账本校验未通过</strong>
+    <ul class="tm-unresolved">${items}</ul>
+    <span>草稿仍保留；系统不会补猜期初持仓或自动改动交易。</span>
+  </div>`;
+}
+
 function draftPanelHTML(state, rec) {
   const draft = rec.draft;
   const summary = draftSummary(draft);
@@ -494,6 +564,15 @@ function draftPanelHTML(state, rec) {
   const sourceLabel = rec.sourceKind === 'image' || rec.vision?.kind
     ? 'AI 视觉识别'
     : rec.modelCalls > 0 ? 'AI 识别' : '本地解析';
+  const usesSettlementDate = (draft.rows ?? []).some((row) => (row.issues ?? []).some((issue) => String(issue).includes('交收日期')));
+  const dateSourceNotice = rec.vision?.kind
+    ? `<div class="bill-warning" role="status">
+      <strong>${usesSettlementDate ? 'AI 使用了交收日期' : '日期来源需要核对'}</strong>
+      <span>${usesSettlementDate
+        ? '草稿日期来自截图中的交收日期，不代表成交日期；请逐行核对并按原始成交日期修正。'
+        : '视觉识别只使用截图中可见的日期列；若列名是“交收日期”，它不是成交日期。系统不会自动倒推，请逐行核对。'}</span>
+    </div>`
+    : '';
   return `<section class="panel bill" aria-labelledby="draft-title">
     <div class="bill-head">
       <div>
@@ -508,10 +587,13 @@ function draftPanelHTML(state, rec) {
       <span>期间 <b>${range}</b></span>
       <span>标的 <b>${symbols} 个</b></span>
     </div>
-    <p class="tm-note">已选 ${summary.included} 行 · 可导入 ${summary.valid} 行${summary.duplicate ? ` · 疑似重复 ${summary.duplicate}` : ''}</p>
+    <p class="tm-note">已选 ${summary.included} 行 · 可导入 ${summary.valid} 行${summary.duplicate ? ` · 疑似重复 ${summary.duplicate}` : ''} · 本次识别${budgetText(rec)}</p>
     ${rec.notice ? `<div class="bill-warning" role="status"><strong>${esc(rec.notice)}</strong><span>导入前仍需要你逐行核对并校验。</span></div>` : ''}
+    ${dateSourceNotice}
     ${errorLine(rec)}
+    ${validationErrorsHTML(rec)}
     ${draftTable(rec)}
+    ${unresolvedPanelHTML(rec)}
     <div class="bill-actions">
       <div class="bill-actions-note">
         <span class="plus" aria-hidden="true">＋</span>
@@ -581,14 +663,17 @@ function billPanelHTML(state, rec) {
 function visionPanelHTML(state, rec) {
   const vision = rec.vision ?? {};
   const count = vision.images?.length ?? 0;
-  const title = vision.kind === 'pdf_scan'
-    ? (count ? `PDF 已在本机渲染 ${count} 页。` : '选择要识别的 PDF 页面。')
-    : (count ? `已在本机准备 ${count} 张截图。` : '正在准备截图…');
+  const preparing = vision.status === 'preparing';
+  const title = visionStatusTitle(vision);
+  const emptyNote = count || preparing || vision.notice ? '' : `<p class="tm-note">${vision.status === 'error'
+    ? '图片没有准备成功；请重新选择截图。'
+    : '还没有选择截图；请从上方选择文件。'}</p>`;
+  const canRestart = rec.pending !== true && (rec.error || rec.budgetExhausted || vision.status === 'error');
   return `<section class="panel bill" aria-labelledby="vision-title">
     <div class="bill-head">
       <div>
         <p class="mono-label">VISION / 图片与 PDF</p>
-        <h2 id="vision-title">${title}</h2>
+        <h2 id="vision-title">${esc(title)}</h2>
       </div>
       <div class="bill-tags"><span class="status-tag ok">仅本机处理</span><span class="status-tag">识别前不发送</span></div>
     </div>
@@ -597,10 +682,15 @@ function visionPanelHTML(state, rec) {
       <span>文件 <b class="file-line">${esc(rec.fileName || vision.fileName || '—')}</b></span>
     </div>
     ${errorLine(rec)}
-    ${imageStrip(vision)}
+    ${vision.notice ? `<p class="tm-note">${esc(vision.notice)}</p>` : ''}
+    ${imageStrip(vision, { pending: rec.pending === true })}
+    ${count ? `<p class="tm-note">已选 ${imageCountText(vision)} · 输入约 ${fmtSize(vision.totalBytes)}${vision.payloadBytes ? ` · 请求约 ${fmtSize(vision.payloadBytes)}` : ''}</p>` : ''}
+    ${emptyNote}
     ${vision.kind === 'pdf_scan' ? pdfSelector(rec) : ''}
+    <p class="tm-note">本次识别${budgetText(rec)}。</p>
     <div class="bill-actions">
       ${aiButton(state, rec) || '<p class="fine">图片与 PDF 页面先在本机处理；只有点击识别时才会发送所选内容。</p>'}
+      ${canRestart ? '<button class="btn btn-outline btn-sm" type="button" data-action="restart-import">结束本次识别并重新开始</button>' : ''}
     </div>
   </section>`;
 }
@@ -718,6 +808,15 @@ export function renderRealImport(host, ctx) {
         aiRecover(ctx);
       } else if (action === 'ai-vision') {
         aiVision(ctx);
+      } else if (action === 'remove-image') {
+        const sourceAttr = button.getAttribute('data-source-index');
+        const indexAttr = button.getAttribute('data-index');
+        removeImage(ctx, {
+          sourceIndex: sourceAttr === null ? null : Number(sourceAttr),
+          index: indexAttr === null ? null : Number(indexAttr),
+        });
+      } else if (action === 'restart-import') {
+        restartImport(ctx);
       } else if (action === 'render-pdf') {
         renderPdf(ctx);
       } else if (action === 'validate') {
@@ -926,12 +1025,12 @@ async function aiRecover(ctx) {
       return { ok: false, kind: 'text', code: 'E_IMPORT_SOURCE_STALE' };
     }
     if (!result.ok) {
-      set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), error: { code: result.code, message: result.message } } });
+      set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), error: { code: result.code, message: result.message, upstream: result.upstream ?? null, retryable: result.retryable === true } } });
       return { ok: false, kind: 'text', code: result.code };
     }
     const draft = buildAiDraft({ aiTrades: result.draft.trades, unresolved: result.draft.unresolved, localDraft, sourceFile: rec.fileName || '粘贴文字', requestId: session.request_ids?.at(-1) ?? null });
     const duplicates = draft.rows.filter((row) => row.duplicateOf).length;
-    set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), status: 'draft', draft, unresolved: result.draft.unresolved, notice: result.draft.trades.length ? `AI 返回 ${result.draft.trades.length} 条交易草稿${duplicates ? `，其中 ${duplicates} 条疑似重复` : ''}` : 'AI 没有整理出新的交易。', error: null } });
+    set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), status: 'draft', draft, unresolved: result.draft.unresolved, notice: aiDraftNotice(result.draft.trades, result.draft.unresolved, duplicates), error: null } });
     return { ok: true, kind: 'text', draftCount: draft.rows.filter((row) => row.include !== false).length };
   } catch {
     set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false }, client(ctx).getSession()), error: { code: 'E_IMPORT_RECOVERY_UNEXPECTED', message: '识别链路出现未预期错误' } } });
@@ -951,6 +1050,59 @@ export async function runImportAi(ctx) {
   return { ok: false, code: 'E_IMPORT_AI_NO_SOURCE' };
 }
 
+function removeImage(ctx, { sourceIndex = null, index = null } = {}) {
+  const { state, set } = ctx;
+  const rec = state.importRecovery;
+  if (!rec || rec.pending || rec.vision?.kind !== 'image') return;
+  const nextVision = Number.isInteger(sourceIndex)
+    ? removeVisionSource(rec.vision, sourceIndex, { sourceKind: 'image' })
+    : removeVisionImage(rec.vision, index, { sourceKind: 'image' });
+  if (!nextVision) return;
+  const hasImages = nextVision.images.length > 0;
+  const contextId = createBillContextId();
+  set({
+    // 删除图片必须让旧草稿、旧 unresolved 和旧确认状态全部失效。
+    bill: freshBill({ contextId, status: 'none', sourceType: 'local', fileName: '截图识别', fileSize: 0 }),
+    chat: defaultChat(contextId),
+    importRecovery: {
+      ...rec,
+      status: hasImages ? 'vision_ready' : 'vision_pdf',
+      vision: nextVision,
+      localDraft: null,
+      draft: null,
+      unresolved: [],
+      error: null,
+      notice: null,
+      validationErrors: [],
+    },
+  });
+}
+
+function restartImport(ctx) {
+  const { set } = ctx;
+  clearImportFeedback();
+  try {
+    client(ctx).completeFlow({ reason: 'user_restart' });
+  } catch { /* flow 收口失败不阻断新的本地导入 */ }
+  pdfSource = null;
+  const contextId = createBillContextId();
+  set({
+    bill: freshBill({ contextId, status: 'none', sourceType: 'local', fileName: '截图识别', fileSize: 0 }),
+    chat: defaultChat(contextId),
+    importRecovery: {
+      ...defaultImportRecovery(),
+      status: 'vision_pdf',
+      sourceKind: 'image',
+      vision: {
+        ...defaultImportRecovery().vision,
+        kind: 'image',
+        status: 'empty',
+        notice: '已结束本次识别任务；请重新选择截图。',
+      },
+    },
+  });
+}
+
 async function openImages(ctx, files) {
   const { set } = ctx;
   const contextId = createBillContextId();
@@ -958,13 +1110,30 @@ async function openImages(ctx, files) {
   const base = recoveryBase({ sourceId, sourceKind: 'image', fileName: '截图识别', fileSize: files.reduce((sum, f) => sum + (f.size || 0), 0), content: '', session: sessionInfo(ctx), status: 'vision_pdf' });
   set({ bill: freshBill({ contextId, status: 'none', sourceType: 'local', fileName: '截图识别', fileSize: base.fileSize }), chat: defaultChat(contextId), importRecovery: { ...base, status: 'vision_pdf', vision: { ...defaultImportRecovery().vision, kind: 'image', fileName: '截图识别', images: [], status: 'preparing' } } });
   try {
-    const images = [];
-    for (const file of files) images.push(await prepareImageFile(file));
+    if (files.length > IMPORT_VISION_MAX_IMAGES) {
+      throw new Error(`一次最多处理 ${IMPORT_VISION_MAX_IMAGES} 张图片；请减少截图数量或分次导入`);
+    }
+    const images = await prepareImageFiles(files, { maxImages: IMPORT_VISION_MAX_IMAGES });
     const checked = validateVisionInput({ images, sourceKind: 'image' });
     if (!checked.ok) throw new Error(checked.message);
-    set({ importRecovery: { ...base, status: 'vision_ready', vision: { ...defaultImportRecovery().vision, kind: 'image', fileName: '截图识别', images: checked.images, totalBytes: checked.totalBytes, totalBase64Chars: checked.totalBase64Chars, payloadBytes: checked.payloadBytes, status: 'ready' } } });
+    set({ importRecovery: { ...base, status: 'vision_ready', vision: { ...defaultImportRecovery().vision, kind: 'image', fileName: '截图识别', images: checked.images, totalBytes: checked.totalBytes, totalBase64Chars: checked.totalBase64Chars, payloadBytes: checked.payloadBytes, status: 'ready', notice: `已在本机准备 ${imageCountText({ images: checked.images })}；点击识别前不会发送。` } } });
   } catch (error) {
-    set({ importRecovery: { ...base, status: 'error', error: { code: 'E_IMPORT_IMAGE', message: error.message } } });
+    set({
+      importRecovery: {
+        ...base,
+        status: 'vision_pdf',
+        error: { code: 'E_IMPORT_IMAGE', message: error.message },
+        vision: {
+          ...defaultImportRecovery().vision,
+          kind: 'image',
+          fileName: '截图识别',
+          images: [],
+          status: 'error',
+          error: { code: 'E_IMPORT_IMAGE', message: error.message },
+          notice: '未发送任何图片。',
+        },
+      },
+    });
   }
 }
 
@@ -1026,11 +1195,11 @@ async function aiVision(ctx) {
       return { ok: false, kind: 'vision', code: 'E_IMPORT_SOURCE_STALE' };
     }
     if (!result.ok) {
-      set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), error: { code: result.code, message: result.message } } });
+      set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), error: { code: result.code, message: result.message, upstream: result.upstream ?? null, retryable: result.retryable === true } } });
       return { ok: false, kind: 'vision', code: result.code };
     }
-    const draft = buildAiDraft({ aiTrades: result.draft.trades, unresolved: result.draft.unresolved, localDraft: rec.localDraft ?? null, sourceFile: rec.fileName || '视觉识别', requestId: session.request_ids?.at(-1) ?? null });
-    set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), status: 'draft', draft, unresolved: result.draft.unresolved, notice: result.draft.trades.length ? `AI 返回 ${result.draft.trades.length} 条交易草稿` : 'AI 没有整理出新的交易。', error: null } });
+    const draft = buildAiDraft({ aiTrades: result.draft.trades, unresolved: result.draft.unresolved, localDraft: rec.localDraft ?? null, sourceFile: rec.fileName || '视觉识别', requestId: session.request_ids?.at(-1) ?? null, duplicatePolicy: 'warn', nonTradePolicy: 'unresolved' });
+    set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), status: 'draft', draft, unresolved: result.draft.unresolved, notice: aiDraftNotice(result.draft.trades, result.draft.unresolved), error: null } });
     return { ok: true, kind: 'vision', draftCount: draft.rows.filter((row) => row.include !== false).length };
   } catch {
     set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false }, client(ctx).getSession()), error: { code: 'E_IMPORT_VISION_UNEXPECTED', message: '视觉识别链路出现未预期错误' } } });
