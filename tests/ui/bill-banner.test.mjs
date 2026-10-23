@@ -154,9 +154,11 @@ check('隐藏：未确认/非本地账单不渲染横幅',
   check('布局：窄屏只保留问答正文 14px gutter，横幅沿用全站 container gutter',
     /\.tm-qa-inner\s*\{\s*padding:\s*0 14px;\s*\}/.test(css)
     && !/tm-bill-banner-shell[^{]*\{\s*padding-inline/.test(css));
-  check('布局：桌面问答横幅补偿内层滚动条占位，窄屏不补偿',
-    /@media \(min-width: 681px\)[\s\S]*body\.tm-qa-standalone \.tm-bill-banner-shell[\s\S]*padding-right:\s*calc\(var\(--gutter\) \+ var\(--tm-scrollbar-w, 0px\)\)/.test(css)
-    && /--tm-scrollbar-w/.test(app));
+  check('布局：问答横幅按 .tm-main 实际宽度动态对齐，覆盖助手开关与视口变化',
+    /function alignChatBanner\(\)/.test(app)
+    && /main\.clientWidth - scrollbar/.test(app)
+    && /new ResizeObserver\(\(\) => alignChatBanner\(\)\)/.test(app)
+    && !/body\.tm-qa-standalone \.tm-bill-banner-shell\s*\{/.test(css));
   check('布局：横幅卡片保留自身内边距，不承担页面 gutter',
     /padding:\s*12px 16px/.test(bannerRule));
 }

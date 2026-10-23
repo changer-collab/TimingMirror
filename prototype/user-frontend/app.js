@@ -198,6 +198,25 @@ import { renderRealProfile } from './realProfile.js';
     document.documentElement.style.setProperty('--tm-scrollbar-w', `${width}px`);
   }
 
+  function alignChatBanner() {
+    if (state.route !== 'chat' || !document.body.classList.contains('tm-qa-standalone')) return;
+    const shell = document.querySelector('#app > .tm-bill-banner-shell');
+    const main = document.getElementById('tm-main');
+    if (!shell || !main) return;
+    const style = getComputedStyle(shell);
+    const rootStyle = getComputedStyle(document.documentElement);
+    const scrollbar = parseFloat(rootStyle.getPropertyValue('--tm-scrollbar-w')) || 0;
+    const maxWidth = parseFloat(style.maxWidth);
+    const paddingLeft = parseFloat(style.paddingLeft) || 0;
+    const available = Math.max(0, main.clientWidth - scrollbar);
+    const width = Math.min(available, Number.isFinite(maxWidth) ? maxWidth : available);
+    const left = Math.max(0, (available - width) / 2);
+    shell.style.width = `${width}px`;
+    shell.style.marginLeft = `${left}px`;
+    shell.style.marginRight = '0';
+    shell.style.paddingRight = `${paddingLeft}px`;
+  }
+
   function scrollTop() {
     const html = document.documentElement;
     const previous = html.style.scrollBehavior;
@@ -2050,6 +2069,7 @@ import { renderRealProfile } from './realProfile.js';
     bridge.bindAssistantToggle();
     bridge.renderAssistant();
     bridge.applyAssistantShell();
+    alignChatBanner();
   }
 
   /* ---------- global events ---------- */
@@ -2104,5 +2124,10 @@ import { renderRealProfile } from './realProfile.js';
 
   calibrateScrollbarWidth();
   bridge.initBridge({ onChange: onSharedChange });
+  if (typeof ResizeObserver === 'function') {
+    const main = document.getElementById('tm-main');
+    if (main) new ResizeObserver(() => alignChatBanner()).observe(main);
+  }
+  window.addEventListener('resize', alignChatBanner);
   render();
 })();

@@ -184,13 +184,6 @@ body {
   margin-top: 18px;
 }
 
-/* 问答页的 .tm-main 不滚动，缺少桌面滚动条占位；补齐后卡片边界才与其他页面一致。 */
-@media (min-width: 681px) {
-  body.tm-qa-standalone .tm-bill-banner-shell {
-    padding-right: calc(var(--gutter) + var(--tm-scrollbar-w, 0px));
-  }
-}
-
 .tm-bill-banner {
   display: flex;
   flex-wrap: wrap;

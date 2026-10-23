@@ -216,7 +216,7 @@ export function createIntentRouter({ classifyIntent = null } = {}) {
         source: 'L2',
         confidence: Number.isFinite(confidence) ? confidence : null,
         ambiguous: true,
-        notice: `在线意图置信度不足${Number.isFinite(confidence) ? `（${confidence.toFixed(2)}）` : ''}，没有据此猜测；账单与事实没有发送。`,
+        notice: '这次没能确定你的问法，没有据此猜测；账单与事实没有发送。',
       };
     }
     if (!Object.prototype.hasOwnProperty.call(QA_INTENT_LABELS, intent)) {
