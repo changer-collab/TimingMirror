@@ -450,7 +450,7 @@ for (const route of ['home', 'import', 'report', 'contract']) {
   ctx.qaDeps.getReportBundle = () => BUNDLE;
   ctx.qaDeps.explainReport = async (args) => {
     calls.push(args);
-    return { ok: true, text: 'AI 解释了已发布的四项组合数字。' };
+    return { ok: true, text: 'AI 解释了已发布的四项组合数字（收益类计算 CALC_RET_V1）。' };
   };
   state.bill = {
     ...defaultBill(),
@@ -478,15 +478,16 @@ for (const route of ['home', 'import', 'report', 'contract']) {
   await Promise.resolve();
   const conversation = render('report');
   const last = state.assistant.qaMessages.at(-1);
-  check('报告页：点击后进入对话视图，结果标注 AI 解释',
+  check('报告页：点击后进入对话视图，结果标注 AI 解释并清理内部公式 ID',
     calls.length === 1
     && state.assistant.view === 'conversation'
     && state.assistant.qaMessages.length === 2
     && last?.kind === 'ai'
     && last?.tag === 'AI 解释'
     && last?.status === 'ok'
-    && last.text.includes('AI 解释了已发布的四项组合数字。')
-    && !allText(conversation).match(/trace|request_id|E_[A-Z_]+/),
+    && last.text.includes('AI 解释了已发布的四项组合数字')
+    && !/CALC_/.test(last.text)
+    && !allText(conversation).match(/CALC_|trace|request_id|E_[A-Z_]+/),
     JSON.stringify({ calls: calls.length, messages: state.assistant.qaMessages }));
 
   ctx.qaDeps.explainReport = async () => ({ ok: false, code: 'E_MODEL_NOT_CONFIGURED' });
