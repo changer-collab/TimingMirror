@@ -3,6 +3,7 @@
 // 无网络/DOM 之外的副作用：发送与规则打开由 ctx.qaDeps 注入。
 import { QA_SUGGESTIONS, normalizeQuestion, QA_INTENT_LABELS, QA_LAYER_LABELS } from './qaIntent.js';
 import { ruleStateKeyOf } from '../../src/agent/qaChips.js';
+import { fmtMoney } from '../../src/engine/display.js';
 
 const STATUS_LABELS = Object.freeze({
   local: '已校验',
@@ -239,7 +240,6 @@ function askHTML(pending) {
       <textarea id="tm-qa-input" data-role="qa-input" rows="2" maxlength="200" placeholder="问这份账单已经发生的事，例如：我最错的一笔是哪个？" ${pending ? 'disabled' : ''}>${esc(draft)}</textarea>
       <button class="tm-qa-send" type="submit" ${pending ? 'disabled' : ''}>发送</button>
     </div>
-    <p class="tm-qa-ask-meta">Enter 发送 · Shift+Enter 换行 · 原始 CSV 仅本机</p>
   </form>`;
 }
 
@@ -266,6 +266,74 @@ function failureAnswer({ question, contextId }) {
   };
 }
 
+function sideMoneyText(value) {
+  return String(value ?? '—').replace(/^¥-/, '-¥');
+}
+
+function sideFactText(fact) {
+  if (!fact) return '—';
+  if (fact.display != null && fact.display !== '') return sideMoneyText(fact.display);
+  if (Number.isFinite(fact.value)) return sideMoneyText(fmtMoney(fact.value));
+  return '—';
+}
+
+function sideHTML(state, ctx) {
+  const bill = state.bill ?? {};
+  const isDemo = bill.demo === true;
+
+  let reportState = { status: 'idle' };
+  try { reportState = ctx.qaDeps?.getReportState?.(bill) ?? { status: 'idle' }; } catch { /* 缓存读取失败 */ }
+
+  const bundle = reportState.status === 'ready' ? reportState.bundle : null;
+  const published = bundle?.review?.portfolio_published === true;
+  const portfolio = published ? (bundle.factsByScope?.portfolio ?? null) : null;
+
+  const trades = Array.isArray(bill.trades) ? bill.trades : [];
+  const tradeCount = trades.length;
+  const symbolCount = tradeCount > 0 ? new Set(trades.map((t) => t.symbol).filter(Boolean)).size : 0;
+
+  let bodyHTML;
+  if (portfolio) {
+    const asOfDate = bundle.asOfDate || '—';
+    const actualRet = sideFactText(portfolio.actualRet);
+    const ghostRet = sideFactText(portfolio.ghostRet);
+    const dragMoney = sideFactText(portfolio.dragMoney);
+    const dragVal = portfolio.dragMoney?.value;
+    const dragLoss = Number.isFinite(dragVal) && dragVal > 0;
+    bodyHTML = `<dl class="tm-qa-side-list">
+      <div><dt>初始本金</dt><dd>暂无</dd></div>
+      <div><dt>估值日</dt><dd>${esc(asOfDate)}</dd></div>
+      <div><dt>实际收益</dt><dd>${esc(actualRet)}</dd></div>
+      <div><dt>对照收益</dt><dd>${esc(ghostRet)}</dd></div>
+      <div><dt>差额</dt><dd${dragLoss ? ' class="tm-qa-side-loss"' : ''}>${esc(dragMoney)}</dd></div>
+      <div><dt>交易 / 标的</dt><dd>${tradeCount > 0 ? `${tradeCount} 笔 / ${symbolCount} 个` : '—'}</dd></div>
+    </dl>`;
+  } else {
+    let statusText = '报告未读取';
+    if (reportState.status === 'loading') statusText = '报告加载中…';
+    else if (reportState.status === 'error') statusText = '报告加载失败';
+    else if (bundle) {
+      if (bundle.status === 'error') statusText = '计算出错';
+      else if (bundle.status === 'blocked') statusText = '计算被阻断';
+      else if (!bundle.review) statusText = '报告未复核';
+      else statusText = '组合未发布';
+    }
+    bodyHTML = `<div class="tm-qa-side-status">
+      <p class="tm-qa-side-status-text">${esc(statusText)}</p>
+    </div>`;
+  }
+
+  return `<aside class="tm-qa-side" aria-label="事实清单">
+    <div class="tm-qa-side-head"><span>FACT SHEET / 事实清单</span><span class="tm-qa-side-tag">${isDemo ? '示例' : '已确认'}</span></div>
+    ${bodyHTML}
+    <div class="tm-qa-side-note">
+      <strong>它不会：</strong>
+      <ul><li>预测涨跌</li><li>推荐具体标的</li><li>替你下单或定规则</li></ul>
+    </div>
+    <a class="tm-qa-side-link" href="#/report">回到完整报告 <span class="arrow">→</span></a>
+  </aside>`;
+}
+
 export function renderRealChat(host, ctx) {
   if (!host) return;
   const { state, set } = ctx;
@@ -289,15 +357,18 @@ export function renderRealChat(host, ctx) {
 
   host.innerHTML = `<div class="tm-qa-page">
     ${contextHTML(state, ctx)}
-    <div class="tm-qa-inner">
-      <div class="tm-qa-scroll" data-role="qa-scroll">
-        ${headHTML(entries.length > 0 || pending, isDemo)}
-        <div class="tm-qa-log" data-role="qa-ledger" aria-live="polite">${logHTML}</div>
+    <div class="tm-qa-layout">
+      <div class="tm-qa-main">
+        <div class="tm-qa-scroll" data-role="qa-scroll">
+          ${headHTML(entries.length > 0 || pending, isDemo)}
+          <div class="tm-qa-log" data-role="qa-ledger" aria-live="polite">${logHTML}</div>
+        </div>
+        <div class="tm-qa-dock" data-role="qa-dock" aria-label="提问区">
+          ${suggestHTML(pending)}
+          ${askHTML(pending)}
+        </div>
       </div>
-      <div class="tm-qa-dock" data-role="qa-dock" aria-label="提问区">
-        ${suggestHTML(pending)}
-        ${askHTML(pending)}
-      </div>
+      ${sideHTML(state, ctx)}
     </div>
   </div>`;
 
