@@ -31,8 +31,8 @@ const CUSTOM_UNABLE_NOTE = '无法判断：本次不显示“未命中”，也�
 const CUSTOM_DISCLOSURE = '这条自定义规则参与测试时，会把规则原文、提醒动作、适用范围、情境标的与日期、当日涨跌幅（如有）、该标的的买入与卖出日期和相关交易日历发送到站点服务端，由模型辅助理解后给出判定；不发送原始账单、CSV 文件、价格金额或其他标的的交易记录。判定只用于提醒，不下单、不阻止交易。';
 const CUSTOM_USED_DATA_LABEL = Object.freeze({ change_pct: '当日涨跌幅', buys: '买入日期', sells: '卖出日期', calendar: '交易日历' });
 const INTRO = '设置在操作复盘中用于提醒自己的交易规则。规则仅用于提醒，不会自动交易或阻止交易。';
-const PRIVACY = '规则仅保存在当前浏览器；不会自动交易，也不会改变分析报告结论。';
-const AGENT_NOTE = '规则只保存在本机，不会自动交易，也不会改变分析报告结论；操作复盘只使用当前生效规则。';
+const PRIVACY = '不会自动交易，也不会改变分析报告结论。操作复盘只使用当前生效规则。';
+// const AGENT_NOTE = '操作复盘只使用当前生效规则。';
 const CURRENT_NOTE = '不同类型或不同股票范围的规则可以同时生效；同一类型、同一范围只保留一条当前规则，保存新参数后旧规则进入历史规则。';
 const REPLACE_NOTE = '保存后，新规则会立即生效；当前同类型规则会进入历史记录，不再参与测试。';
 const STOP_NOTE = '停用后，该规则进入历史规则，不再参与之后的操作复盘；可随时恢复为当前规则。';
@@ -237,16 +237,18 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     set({ contracts: { versions: [...c.versions, ...recs], simContext: null, sim: { ...c.sim, result: null, running: false, runId: null, fallback: null }, ...extra } });
     saveContractsDemo();
   }
-  function openEditor(mode, { rule = null, template_id = null } = {}) {
+  function openEditor(mode, { rule = null, template_id = null, action = null } = {}) {
     if (mode === 'edit' && rule?.is_custom) {
       const result = { status: 'supported', is_custom: true, rule_id: rule.rule_id, text: rule.text, action: rule.action, scope: rule.scope, scope_text: rule.scope_text, understanding: rule.understanding, checks: [] };
-      set({ contracts: { modal: { mode, targetHash: rule.hash, targetRuleId: rule.rule_id }, draft: { template_id: CUSTOM_TEMPLATE, fields: {}, note: rule.latest_note, scope: scopeDraftOf(rule.scope) }, nl: { ...emptyNl(), text: rule.text, status: 'done', result, actionChoice: rule.action } } });
+      set({ contracts: { modal: { mode, targetHash: rule.hash, targetRuleId: rule.rule_id, actionFilter: null }, draft: { template_id: CUSTOM_TEMPLATE, fields: {}, note: rule.latest_note, scope: scopeDraftOf(rule.scope) }, nl: { ...emptyNl(), text: rule.text, status: 'done', result, actionChoice: rule.action } } });
       return;
     }
     const wanted = rule ? rule.template_id : template_id;
-    const fewestTpl = [...templates].sort((a, b) => (slotOf(a.template_id)?.current ? 1 : 0) - (slotOf(b.template_id)?.current ? 1 : 0))[0];
-    const tpl = templates.find((t) => t.template_id === wanted) ?? fewestTpl ?? templates[0];
-    set({ contracts: { modal: { mode, targetHash: rule ? rule.hash : null }, draft: draftFor(tpl, rule) } });
+    const filtered = action ? templates.filter((t) => t.action === action) : templates;
+    const pool = filtered.length ? filtered : templates;
+    const fewestTpl = [...pool].sort((a, b) => (slotOf(a.template_id)?.current ? 1 : 0) - (slotOf(b.template_id)?.current ? 1 : 0))[0];
+    const tpl = templates.find((t) => t.template_id === wanted) ?? fewestTpl ?? pool[0];
+    set({ contracts: { modal: { mode, targetHash: rule ? rule.hash : null, actionFilter: action }, draft: draftFor(tpl, rule) } });
   }
   const closeEditor = () => {
     nlToken = null;
@@ -267,10 +269,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
       el('h2', { class: 'cv-title' }, ['交易规则']),
       el('div', { class: 'cv-intro' }, [INTRO]),
       el('div', { class: 'cv-privacy' }, [PRIVACY]),
-      el('div', { class: 'muted small cv-agent-note' }, [AGENT_NOTE]),
-    ]),
-    el('div', { class: 'cv-head-actions' }, [
-      el('button', { class: 'btn primary cv-add', 'data-role': 'add-rule', onclick: () => openEditor('add') }, ['新增规则']),
+      // el('div', { class: 'muted small cv-agent-note' }, [AGENT_NOTE]),
     ]),
   ]));
 
@@ -355,18 +354,24 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     for (const action of actionOrder) {
       const slots = actionGroups.get(action);
       const customs = customByAction.get(action);
-      if (!slots && !customs) continue;
+      const hasRules = (slots && slots.some((s) => s.current)) || (customs && customs.length);
+      if (!hasRules) {
+        // 该分类无规则：显示空状态 + 新增按钮
+        nodes.push(el('div', { class: 'cv-action-group', 'data-action': action }, [
+          el('div', { class: 'cv-action-title-row' }, [
+            el('div', { class: 'cv-action-title' }, [ACTION_LABEL[action] ?? action]),
+            el('button', { class: 'btn small', 'data-role': `add-rule-${action}`, onclick: () => openEditor('add', { action }) }, ['新增规则']),
+          ]),
+          el('div', { class: 'muted small cv-action-empty' }, [`暂无${ACTION_LABEL[action] ?? action}，点击"新增规则"开始设置。`]),
+        ]));
+        continue;
+      }
       const groupNodes = [];
       if (slots) {
         for (const s of slots) {
+          if (!s.current) continue;
           const slotChildren = [];
           for (const rule of s.currents) slotChildren.push(currentCard(rule));
-          if (!s.current) {
-            slotChildren.push(el('div', { class: 'muted small cv-slot-empty' }, [`暂未设置「${s.template_name}」规则`]));
-          }
-          slotChildren.push(el('div', { class: 'cv-slot-add' }, [
-            el('button', { class: 'btn small', 'data-role': 'add-slot', onclick: () => openEditor('add', { template_id: s.template_id }) }, [s.current ? '新增此类规则' : '新增规则']),
-          ]));
           groupNodes.push(el('div', { class: 'cv-slot', 'data-template': s.template_id, 'data-action': action }, slotChildren));
         }
       }
@@ -377,7 +382,10 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
         ])));
       }
       nodes.push(el('div', { class: 'cv-action-group', 'data-action': action }, [
-        el('div', { class: 'cv-action-title' }, [ACTION_LABEL[action] ?? action]),
+        el('div', { class: 'cv-action-title-row' }, [
+          el('div', { class: 'cv-action-title' }, [ACTION_LABEL[action] ?? action]),
+          el('button', { class: 'btn small', 'data-role': `add-rule-${action}`, onclick: () => openEditor('add', { action }) }, ['新增规则']),
+        ]),
         ...groupNodes,
       ]));
     }
@@ -389,9 +397,6 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
         for (const s of unknownActionSlots) {
           const slotChildren = [];
           for (const rule of s.currents) slotChildren.push(currentCard(rule));
-          slotChildren.push(el('div', { class: 'cv-slot-add' }, [
-            el('button', { class: 'btn small', 'data-role': 'add-slot', onclick: () => openEditor('add', { template_id: s.template_id }) }, ['新增此类规则']),
-          ]));
           unknownNodes.push(el('div', { class: 'cv-slot', 'data-template': s.template_id, 'data-action': 'unknown' }, slotChildren));
         }
       }
@@ -694,14 +699,15 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
           onchange: (e) => {
             nlToken = null;
             if (e.target.value === CUSTOM_TEMPLATE) {
-              set({ contracts: { draft: { template_id: CUSTOM_TEMPLATE, fields: {}, note: c.draft.note, scope: c.draft.scope ?? scopeDraftOf(null) }, nl: emptyNl() } });
+              const defaultAction = c.modal?.actionFilter ?? null;
+              set({ contracts: { draft: { template_id: CUSTOM_TEMPLATE, fields: {}, note: c.draft.note, scope: c.draft.scope ?? scopeDraftOf(null) }, nl: { ...emptyNl(), actionChoice: defaultAction } } });
               return;
             }
             const next = templates.find((t) => t.template_id === e.target.value);
             if (next) set({ contracts: { draft: { ...draftFor(next), note: c.draft.note, scope: c.draft.scope ?? scopeDraftOf(null) }, nl: null } });
           },
         }, [
-          ...templates.map((t) => el('option', { value: t.template_id, selected: t.template_id === c.draft.template_id ? 'selected' : null }, [t.name])),
+          ...templates.filter((t) => !c.modal?.actionFilter || t.action === c.modal.actionFilter).map((t) => el('option', { value: t.template_id, selected: t.template_id === c.draft.template_id ? 'selected' : null }, [t.name])),
           el('option', { value: CUSTOM_TEMPLATE, selected: custom ? 'selected' : null }, ['自定义规则（用一句话描述）']),
         ]),
       ]));
