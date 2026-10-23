@@ -37,7 +37,7 @@ const xStep = (n) => (W - PAD.l - PAD.r) / Math.max(n - 1, 1);
 const xPos = (i, n) => (n <= 1 ? PAD.l + (W - PAD.l - PAD.r) / 2 : PAD.l + xStep(n) * i);
 const AXIS_FMT = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
 const MONEY_FMT = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const fmtAxis = (v) => AXIS_FMT.format(v);
+const fmtAxis = (v) => (Math.abs(v) >= 10000 ? `${(v / 10000).toFixed(1)}万` : AXIS_FMT.format(v));
 const fmtMoney = (v) => `¥${MONEY_FMT.format(v)}`;
 const fmtPrice = (v) => MONEY_FMT.format(v);
 
@@ -143,15 +143,18 @@ function frame(ext, H) {
     g.append(svgEl('line', { x1: PAD.l, x2: W - PAD.r, y1: y, y2: y, class: 'gc-grid' }));
   }
   if (ext) {
-    g.append(svgText(PAD.l - 8, yPos(ext.hi, ext, H) + 4, fmtAxis(ext.hi), 'gc-axis gc-axis-end'));
-    g.append(svgText(PAD.l - 8, yPos(ext.lo, ext, H) + 4, fmtAxis(ext.lo), 'gc-axis gc-axis-end'));
+    for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+      const y = PAD.t + f * (H - PAD.t - PAD.b);
+      g.append(svgText(PAD.l - 8, y + 4, fmtAxis(ext.hi - f * (ext.hi - ext.lo)), 'gc-axis gc-axis-end'));
+    }
   }
   return g;
 }
 
 function axisLabels(n) {
   if (n <= 1) return [0];
-  return [0, Math.floor((n - 1) / 2), n - 1];
+  const last = n - 1;
+  return [...new Set([0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(last * f)))];
 }
 
 function axisLabelAttrs(i, n) {

@@ -129,7 +129,7 @@
 .gc-reading-guide { margin: 4px 0 10px; padding: 10px 12px; border-radius: 7px; background: var(--sheet-2); color: var(--gray); font-size: 13px; line-height: 1.7; }
 .gc-svg { width: 100%; height: auto; display: block; background: #fff; border: 1px solid var(--line); border-radius: 10px; }
 .gc-grid { stroke: #dde4e2; stroke-width: 1; }
-.gc-axis { font-size: 16px; fill: var(--gray); font-family: var(--font-mono); }
+.gc-axis { font-size: 10.5px; fill: var(--gray); font-family: var(--font-mono); }
 .gc-axis-end { text-anchor: end; }
 .gc-line-actual { stroke: #14213d; stroke-width: 2.4; }
 .gc-line-ghost { stroke: #1f4fa8; stroke-width: 2; stroke-dasharray: 7 5; }
