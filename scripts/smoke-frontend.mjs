@@ -836,13 +836,14 @@ state.report = { scenario: 'A', symbol: 'pool' };
     const facts = entry ? findByClass(entry, 'tm-qa-facts')[0] : null;
     const evidence = entry ? findByClass(entry, 'tm-qa-evidence')[0] : null;
     const evidenceSummary = evidence ? findByTag(evidence, 'summary')[0] : null;
-    check('问答账本·最错一笔：local/本地规则/4 条事实/证据折叠/已校验',
+    check('问答账本·最错一笔：local/本机回答/4 条事实/证据折叠',
       state.chat.pending === false && !!entry && entry.attrs['data-state'] === 'local'
       && entry.attrs['data-role'] === 'qa-entry'
-      && texts(entry).join('|').includes('本地规则')
+      && texts(entry).join('|').includes('本机回答')
       && facts && findByClass(facts, 'tm-qa-fact').length === 4
       && evidenceSummary && texts(evidenceSummary).join('').includes('证据')
-      && pageVisibleTxt().includes('已校验')
+      && pageVisibleTxt().includes('本机回答')
+      && !pageVisibleTxt().includes('如何得出') && !pageVisibleTxt().includes('技术详情（错误码）')
       && siteCalls.length === siteBeforeWorst,
       JSON.stringify({ attrs: entry?.attrs, facts: facts ? texts(facts) : null, site: siteCalls.length - siteBeforeWorst }));
   }
@@ -890,10 +891,12 @@ state.report = { scenario: 'A', symbol: 'pool' };
     const facts = entry ? findByClass(entry, 'tm-qa-facts')[0] : null;
     const factsTxt = facts ? texts(facts).join('|') : '';
     const entryTxt = entry ? texts(entry).join('|') : '';
-    check('问答账本·计算口径：meta_calc/可回源事实与公式数/证据不含文件名与成交行',
+    check('问答账本·计算口径：meta_calc/可用数字与用户可读公式/不显示内部 ID 与源行',
       !!entry && entry.attrs['data-state'] === 'local'
-      && factsTxt.includes('可回源事实') && factsTxt.includes('公式')
-      && entryTxt.includes('回源') && !entryTxt.includes('chat-bill.csv') && !entryTxt.includes('第 2 行'),
+      && factsTxt.includes('可用数字')
+      && entryTxt.includes('公式：')
+      && !entryTxt.includes('可回源事实') && !entryTxt.includes('重算次数') && !entryTxt.includes('formula_id')
+      && !entryTxt.includes('chat-bill.csv') && !entryTxt.includes('第 2 行'),
       JSON.stringify({ attrs: entry?.attrs, facts: factsTxt, text: entryTxt.slice(0, 260) }));
   }
 
@@ -933,7 +936,7 @@ state.report = { scenario: 'A', symbol: 'pool' };
     check('问答账本·在线成功：online/复述文本一致/数字校验/面板不重复账单状态栏',
       !!entry && entry.attrs['data-state'] === 'online'
       && entryTxt.includes(answerCsv1) && entryTxt.includes('已核对 4 个可识别数字')
-      && entryTxt.includes('在线复述 · 已校验')
+      && entryTxt.includes('在线复述')
       && state.bill.contextId === context1 && !pageVisibleTxt().includes('chat-bill.csv')
       && siteCalls.length === siteBeforeOnline + 1,
       JSON.stringify({ attrs: entry?.attrs, text: entryTxt.slice(0, 240), calls: siteCalls.length - siteBeforeOnline }));
@@ -1041,9 +1044,11 @@ state.report = { scenario: 'A', symbol: 'pool' };
     const entryTxt = entry ? texts(entry).join('|') : '';
     const call = siteCalls[callsBeforeL2];
     const body = call ? JSON.parse(call.options.body) : null;
-    check('问答账本·L2 在线意图：layer=在线意图/只发送问题文本/本地事实回答',
-      !!entry && entry.attrs['data-state'] === 'local' && entryTxt.includes('在线意图')
-      && entryTxt.includes('4 条事实') && siteCalls.length === callsBeforeL2 + 1
+    check('问答账本·L2 在线意图：只发送问题文本/本地事实回答，界面不显示内部路由层',
+      !!entry && entry.attrs['data-state'] === 'local' && entryTxt.includes('本机回答')
+      && !entryTxt.includes('在线意图') && entryTxt.includes('4 条事实')
+      && state.chat.messages.at(-1)?.answer?.route?.layer === 'L2'
+      && siteCalls.length === callsBeforeL2 + 1
       && !!body && Object.keys(body).join(',') === 'question' && body.question === '帮我看看这个账户',
       JSON.stringify({ attrs: entry?.attrs, url: call?.url, body, text: entryTxt.slice(0, 240), chat: state.chat }));
   }
@@ -1104,7 +1109,6 @@ async function clickRole(role) {
   for (const fn of b.listeners.click ?? []) await fn({});
 }
 const pressEsc = async () => { for (const fn of docListeners.keydown ?? []) await fn({ key: 'Escape' }); };
-const hashOf = (s) => (s.match(/候选哈希，待 M0-C1 冻结：([0-9a-f]{16})/) ?? [])[1] ?? null;
 const settle = async () => { await flush(); await flush(); await flush(); };
 const SIM_BTN = '测试该日买入是否触发规则';
 const stored = () => JSON.parse(store.get('tm.contracts.demo') ?? '{}').versions ?? [];
@@ -1136,7 +1140,7 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
       !modalNode() && !byRole('template') && !fieldInput('threshold_pct') && findByClass(current, 'cv-live').length === 0
       && labelOf(roleBtn('add-rule')) === '新增规则' && String(roleBtn('add-rule').attrs.class).includes('primary')
       && headVis.includes('交易规则') && headVis.includes('设置在操作复盘中用于提醒自己的交易规则。') && headVis.includes('规则仅保存在当前浏览器；不会自动交易，也不会改变分析报告结论。')
-      && headVis.includes('技术说明（候选口径）') && !headVis.includes('M0-C1') && !btnOf(SIM_BTN) && !byRole('sim-symbol') && !btnOf('模拟申报买入'), headVis);
+      && !headVis.includes('技术说明') && !headVis.includes('M0-C1') && !btnOf(SIM_BTN) && !byRole('sim-symbol') && !btnOf('模拟申报买入'), headVis);
     check('默认布局：当前生效规则（0）空状态 + 三种类型各显示“暂未设置 / 新增此类规则”；历史规则默认折叠“历史规则（0）”；无并行 / 整理 / 替换选择字样',
       txt.includes('当前生效规则（0）') && txt.includes('暂无当前生效的规则') && slotHashes('no_buy_on_surge').length === 0
       && texts(slotNode('no_buy_back_within')).join('|').includes('暂未设置「卖出后 N 个交易日内不追回」规则')
@@ -1159,17 +1163,19 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
       && roleBtn('modal-save').disabled === false && !modalTxt().includes('同时保留') && state.contracts.versions.length === 0, modalTxt().slice(0, 300));
   }
   await fire(fieldInput('threshold_pct'), 'input', '3');
-  check('弹窗·实时预览：阈值改为 3 → 预览“3% / 3.0%”，候选哈希随之变化（技术信息默认折叠）',
-    liveTxt().includes('当天涨幅超过 3% 的票') && liveTxt().includes('阈值：3.0%') && hashOf(liveTxt()) === hS3 && !visibleTexts(findByClass(current, 'cv-live')[0]).join('|').includes(hS3), liveTxt().slice(0, 300));
+  check('弹窗·实时预览：阈值改为 3 → 预览“3% / 3.0%”，不显示哈希与技术信息',
+    liveTxt().includes('当天涨幅超过 3% 的票') && liveTxt().includes('阈值：3.0%')
+    && !liveTxt().includes('候选哈希') && !liveTxt().includes('fnv1a64') && !liveTxt().includes('M0-C1'), liveTxt().slice(0, 300));
   await fire(fieldInput('threshold_pct'), 'input', '5%');
-  check('弹窗·参数错误：显示引擎错误（E_CONTRACT_FIELD_INVALID · 须为数字 · 收到「5%」），不生成规则 / 哈希，保存不可点',
-    liveTxt().includes('E_CONTRACT_FIELD_INVALID') && liveTxt().includes('须为数字') && liveTxt().includes('收到「5%」') && !hashOf(liveTxt()) && !liveTxt().includes('阈值：')
+  check('弹窗·参数错误：显示用户可读错误（须为数字 · 收到「5%」），不显示错误码、不生成规则，保存不可点',
+    !liveTxt().includes('E_CONTRACT_FIELD_INVALID') && liveTxt().includes('须为数字') && liveTxt().includes('收到「5%」') && !liveTxt().includes('阈值：')
+    && !liveTxt().includes('候选哈希')
     && roleBtn('modal-save').disabled === true, liveTxt().slice(0, 300));
   await fire(fieldInput('threshold_pct'), 'input', '-1');
   check('弹窗·参数错误：负阈值显示“须 ≥ 0”（不自动纠正），保存不可点', liveTxt().includes('须 ≥ 0') && liveTxt().includes('收到「-1」') && roleBtn('modal-save').disabled === true, liveTxt().slice(0, 200));
   await fire(byRole('template'), 'change', 'no_buy_back_within');
   await fire(fieldInput('days'), 'input', '2.5');
-  check('弹窗·不追回模板：切换后小数窗口 → 引擎错误“须为 ≥ 1 的整数”，保存不可点', liveTxt().includes('E_CONTRACT_FIELD_INVALID') && liveTxt().includes('须为 ≥ 1 的整数') && roleBtn('modal-save').disabled === true, liveTxt().slice(0, 200));
+  check('弹窗·不追回模板：切换后小数窗口 → 用户可读错误“须为 ≥ 1 的整数”，保存不可点', liveTxt().includes('须为 ≥ 1 的整数') && !liveTxt().includes('E_CONTRACT_FIELD_INVALID') && roleBtn('modal-save').disabled === true, liveTxt().slice(0, 200));
   await clickRole('modal-cancel');
   check('弹窗·取消：关闭弹窗，不写入任何记录（内存与本地存储均为 0 条），背景恢复可操作',
     !modalNode() && state.contracts.versions.length === 0 && stored().length === 0 && findByClass(current, 'cv-page')[0].attrs.inert === undefined, String(state.contracts.versions.length));
@@ -1212,7 +1218,8 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   await clickIn(ruleCardOf(hS3), '编辑');
   await fire(fieldInput('threshold_pct'), 'input', '5');
   check('编辑弹窗：涨幅 5% 预览正确，提示”保存后生成版本 v3，当前版本 v1 将进入历史规则”',
-    hashOf(liveTxt()) === hS5 && labelOf(roleBtn('modal-save')) === '保存并启用' && modalTxt().includes('保存后生成版本 v3，当前版本 v1 将进入历史规则'), modalTxt().slice(-300));
+    liveTxt().includes('阈值：5.0%') && !liveTxt().includes('候选哈希')
+    && labelOf(roleBtn('modal-save')) === '保存并启用' && modalTxt().includes('保存后生成版本 v3，当前版本 v1 将进入历史规则'), modalTxt().slice(-300));
   await saveModal();
   {
     const newRec = stored().at(-1);
@@ -1264,7 +1271,8 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
 
   /* —— 9. 完全重复规则：编辑当前规则但不改参数，提示重复 —— */
   await clickIn(ruleCardOf(hS4), '编辑');
-  check('编辑规则未修改：不重复保存', hashOf(liveTxt()) === hS4 && modalTxt().includes('与当前规则相同') && roleBtn('modal-save').disabled === true);
+  check('编辑规则未修改：不重复保存', liveTxt().includes('阈值：4.0%') && !liveTxt().includes('候选哈希')
+    && modalTxt().includes('与当前规则相同') && roleBtn('modal-save').disabled === true);
   await clickRole('modal-cancel');
 
   /* —— 10. 停用（二次确认）→ 进入历史 → 恢复 —— */
@@ -1544,10 +1552,11 @@ const openCustom = async () => { await clickRole('add-rule'); await fire(byRole(
   state.route = 'contract'; state.bill = defaultBill();
   state.contracts = { ...defaultContracts(), marketSource: 'synthetic-fixture' };
   mountCycle(); await settle();
-  check('能力库：页面说明多规则共存，对话页读取规则状态但不支持限定代码，非交易日来源口径待统一',
+  check('能力库：页面说明多规则共存与本机边界，不再显示跨页实现/待统一技术说明',
     texts(current).join('|').includes('不同类型或不同股票范围的规则可以同时生效')
-    && texts(current).join('|').includes('对话页会读取已生效规则来回答规则状态')
-    && texts(current).join('|').includes('非交易日处理沿用各来源原有口径（待统一）'));
+    && texts(current).join('|').includes('规则只保存在本机，不会自动交易，也不会改变分析报告结论')
+    && !texts(current).join('|').includes('对话页会读取已生效规则')
+    && !texts(current).join('|').includes('非交易日处理沿用各来源原有口径'));
   await clickRole('add-rule'); await fire(fieldInput('threshold_pct'), 'input', '3'); await saveModal();
   const first = JSON.stringify(stored()[0]);
   check('能力库：全部股票仍按 v1 保存，不增加范围字段，原哈希不变', stored()[0].schema === 'contract-v1' && !('scope' in stored()[0]) && stored()[0].hash === s3.hash);
@@ -2220,14 +2229,14 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
     && cardTxt('T003').includes('2025-02-24 卖出 200 股 @271.50') && cardTxt('T003').includes('2 个交易日')
     && cardTxt('T003').includes('2025-02-26 买入 100 股 @268.62') && cardTxt('T003').includes('违背规则')
     && cardTxt('T003').includes('依据'), cardTxt('T003').slice(0, 600));
-  check('操作复盘·无此情境：T001 首次买入没有先前卖出，显示 N/A 说明而不是“符合”',
+  check('操作复盘·无此情境：T001 首次买入没有先前卖出，显示 N/A 说明而不是“符合”，不露原因码',
     cardOf('T001').attrs['data-outcome'] === 'compliant' && cardTxt('T001').includes('无此情境')
     && cardTxt('T001').includes('不计为符合')
-    && cardTxt('T001').includes('E_NO_PRIOR_SELL'), cardTxt('T001').slice(0, 500));
-  check('操作复盘·无法确认：卖出记录缺少买入完整性依据时明确无法确认，不当作未命中或符合',
+    && !cardTxt('T001').includes('E_NO_PRIOR_SELL'), cardTxt('T001').slice(0, 500));
+  check('操作复盘·无法确认：卖出记录缺少买入完整性依据时明确无法确认，不当作未命中或符合，不露原因码',
     cardOf('T002').attrs['data-outcome'] === 'missing' && cardTxt('T002').includes('无法确认')
     && cardTxt('T002').includes('不足以确认这个窗口')
-    && cardTxt('T002').includes('E_BUY_OUTSIDE_WINDOW_UNCONFIRMED'), cardTxt('T002').slice(0, 500));
+    && !cardTxt('T002').includes('E_BUY_OUTSIDE_WINDOW_UNCONFIRMED'), cardTxt('T002').slice(0, 500));
   const habitsTxt = texts(findByClass(current, 'tr-habits')[0] ?? { children: [] }).join('|');
   check('操作复盘·画像：卖出后回补 ×2，并明确画像口径不是合规结论',
     habitsTxt.includes('卖出后回补 ×2') && habitsTxt.includes('画像口径，不是合规结论')
@@ -2350,7 +2359,8 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
   check('入口门禁：越界问答在本地拦截，零站点请求、零行情请求，不进入在线复述',
     siteCalls.length === gateCallsBefore && marketCalls.length === gateMarketsBefore
     && state.chat.messages.some((m) => m.answer?.status === 'refusal' && m.answer?.intent === 'out_of_scope')
-    && texts(current).join('|').includes('边界拦截')
+    && texts(current).join('|').includes('本次暂时无法回答')
+    && !texts(current).join('|').includes('边界拦截')
     && texts(current).join('|').includes('未加载账单、未调用模型、0 条事实'),
     JSON.stringify({ calls: siteCalls.length - gateCallsBefore, markets: marketCalls.length - gateMarketsBefore, messages: state.chat.messages.slice(-1) }));
   state.route = 'import';

@@ -178,7 +178,7 @@ function renderProfile(host, ctx, bundle, bill) {
 
   if (!shown) {
     host.innerHTML = emptyState(published
-      ? '本次报告没有生成可用的画像快照。'
+      ? '本次报告没有可用于画像的统计。'
       : '当前账单组合结果未发布，还没有可展示的历史画像；修复账单并打开报告页后才会记录。');
     return;
   }
@@ -191,7 +191,7 @@ function renderProfile(host, ctx, bundle, bill) {
       profile,
     });
   } catch {
-    pack = { candidates: [], notes: ['规则候选生成失败：不生成候选。'] };
+    pack = { candidates: [], notes: ['这次暂时没有可生成的规则候选。'] };
   }
   const candidates = pack.candidates ?? [];
   const banner = published
@@ -209,7 +209,7 @@ function renderProfile(host, ctx, bundle, bill) {
     </div>
     ${banner}
     ${observationLine(observation, profile, published)}
-    <p class="rp-note rp-profile-meta">画像快照：${esc(fmtAt(shown.at))} · 账单覆盖 ${esc(shown.bill?.trade_count ?? '—')} 笔 / ${esc(shown.bill?.symbol_count ?? '—')} 只标的</p>
+    <p class="rp-note rp-profile-meta">画像更新于：${esc(fmtAt(shown.at))} · 账单覆盖 ${esc(shown.bill?.trade_count ?? '—')} 笔 / ${esc(shown.bill?.symbol_count ?? '—')} 只标的</p>
     ${dimensionCards(shown)}
     ${tagsBlock(shown)}
     ${trendBlock(profile)}
