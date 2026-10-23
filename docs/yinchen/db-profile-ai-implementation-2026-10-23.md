@@ -285,8 +285,10 @@ Qoder 内置数据库的迁移只接受受限 DDL：
 
 校验规则：
 
-- 顶层字段必须**恰好**是以上 8 个，不能多也不能少；
-- 文本中出现的数字必须来自 digest（含百分比换算、日期年份）；
+- 以以上 8 个字段为准；额外字段忽略，允许单层包装对象；缺失 `schema_version` 补 1，缺失 `headline` 由 `summary` 生成，缺失数组视为空；
+- 文本中的换行、制表等空白压成单行；超长文本在标点处截断（没有标点时避开数字 token），不因轻微超出整段回退；
+- 数组项可为字符串或带 `text/value/label/content` 的对象；超过 3 条截取前 3 条；空项丢弃；
+- 文本中出现的数字必须来自 digest：允许 0-6 位小数的合理舍入、比率 ×100 写成百分比、千分位、Unicode 负号与描述幅度时的绝对值；仍拒绝 digest 之外的数字；
 - 日期必须是 digest 提供的起止日期，否则拒绝；
 - 拒绝 URL、成交明细、账户/银行卡/身份证/手机号等越界内容；
 - 拒绝“建议买入/卖出、荐股、目标价、保证收益、稳赚、必涨/必跌”等投资建议；
@@ -295,6 +297,7 @@ Qoder 内置数据库的迁移只接受受限 DDL：
   - 账单 ≥1 份 → `medium`
   - 无账单 → `low`
 - 模型未配置、超时、响应非法时，返回**模板兜底**（`source: template`），前端明确标注，不把模板说成 AI；
+- 校验失败时响应带 `fallback_detail`（如 `unlisted_number`、`unlisted_date`、`unsafe_content`）用于诊断；不返回模型原文。前端只展示中文原因，不展示原始错误码；
 - 解读可缓存：`summary_source_hash` 与当前 digest 哈希一致才视为新鲜。
 
 ### 5.3 对话事实 schema
@@ -323,7 +326,8 @@ Qoder 内置数据库的迁移只接受受限 DDL：
 - 云同步状态：`pending`（同步中）、`synced`（已同步）、`failed`（仅本机）、`local`（不可同步）、`demo`（示例账单不参与）。
 - 同步失败不阻断本机报告与问答；状态可就地重绘。
 - 个人中心画像区域展示：云端账单数、事实数、画像解读、事实原文证据、删除入口。
-- 画像解读由用户点击“生成 AI 解读”触发，生成后保存缓存；digest 变化时旧解读隐藏并提示重新生成。
+- 报告发布后自动触发画像解读：首次报告、以及此后每新增 2 份报告调用一次模型；同一报告、摘要仍新鲜时跳过。个人中心仍可手动“生成 AI 解读 / 重新生成”。
+- 自动调用只发送 digest；模板兜底、模型异常或保存失败不覆盖云端旧解读，也不阻断报告。digest 变化时旧解读隐藏并提示重新生成。
 - 所有删除为两步确认，避免误触。
 
 ---
@@ -440,6 +444,8 @@ npm run smoke
 SMOKE_EXIT=0
 ```
 
+线上验收修复后（同日）：`profile-ai` 66/66、`cloud-profile-model` 21/21、`profile-auto-update` 12/12；`npm run check` 退出 0；`npm run smoke` 303/303。
+
 ### 8.3 本机浏览器验收
 
 环境：`http://localhost:5191`，本机 dev server，fake 模型，dev-only 内存 Supabase；账户与账单均为合成数据。
@@ -460,13 +466,73 @@ SMOKE_EXIT=0
   - 删除云端账单后本机报告仍可用；
   - 刷新后画像/账单历史可重新读取。
 
-### 8.4 未验证
+### 8.4 部署与线上验收（2026-10-23，组长执行）
 
-- **真实 DeepSeek 文本与视觉**：本机无 `DEEPSEEK_API_KEY`，未跑真实请求；请求构造、超时、错误映射由单测覆盖。
-- **真实 Tushare 行情**：本机无 `TUSHARE_TOKEN`；动态行情依赖部署环境。
-- **双用户隔离**：只有 fake/内存实现与跨用户单测，未在真实 Gateway + 真实数据库上做 A/B。
-- **线上数据库迁移、函数部署、站点发布**：均未执行。
-- **CI**：仓库未配置，PR 显示 `Checks 0`，不能表述为“CI 通过”。
+部署状态：函数 `app` 已发布，`database_access=read_write`；数据库 `ready`，`bills` / `profile_facts` / `profiles` 三张表已建；三个 Secret 已注入（本轮不读取值）。
+
+线上站点 `https://timingmirror-85sdcc1aphk.qoder.website` 验收：
+
+- **真实意图**：`POST /api/llm/intent` → `200`，约 1.1 秒，返回 `pattern_explain` / `0.86`；只发送 `question`。
+- **对话事实**：`POST /api/llm/profile-fact` → `200`，约 1.4-1.9 秒，返回 2 条带原文证据的事实。
+- **真实视觉**：`POST /api/llm/import-vision` + 合成 JPEG → `200`，约 2.6 秒，4 笔交易（日期、代码、方向、价格、数量、费用）全部识别正确；未点击“校验并用于导入”，没有新增账单。
+- **画像解读**：模板回退链路可用，但真实模型输出连续被判非法，见 8.5。
+- **隔离**：无会话 `curl` → `401 login_required`；无会话 + 伪造 `x-qoder-user-context` → 同样 `401`；有会话 + 伪造头 → Gateway 覆盖伪造值，仍返回本人数据。完整双账号 A/B 需要第二个 Qoder 账号，本轮未执行。
+
+### 8.5 线上验收发现与修复（2026-10-23）
+
+**现象**：个人中心“生成 AI 解读”返回 `source: template`，页面显示原始 `model_timeout` / `model_response_invalid`。
+
+**定位**：用真实会话重放同一 digest：
+
+- 最小 digest 加上 `3 份 / 20 笔` 样本门槛 → `source: ai`；
+- 同一份线上数据取整后 → `source: ai`；
+- 保留精确值（`-0.079821…`、`-0.060782…`、`0.3333…`）→ `model_response_invalid`。
+
+根因是校验只接受 digest 原值或 ×100 后保留 1 位小数的形式，模型把 `-0.0798` 写成 `-7.98%`、`-0.0608` 写成 `-6.08%`、`0.3333` 写成 `33.33%`，并给 `-26044` 加千分位写成 `-26,044` 时触发“未提供数字”，导致整段回退。首轮 15 秒超时与模型冷启动有关。
+
+**修复**：
+
+- 数字：允许 0-6 位小数合理舍入、比率 ×100、千分位、Unicode 负号、描述幅度时的绝对值；仍拒绝 digest 之外的数字与未提供日期。
+- 文本：换行归一为空格；超长在标点处截断（避开数字 token）；数组接受字符串或对象、超量截取前 3 条；忽略额外字段、接受单层包装、缺失 `schema_version` / `headline` 时补齐；置信度支持中文别名，缺失降为 `low`。
+- 诊断：响应新增 `fallback_detail`（`invalid_json` / `invalid_shape` / `unlisted_number` / `unlisted_date` / `unsafe_content` / `investment_advice`），只含枚举，不含模型原文。
+- 前端：`fallback_reason` 映射为中文原因，不再把 `model_timeout` / `model_response_invalid` 直接显示给用户。
+- 延迟：`profileSummary` 增加 `max_tokens=900`；提示词明确金额/百分比格式、数组项类型与样本门槛，减少无效输出。
+
+**修复后验证**：`profile-ai` 66/66、`cloud-profile-model` 21/21；`npm run check` 退出 0；`npm run smoke` 303/303。用线上风格输出（`-1.90%` / `-7.98%` / `-6.08%` / `-26,044` / `33.33%`）本地重放通过。
+
+**待部署**：函数与前端静态资源都需要重新发布；修复尚未在线上复验，不能表述为“线上已通过”。
+
+### 8.6 报告后画像自动更新（2026-10-23）
+
+实现位置：[`prototype/user-frontend/profileAutoUpdate.js`](../../prototype/user-frontend/profileAutoUpdate.js)，由 [`realReport.js`](../../prototype/user-frontend/realReport.js) 在报告发布、`recordReportObservation` 成功后触发。
+
+**触发规则**：
+
+- 首次报告自动调用一次；此后每新增 2 份报告调用一次（按本地 `tm.profile.autoSummary.v1` 记录报告指纹与计数，不按 reload 次数）。
+- 同一报告、重复导入同一 CSV、摘要仍与当前 digest 哈希一致时跳过，不调用模型。报告指纹不含会话级 `contextId`，重新导入同一内容不会被当成新报告。
+- 只发送 `{ digest }`；不发送账单、成交、文件名。
+- 手动“生成 AI 解读 / 重新生成”不受频率限制。
+- 自动调用返回模板、模型异常或保存失败时，不写云端；旧摘要按 digest 变化隐藏，个人中心仍可手动生成。报告页不因失败出现错误或阻断。
+- 本地频率状态按本机画像身份（`created_at`）隔离；`profile_key` 由每份账单派生、逐份变化，只用于报告指纹，不能作为频率键。
+
+**测试账单**（合成数据，价格取冻结历史收盘价；按 01 → 02 → 03 顺序逐份导入）：
+
+- [`m0/csv-input/fixtures/profile-demo/profile-bill-01-2025Q1.csv`](../../m0/csv-input/fixtures/profile-demo/profile-bill-01-2025Q1.csv)：2025-01～03，24 笔；
+- [`m0/csv-input/fixtures/profile-demo/profile-bill-02-2025Q2.csv`](../../m0/csv-input/fixtures/profile-demo/profile-bill-02-2025Q2.csv)：2025-04～05，17 笔；
+- [`m0/csv-input/fixtures/profile-demo/profile-bill-03-2025Jun.csv`](../../m0/csv-input/fixtures/profile-demo/profile-bill-03-2025Jun.csv)：2025-06，26 笔。
+
+三份均通过 `normalizeRows` 整表校验（0 错误、0 警告）。第 3 份报告后画像满足“3 份账单 + 最近账单 26 笔”，置信度上限为 `high`。
+
+**本地端到端**（临时服务器：fake 模型 + 冻结行情，不改仓库）：按 01 → 02 → 03 导入，第 1/3 份各触发一次 `POST /api/llm/profile-summary`；第 2 份只把状态记为 `waiting`，无模型调用；第 3 份后个人中心显示“已保存解读 · 较高置信度”，云端 3 份账单。此结果不等同线上验收。
+
+**验证**：`profile-auto-update` 12/12；`npm run check` 退出 0；`npm run smoke` 303/303。自动更新尚未在线上部署，不能表述为“线上已启用”。
+
+### 8.7 仍未完成 / 限制
+
+- **完整双账号 A/B**：需要第二个 Qoder 账号；当前已验证 Gateway 不可绕过、应用层按 `user_id` 过滤（跨用户单测）。
+- **真实 Tushare 行情**：本轮未单独复验；线上报告已有行情数据。
+- **修复后的线上 AI 成功**：待重新部署后复验。
+- **CI**：仓库未配置，PR 无 CI 检查，不能表述为“CI 通过”。
 
 ---
 
@@ -485,7 +551,7 @@ SMOKE_EXIT=0
 | 9 | 数据库落地 | 只做表设计 | 迁移 SQL + 策略 JSON + 代码 + 测试均已提交；**线上 DB 仍 disabled、schema_version 0、函数 database_access none** | 部署需单独授权；当前数据接口在线上会 503，模型接口不受影响 |
 | 10 | 日期字段 | 设计使用 `date` | 全部用 `text`（`YYYY-MM-DD`） | 内置数据库 DDL 不支持 `date`、`DEFAULT`、`CHECK`，只能应用层校验 |
 | 11 | 隔离层级 | 原方案已提示隔离限制 | 官方 adapter 为匿名模式，只能应用层 `user_id` 过滤 | 不能宣称数据库级隔离；安全边界依赖 Gateway 不可绕过 |
-| 12 | 画像生成时机 | 设计未明确自动/手动 | 用户点击“生成 AI 解读”；结果按 digest 哈希缓存 | 避免每次导入都产生模型调用与费用；用户可主动刷新 |
+| 12 | 画像生成时机 | 设计未明确自动/手动 | 首次报告 + 每新增 2 份报告自动调用；个人中心可手动重新生成；结果按 digest 哈希缓存 | 让画像随账单持续更新，又避免每次导入都产生模型调用与费用；失败不覆盖旧解读 |
 | 13 | 事实来源 | 设计包含对话补画像 | 只记录明确陈述；问句、请求句、AI 推断不记录 | 防止把模型猜测写进用户画像；证据必须原文连续子串 |
 | 14 | 完整明细 | 设计为显式开关 | 默认 `summary`；勾选后 `full`；已存在 `summary` 时可升级为 `full` | 降低隐私与存储风险；重复导入不新增行 |
 

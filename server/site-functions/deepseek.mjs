@@ -221,7 +221,7 @@ export function createDeepSeekTransport({
       return call([
         { role: 'system', content: MODEL_PROMPTS.profileSummary },
         { role: 'user', content: JSON.stringify(digest) },
-      ], { temperature: 0.2 });
+      ], { temperature: 0.2, max_tokens: 900 });
     },
     profileFact({ message }) {
       return call([
