@@ -911,9 +911,9 @@ async function handlePaste(ctx, pasted) {
 async function aiRecover(ctx) {
   const { state, set } = ctx;
   const rec = state.importRecovery;
-  if (!rec || rec.pending || rec.budgetExhausted) return;
+  if (!rec || rec.pending || rec.budgetExhausted) return { ok: false, kind: 'text', code: 'E_IMPORT_AI_BUSY' };
   const content = String(rec.content ?? '');
-  if (!content.trim()) return;
+  if (!content.trim()) return { ok: false, kind: 'text', code: 'E_IMPORT_AI_NO_SOURCE' };
   clearImportFeedback();
   const sourceId = rec.sourceId;
   const localDraft = rec.localDraft ?? (parseDelimitedText(content)?.header?.length ? buildLocalDraft(parseDelimitedText(content), rec.fileName || '粘贴文字') : null);
@@ -923,18 +923,32 @@ async function aiRecover(ctx) {
     const session = client(ctx).getSession();
     if (state.importRecovery.sourceId !== sourceId) {
       set({ importRecovery: applySession({ ...state.importRecovery, pending: false }, session) });
-      return;
+      return { ok: false, kind: 'text', code: 'E_IMPORT_SOURCE_STALE' };
     }
     if (!result.ok) {
       set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), error: { code: result.code, message: result.message } } });
-      return;
+      return { ok: false, kind: 'text', code: result.code };
     }
     const draft = buildAiDraft({ aiTrades: result.draft.trades, unresolved: result.draft.unresolved, localDraft, sourceFile: rec.fileName || '粘贴文字', requestId: session.request_ids?.at(-1) ?? null });
     const duplicates = draft.rows.filter((row) => row.duplicateOf).length;
     set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), status: 'draft', draft, unresolved: result.draft.unresolved, notice: result.draft.trades.length ? `AI 返回 ${result.draft.trades.length} 条交易草稿${duplicates ? `，其中 ${duplicates} 条疑似重复` : ''}` : 'AI 没有整理出新的交易。', error: null } });
+    return { ok: true, kind: 'text', draftCount: draft.rows.filter((row) => row.include !== false).length };
   } catch {
     set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false }, client(ctx).getSession()), error: { code: 'E_IMPORT_RECOVERY_UNEXPECTED', message: '识别链路出现未预期错误' } } });
+    return { ok: false, kind: 'text', code: 'E_IMPORT_RECOVERY_UNEXPECTED' };
   }
+}
+
+export async function runImportAi(ctx) {
+  const rec = ctx?.state?.importRecovery;
+  if (!rec) return { ok: false, code: 'E_IMPORT_AI_NO_SOURCE' };
+  if (rec.pending) return { ok: false, code: 'E_IMPORT_AI_BUSY' };
+  if (rec.budgetExhausted) return { ok: false, code: 'E_IMPORT_AI_BUDGET' };
+  const vision = rec.vision;
+  const visionReady = Array.isArray(vision?.images) && vision.images.length > 0 && vision.status === 'ready';
+  if (visionReady) return aiVision(ctx);
+  if (String(rec.content ?? '').trim()) return aiRecover(ctx);
+  return { ok: false, code: 'E_IMPORT_AI_NO_SOURCE' };
 }
 
 async function openImages(ctx, files) {
@@ -997,10 +1011,10 @@ function hostNumber(id) {
 async function aiVision(ctx) {
   const { state, set } = ctx;
   const rec = state.importRecovery;
-  if (!rec || rec.pending || rec.budgetExhausted) return;
+  if (!rec || rec.pending || rec.budgetExhausted) return { ok: false, kind: 'vision', code: 'E_IMPORT_AI_BUSY' };
   const vision = rec.vision;
   const checked = validateVisionInput({ images: vision?.images ?? [], sourceKind: vision?.kind });
-  if (!checked.ok) return;
+  if (!checked.ok) return { ok: false, kind: 'vision', code: checked.code };
   clearImportFeedback();
   const sourceId = rec.sourceId;
   set({ importRecovery: { ...rec, pending: true, error: null } });
@@ -1009,16 +1023,18 @@ async function aiVision(ctx) {
     const session = client(ctx).getSession();
     if (state.importRecovery.sourceId !== sourceId) {
       set({ importRecovery: applySession({ ...state.importRecovery, pending: false }, session) });
-      return;
+      return { ok: false, kind: 'vision', code: 'E_IMPORT_SOURCE_STALE' };
     }
     if (!result.ok) {
       set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), error: { code: result.code, message: result.message } } });
-      return;
+      return { ok: false, kind: 'vision', code: result.code };
     }
     const draft = buildAiDraft({ aiTrades: result.draft.trades, unresolved: result.draft.unresolved, localDraft: rec.localDraft ?? null, sourceFile: rec.fileName || '视觉识别', requestId: session.request_ids?.at(-1) ?? null });
     set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), status: 'draft', draft, unresolved: result.draft.unresolved, notice: result.draft.trades.length ? `AI 返回 ${result.draft.trades.length} 条交易草稿` : 'AI 没有整理出新的交易。', error: null } });
+    return { ok: true, kind: 'vision', draftCount: draft.rows.filter((row) => row.include !== false).length };
   } catch {
     set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false }, client(ctx).getSession()), error: { code: 'E_IMPORT_VISION_UNEXPECTED', message: '视觉识别链路出现未预期错误' } } });
+    return { ok: false, kind: 'vision', code: 'E_IMPORT_VISION_UNEXPECTED' };
   }
 }
 

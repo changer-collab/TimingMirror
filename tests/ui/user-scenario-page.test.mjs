@@ -51,7 +51,7 @@ check('入口：规则工作区提供 #/scenario 链接',
 check('入口：规则页卡片不再重复测试按钮',
   !/href="#\/scenario"/.test(contract));
 check('页面：scenario 有独立标题/返回规则管理链接',
-  /title: '操作复盘'/.test(scenarioPage) && /href="#\/me"/.test(scenarioPage));
+  /title: '还没有可复盘的真实账单。'/.test(scenarioPage) && /href="#\/me"/.test(scenarioPage));
 check('规则页：scenario 委托到操作复盘视图，不再渲染假设测试区',
   /if \(section === 'scenario'\) \{\s*renderScenarioReview\(root, ctx\);\s*return;/.test(contract)
   && /export function renderScenarioReview/.test(reviewView));

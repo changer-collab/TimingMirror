@@ -1360,9 +1360,84 @@ body {
 .tm-assistant .qa-chip.is-online { border-color: var(--line-strong); color: var(--ink); }
 .tm-assistant .qa-chip.is-online::before { content: "↗"; margin-right: 4px; font-family: var(--font-mono); font-size: 8px; }
 .tm-assistant .qa-chip:disabled { opacity: 0.45; cursor: default; }
-.tm-assistant .qa-messages { flex: 1 1 auto; min-width: 0; min-height: 0; }
-.tm-assistant .qa-msg { max-width: 100%; font-size: 14.5px; }
+.tm-assistant .qa-messages { flex: 1 1 auto; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+.tm-assistant .qa-msg { max-width: 100%; min-width: 0; font-size: 14.5px; line-height: 1.8; }
 .tm-assistant .qa-msg-text { line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+.tm-assistant .qa-conversation { overflow: hidden; }
+.tm-assistant .qa-explain,
+.tm-assistant .qa-conversation {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+}
+.tm-assistant .qa-explain { overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+.tm-assistant .qa-conv-bar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+.tm-assistant .qa-context-line {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tm-assistant .qa-conv-bar .btn { flex: 0 0 auto; }
+.tm-assistant .qa-primary {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--sheet-2);
+  min-width: 0;
+}
+.tm-assistant .qa-primary-note,
+.tm-assistant .qa-send-hint,
+.tm-assistant .qa-last-answer,
+.tm-assistant .qa-empty {
+  margin: 0;
+  color: var(--gray);
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.tm-assistant .qa-primary .qa-actions { margin-top: 0; }
+.tm-assistant .qa-topic-chips { align-items: center; }
+.tm-assistant .qa-expand-row { margin-top: 0; }
+.tm-assistant .qa-last-answer {
+  padding-top: 9px;
+  border-top: 1px solid var(--line-soft);
+}
+.tm-assistant .qa-form-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.tm-assistant .qa-ai-msg.is-pending { border-style: dashed; }
+.tm-assistant .qa-ai-msg.is-failed { border-left-color: var(--loss); }
+.tm-assistant .qa-chat-dock {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding-top: 2px;
+}
 .tm-assistant .qa-msg-text > :not(:first-child) { margin-top: 10px; }
 .tm-assistant .qa-facts { display: grid; gap: 5px; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--line-soft); font-size: 12.5px; line-height: 1.7; white-space: normal; }
 .tm-assistant .qa-facts div { display: flex; gap: 8px; min-width: 0; }
@@ -1395,45 +1470,6 @@ body {
 .tm-assistant .qa-fine { margin: 0; color: var(--faint); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
 .tm-assistant .qa-form { display: flex; flex-direction: column; gap: 8px; }
 .tm-assistant .qa-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.tm-assistant .qa-status-card {
-  display: grid;
-  flex: 0 0 auto;
-  gap: 6px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--sheet-2);
-}
-.tm-assistant .qa-status-title { color: var(--ink); font-size: 12.5px; font-weight: 500; }
-.tm-assistant .qa-status-line { margin: 0; color: var(--gray); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
-.tm-assistant .qa-help-topics {
-  display: grid;
-  flex: 0 1 auto;
-  gap: 6px;
-  min-height: 0;
-  overflow-y: auto;
-}
-.tm-assistant .qa-help-topic {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--sheet);
-}
-.tm-assistant .qa-help-topic summary {
-  padding: 7px 10px;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.6;
-  cursor: pointer;
-}
-.tm-assistant .qa-help-answer {
-  margin: 0;
-  padding: 0 10px 9px;
-  color: var(--gray);
-  font-size: 12px;
-  line-height: 1.7;
-  overflow-wrap: anywhere;
-}
-.tm-assistant .qa-help-topic .qa-actions { padding: 0 10px 9px; }
 .tm-assistant .qa-tag { display: inline-flex; margin-top: 9px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--gray); font-family: var(--font-mono); font-size: 10.5px; line-height: 1.5; }
 .tm-assistant .qa-link-row { margin-top: 9px; }
 .tm-assistant .qa-link { color: var(--ink); font-size: 12.5px; line-height: 1.6; text-decoration: underline; text-underline-offset: 3px; }

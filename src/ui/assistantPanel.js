@@ -1106,6 +1106,10 @@ function scheduleAssistantSync() {
   });
 }
 
+export function explainAssistantResult() {
+  return controller ? controller.explainResult() : null;
+}
+
 export function renderAssistantPanel(root, ctx) {
   const { state } = ctx;
   if (!root) return;

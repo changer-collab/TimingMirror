@@ -1,6 +1,6 @@
 // 新前端的真实能力桥：共享业务状态、路由映射、助手挂载与既有视图适配。
 import { state as shared, notify, loadContractsDemo } from '../../src/state.js';
-import { getRuleAssistantClient, renderAssistantPanel } from '../../src/ui/assistantPanel.js';
+import { getRuleAssistantClient, renderAssistantPanel, explainAssistantResult } from '../../src/ui/assistantPanel.js';
 import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../../src/agent/httpTransport.js';
 import { createImportRecovery } from '../../src/agent/importRecovery.js';
 import { createChatOnline } from '../../src/agent/chatOnline.js';
@@ -8,7 +8,7 @@ import { createOnlineBoundary } from '../../src/agent/onlineBoundary.js';
 import { createDataClient } from '../../src/agent/dataClient.js';
 import { createProfileFactRecorder } from '../../src/agent/profileSignals.js';
 import { renderContract } from '../../src/ui/views/contractView.js';
-import { renderRealImport } from './realImport.js';
+import { renderRealImport, runImportAi } from './realImport.js';
 import { getRealReportBundle, getRealReportState, loadRealReport } from './realReport.js';
 import { ruleStateOf, loadProfile } from './profileStore.js';
 import { openRuleCandidate } from './ruleCandidates.js';
@@ -315,6 +315,45 @@ function openAssistantHelp() {
   focusAssistant();
 }
 
+function focusQaInput() {
+  const focus = () => {
+    if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return;
+    const input = document.querySelector('[data-role="qa-input"]');
+    if (!input || typeof input.focus !== 'function') return;
+    input.focus();
+    if (typeof input.scrollIntoView === 'function') input.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  };
+  if (mobileLayout()) {
+    closeAssistant();
+    setTimeout(focus, 0);
+    return;
+  }
+  focus();
+}
+
+async function explainReportNumbers({ question, bundle, bill } = {}) {
+  if (!bundle?.review || typeof question !== 'string' || question.trim() === '') return { ok: false };
+  if (bill?.status !== 'confirmed' || bill?.sourceType !== 'local' || bill?.demo === true) return { ok: false };
+  const result = await getQaOnlineClient().ask({ question, review: bundle.review });
+  if (!result?.ok || typeof result.text !== 'string' || result.text.trim() === '') return { ok: false };
+  return { ok: true, text: result.text.trim() };
+}
+
+async function explainReviewResult() {
+  const pending = explainAssistantResult();
+  if (!pending) return { ok: false };
+  try {
+    await pending;
+  } catch {
+    return { ok: false };
+  }
+  const explanation = shared.assistant?.resultExplanation;
+  if (typeof explanation?.answer_text === 'string' && explanation.answer_text.trim() !== '') {
+    return { ok: true, text: explanation.answer_text.trim() };
+  }
+  return { ok: false };
+}
+
 const ctx = {
   state: shared,
   set,
@@ -323,7 +362,7 @@ const ctx = {
   importRecovery: getRecoveryClient(),
   ruleAssistantClient: getRuleAssistantClient(),
   assistantTitle: 'AI 助手',
-  assistantSubtitle: '当前页面的说明与操作',
+  assistantSubtitle: '当前页面帮助 · 按需使用 AI',
   globalAssistant: true,
   qaDeps: {
     getReportBundle: (bill) => getRealReportBundle(bill),
@@ -332,6 +371,10 @@ const ctx = {
     askQuestion: (args) => getQaAnswerClient().ask(args),
     extractProfileFacts: (args) => getProfileFactRecorder()?.extract(args),
     saveProfileFacts: (args) => getProfileFactRecorder()?.save(args),
+    explainReport: (args) => explainReportNumbers(args),
+    explainReviewResult: () => explainReviewResult(),
+    runImportAi: () => runImportAi(ctx),
+    focusQaInput: () => focusQaInput(),
     ruleStateOf,
     loadProfile,
     openRuleCandidate,
