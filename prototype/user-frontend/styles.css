@@ -540,38 +540,6 @@ table {
   flex-shrink: 0;
 }
 
-.view-switch {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.45);
-  flex-shrink: 0;
-}
-
-.view-option {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px 9px;
-  border-radius: 999px;
-  font-family: var(--font-mono);
-  font-size: 8.5px;
-  line-height: 1.5;
-  letter-spacing: 0.06em;
-  color: var(--gray);
-  white-space: nowrap;
-}
-
-a.view-option:hover {
-  color: var(--ink);
-}
-
-.view-option.is-active {
-  background: var(--ink);
-  color: var(--sheet);
-}
-
 .proto-chip {
   padding: 5px 10px;
   border: 1px solid var(--line);

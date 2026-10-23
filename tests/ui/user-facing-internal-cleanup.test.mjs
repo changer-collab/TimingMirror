@@ -111,8 +111,8 @@ check('报告：AI 观察不再使用“规则引擎兜底/本地规则引擎”
 }
 
 /* —— 页面入口和视觉边界不因清理发生变化 —— */
-check('范围：未改动开发者入口、STEP 标签和报告顶部已复核状态',
-  /data-developer-link>开发者/.test(app)
+check('范围：用户端不含开发者入口，保留 STEP 标签和报告顶部已复核状态',
+  !/data-developer-link>开发者/.test(app)
   && /STEP 03 \/ ASK/.test(realChat)
   && /portfolio_published === true \? '已复核'/.test(realReport));
 
