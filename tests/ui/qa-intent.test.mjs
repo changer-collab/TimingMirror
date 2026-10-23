@@ -69,6 +69,18 @@ const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: 
   })());
 }
 
+/* ==== ③b 止损/止盈的状态问法不能被当作新建规则 ==== */
+{
+  check('优先级：我的止损规则还生效吗 → contract_status',
+    routeQuestion('我的止损规则还生效吗？').intent === 'contract_status', JSON.stringify(routeQuestion('我的止损规则还生效吗？')));
+  check('优先级：我之前设的止盈规则触发过几次 → contract_status',
+    routeQuestion('我之前设的止盈规则触发过几次？').intent === 'contract_status', JSON.stringify(routeQuestion('我之前设的止盈规则触发过几次？')));
+  check('优先级：帮我设一个止损规则 → contract_setup（新建不被状态词误伤）',
+    routeQuestion('帮我设一个止损规则。').intent === 'contract_setup', JSON.stringify(routeQuestion('帮我设一个止损规则。')));
+  check('优先级：设置一条止损规则，触发时提醒我 → contract_setup',
+    routeQuestion('设置一条止损规则，触发时提醒我。').intent === 'contract_setup', JSON.stringify(routeQuestion('设置一条止损规则，触发时提醒我。')));
+}
+
 /* ==== ④ 既有芯片：有无标点都命中，带 chip_id ==== */
 {
   for (const chip of QA_CHIPS) {
@@ -135,6 +147,20 @@ const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: 
   check('L2：低置信度 → 澄清并说明未发送账单/事实',
     low.intent === null && low.ambiguous === true && low.layer === 'L2'
     && low.notice.includes('置信度不足') && low.notice.includes('账单与事实没有发送'), JSON.stringify(low));
+
+  const unknownRouter = createIntentRouter({
+    classifyIntent: async () => ({ ok: true, intentJson: { intent: 'market_forecast', slots: {}, confidence: 0.99 } }),
+  });
+  const unknown = await unknownRouter.route('帮我看看这个账户');
+  check('L2：12 类之外的意图 → 澄清，不进入回答分支',
+    unknown.intent === null && unknown.ambiguous === true && unknown.layer === 'L2'
+    && unknown.notice.includes('不在支持范围'), JSON.stringify(unknown));
+
+  const tooHighRouter = createIntentRouter({
+    classifyIntent: async () => ({ ok: true, intentJson: { intent: 'loss_overview', slots: {}, confidence: 1.5 } }),
+  });
+  const tooHigh = await tooHighRouter.route('帮我看看这个账户');
+  check('L2：置信度超出 [0,1] → 按不足处理', tooHigh.intent === null && tooHigh.ambiguous === true, JSON.stringify(tooHigh));
 
   const failRouter = createIntentRouter({
     classifyIntent: async () => ({ ok: false, code: 'E_INTENT_DOWN' }),

@@ -217,6 +217,18 @@ export function createDeepSeekTransport({
         { role: 'user', content: JSON.stringify({ source_kind, content }) },
       ]);
     },
+    profileSummary({ digest }) {
+      return call([
+        { role: 'system', content: MODEL_PROMPTS.profileSummary },
+        { role: 'user', content: JSON.stringify(digest) },
+      ], { temperature: 0.2 });
+    },
+    profileFact({ message }) {
+      return call([
+        { role: 'system', content: MODEL_PROMPTS.profileFact },
+        { role: 'user', content: JSON.stringify({ message }) },
+      ], { temperature: 0 });
+    },
     vision({ images }) {
       return callVision(images);
     },
