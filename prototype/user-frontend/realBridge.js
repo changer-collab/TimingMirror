@@ -4,9 +4,11 @@ import { getRuleAssistantClient, renderAssistantPanel, explainAssistantResult } 
 import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../../src/agent/httpTransport.js';
 import { createImportRecovery } from '../../src/agent/importRecovery.js';
 import { createChatOnline } from '../../src/agent/chatOnline.js';
+import { createQaNarrative } from '../../src/agent/qaNarrative.js';
 import { createOnlineBoundary } from '../../src/agent/onlineBoundary.js';
 import { createDataClient } from '../../src/agent/dataClient.js';
 import { createProfileFactRecorder } from '../../src/agent/profileSignals.js';
+import * as adapter from '../../src/demo/adapter.js';
 import { renderContract } from '../../src/ui/views/contractView.js';
 import { renderRealImport, runImportAi } from './realImport.js';
 import { getRealReportBundle, getRealReportState, loadRealReport } from './realReport.js';
@@ -14,7 +16,9 @@ import { ruleStateOf, loadProfile } from './profileStore.js';
 import { openRuleCandidate } from './ruleCandidates.js';
 import { createQaAnswerService } from './qaAnswer.js';
 import { syncBill, syncSnapshotWithBill } from './cloudSync.js';
-import { invalidateCloudProfile } from './cloudProfile.js';
+import {
+  appendCachedCloudFacts, getCachedCloudFacts, invalidateCloudProfile, loadCloudFacts,
+} from './cloudProfile.js';
 
 const MOBILE_BREAKPOINT = 680;
 const OLD_CSS = '/src/ui/styles.css';
@@ -159,6 +163,7 @@ const SHADOW_STYLE = `
 let onChangeCallback = null;
 let recoveryClient = null;
 let qaOnlineClient = null;
+let qaNarrativeClient = null;
 let qaAnswerClient = null;
 let qaIntentBoundary = null;
 let dataClient = null;
@@ -248,12 +253,24 @@ function getQaIntentBoundary() {
   return qaIntentBoundary;
 }
 
+function getQaNarrativeClient() {
+  if (!qaNarrativeClient) {
+    qaNarrativeClient = createQaNarrative({
+      transport: createHttpTransport({ baseUrl: SAME_ORIGIN_BASE, paths: SITE_FUNCTION_PATHS }),
+    });
+  }
+  return qaNarrativeClient;
+}
+
 function getQaAnswerClient() {
   if (!qaAnswerClient) {
     qaAnswerClient = createQaAnswerService({
       getBundle: (bill) => getRealReportBundle(bill),
       loadBundle: (bill) => loadRealReport(bill),
       askOnline: ({ question, review }) => getQaOnlineClient().ask({ question, review }),
+      askNarrative: (args) => getQaNarrativeClient().ask(args),
+      getSavedFacts: () => getCachedCloudFacts(),
+      loadSavedFacts: () => loadCloudFacts(ctx),
       loadProfile,
       classifyIntent: ({ question }) => getQaIntentBoundary().classifyIntent({ question }),
     });
@@ -354,6 +371,39 @@ async function explainReviewResult() {
   return { ok: false };
 }
 
+let scenarioPrewarmKey = null;
+
+// 报告发布后即预取复盘上下文：进入情景页时命中同一 reviewKey 直接渲染，不再等行情。
+async function prewarmScenarioReview(bill) {
+  if (!bill || bill.status !== 'confirmed' || bill.sourceType !== 'local' || bill.demo === true) return;
+  if (!Array.isArray(bill.trades) || !bill.trades.length) return;
+  const versions = shared.contracts?.versions ?? [];
+  const marketSource = adapter.DEFAULT_MARKET_SOURCE;
+  const src = adapter.contractTradeSource(bill, marketSource);
+  const ruleSet = adapter.contractRuleSet(versions);
+  const currentRules = ruleSet.current;
+  const customRules = ruleSet.customCurrent ?? [];
+  const reviewKey = `${src.key}|${currentRules.map((rule) => rule.hash).join('|')}|${customRules.map((rule) => rule.hash).join('|')}`;
+  const current = shared.contracts?.simContext;
+  if (current?.reviewKey === reviewKey && (current.review || current.error)) return;
+  if (scenarioPrewarmKey === reviewKey) return;
+  scenarioPrewarmKey = reviewKey;
+  try {
+    const context = await adapter.contractSimContext({ bill, marketSource, versions });
+    if (shared.bill?.contextId !== bill.contextId) return;
+    // 静默写入：预取完成若触发全局重渲染，会打断当前报告页的滚动与阅读。
+    shared.contracts = { ...(shared.contracts ?? {}), simContext: { ...context, reviewKey } };
+  } catch (e) {
+    if (shared.bill?.contextId !== bill.contextId) return;
+    shared.contracts = {
+      ...(shared.contracts ?? {}),
+      simContext: { error: String(e && e.message ? e.message : e), sourceKey: src.key, reviewKey },
+    };
+  } finally {
+    if (scenarioPrewarmKey === reviewKey) scenarioPrewarmKey = null;
+  }
+}
+
 const ctx = {
   state: shared,
   set,
@@ -369,6 +419,7 @@ const ctx = {
     getReportState: (bill) => getRealReportState(bill),
     loadReportBundle: (bill) => loadRealReport(bill),
     askQuestion: (args) => getQaAnswerClient().ask(args),
+    narrateAnswer: (args) => getQaAnswerClient().narrate(args),
     extractProfileFacts: (args) => getProfileFactRecorder()?.extract(args),
     saveProfileFacts: (args) => getProfileFactRecorder()?.save(args),
     explainReport: (args) => explainReportNumbers(args),
@@ -398,8 +449,12 @@ const ctx = {
     saveProfileSummary: (args) => getDataClient().saveProfileSummary(args),
     requestProfileSummary: ({ digest, signal } = {}) => getProfileFactTransport().profileSummary({ digest, signal }),
     invalidateCloudProfile,
+    getCachedCloudFacts,
+    loadCloudFacts,
+    appendCachedCloudFacts,
   },
   scrollToSimulation,
+  prewarmScenario: prewarmScenarioReview,
   isOverlayLayout: mobileLayout,
   focusAssistant,
   refreshAssistant: renderAssistant,

@@ -82,8 +82,12 @@ function makeBundle(overrides = {}) {
 
 const BUNDLE = makeBundle();
 
-function makeService({ bundle = BUNDLE, askOnline = null, classifyIntent = null, loadBundle = null, loadProfile = null } = {}) {
-  const calls = { gets: 0, loads: 0, asks: 0, profiles: 0, classify: 0 };
+function makeService({
+  bundle = BUNDLE, askOnline = null, askNarrative = null,
+  getSavedFacts = null, loadSavedFacts = null,
+  classifyIntent = null, loadBundle = null, loadProfile = null,
+} = {}) {
+  const calls = { gets: 0, loads: 0, asks: 0, profiles: 0, classify: 0, narrative: 0, savedReads: 0, savedLoads: 0 };
   const service = createQaAnswerService({
     getBundle() { calls.gets += 1; return bundle; },
     loadBundle: loadBundle ?? (async () => { calls.loads += 1; return bundle; }),
@@ -92,6 +96,17 @@ function makeService({ bundle = BUNDLE, askOnline = null, classifyIntent = null,
       if (!askOnline) return { ok: false, code: 'W_QA_ONLINE_UNAVAILABLE' };
       return askOnline(args);
     },
+    askNarrative: async (args) => {
+      calls.narrative += 1;
+      if (!askNarrative) return { ok: false, code: 'E_QA_NARRATIVE_UNAVAILABLE' };
+      return askNarrative(args);
+    },
+    getSavedFacts: getSavedFacts
+      ? () => { calls.savedReads += 1; return getSavedFacts(); }
+      : null,
+    loadSavedFacts: loadSavedFacts
+      ? async () => { calls.savedLoads += 1; return loadSavedFacts(); }
+      : null,
     loadProfile: () => { calls.profiles += 1; return loadProfile ? loadProfile() : null; },
     classifyIntent: classifyIntent
       ? async (args) => { calls.classify += 1; return classifyIntent(args); }
@@ -111,6 +126,14 @@ function makeService({ bundle = BUNDLE, askOnline = null, classifyIntent = null,
     && worst.evidence.some((e) => e.label === '公式' && e.detail.includes('×')), JSON.stringify({ facts: worst.facts, evidence: worst.evidence }));
   check('最错一笔：不触发在线复述', calls.asks === 0 && worst.trace.number_check === null, JSON.stringify(calls));
   check('最错一笔：账单上下文写入信封', worst.bill_context_id === 'bill-qa-1', worst.bill_context_id);
+
+  const best = await service.ask({ question: '我获利最高的一笔是哪个？', bill: BILL });
+  check('最赚一笔：local / intent 正确 / 4 条事实 / 证据为公式', best.status === 'local'
+    && best.intent === 'best_trade' && best.route.layer === 'L1'
+    && best.facts.length === 4 && best.evidence.some((e) => e.label === '公式')
+    && best.facts.some((f) => f.label === '组合损耗'), JSON.stringify(best));
+  check('最赚一笔：不触发在线复述', calls.asks === 0 && best.trace.number_check === null, JSON.stringify(calls));
+  check('最赚一笔：明确这是事后对照而非因果', best.text.includes('事后对照') && best.text.includes('不等于因果'), best.text);
 
   const pattern = await service.ask({ question: '为什么说我追高？', bill: BILL });
   check('为什么追高：local / 3 条事实 / 证据可回源', pattern.status === 'local'
@@ -342,6 +365,105 @@ function makeService({ bundle = BUNDLE, askOnline = null, classifyIntent = null,
   const noBundle = await cachedless.ask({ question: '我最错的一笔是哪个？', bill: BILL });
   check('报告未载入：error / 不重复请求行情', noBundle.status === 'error'
     && noBundle.diagnostics.some((d) => d.code === 'E_QA_BUNDLE_UNAVAILABLE'), JSON.stringify(noBundle));
+}
+
+/* ==== ⑧ AI 解读层：手动策略、守卫与失败不带文本 ==== */
+{
+  const { service, calls } = makeService();
+  const worst = await service.ask({ question: '我最错的一笔是哪个？', bill: BILL });
+  const portfolio = await service.ask({ question: '组合整体表现如何？', bill: BILL });
+  const refusal = await service.ask({ question: '明天买什么？', bill: BILL });
+  check('解读策略：本地可解释意图为 manual', worst.narrative_policy === 'manual', worst.narrative_policy);
+  check('解读策略：组合表现与拒绝类为 none', portfolio.narrative_policy === 'none'
+    && refusal.narrative_policy === 'none', JSON.stringify({ p: portfolio.narrative_policy, r: refusal.narrative_policy }));
+  check('解读策略：策略不改变本地答案事实', worst.facts.length === 4 && worst.source === 'local');
+
+  const sent = [];
+  const narrativeService = makeService({
+    askNarrative: async (args) => {
+      sent.push(args);
+      return { ok: true, text: '合成解读正文', number_check: { checked: 5, matched_count: 5, failed_count: 0 } };
+    },
+  });
+  const answer = await narrativeService.service.ask({ question: '我最错的一笔是哪个？', bill: BILL });
+  const narrated = await narrativeService.service.narrate({ question: '我最错的一笔是哪个？', answer, bill: BILL });
+  check('解读：成功路径返回文本与数字校验计数', narrated.ok === true
+    && narrated.text === '合成解读正文' && narrated.number_check?.checked === 5, JSON.stringify(narrated));
+  check('解读：只发送问题/意图/事实/证据，不发送本地答案正文', sent.length === 1
+    && Object.keys(sent[0]).join(',') === 'question,intent,facts,evidence'
+    && !('text' in sent[0]) && !('answer' in sent[0])
+    && sent[0].facts.length === 4 && sent[0].intent === 'worst_trade', JSON.stringify(sent[0]));
+
+  const noPolicy = await narrativeService.service.narrate({ question: '组合整体表现如何？', answer: portfolio, bill: BILL });
+  check('解读：narrative_policy=none 时短路且不调用模型', noPolicy.ok === false
+    && noPolicy.code === 'E_QA_NARRATIVE_NOT_ALLOWED' && narrativeService.calls.narrative === 1, JSON.stringify(noPolicy));
+
+  const demoAnswer = await narrativeService.service.ask({ question: '我最错的一笔是哪个？', bill: { ...BILL, demo: true } });
+  const demoNarrate = await narrativeService.service.narrate({ question: '我最错的一笔是哪个？', answer: demoAnswer, bill: { ...BILL, demo: true } });
+  check('解读：示例账单策略为 none 且不发起请求', demoAnswer.narrative_policy === 'none'
+    && demoNarrate.code === 'E_QA_NARRATIVE_NOT_ALLOWED'
+    && narrativeService.calls.narrative === 1, JSON.stringify({ demoAnswer, demoNarrate }));
+
+  const noFactAnswer = { status: 'local', intent: 'worst_trade', narrative_policy: 'manual', facts: [], evidence: [], bill_context_id: 'bill-qa-1' };
+  const noFacts = await narrativeService.service.narrate({ question: '我最错的一笔是哪个？', answer: noFactAnswer, bill: BILL });
+  check('解读：无事实时短路', noFacts.code === 'E_QA_NARRATIVE_NO_FACTS' && narrativeService.calls.narrative === 1, JSON.stringify(noFacts));
+
+  const staleAnswer = { ...answer, bill_context_id: 'bill-other' };
+  const stale = await narrativeService.service.narrate({ question: '我最错的一笔是哪个？', answer: staleAnswer, bill: BILL });
+  check('解读：账单已变化时短路', stale.code === 'E_QA_NARRATIVE_STALE' && narrativeService.calls.narrative === 1, JSON.stringify(stale));
+
+  const failing = makeService({ askNarrative: async () => { throw new Error('offline'); } });
+  const failingAnswer = await failing.service.ask({ question: '我最错的一笔是哪个？', bill: BILL });
+  const failure = await failing.service.narrate({ question: '我最错的一笔是哪个？', answer: failingAnswer, bill: BILL });
+  check('解读：在线异常 → UNAVAILABLE 且不返回文本', failure.ok === false
+    && failure.code === 'E_QA_NARRATIVE_UNAVAILABLE' && !('text' in failure), JSON.stringify(failure));
+
+  const plain = makeService();
+  const plainAnswer = await plain.service.ask({ question: '我最错的一笔是哪个？', bill: BILL });
+  const unavailable = await plain.service.narrate({ question: '我最错的一笔是哪个？', answer: plainAnswer, bill: BILL });
+  check('解读：未注入 online 客户端 → UNAVAILABLE', unavailable.code === 'E_QA_NARRATIVE_UNAVAILABLE', JSON.stringify(unavailable));
+  check('解读：策略与守卫不触发在线复述', calls.asks === 0 && plain.calls.asks === 0, JSON.stringify(plain.calls));
+}
+
+/* ==== ⑨ 画像事实回流：独立通道、缓存冷加载与失败降级 ==== */
+{
+  const savedRows = [
+    { kind: 'goal', key: 'holding_horizon', value: '希望做长线', evidence: '我希望做长线', source: 'manual', created_at: '2026-10-20T08:00:00.000Z' },
+    { kind: 'constraint', key: 'avoid_new', value: '不碰次新股', evidence: '我不碰次新股', source: 'chat', created_at: '2026-10-21T08:00:00.000Z' },
+  ];
+  const { service, calls } = makeService({ getSavedFacts: () => savedRows });
+  const profile = await service.ask({ question: '我是谁？', bill: BILL });
+  check('画像回流：profile 携带 saved_facts 独立通道', profile.saved_facts.length === 2
+    && profile.saved_fact_total === 2 && profile.trace.saved_fact_count === 2, JSON.stringify({ saved: profile.saved_facts, trace: profile.trace }));
+  check('画像回流：不并入确定性 facts，不改变事实条数', profile.facts.length === 4
+    && !profile.facts.some((f) => f.value.includes('长线')), JSON.stringify(profile.facts));
+  check('画像回流：notice 说明单独展示', profile.notice.includes('单独列在下方'), profile.notice);
+
+  const how = await service.ask({ question: '我该怎么改？', bill: BILL });
+  const baseline = await makeService().service.ask({ question: '我该怎么改？', bill: BILL });
+  check('画像回流：怎么改同样展示事实但候选不受影响', how.saved_facts.length === 2
+    && JSON.stringify(how.candidate) === JSON.stringify(baseline.candidate)
+    && JSON.stringify(how.facts) === JSON.stringify(baseline.facts), JSON.stringify({ how: how.candidate, baseline: baseline.candidate }));
+
+  const worst = await service.ask({ question: '我最错的一笔是哪个？', bill: BILL });
+  check('画像回流：只在 profile/怎么改读取画像', worst.saved_facts.length === 0
+    && calls.savedReads === 2, JSON.stringify(calls));
+
+  const cold = makeService({ getSavedFacts: () => [], loadSavedFacts: () => savedRows });
+  const coldProfile = await cold.service.ask({ question: '我是谁？', bill: BILL });
+  check('画像回流：缓存冷时按需加载一次', coldProfile.saved_facts.length === 2
+    && cold.calls.savedReads === 1 && cold.calls.savedLoads === 1, JSON.stringify(cold.calls));
+
+  const failing = makeService({ getSavedFacts: () => { throw new Error('cloud down'); } });
+  const degraded = await failing.service.ask({ question: '我是谁？', bill: BILL });
+  check('画像回流：云端失败只降级提示，不阻断回答', degraded.status === 'local'
+    && degraded.saved_facts.length === 0
+    && degraded.notice.includes('云端画像暂不可用'), JSON.stringify({ status: degraded.status, notice: degraded.notice }));
+
+  const demo = makeService({ getSavedFacts: () => savedRows });
+  const demoProfile = await demo.service.ask({ question: '我是谁？', bill: { ...BILL, demo: true } });
+  check('画像回流：示例账单不读取云端事实', demoProfile.saved_facts.length === 0
+    && demo.calls.savedReads === 0, JSON.stringify(demo.calls));
 }
 
 const failed = results.filter((r) => !r.ok);

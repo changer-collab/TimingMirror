@@ -9,6 +9,7 @@ import {
 } from './qaIntent.js';
 import { ruleStateKeyOf } from '../../src/agent/qaChips.js';
 import { shouldExtractProfileFacts } from '../../src/agent/profileSignals.js';
+import { PROFILE_FACT_KIND_LABELS } from '../../src/agent/cloudProfileModel.js';
 import { fmtMoney } from '../../src/engine/display.js';
 
 const STATUS_LABELS = Object.freeze({
@@ -33,13 +34,7 @@ const STATUS_TITLES = Object.freeze({
   pending: '正在核对',
 });
 
-const FACT_KIND_LABELS = Object.freeze({
-  goal: '目标',
-  preference: '偏好',
-  constraint: '约束',
-  habit: '习惯',
-  risk_tolerance: '风险承受',
-});
+const FACT_KIND_LABELS = PROFILE_FACT_KIND_LABELS;
 
 const BOUNDARY_STATES = new Set(['refusal', 'registration', 'unavailable']);
 
@@ -169,6 +164,9 @@ function profileFactHTML(message) {
   }
   if (fact.state === 'saved') {
     const duplicates = fact.duplicates ? ` · 另有 ${esc(fact.duplicates)} 条已存在` : '';
+    const stale = fact.summary_stale
+      ? '<p class="tm-qa-profilefact-note is-warn">画像已更新；<a href="#/me">个人中心</a>的旧解读需要重新生成。</p>'
+      : '';
     return `<div class="tm-qa-profilefact" data-role="qa-profilefact">
       <div class="tm-qa-profilefact-head">
         <span>已记入画像 · ${esc(fact.facts?.length ?? 0)} 条${duplicates}</span>
@@ -176,6 +174,7 @@ function profileFactHTML(message) {
       </div>
       ${profileFactsHTML(fact.facts, true)}
       <p class="tm-qa-profilefact-note">来自你的陈述；可到 <a href="#/me">个人中心</a> 查看和删除。</p>
+      ${stale}
     </div>`;
   }
   if (fact.state === 'duplicate') {
@@ -213,6 +212,54 @@ function profileActionHTML(message, question, allowProfile) {
   </div>`;
 }
 
+function savedFactsHTML(answer) {
+  const list = Array.isArray(answer?.saved_facts) ? answer.saved_facts.slice(0, 5) : [];
+  if (!list.length) return '';
+  const total = Number.isFinite(answer?.saved_fact_total) ? answer.saved_fact_total : list.length;
+  const more = total > list.length
+    ? `<p class="tm-qa-notice">画像中共 ${esc(total)} 条，这里显示最近 ${list.length} 条。</p>`
+    : '';
+  return `<section class="tm-qa-savedfacts" data-role="qa-saved-facts">
+    <div class="tm-qa-savedfacts-head"><span>你主动记入的画像事实</span><a href="#/me">查看 / 删除</a></div>
+    <ul class="tm-qa-profile-list is-saved">${list.map((fact) => `
+      <li class="tm-qa-profile-fact">
+        <span class="tm-qa-profile-kind">${esc(FACT_KIND_LABELS[fact.kind] ?? '事实')}</span>
+        <strong>${esc(fact.value)}</strong>
+        ${fact.evidence ? `<span class="tm-qa-profile-evidence">原文：${esc(fact.evidence)}</span>` : ''}
+      </li>`).join('')}</ul>
+    ${more}
+    <p class="tm-qa-notice">只读展示；补充或删除请到个人中心。</p>
+  </section>`;
+}
+
+function narrativeHTML(message, question) {
+  const narrative = message?.narrative;
+  if (!narrative) return '';
+  if (narrative.status === 'pending') {
+    return '<p class="tm-qa-narrative is-pending" data-role="qa-narrative">正在生成 AI 解读…</p>';
+  }
+  if (narrative.status === 'ok') {
+    const checked = narrative.number_check && Number.isFinite(narrative.number_check.checked)
+      ? `已核对 ${narrative.number_check.checked} 处数字`
+      : '数字已在本机复核';
+    return `<section class="tm-qa-narrative" data-role="qa-narrative">
+      <div class="tm-qa-narrative-head"><span class="tm-qa-badge is-online">AI 解读</span><span>${esc(checked)}</span></div>
+      <p class="tm-qa-text">${esc(narrative.text)}</p>
+      <p class="tm-qa-notice">只解释上方已核对事实；未通过数字校验时不会显示。</p>
+    </section>`;
+  }
+  if (narrative.status === 'failed') {
+    const retry = narrative.retryable === false
+      ? ''
+      : `<div class="tm-qa-actions"><button type="button" class="btn small" data-role="qa-narrative-retry" data-message-id="${esc(message.id ?? '')}" data-question="${esc(question)}">重试 AI 解读</button></div>`;
+    return `<div class="tm-qa-narrative is-warn" data-role="qa-narrative">
+      <p>AI 解读未完成：${esc(narrative.text || '在线解读服务暂时不可用，请稍后重试。')}。上面的本地答案仍然有效。</p>
+      ${retry}
+    </div>`;
+  }
+  return '';
+}
+
 function onlineHTML(message) {
   const online = message?.online;
   if (!online) return '';
@@ -245,6 +292,9 @@ function actionsHTML(answer, message, actionMap, currentRuleKey, question, allow
       kind: 'online',
     });
   }
+  if (allowOnline && answer.status === 'local' && answer.narrative_policy === 'manual' && !message?.narrative) {
+    actions.push({ id: 'ai-narrative', label: 'AI 解读', kind: 'narrative' });
+  }
   const names = new Set(actions.map((a) => a.id));
   let stale = false;
   const buttons = [];
@@ -257,9 +307,14 @@ function actionsHTML(answer, message, actionMap, currentRuleKey, question, allow
     actionMap.set(actionKey, { ...action, question, messageId: message?.id ?? null });
     buttons.push(`<button type="button" class="tm-qa-action${action.kind === 'candidate' ? ' is-primary' : ''}" data-action="${esc(action.kind)}" data-action-key="${esc(actionKey)}">${esc(action.label)}</button>`);
   }
-  const note = actions.some((action) => action.kind === 'online')
-    ? '<p class="tm-qa-action-note">在线复述会发送问题与所需已核对数字；不会上传原始 CSV。</p>'
-    : '';
+  const notes = [];
+  if (actions.some((action) => action.kind === 'online')) {
+    notes.push('在线复述会发送问题与所需已核对数字；不会上传原始 CSV。');
+  }
+  if (actions.some((action) => action.kind === 'narrative')) {
+    notes.push('AI 解读会发送问题与上方已展示事实；不会上传原始 CSV。');
+  }
+  const note = notes.length ? `<p class="tm-qa-action-note">${notes.join(' ')}</p>` : '';
   const staleNote = stale && names.size
     ? '<p class="tm-qa-stale">规则状态已变化，原候选已失效；上方账单事实仍然有效。</p>'
     : '';
@@ -301,9 +356,11 @@ function answerHTML(entry, actionMap, currentRuleKey, allowOnline, allowProfile)
     </div>
     <p class="tm-qa-text">${esc(answer.text)}</p>
     ${factsHTML(facts)}
+    ${savedFactsHTML(answer)}
     ${evidenceHTML(answer.evidence)}
     ${actionsHTML(answer, entry.message, actionMap, currentRuleKey, entry.question, allowOnline)}
     ${onlineHTML(entry.message)}
+    ${narrativeHTML(entry.message, entry.question)}
     ${profileActionHTML(entry.message, entry.question, allowProfile)}
     ${profileFactHTML(entry.message)}
     ${answer.notice ? `<p class="tm-qa-notice">${esc(answer.notice)}</p>` : ''}
@@ -352,11 +409,11 @@ function headHTML(hasEntries, isDemo, showClearConfirm) {
 
 function privacyLine(question) {
   const text = questionText(question);
-  if (!text) return '本地回答不上传；在线复述和画像记录只在你主动选择后发送。';
+  if (!text) return '本地回答不上传；在线复述、AI 解读和画像记录只在你主动选择后发送。';
   if (isPageHelpQuestion(text)) return '本次：页面帮助问题，不发送；请查看 AI 助手帮助。';
   const route = routeQuestion(text);
   if (route.intent === 'loss_overview') return '本次：本机回答，不上传。需要在线复述时，请在回答上单独选择。';
-  if (route.intent) return '本次：本机回答，不上传。';
+  if (route.intent) return '本次：本机回答，不上传；AI 解读只在你点击后发送问题与上方事实。';
   return '本次：本机未匹配；发送后会先发送问题文本理解问法，不发送账单数字。';
 }
 
@@ -700,8 +757,8 @@ export function renderRealChat(host, ctx) {
     const payload = result.result ?? {};
     const added = Array.isArray(payload.added) ? payload.added : [];
     const duplicates = Array.isArray(payload.duplicates) ? payload.duplicates : [];
-    ctx.cloudDeps?.invalidateCloudProfile?.();
     if (added.length) {
+      ctx.cloudDeps?.appendCachedCloudFacts?.(added);
       patchMessage(ctx, messageId, {
         profile_fact: {
           state: 'saved',
@@ -709,11 +766,13 @@ export function renderRealChat(host, ctx) {
           facts: added,
           ids: added.map((item) => item?.id).filter((id) => typeof id === 'string'),
           duplicates: duplicates.length,
+          summary_stale: true,
           requestId: null,
         },
       });
       return;
     }
+    ctx.cloudDeps?.invalidateCloudProfile?.();
     patchMessage(ctx, messageId, {
       profile_fact: { ...fact, state: duplicates.length ? 'duplicate' : 'empty', requestId: null, facts: [] },
     });
@@ -772,6 +831,50 @@ export function renderRealChat(host, ctx) {
     }
     const text = result?.notice ? String(result.notice) : '在线服务当前不可用，请稍后重试。';
     patchMessage(ctx, messageId, { online: { status: 'failed', text } });
+  }
+
+  async function runNarrative(question, messageId) {
+    const message = findMessage(ctx, messageId);
+    if (!message || !question || message.narrative?.status === 'pending') return;
+    if ((message.bill_context_id ?? null) !== (state.bill?.contextId ?? null)) return;
+    if (typeof ctx.qaDeps?.narrateAnswer !== 'function') {
+      patchMessage(ctx, messageId, {
+        narrative: { status: 'failed', text: '当前环境不支持 AI 解读。', retryable: false },
+      });
+      return;
+    }
+    const requestId = `narrative-${++seq}`;
+    patchMessage(ctx, messageId, { narrative: { status: 'pending', requestId } });
+    let result = null;
+    try {
+      result = await ctx.qaDeps.narrateAnswer({
+        question,
+        answer: message.answer,
+        bill: state.bill,
+      });
+    } catch {
+      result = null;
+    }
+    if ((state.bill?.contextId ?? null) !== (message.bill_context_id ?? null)) return;
+    const latest = findMessage(ctx, messageId);
+    if (!latest || latest.narrative?.requestId !== requestId) return;
+    if (result?.ok && result.text) {
+      patchMessage(ctx, messageId, {
+        narrative: { status: 'ok', text: result.text, number_check: result.number_check ?? null },
+      });
+      return;
+    }
+    const code = result?.code ?? 'E_QA_NARRATIVE_UNAVAILABLE';
+    const retryable = code !== 'E_QA_NARRATIVE_NOT_ALLOWED'
+      && code !== 'E_QA_NARRATIVE_STALE'
+      && code !== 'E_QA_NARRATIVE_NO_FACTS';
+    patchMessage(ctx, messageId, {
+      narrative: {
+        status: 'failed',
+        text: result?.message || '在线解读服务暂时不可用，请稍后重试。',
+        retryable,
+      },
+    });
   }
 
   function clearConversation() {
@@ -841,6 +944,14 @@ export function renderRealChat(host, ctx) {
       else if (action === 'cancel') cancelProfile(messageId);
       return;
     }
+    const narrativeRetry = e.target.closest('[data-role="qa-narrative-retry"]');
+    if (narrativeRetry && host.contains(narrativeRetry)) {
+      void runNarrative(
+        narrativeRetry.getAttribute('data-question') || '',
+        narrativeRetry.getAttribute('data-message-id'),
+      );
+      return;
+    }
     const button = e.target.closest('[data-action]');
     if (!button || !host.contains(button)) return;
     const action = actionMap.get(button.getAttribute('data-action-key'));
@@ -851,6 +962,10 @@ export function renderRealChat(host, ctx) {
     }
     if (action.kind === 'online') {
       void runOnline(action.question, action.messageId);
+      return;
+    }
+    if (action.kind === 'narrative') {
+      void runNarrative(action.question, action.messageId);
       return;
     }
     if (action.kind === 'assistant-help') {

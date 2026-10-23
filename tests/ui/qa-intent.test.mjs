@@ -2,7 +2,7 @@
 /**
  * 独立问答页意图路由 —— 离线单测（不调用模型/行情/网络）
  *
- * 覆盖：12 类意图代表问法、规则优先级、五个既有芯片、L2 命中/低置信度/失败降级、
+ * 覆盖：13 类意图代表问法、规则优先级、五个既有芯片、L2 命中/低置信度/失败降级、
  *       槽位提取与问题归一化。
  * 运行：node tests/ui/qa-intent.test.mjs（或 npm run check）
  */
@@ -27,7 +27,7 @@ const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: 
     QA_SUGGESTIONS.length === 8
     && QA_SUGGESTIONS.slice(0, 5).every((s, i) => s.question === QA_CHIPS[i].question && s.label === QA_CHIPS[i].label)
     && QA_SUGGESTIONS.filter((s) => s.online).length === 0, JSON.stringify(QA_SUGGESTIONS));
-  check('意图标签：12 类均有中文短标签', Object.keys(QA_INTENT_LABELS).length === 12
+  check('意图标签：13 类均有中文短标签', Object.keys(QA_INTENT_LABELS).length === 13
     && Object.values(QA_INTENT_LABELS).every((v) => typeof v === 'string' && v.length > 0), JSON.stringify(QA_INTENT_LABELS));
 }
 
@@ -54,10 +54,11 @@ const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: 
     billingQuestions.every((question) => !isPageHelpQuestion(question)), JSON.stringify(billingQuestions.map((q) => [q, isPageHelpQuestion(q)])));
 }
 
-/* ==== ② 12 类代表问法 ==== */
+/* ==== ② 13 类代表问法 ==== */
 {
   const cases = [
     ['我最错的一笔是哪个？', 'worst_trade'],
+    ['我获利最高的一笔是哪个？', 'best_trade'],
     ['组合整体表现如何？', 'loss_overview'],
     ['为什么说我追高？', 'pattern_explain'],
     ['我是谁？', 'profile'],
@@ -82,6 +83,9 @@ const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: 
   check('优先级：怎么避免追高 → how_to_change', routeQuestion('怎么避免追高？').intent === 'how_to_change');
   check('优先级：为什么追高 → pattern_explain', routeQuestion('为什么追高？').intent === 'pattern_explain');
   check('优先级：亏损最大的一笔 → worst_trade', routeQuestion('亏损最大的一笔是哪笔？').intent === 'worst_trade');
+  check('优先级：获利最高 → best_trade（不与最错一笔互换）', routeQuestion('我获利最高的一笔是哪个？').intent === 'best_trade');
+  check('优先级：哪笔卖出赚得最多 → best_trade', routeQuestion('哪笔卖出赚得最多？').intent === 'best_trade');
+  check('优先级：最成功的一笔 → best_trade', routeQuestion('我最成功的一笔是哪个？').intent === 'best_trade');
   check('优先级：我的规则怎么改 → how_to_change', routeQuestion('我的规则怎么改？').intent === 'how_to_change');
   check('优先级：规则守得住吗 → contract_status', routeQuestion('规则守得住吗？').intent === 'contract_status');
   check('优先级：帮我定个止损 → contract_setup', routeQuestion('帮我定个止损。').intent === 'contract_setup');
@@ -175,7 +179,7 @@ const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: 
     classifyIntent: async () => ({ ok: true, intentJson: { intent: 'market_forecast', slots: {}, confidence: 0.99 } }),
   });
   const unknown = await unknownRouter.route('帮我看看这个账户');
-  check('L2：12 类之外的意图 → 澄清，不进入回答分支',
+  check('L2：已定义类别之外的意图 → 澄清，不进入回答分支',
     unknown.intent === null && unknown.ambiguous === true && unknown.layer === 'L2'
     && unknown.notice.includes('不在支持范围'), JSON.stringify(unknown));
 

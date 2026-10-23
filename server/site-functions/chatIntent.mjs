@@ -1,7 +1,7 @@
-// 问答意图响应的服务端 schema 校验：只接受 12 类意图、两个槽位与 [0,1] 置信度。
+// 问答意图响应的服务端 schema 校验：只接受已定义意图类别、两个槽位与 [0,1] 置信度。
 // 校验后只回传规范化 JSON，模型多写的字段不会进入客户端；不记录问题或模型正文。
 export const CHAT_INTENT_CATEGORIES = Object.freeze([
-  'worst_trade', 'loss_overview', 'pattern_explain', 'profile', 'what_if', 'similar_context',
+  'worst_trade', 'best_trade', 'loss_overview', 'pattern_explain', 'profile', 'what_if', 'similar_context',
   'how_to_change', 'contract_setup', 'contract_status', 'meta_calc', 'meta_trust', 'out_of_scope',
 ]);
 
@@ -44,7 +44,7 @@ export function validateChatIntentResponse(rawText) {
   if (!isObject(parsed)) return fail('响应必须为对象');
   const extra = Object.keys(parsed).filter((key) => !RESPONSE_KEYS.has(key));
   if (extra.length) return fail(`响应不允许字段：${extra.join(',')}`);
-  if (!CHAT_INTENT_CATEGORIES.includes(parsed.intent)) return fail('intent 不在 12 类内');
+  if (!CHAT_INTENT_CATEGORIES.includes(parsed.intent)) return fail('intent 不在已定义类别内');
   if (typeof parsed.confidence !== 'number' || !Number.isFinite(parsed.confidence)
     || parsed.confidence < 0 || parsed.confidence > 1) {
     return fail('confidence 必须为 [0,1] 数值');

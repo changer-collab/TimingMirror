@@ -24,6 +24,7 @@ export const QA_SUGGESTIONS = Object.freeze([
 
 export const QA_INTENT_LABELS = Object.freeze({
   worst_trade: '最错一笔',
+  best_trade: '最赚一笔',
   loss_overview: '组合表现',
   pattern_explain: '追高解释',
   profile: '行为画像',
@@ -111,8 +112,12 @@ const L1_RULES = Object.freeze([
     test: /(我是谁|我的风格|交易风格|画像|我的习惯|性格|我是什么样)/u,
   },
   {
+    intent: 'best_trade',
+    test: /(获利最高|赚得最多|赚最多|盈利最多|收益最高|最赚|最成功|赚得最好|最好的一笔)/u,
+  },
+  {
     intent: 'worst_trade',
-    test: /(最错|最伤|最亏|最差|亏损最大|亏最多|哪笔亏|最失败|最糟)/u,
+    test: /(最错|最伤|最亏|最差|亏损最大|亏最多|亏得最多|哪笔亏|最失败|最糟|代价最高)/u,
   },
   {
     intent: 'loss_overview',

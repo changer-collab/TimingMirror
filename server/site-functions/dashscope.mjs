@@ -8,7 +8,7 @@ export const DASHSCOPE_MULTIMODAL_ENDPOINT = 'https://dashscope.aliyuncs.com/api
 export const DASHSCOPE_VISION_MODEL = 'qwen3-vl-plus';
 
 const INTENTS = [
-  'worst_trade', 'loss_overview', 'pattern_explain', 'profile', 'what_if', 'similar_context',
+  'worst_trade', 'best_trade', 'loss_overview', 'pattern_explain', 'profile', 'what_if', 'similar_context',
   'how_to_change', 'contract_setup', 'contract_status', 'meta_calc', 'meta_trust', 'out_of_scope',
 ];
 
@@ -17,6 +17,7 @@ const INTENT_SYSTEM = [
   `intent 必须严格属于：${INTENTS.join(', ')}。`,
   '类别定义（按提问目的判断，不要求出现关键词）：',
   '- worst_trade：哪一笔交易相对持有到估值日代价最大、最让人后悔或亏损最大。',
+  '- best_trade：哪一笔交易相对持有到估值日获利最高、赚得最多、卖出比一直持有更划算；问“最成功的一笔”也归此类。',
   '- loss_overview：整份账单或组合的整体表现、实际收益、对照收益、择时损耗。',
   '- pattern_explain：解释这份账单里某种重复交易行为为什么被标记，例如追高、卖出后很快买回、买入后很快卖出、交易频繁；用户可能用“总在同一个地方栽跟头”“手痒”“拿不住”等口语。',
   '- profile：想了解自己的交易习惯、风格或“我是谁”；只描述本账单可验证的行为。',
@@ -33,13 +34,16 @@ const INTENT_SYSTEM = [
   '2. 解释“为什么会被标记/为什么我总是……”归 pattern_explain；“我该怎么改/下次怎么办/如何避免”归 how_to_change。',
   '3. 提到设置规则、阈值、提醒、止损线归 contract_setup；问规则是否生效、是否守住、触发几次归 contract_status。',
   '4. 问数字怎么算、从哪来归 meta_calc；问准不准、可不可信归 meta_trust。',
-  '5. 模糊问法按最接近的提问目的归类；实在无法判断时 confidence 低于 0.5，不要猜一个高置信度。',
+  '5. 方向必须区分：问获利最高/赚最多/最成功归 best_trade；问亏损最大/最错/最后悔归 worst_trade，不得互换。',
+  '6. 模糊问法按最接近的提问目的归类；实在无法判断时 confidence 低于 0.5，不要猜一个高置信度。',
   'slots 只能包含 symbol 和 trade_date，不要输出任何其他槽位（如 pattern、reason、amount）。',
   '- symbol：问题中明确出现的 6 位股票代码，字符串并保留前导零；没有就省略。',
   '- trade_date：问题中明确出现的日期，规范为 YYYY-MM-DD（月、日补零）；没有就省略，不要猜年份。',
   '只输出 JSON 对象：{"intent":"...","slots":{},"confidence":0.0}；不要输出 Markdown、解释或额外字段。',
   '示例：',
   '问：我最错的一笔是哪个？ → {"intent":"worst_trade","slots":{},"confidence":0.98}',
+  '问：我获利最高的一笔是哪个？ → {"intent":"best_trade","slots":{},"confidence":0.97}',
+  '问：哪笔卖出相对一直持有赚得最多 → {"intent":"best_trade","slots":{},"confidence":0.95}',
   '问：帮我看看整体收益怎么样 → {"intent":"loss_overview","slots":{},"confidence":0.95}',
   '问：我是不是老在同一个地方栽跟头 → {"intent":"pattern_explain","slots":{},"confidence":0.72}',
   '问：我总是拿不住，刚买就卖 → {"intent":"pattern_explain","slots":{},"confidence":0.9}',
@@ -211,6 +215,18 @@ const PROFILE_FACT_SYSTEM = [
   '只输出 JSON 对象，字段固定为 {"facts":[{"kind":"...","key":"...","value":"...","evidence":"..."}]}，不要 Markdown 或解释。',
 ].join('\n');
 
+const QA_NARRATIVE_SYSTEM = [
+  '你是 TimingMirror 的问答解读器。用户消息是 JSON：{"question","intent","facts","evidence","allowed"}。',
+  '确定性引擎已经生成并展示了 facts 与 evidence；你的任务只是用简体中文解释这些事实的含义和阅读顺序。',
+  '硬性要求：',
+  '- 只能使用 facts/evidence 中出现的内容；不得引入新的数字、日期、标的、金额、比率、持仓或交易记录。',
+  '- 文本中出现的每个数字、日期、6 位代码和计数，都必须原样来自 allowed 清单；不得换算、四舍五入或合并数字。',
+  '- 不预测收益或涨跌，不推荐买入/卖出，不评价人格，不使用“你总是/你一定/必然”。',
+  '- 不复述本地模板原文；不做组合、总收益或下一步操作结论。',
+  '- 40-320 字，单段，不要换行，不要 Markdown、代码块、URL、文件名或额外字段。',
+  '只输出 JSON 对象：{"answer_text":"..."}。',
+].join('\n');
+
 export const MODEL_PROMPTS = Object.freeze({
   intent: INTENT_SYSTEM,
   restate: RESTATE_SYSTEM,
@@ -225,6 +241,7 @@ export const MODEL_PROMPTS = Object.freeze({
   rule: RULE_SYSTEM,
   profileSummary: PROFILE_SUMMARY_SYSTEM,
   profileFact: PROFILE_FACT_SYSTEM,
+  qaNarrative: QA_NARRATIVE_SYSTEM,
 });
 
 export class ModelTransportError extends Error {
@@ -399,6 +416,12 @@ export function createDashScopeTransport({
         { role: 'system', content: IMPORT_RECOVER_SYSTEM },
         { role: 'user', content: JSON.stringify({ source_kind, content }) },
       ]);
+    },
+    qaNarrative({ question, intent, facts, evidence, allowed }) {
+      return call([
+        { role: 'system', content: QA_NARRATIVE_SYSTEM },
+        { role: 'user', content: JSON.stringify({ question, intent, facts, evidence, allowed }) },
+      ], { temperature: 0.2 });
     },
     vision({ images }) {
       return callVision(images);

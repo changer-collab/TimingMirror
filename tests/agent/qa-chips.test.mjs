@@ -265,6 +265,32 @@ const answerFor = (chipId, extra = {}) => buildLocalChipAnswer({
   check('我是谁：不生成性格/风险偏好等未实现标签', !/(保守型|激进型|稳健型|风险偏好[:：]|性格[:：])/.test(a.text), a.text);
 }
 
+/* ==== ④b 画像事实回流：独立通道，不改确定性事实与候选 ==== */
+{
+  const savedFacts = [
+    { id: 'a', kind: 'goal', key: 'long_term', value: '希望做长线', evidence: '我希望做长线', source: 'manual', created_at: '2026-10-21T08:00:00.000Z' },
+    { id: 'b', kind: 'constraint', key: 'avoid_new', value: '不碰次新股', evidence: '我不碰次新股', source: 'chat', created_at: '2026-10-20T08:00:00.000Z' },
+  ];
+  const baselineProfile = answerFor('profile');
+  const profile = answerFor('profile', { savedFacts });
+  check('画像回流：profile 单独返回 saved_facts 与总数', profile.ok
+    && profile.saved_facts.length === 2 && profile.saved_fact_total === 2
+    && profile.saved_facts[0].label === '目标', JSON.stringify(profile.saved_facts));
+  check('画像回流：profile 确定性文字与事实不受影响', profile.text === baselineProfile.text
+    && JSON.stringify(profile.facts) === JSON.stringify(baselineProfile.facts)
+    && profile.notice.includes('单独列在下方'), JSON.stringify({ text: profile.text, notice: profile.notice }));
+  check('画像回流：不并入 facts，不改变事实条数', profile.facts.length === 4
+    && !profile.facts.some((f) => f.value.includes('长线')), JSON.stringify(profile.facts));
+
+  const baselineHow = answerFor('how_to_change');
+  const how = answerFor('how_to_change', { savedFacts });
+  check('画像回流：怎么改的候选与事实不受事实通道影响', how.ok
+    && how.saved_facts.length === 2
+    && JSON.stringify(how.candidate) === JSON.stringify(baselineHow.candidate)
+    && JSON.stringify(how.facts) === JSON.stringify(baselineHow.facts), JSON.stringify({ candidate: how.candidate }));
+  check('画像回流：worst_trade 不携带事实通道', answerFor('worst_trade').saved_facts.length === 0);
+}
+
 /* ==== ⑤ 怎么改：复用规则候选，展示理由/证据；保存仍由用户确认 ==== */
 {
   const a = answerFor('how_to_change');

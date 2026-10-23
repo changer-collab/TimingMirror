@@ -2,6 +2,7 @@
 // 事实封闭：数字只来自当前账单已发布报告；在线只复述组合四事实，失败回退本地事实。
 // 不操作 DOM；报告加载、在线复述与画像读取均由调用方注入。
 import {
+  buildBestTradeAnswer,
   buildLocalChipAnswer,
   buildLocalPortfolioAnswer,
   QA_CHIP_CODES,
@@ -25,7 +26,12 @@ const UNAVAILABLE_CODES = new Set([
 ]);
 
 const PUBLISHED_INTENTS = new Set([
-  'loss_overview', 'worst_trade', 'pattern_explain', 'profile',
+  'loss_overview', 'worst_trade', 'best_trade', 'pattern_explain', 'profile',
+  'how_to_change', 'what_if', 'meta_calc', 'meta_trust',
+]);
+
+const NARRATIVE_INTENTS = new Set([
+  'worst_trade', 'best_trade', 'pattern_explain', 'profile',
   'how_to_change', 'what_if', 'meta_calc', 'meta_trust',
 ]);
 
@@ -110,13 +116,24 @@ function evidenceItem(text) {
 function makeEnvelope({
   status, intent = null, route = null, source = 'local', text = '', facts = [],
   evidence = [], actions = [], trace = {}, candidate = null, notice = null,
-  diagnostics = [], bill = null, elapsedMs = 0,
+  diagnostics = [], bill = null, elapsedMs = 0, savedFacts = [], savedFactTotal = 0,
 }) {
   const cleanFacts = facts.filter(Boolean).map((f) => ({
     label: String(f.label ?? ''),
     value: String(f.value ?? ''),
     tone: f.tone === 'loss' || f.tone === 'ok' ? f.tone : 'neutral',
   }));
+  const cleanSavedFacts = (Array.isArray(savedFacts) ? savedFacts : []).filter(Boolean).map((f) => ({
+    kind: String(f.kind ?? ''),
+    label: String(f.label ?? ''),
+    value: String(f.value ?? ''),
+    evidence: f.evidence ? String(f.evidence) : null,
+    source: f.source === 'manual' ? 'manual' : 'chat',
+    created_at: f.created_at ? String(f.created_at) : null,
+  }));
+  const total = Number.isFinite(savedFactTotal) && savedFactTotal > 0
+    ? Math.max(cleanSavedFacts.length, Math.round(savedFactTotal))
+    : cleanSavedFacts.length;
   return {
     status,
     intent,
@@ -129,10 +146,16 @@ function makeEnvelope({
     facts: cleanFacts,
     evidence: evidence.filter(Boolean),
     actions: actions.filter(Boolean),
+    narrative_policy: status === 'local' && NARRATIVE_INTENTS.has(intent) && bill?.demo !== true
+      ? 'manual'
+      : 'none',
+    saved_facts: cleanSavedFacts,
+    saved_fact_total: total,
     trace: {
       template_id: trace.template_id ?? null,
       plan_id: trace.plan_id ?? null,
       fact_count: cleanFacts.length,
+      saved_fact_count: cleanSavedFacts.length,
       number_check: trace.number_check ?? null,
       elapsed_ms: Math.max(0, Math.round(elapsedMs)),
       intent_code: intent ?? 'clarify',
@@ -211,6 +234,8 @@ function localEnvelope({ local, intent, route, bill, elapsedMs, actions = [], no
     },
     candidate: local.candidate ?? null,
     notice: notice ?? local.notice ?? null,
+    savedFacts: Array.isArray(local.saved_facts) ? local.saved_facts : [],
+    savedFactTotal: local.saved_fact_total ?? 0,
     bill,
     elapsedMs,
   });
@@ -638,6 +663,9 @@ export function createQaAnswerService({
   getBundle = () => null,
   loadBundle = null,
   askOnline = null,
+  askNarrative = null,
+  getSavedFacts = null,
+  loadSavedFacts = null,
   loadProfile = () => null,
   classifyIntent = null,
   now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
@@ -759,6 +787,21 @@ export function createQaAnswerService({
       return env;
     }
 
+    if (intent === 'best_trade') {
+      const local = buildBestTradeAnswer({ bundle, bill, question: normalized });
+      if (!local.ok) {
+        return localFailureEnvelope({ failure: local, intent, route, bill, elapsedMs: elapsed(), question: normalized });
+      }
+      return localEnvelope({
+        local,
+        intent,
+        route,
+        bill,
+        elapsedMs: elapsed(),
+        actions: [reportAction(), askAction('qa-meta-calc', '这些数字怎么算', SUGGESTION_ACTIONS.metaCalc.question)],
+      });
+    }
+
     const chip = intent;
     if (!['worst_trade', 'pattern_explain', 'profile', 'how_to_change'].includes(chip)) {
       return clarifyEnvelope({ route, bill, elapsedMs: elapsed() });
@@ -767,6 +810,21 @@ export function createQaAnswerService({
     if (chip === 'how_to_change' && typeof loadProfile === 'function') {
       try { profile = loadProfile(); } catch { profile = null; }
     }
+    let savedFacts = [];
+    let savedFactsUnavailable = false;
+    if ((chip === 'profile' || chip === 'how_to_change')
+      && bill?.status === 'confirmed' && bill?.sourceType === 'local' && bill?.demo !== true) {
+      try {
+        let loaded = typeof getSavedFacts === 'function' ? getSavedFacts() : null;
+        if ((!loaded || (Array.isArray(loaded) && loaded.length === 0)) && typeof loadSavedFacts === 'function') {
+          loaded = await loadSavedFacts();
+        }
+        savedFacts = Array.isArray(loaded?.facts) ? loaded.facts : (Array.isArray(loaded) ? loaded : []);
+      } catch {
+        savedFacts = [];
+        savedFactsUnavailable = true;
+      }
+    }
     const local = buildLocalChipAnswer({
       chip,
       bundle,
@@ -774,6 +832,7 @@ export function createQaAnswerService({
       ruleState: ruleStateFromVersions(versions, ruleState),
       profile,
       question: normalized,
+      savedFacts,
     });
     if (!local.ok) {
       return localFailureEnvelope({ failure: local, intent, route, bill, elapsedMs: elapsed(), question: normalized });
@@ -781,8 +840,39 @@ export function createQaAnswerService({
     const actions = chip === 'how_to_change'
       ? [rulesAction(), reportAction('打开报告 · 证据')]
       : [reportAction(), askAction('qa-meta-calc', '这些数字怎么算', SUGGESTION_ACTIONS.metaCalc.question)];
-    return localEnvelope({ local, intent, route, bill, elapsedMs: elapsed(), actions });
+    const notice = savedFactsUnavailable
+      ? `${local.notice ? `${local.notice} ` : ''}云端画像暂不可用，本次只列本账单行为。`
+      : null;
+    return localEnvelope({ local, intent, route, bill, elapsedMs: elapsed(), actions, notice });
   }
 
-  return Object.freeze({ ask });
+  async function narrate({ question = '', answer = null, bill = null } = {}) {
+    if (!answer || answer.status !== 'local' || answer.narrative_policy !== 'manual') {
+      return { ok: false, code: 'E_QA_NARRATIVE_NOT_ALLOWED', message: '这条回答不提供 AI 解读。' };
+    }
+    if (!bill || bill.status !== 'confirmed' || bill.sourceType !== 'local' || bill.demo === true) {
+      return { ok: false, code: 'E_QA_NARRATIVE_NOT_ALLOWED', message: 'AI 解读只用于已确认的本地账单。' };
+    }
+    if (answer.bill_context_id && bill.contextId && answer.bill_context_id !== bill.contextId) {
+      return { ok: false, code: 'E_QA_NARRATIVE_STALE', message: '账单已变化，请重新提问后再解读。' };
+    }
+    if (!Array.isArray(answer.facts) || answer.facts.length === 0) {
+      return { ok: false, code: 'E_QA_NARRATIVE_NO_FACTS', message: '这条回答没有可解释的事实。' };
+    }
+    if (typeof askNarrative !== 'function') {
+      return { ok: false, code: 'E_QA_NARRATIVE_UNAVAILABLE', message: 'AI 解读接口不可用。' };
+    }
+    try {
+      return await askNarrative({
+        question,
+        intent: answer.intent,
+        facts: answer.facts,
+        evidence: answer.evidence,
+      });
+    } catch {
+      return { ok: false, code: 'E_QA_NARRATIVE_UNAVAILABLE', message: '在线解读服务暂时不可用。' };
+    }
+  }
+
+  return Object.freeze({ ask, narrate });
 }

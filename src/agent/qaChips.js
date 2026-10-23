@@ -8,6 +8,7 @@ import { buildPlan } from './planner.js';
 import { classifyOffline } from './offlineIntent.js';
 import { buildRuleCandidates } from '../engine/userProfile.js';
 import { fmtMoney, fmtPct } from '../engine/display.js';
+import { PROFILE_FACT_KIND_LABELS } from './cloudProfileModel.js';
 
 export const QA_CHIP_CODES = Object.freeze({
   UNKNOWN_CHIP: 'E_QA_UNKNOWN_CHIP',
@@ -65,6 +66,41 @@ function fail(code, message) {
   return { ok: false, code, message: String(message ?? '') };
 }
 
+const SAVED_FACT_LIMIT = 5;
+
+// 用户主动记入的画像事实：单独通道展示，不并入确定性 facts，也不参与候选规则选择。
+export function savedFactsView(savedFacts) {
+  const rows = (Array.isArray(savedFacts) ? savedFacts : [])
+    .filter((fact) => fact && typeof fact === 'object' && typeof fact.value === 'string' && fact.value.trim());
+  const sorted = [...rows].sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
+  const seen = new Set();
+  const unique = [];
+  for (const fact of sorted) {
+    const dedupe = `${fact.kind ?? ''}\n${fact.key ?? ''}\n${fact.value.trim()}`;
+    if (seen.has(dedupe)) continue;
+    seen.add(dedupe);
+    unique.push(fact);
+  }
+  const facts = unique.slice(0, SAVED_FACT_LIMIT).map((fact) => {
+    const kind = PROFILE_FACT_KIND_LABELS[fact.kind] ? fact.kind : 'preference';
+    return {
+      kind,
+      label: PROFILE_FACT_KIND_LABELS[kind],
+      value: fact.value.trim().slice(0, 240),
+      evidence: typeof fact.evidence === 'string' && fact.evidence.trim() ? fact.evidence.trim().slice(0, 120) : null,
+      source: fact.source === 'manual' ? 'manual' : 'chat',
+      created_at: typeof fact.created_at === 'string' ? fact.created_at : null,
+    };
+  });
+  return { facts, total: unique.length };
+}
+
+function savedFactsNote(total) {
+  return total > 0
+    ? `你主动记入的 ${total} 条画像事实单独列在下方，可到个人中心删除；`
+    : '';
+}
+
 function planContext(bundle, bill) {
   const context = {};
   if (Array.isArray(bill?.trades)) context.trades = bill.trades;
@@ -94,7 +130,10 @@ function planView(plan) {
   };
 }
 
-function localAnswer({ chip, plan, text, facts = [], evidence = [], candidate = null, notice = null }) {
+function localAnswer({
+  chip, plan, text, facts = [], evidence = [], candidate = null, notice = null,
+  savedFacts = null, savedFactTotal = 0,
+}) {
   return {
     ok: true,
     kind: 'local',
@@ -107,6 +146,8 @@ function localAnswer({ chip, plan, text, facts = [], evidence = [], candidate = 
     evidence: evidence.filter(Boolean),
     candidate,
     notice,
+    saved_facts: Array.isArray(savedFacts) ? savedFacts : [],
+    saved_fact_total: Number.isFinite(savedFactTotal) ? savedFactTotal : 0,
   };
 }
 
@@ -294,6 +335,75 @@ function worstTradeAnswer({ chip, bundle, bill, plan }) {
   });
 }
 
+// “最赚一笔”与“最错一笔”共用逐笔损耗分解：dragMoney = 卖出数量 × (估值日收盘 − 卖出价)，
+// 负值表示卖出优于一直持有；取最小值（负得最多）即为相对赚得最多的一笔。
+export function buildBestTradeAnswer({ bundle, bill, question = '我获利最高的一笔是哪个？' } = {}) {
+  const chip = { id: 'best_trade', question, intent: 'best_trade' };
+  const plan = buildPlan({
+    question,
+    intentJson: { intent: 'best_trade', slots: {}, confidence: 1 },
+    context: planContext(bundle, bill),
+  });
+  const decomposition = bundle?.insights?.portfolio?.decomposition;
+  if (!decomposition) {
+    return fail(QA_CHIP_CODES.DECOMPOSITION_UNAVAILABLE, '当前账单报告的逐笔损耗分解没有生成：本次不回答“最赚一笔”，也不用其他数字代替。');
+  }
+  if (decomposition.blocked) {
+    return fail(QA_CHIP_CODES.DECOMPOSITION_BLOCKED, '逐笔损耗分解未通过加总或回源校验：本次不展示“最赚一笔”。');
+  }
+  const items = Array.isArray(decomposition.items) ? decomposition.items : [];
+  const total = decomposition.total?.display ?? '—';
+  if (items.length === 0) {
+    return localAnswer({
+      chip,
+      plan,
+      text: `当前账单没有卖出笔，逐笔损耗为 ${total}；没有可以排序的“最赚一笔”。`,
+      facts: [{ label: '组合损耗', value: total }],
+      notice: '没有卖出笔时不生成逐笔归因，也不用示例交易补齐。',
+    });
+  }
+  const best = items.reduce((a, b) => (Number(b.dragMoney) < Number(a.dragMoney) ? b : a), items[0]);
+  const drag = Number(best.dragMoney) || 0;
+  const absDrag = fmtMoney(Math.abs(drag));
+  if (drag === 0) {
+    return localAnswer({
+      chip,
+      plan,
+      text: `按当前账单报告的逐笔损耗分解，每笔卖出的差额都是 0：没有哪一笔卖出相对“买入不动”多赚，也就没有“最赚一笔”。组合总损耗 ${total}。这是事后对照，不评价当时的决定。`,
+      facts: [{ label: '组合损耗', value: total }],
+      notice: '逐笔差额为 0 时不评选“最赚一笔”；逐笔分解未进入复核发布事实。',
+    });
+  }
+  if (drag > 0) {
+    return localAnswer({
+      chip,
+      plan,
+      text: `按当前账单报告的逐笔损耗分解，没有哪一笔卖出相对“买入不动”更赚：每笔卖出都不优于持有到估值日。最接近的一笔是 ${best.trade_date} 卖出 ${best.symbol} ${best.quantity} 股，实际比持有到估值日少赚 ${absDrag}。组合总损耗 ${total}。这是事后对照，不评价当时的决定；展示序不等于因果。`,
+      facts: [
+        { label: '成交（最接近）', value: `${best.trade_date} · 卖出 ${best.symbol} × ${best.quantity}` },
+        { label: '落后对照', value: absDrag },
+        { label: '组合损耗', value: total },
+        { label: '回源', value: tradeSourceLabel(best.source) },
+      ],
+      evidence: [`公式：${best.quantity} × (${priceText(best.close)} − ${priceText(best.price)}) = ${absDrag}（不含费用、税费与分红）`],
+      notice: '没有负损耗卖出时不评选“最赚一笔”，只如实说明最接近的一笔；逐笔分解未进入复核发布事实。',
+    });
+  }
+  return localAnswer({
+    chip,
+    plan,
+    text: `按当前账单报告的逐笔损耗分解，相对“买入不动”赚得最多的一笔是 ${best.trade_date} 卖出 ${best.symbol} ${best.quantity} 股：卖出价 ${priceText(best.price)}，估值日收盘 ${priceText(best.close)}，实际比持有到估值日多赚 ${absDrag}，占组合总损耗 ${shareText(best)}。组合总损耗 ${total}。这是事后对照，不评价当时的决定；展示序不等于因果。`,
+    facts: [
+      { label: '成交', value: `${best.trade_date} · 卖出 ${best.symbol} × ${best.quantity}` },
+      { label: '优于对照', value: absDrag },
+      { label: '组合损耗', value: total },
+      { label: '回源', value: tradeSourceLabel(best.source) },
+    ],
+    evidence: [`公式：${best.quantity} × (${priceText(best.close)} − ${priceText(best.price)}) = −${absDrag}（不含费用、税费与分红）`],
+    notice: '“最赚一笔”只按逐笔损耗金额升序排序（负损耗最大）；逐笔分解是候选补充口径，未进入复核发布事实。',
+  });
+}
+
 function multiPatternAnswer({ chip, plan, established }) {
   const list = established.map((p) => `${p.name}（命中 ${p.sample_n} 笔 / 已评估 ${p.evaluated_n} 笔）`).join('、');
   return localAnswer({
@@ -345,7 +455,9 @@ function patternAnswer({ chip, bundle, bill, plan, question }) {
   });
 }
 
-function profileAnswer({ chip, bundle, bill, plan }) {
+function profileAnswer({ chip, bundle, bill, plan, savedFacts = [] }) {
+  const saved = savedFactsView(savedFacts);
+  const savedNote = savedFactsNote(saved.total);
   const base = behaviorData(bundle);
   if (!base.ok) return fail(QA_CHIP_CODES.BEHAVIOR_UNAVAILABLE, base.message);
   const patterns = base.patterns;
@@ -360,7 +472,9 @@ function profileAnswer({ chip, bundle, bill, plan }) {
       plan,
       text: `镜子不给你贴人格标签。这份账单覆盖 ${tradeCount} 笔交易（买入 ${buyCount}、卖出 ${sellCount}）；行为发现没有生成可核验的模式，因此不生成行为画像。`,
       facts: [{ label: '账单覆盖', value: `${tradeCount} 笔 / ${buyCount} 笔买入 / ${sellCount} 笔卖出` }],
-      notice: '“我是谁”只列本账单可验证的交易行为；不用示例标签补齐。',
+      notice: `${savedNote}“我是谁”只列本账单可验证的交易行为；不用示例标签补齐。`,
+      savedFacts: saved.facts,
+      savedFactTotal: saved.total,
     });
   }
   const summary = patterns.map((p) => `${p.name}${p.status}（命中 ${p.sample_n} 笔 / 已评估 ${p.evaluated_n} 笔）`).join('；');
@@ -381,11 +495,15 @@ function profileAnswer({ chip, bundle, bill, plan }) {
       { label: '不成立', value: namesByStatus('不成立') },
     ],
     evidence,
-    notice: '“我是谁”只列本账单可验证的交易行为；不包含你主动记录的画像事实，也不生成性格、风险偏好等未经实现的标签。',
+    notice: `${savedNote}行为发现仍只来自本账单，不生成性格、风险偏好等未经实现的标签。`,
+    savedFacts: saved.facts,
+    savedFactTotal: saved.total,
   });
 }
 
-function howToChangeAnswer({ chip, bundle, bill, plan, ruleState, profile }) {
+function howToChangeAnswer({ chip, bundle, bill, plan, ruleState, profile, savedFacts = [] }) {
+  const saved = savedFactsView(savedFacts);
+  const savedNote = savedFactsNote(saved.total);
   const base = behaviorData(bundle);
   if (!base.ok) return fail(QA_CHIP_CODES.BEHAVIOR_UNAVAILABLE, base.message);
   let candidatePack = null;
@@ -418,9 +536,11 @@ function howToChangeAnswer({ chip, bundle, bill, plan, ruleState, profile }) {
       text: `${summary}当前没有可建立的规则候选；镜子不替你定规矩，也不用示例候选补齐。`,
       facts: base.patterns.map((p) => ({ label: p.name, value: patternSummaryValue(p) })),
       evidence: base.patterns.flatMap((p) => patternEvidenceLines(p, 3)).slice(0, 6),
-      notice: uncovered.length
+      notice: `${savedNote}${uncovered.length
         ? `现有规则模板未覆盖：${uncovered.map((p) => p.name).join('、')}；该模式只做行为发现，不生成规则候选。`
-        : candidatePack?.notes?.[0] ?? null,
+        : candidatePack?.notes?.[0] ?? ''}`,
+      savedFacts: saved.facts,
+      savedFactTotal: saved.total,
     });
   }
   const evidence = patternEvidenceLines(pattern, 6);
@@ -440,13 +560,17 @@ function howToChangeAnswer({ chip, bundle, bill, plan, ruleState, profile }) {
     facts: patternFacts(pattern),
     evidence,
     candidate,
-    notice: actionable
+    notice: `${savedNote}${actionable
       ? '候选由本账单行为证据生成，不来自模型；打开模板不会自动保存。'
-      : `当前候选状态：${candidate.status_text}；不提供一键保存。`,
+      : `当前候选状态：${candidate.status_text}；不提供一键保存。`}`,
+    savedFacts: saved.facts,
+    savedFactTotal: saved.total,
   });
 }
 
-export function buildLocalChipAnswer({ chip, bundle, bill, ruleState = null, profile = null, question = null } = {}) {
+export function buildLocalChipAnswer({
+  chip, bundle, bill, ruleState = null, profile = null, question = null, savedFacts = [],
+} = {}) {
   const def = findQaChip(chip);
   if (!def) return fail(QA_CHIP_CODES.UNKNOWN_CHIP, '未知的问答芯片：不生成回答');
   if (def.online) return fail(QA_CHIP_CODES.UNKNOWN_CHIP, '“组合表现”只在点击时调用既有在线复述接口，不使用本地芯片回答');
@@ -457,8 +581,8 @@ export function buildLocalChipAnswer({ chip, bundle, bill, ruleState = null, pro
   const plan = buildChipPlan({ chip: def, bundle, bill });
   if (def.id === 'worst_trade') return worstTradeAnswer({ chip: def, bundle, bill, plan });
   if (def.id === 'pattern_explain') return patternAnswer({ chip: def, bundle, bill, plan, question: question ?? def.question });
-  if (def.id === 'profile') return profileAnswer({ chip: def, bundle, bill, plan });
-  if (def.id === 'how_to_change') return howToChangeAnswer({ chip: def, bundle, bill, plan, ruleState, profile });
+  if (def.id === 'profile') return profileAnswer({ chip: def, bundle, bill, plan, savedFacts });
+  if (def.id === 'how_to_change') return howToChangeAnswer({ chip: def, bundle, bill, plan, ruleState, profile, savedFacts });
   return fail(QA_CHIP_CODES.UNKNOWN_CHIP, '该芯片没有本地回答实现');
 }
 
