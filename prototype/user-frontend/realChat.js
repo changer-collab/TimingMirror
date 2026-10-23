@@ -487,9 +487,10 @@ export function renderRealChat(host, ctx) {
   const { state, set } = ctx;
   const contextId = state.bill?.contextId ?? null;
   if (draftContextId !== contextId) {
+    const lostHandoff = handoffNotice === '已从助手带入问题，请确认后发送。' && !!draft.trim();
     draft = '';
     draftContextId = contextId;
-    handoffNotice = null;
+    handoffNotice = lostHandoff ? '账单已变化，之前从助手带入的问题已丢弃，请重新提问。' : null;
     clearArmed = false;
   }
   const incoming = typeof ctx.takeQaHandoff === 'function' ? ctx.takeQaHandoff(contextId) : null;

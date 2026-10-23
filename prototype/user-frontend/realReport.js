@@ -750,10 +750,12 @@ export function renderRealReport(host, bill, ctx = null) {
       if (!target) return;
       if (ctx && ctx.state?.bill?.contextId !== bill.contextId) return;
       renderBundle(target, bundle, ctx, bill);
+      ctx?.refreshAssistant?.();
     })
     .catch(() => {
       const target = liveHost();
       if (target) renderError(target);
+      ctx?.refreshAssistant?.();
     });
 }
 

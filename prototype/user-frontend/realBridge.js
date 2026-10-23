@@ -302,6 +302,7 @@ const ctx = {
   scrollToSimulation,
   isOverlayLayout: mobileLayout,
   focusAssistant,
+  refreshAssistant: renderAssistant,
   openAssistantHelp,
   handoffToQa,
   takeQaHandoff,

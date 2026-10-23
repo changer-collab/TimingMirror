@@ -21,6 +21,7 @@ const realChat = read('prototype/user-frontend/realChat.js');
 const qaAnswer = read('prototype/user-frontend/qaAnswer.js');
 const realReport = read('prototype/user-frontend/realReport.js');
 const realProfile = read('prototype/user-frontend/realProfile.js');
+const realBridge = read('prototype/user-frontend/realBridge.js');
 const scenarioView = read('src/ui/views/scenarioReviewView.js');
 const contractView = read('src/ui/views/contractView.js');
 
@@ -79,6 +80,9 @@ check('助手：只做页面帮助，不复制账单芯片/在线复述/画像�
   !/QA_CHIPS|askOnline|recordProfileFacts|profileFact/.test(qaAssistant)
   && /showInput: state\.route !== 'chat'/.test(qaAssistant)
   && !/name="qa-input"|data-role="qa-input"/.test(qaAssistant));
+check('助手：报告异步加载完成/失败后刷新状态，避免停留在未载入',
+  /ctx\?\.refreshAssistant\?\.\(\)/.test(realReport)
+  && /refreshAssistant:\s*renderAssistant/.test(realBridge));
 check('报告：AI 观察不再使用“规则引擎兜底/本地规则引擎”内部称呼',
   /本机规则补充/.test(realReport) && /本机规则识别/.test(realReport)
   && !/规则引擎兜底|本地规则引擎/.test(realReport));

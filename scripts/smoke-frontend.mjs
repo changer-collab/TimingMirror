@@ -1174,6 +1174,19 @@ state.report = { scenario: 'A', symbol: 'pool' };
   }
 
   ctx.takeQaHandoff = null;
+  await importChatBill('chat-handoff-lost.csv', chatCsv3);
+  mountCycle();
+  await flush();
+  {
+    const input = textarea();
+    check('问答账本·助手交接：账单变化时丢弃已预填内容并提示',
+      !!input && !texts(input).join('').includes('我最错的一笔是哪个？')
+      && pageVisibleTxt().includes('账单已变化，之前从助手带入的问题已丢弃')
+      && state.chat.messages.length === 0,
+      JSON.stringify({ input: input ? texts(input) : null, chat: state.chat }));
+  }
+
+  ctx.takeQaHandoff = null;
   await importChatBill('chat-handoff-2.csv', chatCsv2);
   ctx.takeQaHandoff = () => ({ dropped: true });
   mountCycle();
