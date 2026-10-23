@@ -62,12 +62,12 @@ check('习惯条：展示已成立习惯并声明不是合规结论',
   && /画像口径，不是合规结论/.test(view)
   && /href: '#\/me'/.test(view));
 
-check('时间线：按成交卡片展示、默认展开首笔违背、可看依据',
+check('时间线：按成交卡片展示、默认展开首笔违背、可看依据，不显示内部原因码',
   /for \(const op of review\.operations\)/.test(view)
   && /op\.outcome === 'violated'/.test(view)
   && /data-trade-id/.test(view)
   && /tr-rule-more/.test(view)
-  && /原因码/.test(view));
+  && !/原因码/.test(view));
 
 check('情节：交易类规则展示“卖出/买入 → 交易日 → 操作”链',
   /function chainOf\(event, op, byTrade\)/.test(view)
@@ -91,7 +91,8 @@ check('口径：披露历史复盘、行情来源/范围、非实时与数据不
   && /数据与口径/.test(view)
   && /服务端获取，非实时/.test(view)
   && /行情范围：/.test(view)
-  && /review\.notes\.map/.test(view));
+  && /review\.notes\.map/.test(view)
+  && !/fetchedAt/.test(view) && !/拉取/.test(view));
 
 check('状态：加载/错误/未确认账单/无生效规则/无交易均有明确分支',
   /tr-loading/.test(view) && /tr-error/.test(view)

@@ -893,11 +893,10 @@ function simulationCounts(simulation) {
 function simulationDetailNodes(simulation) {
   const results = Array.isArray(simulation?.results) ? simulation.results : [];
   return results
-    .filter((r) => r && (r.code || r.message || r.display_verdict || r.verdict))
+    .filter((r) => r && (r.message || r.display_verdict || r.verdict))
     .map((r) => el('div', { class: 'muted small' }, [
       [
-        r.display_verdict ?? r.verdict ?? (r.ok ? 'completed' : 'error'),
-        r.code ? `（${r.code}）` : '',
+        r.display_verdict ?? r.verdict ?? (r.ok ? '完成' : '无法判定'),
         r.message ? ` · ${r.message}` : '',
       ].join(''),
     ]));
@@ -958,7 +957,6 @@ function explanationBlock(controller, state, simulation, attempt) {
     const failed = state.assistant.resultExplanationAttempt;
     nodes.push(el('div', { class: 'assistant-check bad' }, [
       failed.status === 'stale' ? '旧 AI 解释已失效' : 'AI 解释未生成',
-      failed.code ? `（${failed.code}）` : '',
       failed.message ? ` · ${failed.message}` : '',
       el('div', { class: 'muted small' }, ['本地摘要仍然有效；未生成模型解释。']),
     ]));
@@ -1047,7 +1045,6 @@ function draftCard(controller, state) {
     ]) : attemptFailed || attemptNotRun ? el('div', { class: 'assistant-sim' }, [
       el('div', { class: 'assistant-check bad' }, [
         attemptFailed ? '本次模拟执行失败' : '本次模拟未执行',
-        attempt.error?.code ? `（${attempt.error.code}）` : '',
         attempt.error?.message ? ` · ${attempt.error.message}` : '',
         attempt.context?.date ? el('div', { class: 'muted small' }, [`本次对象：${simulationContextText(attempt)}`]) : null,
         attempt.summary ? el('div', { class: 'muted small' }, [simulationCounts(attempt)]) : null,
@@ -1099,60 +1096,6 @@ function draftCard(controller, state) {
   return card;
 }
 
-function techLine(label, value) {
-  return el('div', { class: 'assistant-tech-line' }, [`${label}：${textOf(value)}`]);
-}
-
-function technicalDetails(state) {
-  const a = state.assistant;
-  const trace = a.trace;
-  const saved = a.semanticConfirmation?.saved_rule ?? null;
-  const current = a.currentRule;
-  const plan = a.plan;
-  const sim = a.simulation;
-  const attempt = a.simulationAttempt;
-  const consistency = a.consistency;
-  const last = a.lastAttempt;
-  if (!a.flowId && !a.draft && !last) return null;
-  const requestIds = trace?.messages?.[0]?.request_ids ?? [];
-  const lines = [
-    techLine('任务编号', a.flowId ?? '未生成'),
-    techLine('请求编号', requestIds.join('、') || a.requestId || '无'),
-    techLine('模型请求', `${a.modelCalls ?? 0}/${a.budgetMax ?? 2}`),
-    techLine('是否出站', a.outbound ? '是' : '否'),
-    techLine('计划', plan ? `${plan.plan_id} · ${plan.status}` : '未生成'),
-    techLine('草案来源', a.draft?.origin === CANDIDATE_ORIGIN ? '报告行为证据（确定性）' : (a.draft ? 'AI 规则理解' : '—')),
-    techLine('草案哈希', a.draft?.hash ?? '—'),
-    techLine('保存规则哈希', saved ? `${saved.hash}（v${saved.version ?? '—'}）` : '—'),
-    techLine('当前规则哈希', current ? `${current.hash}（v${current.version ?? '—'}）` : '—'),
-    techLine('模拟执行规则', sim?.rule_hash ? `${sim.rule_hash}（v${sim.rule_version ?? '—'}）` : '—'),
-    techLine('模拟状态', sim ? `${sim.status ?? 'completed'}${sim.stale ? '（已失效）' : ''}` : '未执行'),
-    techLine('本次模拟尝试', attempt ? `${attempt.status}${attempt.error?.code ? ` · ${attempt.error.code}` : ''}` : '无'),
-    techLine('模拟失效', sim?.stale ? `是（${sim.stale_reason ?? '规则变化'}）` : '否'),
-    techLine('核对状态', consistency
-      ? `${consistency.status} · ${consistency.binding ?? '无绑定'} · 覆盖=${consistency.semantic_confirmation_covers_rule} · 独立复核=${consistency.independent_review}`
-      : '未运行'),
-    techLine('结果解释', a.resultExplanation
-      ? `ok · ${a.resultExplanation.binding?.simulation_result_id ?? '—'}`
-      : (a.resultExplanationAttempt
-        ? `${a.resultExplanationAttempt.status} · ${a.resultExplanationAttempt.code ?? '—'}`
-        : '未生成')),
-    techLine('结果解释绑定', a.resultExplanation?.binding
-      ? `${a.resultExplanation.binding.rule_hash} · v${a.resultExplanation.binding.rule_version} · ${a.resultExplanation.binding.simulation_result_id}`
-      : '—'),
-    techLine('上次请求', last
-      ? `${last.status ?? '—'} · ${last.code ?? '—'} · ${last.modelCalls ?? 0}/${last.budgetMax ?? 2}`
-      : '无'),
-    techLine('trace', trace ? trace.messages.map((m) => m.type).join(' → ') : '未生成'),
-  ];
-  if (a.error?.code) lines.push(techLine('错误码', a.error.code));
-  if (a.marketNotice) lines.push(techLine('行情错误', `${a.marketNotice.code} · ${a.marketNotice.message}`));
-  return el('details', { class: 'assistant-tech' }, [
-    el('summary', {}, ['开发调试（技术信息）']),
-    el('div', { class: 'assistant-tech-body' }, lines),
-  ]);
-}
-
 let syncScheduled = false;
 function scheduleAssistantSync() {
   if (syncScheduled || !controller) return;
@@ -1202,13 +1145,6 @@ export function renderAssistantPanel(root, ctx) {
     card.append(el('div', { class: 'assistant-market' }, [
       el('div', { class: 'assistant-draft-head' }, ['行情暂不可用']),
       el('div', {}, ['现在无法生成有效的模拟结果。你可以继续查看或修改规则；系统不会用静态或合成行情替代。']),
-      el('details', { class: 'assistant-tech' }, [
-        el('summary', {}, ['技术详情（行情错误）']),
-        el('div', { class: 'assistant-tech-body' }, [
-          techLine('错误码', state.assistant.marketNotice.code),
-          techLine('原始信息', state.assistant.marketNotice.message),
-        ]),
-      ]),
       !state.assistant.draft ? el('div', { class: 'row assistant-actions' }, [
         el('button', {
           class: 'btn small', 'data-role': 'assistant-market-rules',
@@ -1241,7 +1177,6 @@ export function renderAssistantPanel(root, ctx) {
       || (state.assistant.messages ?? []).some((m) => m.role === 'user');
     card.append(el('div', { class: 'assistant-error', role: 'alert' }, [
       el('div', {}, [state.assistant.error.message ?? '操作未完成，请稍后重试。']),
-      last?.code ? el('div', { class: 'muted small' }, [`${last.status ?? 'failed'} · ${last.code}`]) : null,
       last ? el('div', { class: 'row assistant-actions' }, [
         el('button', {
           class: 'btn small', 'data-role': 'assistant-retry',
@@ -1277,7 +1212,5 @@ export function renderAssistantPanel(root, ctx) {
   const draft = draftCard(controller, state);
   if (draft) card.append(draft);
 
-  const tech = technicalDetails(state);
-  if (tech) card.append(tech);
   root.replaceChildren(card);
 }

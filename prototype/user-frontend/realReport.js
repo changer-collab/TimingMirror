@@ -26,6 +26,28 @@ const FACT_LABELS = Object.freeze({
   drag: '择时差',
 });
 
+const FACT_FORMULAS = Object.freeze({
+  buyCost: '买入成本 = 买入价格 × 数量（逐笔加总）',
+  sellProceeds: '卖出所得 = 卖出价格 × 数量（逐笔加总）',
+  actualValue: '期末实际价值 = 持仓数量 × 估值日收盘价',
+  ghostValue: '一直持有价值 = 不动持仓数量 × 估值日收盘价',
+  actualRet: '实际收益 = 期末实际价值 ÷ 买入成本 − 1',
+  ghostRet: '一直持有收益 = 一直持有价值 ÷ 买入成本 − 1',
+  dragMoney: '择时差额 = 一直持有价值 − 期末实际价值',
+  drag: '择时差 = 一直持有收益 − 实际收益',
+});
+
+const FACT_STEPS = Object.freeze({
+  buyCost: ['逐笔取买入价格 × 数量', '把各笔买入成本加总', '金额按成交价计算，不含费用与税费'],
+  sellProceeds: ['逐笔取卖出价格 × 数量', '把各笔卖出所得加总', '金额按成交价计算，不含费用与税费'],
+  actualValue: ['取估值日收盘价；非交易日按最近交易日', '乘以期末持仓数量', '缺价时不改用其他日期或示例价格'],
+  ghostValue: ['按买入不动的假设取得持仓数量', '乘以估值日收盘价', '缺价时不改用其他日期或示例价格'],
+  actualRet: ['用期末实际价值 ÷ 买入成本', '再减 1，得到实际收益率', '收益按成交价与估值日收盘价计算'],
+  ghostRet: ['用一直持有价值 ÷ 买入成本', '再减 1，得到买入不动收益率', '收益按成交价与估值日收盘价计算'],
+  dragMoney: ['用一直持有价值减去期末实际价值', '正值表示少拿，负值表示少亏', '只做同一笔本金和同一段行情的事后对照'],
+  drag: ['用一直持有收益减去实际收益', '正值表示相对损耗，负值表示实际优于对照', '不是预测，也不评价当时的决定'],
+});
+
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -135,9 +157,14 @@ export function reportVisibility({ bundle = null, insights = null, candidatePack
   };
 }
 
+function userErrorText(message, fallback = '这项数据未通过核对') {
+  const text = String(message ?? '').replace(/\b[EW]_[A-Z0-9_]+\b/g, '').replace(/\s{2,}/g, ' ').trim();
+  return text || fallback;
+}
+
 function blockedBlock(bundle, demo) {
   const errors = Array.isArray(bundle.errors) ? bundle.errors : [];
-  const rows = errors.slice(0, 8).map((e) => `<li>${e.line ? `第 ${e.line} 行 · ` : ''}${esc(e.message || e.code)}</li>`);
+  const rows = errors.slice(0, 8).map((e) => `<li>${e.line ? `第 ${e.line} 行 · ` : ''}${esc(userErrorText(e.message))}</li>`);
   return `<section class="panel rp-blocked">
     <p class="mono-label">${demo ? 'EXAMPLE REPORT / 示例' : 'REPORT / 阻断'}</p>
     <h2 class="rp-blocked-title">这份账单暂时不能生成报告</h2>
@@ -308,7 +335,7 @@ function patternLead(pattern) {
 function behaviorPatternRow(pattern, primary) {
   const evidence = Array.isArray(pattern.evidence) ? pattern.evidence.slice(0, 4) : [];
   const sourceBadge = primary && pattern.pattern_id === 'chase_high_buy'
-    ? '<span class="rp-badge mode" data-role="behavior-source">本地规则引擎</span>'
+    ? '<span class="rp-badge mode" data-role="behavior-source">本机规则识别</span>'
     : '';
   const comment = primary && pattern.pattern_id === 'chase_high_buy'
     ? '<p class="rp-behavior-comment" data-role="behavior-comment" hidden></p>'
@@ -394,7 +421,7 @@ function hydrateBehaviorAnalysis(host, { bill, bundle, vis, profileKey = null })
       return;
     }
     if (sourceEl) {
-      sourceEl.textContent = '规则引擎兜底';
+      sourceEl.textContent = '本机规则补充';
       sourceEl.className = 'rp-badge fallback';
       sourceEl.title = behaviorFallbackText(analysis.fallback_reason);
     }
@@ -425,36 +452,31 @@ function hydrateBehaviorAnalysis(host, { bill, bundle, vis, profileKey = null })
 }
 
 function sourceLineText(ref) {
-  if (!ref) return '源行不可定位';
-  const row = Number.isFinite(ref.line) ? ` 第 ${ref.line} 行` : '';
-  return `${ref.file ?? '源行不可定位'}${row}（${ref.key ?? '—'}）`;
+  if (!ref) return '账单中暂未提供行号';
+  const file = ref.file ? `${ref.file} ` : '';
+  const line = Number.isFinite(ref.line) ? `第 ${ref.line} 行` : '行号未提供';
+  return `${file}${line}`.trim();
 }
 
 export function factDetail(fact, bundle) {
   const label = FACT_LABELS[fact.key] ?? fact.key;
   const provenance = factProvenance(bundle, fact);
-  if (!provenance) {
-    return `<details class="rp-fact-detail"><summary>${esc(label)} · 查看来源</summary><p class="rp-caption">当前事实没有可展开的计算路径。</p></details>`;
-  }
+  if (!provenance) return '';
   const refs = provenance.source_refs;
   const shown = refs.slice(0, 8);
   const allSources = refs.length > shown.length
     ? `<details class="rp-more-sources"><summary>查看全部 ${refs.length} 笔来源</summary><ul>${refs.map((ref) => `<li>${esc(sourceLineText(ref))}</li>`).join('')}</ul></details>`
     : '';
-  const review = `复核：${provenance.verify_verdict ?? '—'}${provenance.verify_id ? ` · ${provenance.verify_id}` : ''}${provenance.blocked ? ' · 路径被阻断' : ''}`;
-  const reasons = provenance.verify_reasons.length
-    ? `<p><strong>复核原因</strong> ${esc(provenance.verify_reasons.map((r) => `${r.code ?? '—'}：${r.message ?? r.kind ?? '—'}`).join('；'))}</p>`
-    : '';
-  const steps = provenance.steps.length
-    ? `<details class="rp-fact-steps"><summary>计算步骤</summary><ol>${provenance.steps.map((s) => `<li><strong>${esc(s.label ?? '步骤')}</strong>：${esc(s.detail ?? '—')}</li>`).join('')}</ol></details>`
+  const formula = FACT_FORMULAS[fact.key] ?? provenance.formula_text ?? null;
+  const userSteps = FACT_STEPS[fact.key] ?? [];
+  const steps = userSteps.length
+    ? `<details class="rp-fact-steps"><summary>计算步骤</summary><ol>${userSteps.map((step) => `<li>${esc(step)}</li>`).join('')}</ol></details>`
     : '';
   return `<details class="rp-fact-detail">
     <summary>${esc(label)} · 查看来源</summary>
-    <p><strong>公式</strong> ${esc(provenance.formula_id ?? '—')}${provenance.formula_text ? `：${esc(provenance.formula_text)}` : ''}</p>
-    <p><strong>成交行</strong> ${esc(shown.map(sourceLineText).join('；') || '未提供')}${refs.length > shown.length ? '（已显示前 8 笔）' : ''}</p>
+    ${formula ? `<p><strong>公式含义</strong> ${esc(formula)}</p>` : ''}
+    <p><strong>成交来源</strong> ${esc(shown.map(sourceLineText).join('；') || '暂未提供')}${refs.length > shown.length ? '（已显示前 8 笔）' : ''}</p>
     ${allSources}
-    <p><strong>${esc(review)}</strong></p>
-    ${reasons}
     ${steps}
   </details>`;
 }
@@ -508,14 +530,15 @@ function candidateSection(candidates) {
 function basisSection(bundle, demo) {
   const published = (bundle.review?.published_facts ?? []).filter((fact) => (fact.scope || 'portfolio') === 'portfolio');
   const facts = published.filter((fact) => FACT_LABELS[fact.key]);
+  if (!facts.length) return '';
   const rows = facts.map((fact) => `<div><dt>${esc(FACT_LABELS[fact.key])}</dt><dd>${esc(factDisplay(fact))}</dd></div>`).join('');
-  const details = facts.map((fact) => factDetail(fact, bundle)).join('');
+  const details = facts.map((fact) => factDetail(fact, bundle)).filter(Boolean).join('');
   return `<section class="report-section rp-basis-section">
     <details class="rp-basis">
-      <summary><span>核对数据</span><small>${published.length} 项已复核</small><i class="rp-basis-plus" aria-hidden="true">+</i></summary>
+      <summary><span>数字与来源</span><i class="rp-basis-plus" aria-hidden="true">+</i></summary>
       <dl class="rp-basis-grid">${rows}</dl>
-      <div class="rp-provenance-list">${details}</div>
-      <p class="rp-caption">按成交价计算，不含费用与税费；数字由本地确定性引擎生成并复核。${demo ? '示例数据只用于演示。' : ''}</p>
+      ${details ? `<div class="rp-provenance-list">${details}</div>` : ''}
+      <p class="rp-caption">按成交价计算，不含费用与税费；数字由本机程序计算并核对。${demo ? '示例数据只用于演示。' : ''}</p>
     </details>
   </section>`;
 }
@@ -524,7 +547,7 @@ function footnote(vis) {
   const supplemental = vis.behavior || vis.pgr || vis.candidate;
   return `<footer class="rp-footnote">
     <p>这是一次事后对照，不预测未来，也不构成投资建议。</p>
-    ${supplemental ? '<p>补充图表和规则候选为候选口径，不进入已复核事实。</p>' : ''}
+    ${supplemental ? '<p>补充图表和规则候选为候选口径，不进入报告数字。</p>' : ''}
     ${vis.candidate ? '' : '<p>想把下一次的决定写成规则？<a href="#/me">去个人中心看看现有模板</a>。</p>'}
   </footer>`;
 }
@@ -561,7 +584,7 @@ function renderBundle(host, bundle, ctx, bill) {
   const vis = reportVisibility({ bundle, insights, candidatePack });
   const warnings = Array.isArray(bundle.warnings) ? bundle.warnings : [];
   const warningNote = warnings.length
-    ? `<p class="rp-caption">有 ${warnings.length} 条账单提示已按 0 或缺省口径处理，不影响已复核数字的可回查性。</p>`
+    ? `<p class="rp-caption">有 ${warnings.length} 条账单提示已按 0 或缺省口径处理，不影响报告数字的可回查性。</p>`
     : '';
 
   host.innerHTML = `<div class="container report-body">
@@ -652,8 +675,8 @@ function bindCandidateButtons(host, ctx, candidates) {
   });
 }
 
-function renderError(host, message) {
-  host.innerHTML = `<div class="container report-body"><section class="panel rp-blocked"><strong>报告加载失败</strong><p class="rp-note">${esc(message)}</p></section></div>`;
+function renderError(host) {
+  host.innerHTML = '<div class="container report-body"><section class="panel rp-blocked"><strong>报告暂时无法生成</strong><p class="rp-note">请回到导入页核对账单，或稍后重试。</p></section></div>';
 }
 
 function ensureReport(bill) {
@@ -694,7 +717,7 @@ export function renderRealReport(host, bill, ctx = null) {
     return;
   }
   if (cached?.status === 'error') {
-    renderError(host, cached.message);
+    renderError(host);
     return;
   }
   const liveHost = () => document.getElementById('tm-real-report');
@@ -706,10 +729,9 @@ export function renderRealReport(host, bill, ctx = null) {
       if (ctx && ctx.state?.bill?.contextId !== bill.contextId) return;
       renderBundle(target, bundle, ctx, bill);
     })
-    .catch((error) => {
-      const message = String(error && error.message ? error.message : error);
+    .catch(() => {
       const target = liveHost();
-      if (target) renderError(target, message);
+      if (target) renderError(target);
     });
 }
 

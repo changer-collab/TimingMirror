@@ -1,28 +1,28 @@
 // 独立问答页「对话账本」：问题 → 意图 → 最小事实包 → 本地/在线回答 → 证据。
 // 只渲染 qaAnswer 信封；数字只来自当前账单已发布报告，在线失败回退本地事实。
 // 无网络/DOM 之外的副作用：发送与规则打开由 ctx.qaDeps 注入。
-import { QA_SUGGESTIONS, normalizeQuestion, QA_INTENT_LABELS, QA_LAYER_LABELS } from './qaIntent.js';
+import { QA_SUGGESTIONS, normalizeQuestion, QA_INTENT_LABELS } from './qaIntent.js';
 import { ruleStateKeyOf } from '../../src/agent/qaChips.js';
 
 const STATUS_LABELS = Object.freeze({
-  local: '已校验',
-  online: '在线复述 · 已校验',
-  clarify: '待澄清',
-  refusal: '边界拦截',
-  registration: '登记式应答',
-  unavailable: '未接入',
-  error: '未回答',
-  pending: '处理中',
+  local: '本机回答',
+  online: '在线复述',
+  clarify: '需要补充信息',
+  refusal: '本次暂时无法回答',
+  registration: '需要你确认',
+  unavailable: '本版本暂不支持',
+  error: '本次暂时无法回答',
+  pending: '正在核对',
 });
 
 const STATUS_TITLES = Object.freeze({
-  local: '本地已复核事实',
-  online: '在线复述，数字已本地校验',
-  clarify: '需要补充指代',
-  refusal: '边界拦截',
-  registration: '不替你决定',
-  unavailable: '未给出结论',
-  error: '未回答',
+  local: '基于这份账单的本机回答',
+  online: '在线复述，数字已在本机核对',
+  clarify: '需要补充信息',
+  refusal: '超出本版本可回答范围',
+  registration: '需要你确认后继续',
+  unavailable: '本版本暂不支持',
+  error: '本次暂时无法回答',
   pending: '正在核对',
 });
 
@@ -116,41 +116,11 @@ function actionsHTML(answer, message, actionMap, currentRuleKey) {
   return `<div class="tm-qa-actions">${buttons.join('')}</div>${staleNote}`;
 }
 
-function traceHTML(answer) {
-  const trace = answer.trace ?? {};
-  const rows = [];
-  if (trace.intent_code) rows.push(['意图', trace.intent_code]);
-  if (trace.layer_label) rows.push(['路由', trace.layer_label]);
-  if (Number.isFinite(trace.elapsed_ms)) rows.push(['耗时', `${trace.elapsed_ms} ms（实测）`]);
-  if (answer.route?.layer === 'L2' && Number.isFinite(answer.route?.confidence)) {
-    rows.push(['意图置信度', answer.route.confidence.toFixed(2)]);
-  }
-  if (trace.template_id) rows.push(['模板', trace.template_id]);
-  if (trace.plan_id) rows.push(['计划', trace.plan_id]);
-  if (trace.number_check) rows.push(['数字校验', trace.number_check]);
-  if (!rows.length) return '';
-  return `<details class="tm-qa-trace">
-    <summary>如何得出</summary>
-    <dl class="tm-qa-trace-list">${rows.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
-  </details>`;
-}
-
-function diagnosticsHTML(answer) {
-  const diagnostics = Array.isArray(answer.diagnostics) ? answer.diagnostics : [];
-  if (answer.status !== 'error' || !diagnostics.length) return '';
-  return `<details class="tm-qa-error-detail">
-    <summary>技术详情（错误码）</summary>
-    <dl>${diagnostics.map((d) => `<div><dt>${esc(d.code)}</dt><dd>${esc(d.message)}</dd></div>`).join('')}</dl>
-  </details>`;
-}
-
 function answerHTML(entry, actionMap, currentRuleKey) {
   const answer = entry.answer;
   const status = statusOf(answer);
   const intent = answer.intent ?? '';
   const facts = Array.isArray(answer.facts) ? answer.facts : [];
-  const routeLayer = answer.route?.layer ?? 'L3';
-  const layerLabel = QA_LAYER_LABELS[routeLayer] ?? QA_LAYER_LABELS.L3;
   const boundary = BOUNDARY_STATES.has(status) ? ' is-boundary' : '';
   return `<article class="tm-qa-entry${boundary}" data-role="qa-entry" data-intent="${esc(intent || 'none')}" data-state="${esc(status)}">
     ${entry.question ? `<header class="tm-qa-entry-head">
@@ -159,7 +129,6 @@ function answerHTML(entry, actionMap, currentRuleKey) {
     </header>` : ''}
     <div class="tm-qa-route">
       <span class="tm-qa-intent">${esc(intentLabelOf(intent))}</span>
-      <span class="tm-qa-layer">${esc(layerLabel)}</span>
       <span class="tm-qa-factcount">${facts.length} 条事实</span>
       <span class="tm-qa-badge is-${esc(status)}" title="${esc(STATUS_TITLES[status] ?? '')}">${esc(badgeOf(status))}</span>
     </div>
@@ -168,8 +137,6 @@ function answerHTML(entry, actionMap, currentRuleKey) {
     ${evidenceHTML(answer.evidence)}
     ${actionsHTML(answer, entry.message, actionMap, currentRuleKey)}
     ${answer.notice ? `<p class="tm-qa-notice">${esc(answer.notice)}</p>` : ''}
-    ${traceHTML(answer)}
-    ${diagnosticsHTML(answer)}
   </article>`;
 }
 
@@ -181,10 +148,9 @@ function pendingHTML(question) {
     </header>
     <div class="tm-qa-route">
       <span class="tm-qa-intent">正在核对</span>
-      <span class="tm-qa-layer">本地</span>
       <span class="tm-qa-badge is-pending">${esc(badgeOf('pending'))}</span>
     </div>
-    <p class="tm-qa-text">正在核对这份账单的已复核事实…</p>
+    <p class="tm-qa-text">正在核对这份账单的报告数字…</p>
   </article>`;
 }
 
@@ -199,7 +165,7 @@ function headHTML(hasEntries, isDemo) {
       <span class="tm-qa-head-right">${hasEntries ? '<button type="button" class="tm-qa-clear" data-role="qa-clear">清空对话</button>' : ''}<span class="tm-qa-step">04 / QA</span></span>
     </div>
     <h1>问它为什么，<br>别问它买什么。</h1>
-    <p class="tm-qa-intro">任何问法都可以。答案只来自这份${isDemo ? '示例' : ''}账单的已复核事实；不荐股、不预测、不替你决定。</p>
+    <p class="tm-qa-intro">任何问法都可以。答案只来自这份${isDemo ? '示例' : ''}账单报告中已核对的数字；不荐股、不预测、不替你决定。</p>
   </header>`;
 }
 
