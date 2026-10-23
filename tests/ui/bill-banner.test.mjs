@@ -138,7 +138,7 @@ check('隐藏：未确认/非本地账单不渲染横幅',
 {
   const shellRule = cssBlock('.tm-bill-banner-shell {');
   const bannerRule = cssBlock('.tm-bill-banner {');
-  const qaInnerRule = cssBlock('.tm-qa-inner {');
+  const qaLayoutRule = cssBlock('.tm-qa-layout {');
   check('布局：横幅外壳使用 container，卡片不再把 container padding 覆盖成 16px',
     /class="container tm-bill-banner-shell/.test(bannerSource)
     && /margin-top:\s*18px/.test(shellRule)
@@ -148,11 +148,12 @@ check('隐藏：未确认/非本地账单不渲染横幅',
     && /class="container page-body"/.test(realImport)
     && /class="container report-body"/.test(realReport)
     && /class="container page-body tm-scenario-page"/.test(scenarioPage));
-  check('布局：问答横幅不再跟随 .tm-qa-inner 收窄，正文窄宽保持不变',
-    /max-width:\s*920px/.test(qaInnerRule) && /padding:\s*0 24px/.test(qaInnerRule)
-    && !/max-width:\s*920px/.test(shellRule) && !/padding-inline/.test(shellRule));
-  check('布局：窄屏只保留问答正文 14px gutter，横幅沿用全站 container gutter',
-    /\.tm-qa-inner\s*\{\s*padding:\s*0 14px;\s*\}/.test(css)
+  check('布局：问答横幅不跟随当前问答布局收窄，正文宽度由 .tm-qa-layout 决定',
+    /max-width:\s*1200px/.test(qaLayoutRule) && /padding:\s*0 clamp\(14px, 2\.2vw, 26px\)/.test(qaLayoutRule)
+    && !/max-width/.test(shellRule) && !/padding-inline/.test(shellRule));
+  check('布局：窄屏问答正文保留 14px gutter，横幅沿用全站 container gutter',
+    /\.tm-qa-scroll\s*\{\s*padding:\s*16px 14px;\s*\}/.test(css)
+    && /\.tm-qa-layout\s*\{[^}]*padding:\s*0 12px;/s.test(css)
     && !/tm-bill-banner-shell[^{]*\{\s*padding-inline/.test(css));
   check('布局：问答横幅按 .tm-main 实际宽度动态对齐，覆盖助手开关与视口变化',
     /function alignChatBanner\(\)/.test(app)

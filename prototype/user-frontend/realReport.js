@@ -721,6 +721,15 @@ export function getRealReportBundle(bill) {
   return cached?.status === 'ready' ? cached.bundle : null;
 }
 
+export function getRealReportState(bill) {
+  const cached = cache.get(bill?.contextId || 'anonymous');
+  if (!cached) return { status: 'idle' };
+  if (cached.status === 'ready') return { status: 'ready', bundle: cached.bundle };
+  if (cached.status === 'loading') return { status: 'loading' };
+  if (cached.status === 'error') return { status: 'error', message: cached.message };
+  return { status: 'idle' };
+}
+
 export function renderRealReport(host, bill, ctx = null) {
   if (!host || !bill) return;
   const key = bill.contextId || 'anonymous';
