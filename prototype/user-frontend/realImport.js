@@ -419,13 +419,11 @@ function billWarningsHTML(bill) {
 
 function details(rec) {
   const text = String(rec.content ?? '');
-  const trace = rec.trace;
   return `<details class="tm-import-details">
     <summary>原文与识别信息</summary>
     <div class="tm-details-body">
-      <p>${esc(SOURCE_LABEL[rec.sourceKind] || '文件')} · ${rec.fileName ? esc(rec.fileName) : '未选择文件'} · 模型请求 ${rec.modelCalls ?? 0}/${rec.budgetMax ?? 2}${rec.flowId ? ` · 任务 ${esc(rec.flowId)}` : ''}</p>
-      ${text ? `<pre class="tm-original">${esc(text.slice(0, 4000))}${text.length > 4000 ? '\n…' : ''}</pre>` : '<p class="tm-note">没有保留可展开的识别文字。</p>'}
-      ${trace ? `<p class="tm-tech">trace：${esc((trace.messages ?? []).map((m) => m.type).join(' → '))} · flow ${esc(trace.flow_id ?? '—')}</p>` : ''}
+      <p>${esc(SOURCE_LABEL[rec.sourceKind] || '文件')} · ${rec.fileName ? esc(rec.fileName) : '未选择文件'}</p>
+      <pre class="tm-original">${esc(text.slice(0, 4000))}${text.length > 4000 ? '\n…' : ''}</pre>
     </div>
   </details>`;
 }
@@ -439,7 +437,7 @@ function aiButton(state, rec) {
   const canText = ['csv', 'tsv', 'xlsx', 'pdf', 'text'].includes(rec.sourceKind) && text.length > 0;
   const canVision = imageCount > 0 && rec.vision?.status === 'ready';
   if (!canText && !canVision) return '';
-  if (rec.budgetExhausted) return `<p class="tm-note">本次导入任务的模型请求次数已用完；仍可手动修改或重新解析。</p>`;
+  if (rec.budgetExhausted) return `<p class="tm-note">本次 AI 识别次数已用完；仍可手动修改或重新解析。</p>`;
   const label = imageCount ? `让 AI 识别这 ${imageCount} 张图` : (rec.modelCalls > 0 ? `再次让 AI 识别（剩 ${Math.max(0, rec.budgetMax - rec.modelCalls)} 次）` : '让 AI 帮我识别');
   return `<div class="tm-ai-row"><button class="btn btn-primary" type="button" data-action="${imageCount ? 'ai-vision' : 'ai-text'}">${label}</button><span class="tm-note">${sendNotice(rec)}</span></div>`;
 }
@@ -509,7 +507,6 @@ function draftPanelHTML(state, rec) {
       <span>文件 <b class="file-line">${esc(rec.fileName || '粘贴文字')}</b></span>
       <span>期间 <b>${range}</b></span>
       <span>标的 <b>${symbols} 个</b></span>
-      <span>模型请求 <b>${rec.modelCalls ?? 0}/${rec.budgetMax ?? 2}</b></span>
     </div>
     <p class="tm-note">已选 ${summary.included} 行 · 可导入 ${summary.valid} 行${summary.duplicate ? ` · 疑似重复 ${summary.duplicate}` : ''}</p>
     ${rec.notice ? `<div class="bill-warning" role="status"><strong>${esc(rec.notice)}</strong><span>导入前仍需要你逐行核对并校验。</span></div>` : ''}
@@ -598,7 +595,6 @@ function visionPanelHTML(state, rec) {
     <div class="bill-meta">
       <span>来源 <b>${vision.kind === 'pdf_scan' ? '扫描 PDF' : '截图'}</b></span>
       <span>文件 <b class="file-line">${esc(rec.fileName || vision.fileName || '—')}</b></span>
-      <span>模型请求 <b>${rec.modelCalls ?? 0}/${rec.budgetMax ?? 2}</b></span>
     </div>
     ${errorLine(rec)}
     ${imageStrip(vision)}
@@ -645,7 +641,7 @@ export function renderRealImport(host, ctx) {
   const rec = state.importRecovery ?? defaultImportRecovery();
   const bill = state.bill ?? {};
   const hasSource = !!(rec.fileName || bill.fileName);
-  const hasDetails = hasSource && (String(rec.content ?? '').trim() || rec.trace || rec.draft);
+  const hasDetails = hasSource && String(rec.content ?? '').trim();
   host.innerHTML = `${pageHeadHTML()}
     <div class="container page-body">
       <div class="import-grid">

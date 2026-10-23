@@ -75,9 +75,10 @@ check('横幅：无确认账单/me 页面隐藏',
 check('横幅：示例/本地文案和链接区分',
   /当前是示例场景/.test(banner) && /当前有已确认的本地账单/.test(banner)
   && /报告、问答和规则测试都使用这笔账单。/.test(banner)
-  && /demo \? '换个场景' : '更换账单'/.test(banner)
-  && /!demo && state\.route !== 'scenario'/.test(banner));
-check('横幅：报告/事实问答/操作复盘页接入，规则页不接入',
+  && /换个场景 →/.test(banner) && /更换账单 →/.test(banner)
+  && /查看报告 →/.test(banner) && /去事实问答 →/.test(banner)
+  && /历史情境测试 →/.test(banner));
+check('横幅：报告/事实问答/历史测试页接入，规则页不接入',
   /confirmedBillBanner\(\)\}\$\{realReportPage\(\)\}/.test(reportPage)
   && /confirmedBillBanner\(\)\}\$\{realChatPage\(\)\}/.test(chatPage)
   && /confirmedBillBanner\(\)/.test(scenarioPage)

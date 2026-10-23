@@ -189,6 +189,34 @@ import { renderRealProfile } from './realProfile.js';
     return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   }
 
+  function calibrateScrollbarWidth() {
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:absolute;top:-9999px;left:-9999px;width:100px;height:100px;overflow:scroll;';
+    document.body.appendChild(probe);
+    const width = probe.offsetWidth - probe.clientWidth;
+    probe.remove();
+    document.documentElement.style.setProperty('--tm-scrollbar-w', `${width}px`);
+  }
+
+  function alignChatBanner() {
+    if (state.route !== 'chat' || !document.body.classList.contains('tm-qa-standalone')) return;
+    const shell = document.querySelector('#app > .tm-bill-banner-shell');
+    const main = document.getElementById('tm-main');
+    if (!shell || !main) return;
+    const style = getComputedStyle(shell);
+    const rootStyle = getComputedStyle(document.documentElement);
+    const scrollbar = parseFloat(rootStyle.getPropertyValue('--tm-scrollbar-w')) || 0;
+    const maxWidth = parseFloat(style.maxWidth);
+    const paddingLeft = parseFloat(style.paddingLeft) || 0;
+    const available = Math.max(0, main.clientWidth - scrollbar);
+    const width = Math.min(available, Number.isFinite(maxWidth) ? maxWidth : available);
+    const left = Math.max(0, (available - width) / 2);
+    shell.style.width = `${width}px`;
+    shell.style.marginLeft = `${left}px`;
+    shell.style.marginRight = '0';
+    shell.style.paddingRight = `${paddingLeft}px`;
+  }
+
   function scrollTop() {
     const html = document.documentElement;
     const previous = html.style.scrollBehavior;
@@ -391,26 +419,29 @@ import { renderRealProfile } from './realProfile.js';
     const demo = !!bill.demo;
     const name = demo ? (bill.demoScenario?.title || '示例场景') : (bill.fileName || '本地账单');
     const fileLabel = bill.fileName && bill.fileName !== name ? ` · ${esc(bill.fileName)}` : '';
-    const links = [];
-    if (state.route !== 'report') {
-      links.push(`<a class="text-link" href="#/report">${demo ? '查看示例报告' : '查看报告'} →</a>`);
-    }
-    if (state.route !== 'chat') {
-      links.push(`<a class="text-link" href="#/chat">${demo ? '去示例问答' : '去事实问答'} →</a>`);
-    }
-    if (!demo && state.route !== 'scenario') {
-      links.push('<a class="text-link" href="#/scenario">操作复盘 →</a>');
-    }
-    links.push(`<a class="text-link" href="#/import">${demo ? '换个场景' : '更换账单'} →</a>`);
+    const links = demo
+      ? [
+        ...(state.route !== 'report' ? ['<a class="text-link" href="#/report">查看示例报告 →</a>'] : []),
+        ...(state.route !== 'chat' ? ['<a class="text-link" href="#/chat">去示例问答 →</a>'] : []),
+        '<a class="text-link" href="#/import">换个场景 →</a>',
+      ]
+      : [
+        '<a class="text-link" href="#/report">查看报告 →</a>',
+        '<a class="text-link" href="#/chat">去事实问答 →</a>',
+        '<a class="text-link" href="#/scenario">历史情境测试 →</a>',
+        '<a class="text-link" href="#/import">更换账单 →</a>',
+      ];
     const summary = demo
       ? `${esc(name)}${fileLabel} · 合成账单与示例行情，仅用于演示。`
       : `${esc(name)} · 报告、问答和规则测试都使用这笔账单。`;
-    return `<div class="container tm-bill-banner" role="status">
-      <div class="tm-bill-banner-main">
-        <strong>${demo ? '当前是示例场景' : '当前有已确认的本地账单'}</strong>
-        <span>${summary}</span>
+    return `<div class="container tm-bill-banner-shell">
+      <div class="tm-bill-banner" role="status">
+        <div class="tm-bill-banner-main">
+          <strong>${demo ? '当前是示例场景' : '当前有已确认的本地账单'}</strong>
+          <span>${summary}</span>
+        </div>
+        <div class="tm-bill-banner-links">${links.join('')}</div>
       </div>
-      <div class="tm-bill-banner-links">${links.join('')}</div>
     </div>`;
   }
 
@@ -596,13 +627,7 @@ import { renderRealProfile } from './realProfile.js';
   /* ---------- home ---------- */
 
   function homePage() {
-    const sharedBill = sharedState().bill;
-    const realBanner = isConfirmedLocal()
-      ? (sharedBill.demo
-        ? `<div class="container tm-real-home-banner"><strong>当前是示例场景。</strong><span>${esc(sharedBill.demoScenario?.title || '示例报告')} · 示例交易与 Tushare 历史行情快照，仅用于演示。</span><a class="text-link" href="#/report">查看示例报告 →</a><a class="text-link" href="#/import">换个场景 →</a></div>`
-        : `<div class="container tm-real-home-banner"><strong>当前有已确认的本地账单。</strong><span>${esc(sharedBill.fileName || '本地账单')} · 报告、问答和助手都使用这笔账单。</span><a class="text-link" href="#/report">查看真实报告 →</a><a class="text-link" href="#/chat">去事实问答 →</a></div>`)
-      : '';
-    return `${realBanner}<div class="home">
+    return `${confirmedBillBanner()}<div class="home">
       <section class="hero">
         <div class="container hero-grid">
           <div class="hero-copy reveal">
@@ -2044,6 +2069,7 @@ import { renderRealProfile } from './realProfile.js';
     bridge.bindAssistantToggle();
     bridge.renderAssistant();
     bridge.applyAssistantShell();
+    alignChatBanner();
   }
 
   /* ---------- global events ---------- */
@@ -2096,6 +2122,12 @@ import { renderRealProfile } from './realProfile.js';
     }
   }
 
+  calibrateScrollbarWidth();
   bridge.initBridge({ onChange: onSharedChange });
+  if (typeof ResizeObserver === 'function') {
+    const main = document.getElementById('tm-main');
+    if (main) new ResizeObserver(() => alignChatBanner()).observe(main);
+  }
+  window.addEventListener('resize', alignChatBanner);
   render();
 })();

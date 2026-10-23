@@ -183,14 +183,15 @@ function makeService({ bundle = BUNDLE, askOnline = null, classifyIntent = null,
 {
   const { service } = makeService();
   const calc = await service.ask({ question: '这些数字是怎么算出来的？', bill: BILL });
-  check('怎么算的：local / 可回源事实与公式数', calc.status === 'local'
+  check('怎么算的：local / 可用数字与未纳入数量，不显示公式/重算内部计数', calc.status === 'local'
     && calc.intent === 'meta_calc'
-    && calc.facts.some((f) => f.label === '可回源事实' && f.value === '26 / 26 条')
-    && calc.facts.some((f) => f.label === '公式' && f.value !== '0 个'), JSON.stringify(calc.facts));
-  check('怎么算的：证据只列公式/单位/回源条数', calc.evidence.length > 0
-    && calc.evidence.every((e) => /回源 \d+ 条$/.test(e.detail))
+    && calc.facts.some((f) => f.label === '可用数字')
+    && !calc.facts.some((f) => ['可回源事实', '公式', '复核状态', '重算次数'].includes(f.label)), JSON.stringify(calc.facts));
+  check('怎么算的：证据展示用户可读公式，不含文件名/成交行/内部公式标识', calc.evidence.length > 0
+    && calc.evidence.every((e) => e.detail.startsWith('公式：'))
     && !JSON.stringify(calc.evidence).includes('qa-mini.csv')
-    && !/第 \d+ 行/.test(JSON.stringify(calc.evidence)), JSON.stringify(calc.evidence));
+    && !/第 \d+ 行/.test(JSON.stringify(calc.evidence))
+    && !/CALC_|formula_id/.test(JSON.stringify(calc.evidence)), JSON.stringify(calc.evidence));
 
   const degradedReview = {
     ...REVIEW,
@@ -201,13 +202,16 @@ function makeService({ bundle = BUNDLE, askOnline = null, classifyIntent = null,
   };
   const trustService = makeService({ bundle: makeBundle({ review: degradedReview }) });
   const trust = await trustService.service.ask({ question: '这些数可信吗？', bill: BILL });
-  check('可信吗：local / 复核状态与降级计数', trust.status === 'local'
+  check('可信吗：local / 组合结果与缺口计数，不显示内部复核状态', trust.status === 'local'
     && trust.intent === 'meta_trust'
-    && trust.facts.some((f) => f.label === '复核状态' && f.value === '降级发布')
-    && trust.facts.some((f) => f.label === '扣发事实' && f.value === '1 条')
-    && trust.facts.some((f) => f.label === '降级/缺价' && f.value === '1 条 / 1 个'), JSON.stringify(trust.facts));
-  check('可信吗：证据列降级消息，最多 4 条', trust.evidence.length === 1
-    && trust.evidence[0].detail.includes('合成缺价'), JSON.stringify(trust.evidence));
+    && trust.facts.some((f) => f.label === '组合结果' && f.value === '已发布')
+    && trust.facts.some((f) => f.label === '未纳入回答' && f.value === '1 条')
+    && trust.facts.some((f) => f.label === '数据提示/缺价' && f.value === '1 条 / 1 个')
+    && !trust.facts.some((f) => ['复核状态', '扣发事实'].includes(f.label)), JSON.stringify(trust.facts));
+  check('可信吗：证据列数据提示消息，最多 4 条且不显示原因码', trust.evidence.length === 1
+    && trust.evidence[0].label === '数据提示'
+    && trust.evidence[0].detail.includes('合成缺价')
+    && !JSON.stringify(trust.evidence).includes('W_PRICE_MISSING'), JSON.stringify(trust.evidence));
 
   const heldService = makeService({ bundle: makeBundle({ review: { ...REVIEW, portfolio_published: false } }) });
   const held = await heldService.service.ask({ question: '这些数可信吗？', bill: BILL });

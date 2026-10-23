@@ -43,6 +43,7 @@ check('展示兜底：sellProceeds 无 display 时仍格式化为金额', factDi
 check('展示兜底：已有 display 不被改写', factDisplay({ key: 'drag', value: 0.1, display: '+10.0pp' }) === '+10.0pp',
   factDisplay({ key: 'drag', value: 0.1, display: '+10.0pp' }));
 check('展示兜底：heldShares 显示股数', factDisplay({ key: 'heldShares', value: 100 }) === '100 股');
+check('无来源：不生成空的技术折叠入口', factDetail({ key: 'buyCost', fact_id: 'missing' }, { review: { published_facts: [] } }) === '');
 
 /* —— 单条事实使用自己的 verify verdict，而不是整份 review.status —— */
 {
@@ -65,8 +66,9 @@ check('展示兜底：heldShares 显示股数', factDisplay({ key: 'heldShares',
   const failHtml = factDetail(failFact, mixed);
   check('复核状态：整份 review=degraded 时仍按单条 fact verdict 显示', passProv.verify_verdict === 'pass'
     && failProv.verify_verdict === 'fail' && failProv.blocked === true, JSON.stringify({ pass: passProv.verify_verdict, fail: failProv.verify_verdict }));
-  check('复核状态：失败事实展开显示 fail 与原因，不显示整份 review.status', failHtml.includes('复核：fail')
-    && failHtml.includes('E_TEST_FAIL') && !failHtml.includes('复核：degraded'), failHtml.slice(0, 500));
+  check('用户界面：失败事实不显示内部复核状态/原因码，保留公式与成交来源', !failHtml.includes('复核：fail')
+    && !failHtml.includes('E_TEST_FAIL') && !failHtml.includes('verify_id')
+    && failHtml.includes('公式含义') && failHtml.includes('成交来源'), failHtml.slice(0, 500));
 }
 
 /* —— 超过 8 笔来源时可展开全部，逐笔可回成交行 —— */
@@ -83,9 +85,10 @@ check('展示兜底：heldShares 显示股数', factDisplay({ key: 'heldShares',
     provenance: { items: [{ fact_id: 'portfolio.buyCost', formula_id: 'CALC_TEST', formula_text: 'test', source_refs: refs, steps: [], blocked: false }] },
   };
   const html = factDetail(fact, fake);
-  check('来源全部可达：12 笔时显示“查看全部 12 笔来源”，含第 12 笔文件/行号', html.includes('查看全部 12 笔来源')
-    && html.includes('T012') && html.includes('synthetic.csv 第 13 行'), html.slice(-1200));
-  check('来源全部可达：每笔 source_ref 都进入展开列表', refs.every((r) => html.includes(`${r.file} 第 ${r.line} 行（${r.key}）`)), 'missing source row');
+  check('来源全部可达：12 笔时显示“查看全部 12 笔来源”，含第 12 笔文件/行号且不显示内部 key', html.includes('查看全部 12 笔来源')
+    && html.includes('synthetic.csv 第 13 行') && !html.includes('T012'), html.slice(-1200));
+  check('来源全部可达：每笔 source_ref 的文件/行号都进入展开列表', refs.every((r) => html.includes(`${r.file} 第 ${r.line} 行`)), 'missing source row');
+  check('内部标识：不显示 formula_id / verify_id / CALC_TEST', !html.includes('CALC_TEST') && !html.includes('V-test0001'));
 }
 
 let pass = 0;

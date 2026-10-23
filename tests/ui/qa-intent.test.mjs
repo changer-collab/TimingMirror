@@ -146,7 +146,7 @@ const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: 
   const low = await lowRouter.route('帮我看看这个账户');
   check('L2：低置信度 → 澄清并说明未发送账单/事实',
     low.intent === null && low.ambiguous === true && low.layer === 'L2'
-    && low.notice.includes('置信度不足') && low.notice.includes('账单与事实没有发送'), JSON.stringify(low));
+    && low.notice.includes('没有据此猜测') && low.notice.includes('账单与事实没有发送'), JSON.stringify(low));
 
   const unknownRouter = createIntentRouter({
     classifyIntent: async () => ({ ok: true, intentJson: { intent: 'market_forecast', slots: {}, confidence: 0.99 } }),

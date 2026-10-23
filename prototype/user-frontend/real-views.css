@@ -180,13 +180,16 @@ body {
   color: var(--faint);
 }
 
+.tm-bill-banner-shell {
+  margin-top: 18px;
+}
+
 .tm-bill-banner {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px 18px;
-  margin-top: 18px;
   padding: 12px 16px;
   border: 1px solid var(--line);
   border-left: 3px solid var(--ink);
@@ -758,10 +761,13 @@ body {
     display: none;
   }
 
+  .tm-bill-banner-shell {
+    margin-top: 12px;
+  }
+
   .tm-bill-banner {
     align-items: flex-start;
     flex-direction: column;
-    margin-top: 12px;
   }
 
   .tm-demo-strip {
