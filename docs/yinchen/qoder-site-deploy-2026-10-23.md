@@ -17,7 +17,7 @@
 | 函数访问级别 | 从 `database_access: none` 改为 `read_write`，并声明 `requiredSchemaVersion` |
 | 模型 Secret | 文本与视觉统一使用 `DEEPSEEK_API_KEY`；`DASHSCOPE_API_KEY` 不再被新函数读取 |
 | 前端产物 | `npm run build:site` 生成 `dist/`，包含云同步、账单历史、画像与问答改动 |
-| 用户区分 | 仍由 Qoder Gateway 的 `x-qoder-user-context` 提供；本次发布**不包含**注册/密码登录 |
+| 用户区分 | 仍由 Qoder Gateway 的 `x-qoder-user-context` 提供；已确认**不做**独立注册/密码登录 |
 | 当前线上状态 | 函数 `database_access: none`；DB `disabled`、`schema_version 0`；本次发布切换为新版前端与函数 |
 
 当前站点（只读核对，2026-10-23）：
