@@ -615,7 +615,7 @@ import { renderRealProfile } from './realProfile.js';
     return `${confirmedBillBanner()}
     ${pageHead({
       code: 'RULES / REVIEW',
-      title: '操作复盘',
+      title: '还没有可复盘的真实账单。',
       intro: `<p>按账单里的每一笔真实操作，逐笔对照当前规则。画像只描述交易习惯，不参与判定。</p>`,
       right: '<span class="sample-tag">按真实操作复盘</span><a class="text-link" href="#/me">返回规则管理</a>',
     })}
