@@ -380,8 +380,10 @@ async function prewarmScenarioReview(bill) {
   const versions = shared.contracts?.versions ?? [];
   const marketSource = adapter.DEFAULT_MARKET_SOURCE;
   const src = adapter.contractTradeSource(bill, marketSource);
-  const currentRules = adapter.contractRuleSet(versions).current;
-  const reviewKey = `${src.key}|${currentRules.map((rule) => rule.hash).join('|')}`;
+  const ruleSet = adapter.contractRuleSet(versions);
+  const currentRules = ruleSet.current;
+  const customRules = ruleSet.customCurrent ?? [];
+  const reviewKey = `${src.key}|${currentRules.map((rule) => rule.hash).join('|')}|${customRules.map((rule) => rule.hash).join('|')}`;
   const current = shared.contracts?.simContext;
   if (current?.reviewKey === reviewKey && (current.review || current.error)) return;
   if (scenarioPrewarmKey === reviewKey) return;

@@ -121,11 +121,11 @@ check('样式：使用 tr-* 命名并提供移动端 2×2 统计与单列事件'
 
 check('预加载：报告发布后按与页面相同的 reviewKey 预取复盘上下文',
   /async function prewarmScenarioReview\(bill\)/.test(bridge)
-  && /reviewKey = `\$\{src\.key\}\|\$\{currentRules\.map\(\(rule\) => rule\.hash\)\.join\('\|'\)\}`/.test(bridge)
+  && /reviewKey = `\$\{src\.key\}\|\$\{currentRules\.map\(\(rule\) => rule\.hash\)\.join\('\|'\)\}\|\$\{customRules\.map\(\(rule\) => rule\.hash\)\.join\('\|'\)\}`/.test(bridge)
   && /shared\.contracts = \{ \.\.\.\(shared\.contracts \?\? \{\}\), simContext: \{ \.\.\.context, reviewKey \} \}/.test(bridge)
   && /prewarmScenario: prewarmScenarioReview/.test(bridge)
   && /if \(!demo\) void ctx\?\.prewarmScenario\?\.\(bill\);/.test(report)
-  && /const contextKey = `\$\{src\.key\}\|\$\{currentRules\.map\(\(r\) => r\.hash\)\.join\('\|'\)\}`/.test(view));
+  && /const contextKey = `\$\{src\.key\}\|\$\{currentRules\.map\(\(r\) => r\.hash\)\.join\('\|'\)\}\|\$\{customRules\.map\(\(r\) => r\.hash\)\.join\('\|'\)\}`/.test(view));
 
 check('脚本：引擎与页面测试均加入 npm run check',
   /node tests\/trade-review\.test\.mjs/.test(pkg)
