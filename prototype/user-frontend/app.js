@@ -100,7 +100,7 @@ import { renderRealProfile } from './realProfile.js';
     import: '导入账单 · 择时镜子',
     report: '报告 · 择时镜子',
     chat: '问镜子 · 择时镜子',
-    scenario: '历史情境测试 · 择时镜子',
+    scenario: '操作复盘 · 择时镜子',
     me: '个人中心 · 择时镜子',
   };
 
@@ -257,7 +257,7 @@ import { renderRealProfile } from './realProfile.js';
         ${navLink('import', '导入')}
         ${navLink('report', '报告')}
         ${navLink('chat', '问答')}
-        ${navLink('scenario', '历史情境测试')}
+        ${navLink('scenario', '复盘')}
       </nav>
       <div class="topbar-right">
         <nav class="view-switch" aria-label="界面视图">
@@ -279,12 +279,12 @@ import { renderRealProfile } from './realProfile.js';
       ['import', '导入'],
       ['report', '报告'],
       ['chat', '问答'],
-      ['scenario', '测试'],
+      ['scenario', '复盘'],
       ['me', '我的'],
     ];
     mobileNavEl.innerHTML = mobile.map(([route, label]) => {
       const current = state.route === route ? ' aria-current="page"' : '';
-      const aria = route === 'scenario' ? ' aria-label="历史情境测试"' : '';
+      const aria = route === 'scenario' ? ' aria-label="操作复盘"' : '';
       return `<a href="#/${route}"${current}${aria}>${label}</a>`;
     }).join('');
 
@@ -308,7 +308,7 @@ import { renderRealProfile } from './realProfile.js';
               <li><a href="#/import">导入账单</a></li>
               <li><a href="#/report" data-demo-link data-demo-route="report">示例报告</a></li>
               <li><a href="#/chat">问镜子</a></li>
-              <li><a href="#/scenario">历史情境测试</a></li>
+              <li><a href="#/scenario">操作复盘</a></li>
               <li><a href="#/me">个人中心</a></li>
             </ul>
           </div>
@@ -338,7 +338,7 @@ import { renderRealProfile } from './realProfile.js';
         </div>
         <div class="page-head-grid">
           <h1>${title}</h1>
-          <div class="page-intro">${intro}</div>
+          <div class="page-intro${intro.includes('class="report-meta"') ? ' page-intro-wide' : ''}">${intro}</div>
         </div>
         <div class="page-head-rule" aria-hidden="true"></div>
       </div>
@@ -399,7 +399,7 @@ import { renderRealProfile } from './realProfile.js';
       links.push(`<a class="text-link" href="#/chat">${demo ? '去示例问答' : '去事实问答'} →</a>`);
     }
     if (!demo && state.route !== 'scenario') {
-      links.push('<a class="text-link" href="#/scenario">历史情境测试 →</a>');
+      links.push('<a class="text-link" href="#/scenario">操作复盘 →</a>');
     }
     links.push(`<a class="text-link" href="#/import">${demo ? '换个场景' : '更换账单'} →</a>`);
     const summary = demo
@@ -564,7 +564,7 @@ import { renderRealProfile } from './realProfile.js';
       <section class="tm-workspace-head">
         <p class="mono-label">MY MIRROR / 个人中心</p>
         <h1>画像与规则</h1>
-        <p class="muted">画像只从已复核账单派生；规则保存在当前浏览器，历史情境测试已独立为单独页面。</p>
+        <p class="muted">画像只从已复核账单派生；规则保存在当前浏览器，操作复盘已独立为单独页面。</p>
       </section>
       <div id="tm-real-profile"></div>
       <section class="tm-me-rules" aria-label="规则工作区">
@@ -573,7 +573,7 @@ import { renderRealProfile } from './realProfile.js';
             <p class="mono-label">RULES WORKSPACE / 规则工作区</p>
             <p class="muted">保存、停用与版本记录都由你确认；不会自动交易。</p>
           </div>
-          <a class="text-link" href="#/scenario">打开历史情境测试 →</a>
+          <a class="text-link" href="#/scenario">打开操作复盘 →</a>
         </div>
         <div id="tm-real-rules"></div>
       </section>
@@ -584,7 +584,7 @@ import { renderRealProfile } from './realProfile.js';
     return `${confirmedBillBanner()}
     ${pageHead({
       code: 'RULES / REVIEW',
-      title: '历史情境测试',
+      title: '操作复盘',
       intro: `<p>按账单里的每一笔真实操作，逐笔对照当前规则。画像只描述交易习惯，不参与判定。</p>`,
       right: '<span class="sample-tag">按真实操作复盘</span><a class="text-link" href="#/me">返回规则管理</a>',
     })}

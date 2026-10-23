@@ -1,4 +1,4 @@
-// 交易规则（契约）：当前生效规则（每种类型最多一条）→ 历史规则（折叠）→ 新增 / 修改弹窗 → 当前规则的历史情境测试（本地账单与示例：Tushare 动态 / 合成回归）
+// 交易规则（契约）：当前生效规则（每种类型最多一条）→ 历史规则（折叠）→ 新增 / 修改弹窗 → 当前规则的操作复盘（本地账单与示例：Tushare 动态 / 合成回归）
 // 边界：当前 / 历史划分、版本状态机、解析与判定全部由 adapter 提供（adapter 内部调用引擎）；本页只渲染返回的文本与 display。
 import { el, chip } from '../components.js';
 import * as adapter from '../../demo/adapter.js';
@@ -30,12 +30,12 @@ const CUSTOM_PENDING_NOTE = '正在结合本次情境数据判定这条自定义
 const CUSTOM_UNABLE_NOTE = '无法判断：本次不显示“未命中”，也不作命中判定。';
 const CUSTOM_DISCLOSURE = '这条自定义规则参与测试时，会把规则原文、提醒动作、适用范围、情境标的与日期、当日涨跌幅（如有）、该标的的买入与卖出日期和相关交易日历发送到站点服务端，由模型辅助理解后给出判定；不发送原始账单、CSV 文件、价格金额或其他标的的交易记录。判定只用于提醒，不下单、不阻止交易。';
 const CUSTOM_USED_DATA_LABEL = Object.freeze({ change_pct: '当日涨跌幅', buys: '买入日期', sells: '卖出日期', calendar: '交易日历' });
-const INTRO = '设置在历史情境测试中用于提醒自己的交易规则。规则仅用于提醒，不会自动交易或阻止交易。';
+const INTRO = '设置在操作复盘中用于提醒自己的交易规则。规则仅用于提醒，不会自动交易或阻止交易。';
 const PRIVACY = '规则仅保存在当前浏览器；不会自动交易，也不会改变分析报告结论。';
-const AGENT_NOTE = '对话页会读取已生效规则来回答规则状态、避免重复推荐候选，但还不能按“限定股票代码”等范围判断；规则不会自动交易，也不会改变分析报告结论；历史情境测试已独立到单独页面。';
+const AGENT_NOTE = '对话页会读取已生效规则来回答规则状态、避免重复推荐候选，但还不能按“限定股票代码”等范围判断；规则不会自动交易，也不会改变分析报告结论；操作复盘已独立到单独页面。';
 const CURRENT_NOTE = '不同类型或不同股票范围的规则可以同时生效；同一类型、同一范围只保留一条当前规则，保存新参数后旧规则进入历史规则。';
 const REPLACE_NOTE = '保存后，新规则会立即生效；当前同类型规则会进入历史记录，不再参与测试。';
-const STOP_NOTE = '停用后，该规则进入历史规则，不再参与之后的历史情境测试；可随时恢复为当前规则。';
+const STOP_NOTE = '停用后，该规则进入历史规则，不再参与之后的操作复盘；可随时恢复为当前规则。';
 const RECONFIRM_NOTE = '这条规则的保存内容与当前校验标识不一致。为避免误用，它暂不参与测试。请核对后用“新增规则”重新保存，或停用该规则。';
 const EMPTY_NOTE = '暂无当前生效的规则，测试时不会产生规则提醒。点击“新增规则”开始设置。';
 
@@ -110,7 +110,7 @@ const HISTORY_TAG = Object.freeze({ replaced: '已被替代', superseded: '已�
 const NL_INTRO = '用一句话描述你想遵守的交易规则，系统会识别并生成规则预览；识别与关键词检查只是辅助，请对照原话核对。你确认后才会保存并启用，取消或修改描述都不会生效。';
 const NL_PRIVACY = '识别时只把下方输入框里的这段文字发送到站点服务端，由站点模型服务理解意图；不发送 CSV、交易记录、账户信息或已保存的规则。规则是否合法、能否执行、测试时是否命中，均由本地程序按规则模板确定性判定，不执行模型生成的任何代码。';
 const NL_CHECK_WARNING = '关键词和模型检查只能覆盖常见表达，不能保证发现所有股票名称、附加条件或隐含限定；系统不承诺“绝不遗漏”，请务必逐字对照原话核对。';
-const NL_FALLBACK = '已有规则、模板新增与历史情境测试不受影响；也可以改选具体模板直接填写参数。';
+const NL_FALLBACK = '已有规则、模板新增与操作复盘不受影响；也可以改选具体模板直接填写参数。';
 const CUSTOM_TEMPLATE = '__custom__';
 const SCOPE_UI_LABEL = Object.freeze({ all: '全部股票', symbol: '单个股票' });
 const NL_STATUS = Object.freeze({
@@ -303,7 +303,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
         ]),
       ]),
       el('div', { class: 'cv-rule-text' }, [safe(rule.text)]),
-      isCustom ? el('div', { class: 'muted small' }, ['已保存，暂不参与情境测试。']) : null,
+      isCustom ? el('div', { class: 'muted small' }, ['已保存，暂不参与操作复盘。']) : null,
       isCustom ? el('div', { class: 'cv-rule-action' }, [`提醒动作：${actionLabel}`]) : null,
       rule.decision_statement ? el('div', { class: 'cv-decision cv-decision-current' }, [`决定自述：${safe(rule.decision_statement.text)}`]) : null,
       el('div', { class: 'cv-rule-scope', 'data-scope': rule.scope && rule.scope.kind === 'symbol' ? rule.scope.symbol : 'all' }, [`适用范围：${safe(rule.scope_text)}`]),
@@ -421,7 +421,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
   if (!scenarioOnly && ruleSet.needsReconfirm.length) {
     page.append(el('div', { class: 'card cv-reconfirm-box' }, [
       el('div', { class: 'cv-group-title' }, [`待重新确认的规则（${ruleSet.needsReconfirm.length}）`]),
-      el('div', { class: 'muted small' }, ['以下规则不计入当前生效规则，也不参与历史情境测试。']),
+      el('div', { class: 'muted small' }, ['以下规则不计入当前生效规则，也不参与操作复盘。']),
       ...ruleSet.needsReconfirm.map((r) => el('div', { class: 'cv-rule reconfirm', 'data-hash': r.hash }, [
         el('div', { class: 'row cv-rule-head' }, [
           chip('待重新确认', 'warn'),
@@ -458,7 +458,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
       pending && preview.scope_change ? el('div', { class: 'cv-confirm' }, [el('div', {}, [preview.scope_change.message]), el('button', { class: 'btn small', onclick: () => set({ contracts: { restorePending: null } }) }, ['取消恢复'])]) : null,
       preview.conflict ? el('div', { class: 'muted small' }, ['该范围已有其他生效规则，请先处理后再恢复。']) : null,
       el('div', { class: 'cv-hist-reason' }, [historyReason(rule)]),
-      rule.restorable ? el('div', { class: 'muted small' }, ['恢复后，该规则重新参与情境测试；其余规则不受影响。']) : null,
+      rule.restorable ? el('div', { class: 'muted small' }, ['恢复后，该规则重新参与操作复盘；其余规则不受影响。']) : null,
       ruleDetail(rule),
     ]);
   }
@@ -480,7 +480,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     ...ruleSet.legacy.map(legacyItem),
   ]));
 
-  /* —— 历史情境测试：所有当前规则逐条判定；交易来源由 adapter 按账单状态决定 —— */
+  /* —— 操作复盘：所有当前规则逐条判定；交易来源由 adapter 按账单状态决定 —— */
   let simBtn = null;
   let simResultBox = null;
 
@@ -496,17 +496,17 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
   const sim = el('div', { class: 'card', 'data-role': 'sim-section' });
   simResultBox = el('div', { class: 'cv-sim-out' });
   if (!localBill && !demoSimulationAllowed) {
-    sim.append(el('div', { class: 'section-title' }, ['历史情境测试']));
+    sim.append(el('div', { class: 'section-title' }, ['操作复盘']));
     sim.append(el('div', { class: 'cv-sim-empty' }, [
-      el('div', { class: 'muted' }, ['导入并确认一份账单后，可在上方用当前规则做历史情境测试。没有账单时不会自动加载行情，也不会用示例数据代替。']),
+      el('div', { class: 'muted' }, ['导入并确认一份账单后，可在上方用当前规则做操作复盘。没有账单时不会自动加载行情，也不会用示例数据代替。']),
       el('a', { class: 'btn small', href: '#/import' }, ['去导入账单']),
     ]));
   } else {
   sim.append(el('div', { class: 'section-title' }, [localBill
-    ? '历史情境测试（Tushare 动态行情）'
+    ? '操作复盘（Tushare 动态行情）'
     : marketSource === 'synthetic-fixture'
-      ? '历史情境测试（合成行情）'
-      : '历史情境测试（Tushare 动态行情）']));
+      ? '操作复盘（合成行情）'
+      : '操作复盘（Tushare 动态行情）']));
   // 本地已确认账单固定使用 Tushare 动态行情（无行情来源切换）；示例账单可切换 Tushare 动态 / 合成回归。
   if (!localBill) {
     const srcGroup = el('div', { class: 'rp-control-group' });
@@ -592,7 +592,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
         });
     }
   } else if (sc.error) {
-    sim.append(el('div', { class: 'error' }, [`${localBill ? '历史情境测试阻断' : '行情加载失败'}：${sc.error}`]));
+    sim.append(el('div', { class: 'error' }, [`${localBill ? '操作复盘阻断' : '行情加载失败'}：${sc.error}`]));
   } else {
     const simAction = c.sim.action === 'sell' ? 'sell' : 'buy';
     sim.append(el('div', { class: 'muted small' }, [
@@ -1031,7 +1031,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     function nlResult(r) {
       const isCustom = r.is_custom === true;
       const pending = r.status === 'supported' && !isCustom && !adapter.contractNlSaveState(c.versions, r, { choices: c.nl.choices, ack: true }).confirm.ok;
-      const s = isCustom ? { text: '自定义规则：暂不参与情境测试', kind: 'mode' } : pending ? { text: '待你确认', kind: 'mode' } : NL_STATUS[r.status] ?? NL_STATUS.error;
+      const s = isCustom ? { text: '自定义规则：暂不参与操作复盘', kind: 'mode' } : pending ? { text: '待你确认', kind: 'mode' } : NL_STATUS[r.status] ?? NL_STATUS.error;
       const nodes = [el('div', { class: 'row' }, [el('span', { class: `chip ${s.kind}`, 'data-role': 'nl-status' }, [s.text])])];
       const understanding = r.understanding
         ? el('div', { class: 'muted small' }, [`模型理解（仅供核对，不参与判定）：${r.understanding}`])
@@ -1078,7 +1078,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
           ack.addEventListener('change', (e) => { c.nl = { ...c.nl, ack: !!e.target.checked }; paintNl(); });
           nodes.push(el('div', { class: 'cv-nl-warn' }, [NL_CHECK_WARNING]));
           nodes.push(el('label', { class: 'cv-nl-ack' }, [ack, el('span', {}, ['我已逐字对照原话核对：上面的预览与我的本意一致。'])]));
-          nodes.push(el('div', { class: 'muted small' }, ['保存后将按你确认的动作与适用范围生成规则；自定义规则暂不参与历史情境测试，后续版本会支持。']));
+          nodes.push(el('div', { class: 'muted small' }, ['保存后将按你确认的动作与适用范围生成规则；自定义规则暂不参与操作复盘，后续版本会支持。']));
           const canSave = c.nl.ack && !!c.nl.actionChoice;
           if (!canSave) {
             const reasons = [];
@@ -1122,7 +1122,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
           editor_blocked: '该参数对应的历史记录内容与校验标识不一致，不能保存；请换用其他参数。',
         }[ss.reason] ?? (d.action === 'restore'
           ? `与历史版本 v${safe(d.same && d.same.v)} 相同：确认后恢复该版本为当前规则，不新增版本号。`
-          : `确认后生成版本 v${d.next_version}，立即参与历史情境测试。`);
+          : `确认后生成版本 v${d.next_version}，立即参与操作复盘。`);
         nodes.push(el('div', { class: 'muted small cv-hint' }, [hint]));
         if (d.action === 'duplicate' && d.canSave) {
           const dup = el('input', { type: 'checkbox', 'data-role': 'nl-dup-ack', checked: c.nl.dupAck ? '' : null });

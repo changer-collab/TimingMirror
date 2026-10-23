@@ -1,7 +1,7 @@
 // 首版规则助手（主线 C；接口候选，未冻结）
 // 链路：用户主动点击 → 本地预检 → 受限规则 intent（注入 transport）
 //       → 本地 schema/模板/字段校验 → 受限计划 → 草案（不保存）
-//       → 用户在规则页确认/保存 → 历史模拟（复用现有 adapter/规则页）
+//       → 用户在规则页确认/保存 → 操作复盘（复用现有 adapter/规则页）
 //       → 一致性检查与本地证据摘要 → 四类 trace。
 // 边界：不直接调用模型/网络；不计算金额；不保存规则；不决定复核通过；
 //       不发送原始 CSV/成交行/账户信息；预算、重试与超时均在本模块内计数。
@@ -193,7 +193,7 @@ function planForDraft(question, draft) {
     plan_id: planId,
     intent: 'contract_setup',
     template_id: draft.template_id,
-    composition_reason: '规则模板解析→用户确认→历史模拟',
+    composition_reason: '规则模板解析→用户确认→操作复盘',
     status: 'needs_confirmation',
     executed: false,
     steps: [
@@ -317,7 +317,7 @@ function localExplanation(flow) {
   const draftText = ruleText(flow.draft);
   const semantic = flow.semantic_confirmation;
   if (!semantic) {
-    return `规则建议（尚未保存）：${draftText}。历史模拟尚未执行；保存后才会用于模拟。`;
+    return `规则建议（尚未保存）：${draftText}。操作复盘尚未执行；保存后才会用于复盘。`;
   }
   const saved = semantic.saved_rule;
   const savedVersion = ruleVersion(saved);
@@ -347,13 +347,13 @@ function localExplanation(flow) {
     if (simulation) {
       return `${savedLine}${currentLine}此前的模拟结果已失效，需要重新模拟，不能作为当前规则的验证；原语义确认仍对应此前保存的规则，不覆盖当前规则。未做独立复核。`;
     }
-    return `${savedLine}${currentLine}尚未执行历史模拟，需要重新模拟。未做独立复核。`;
+    return `${savedLine}${currentLine}尚未执行操作复盘，需要重新复盘。未做独立复核。`;
   }
   if (attempt) {
     return `${savedLine}${attemptLine}${historicalLine}${!simulation ? '尚未形成有效模拟结果。' : ''}未做独立复核，不能据此推断收益或因果。`;
   }
   if (!simulation) {
-    return `${savedLine}历史模拟尚未执行：需要数据、标的和日期。未做独立复核。`;
+    return `${savedLine}操作复盘尚未执行：需要数据、标的和日期。未做独立复核。`;
   }
   return `${savedLine}${simulationLine(simulation)}仅引用你保存的规则和实际模拟汇总；未做独立复核，不能据此推断收益或因果。`;
 }
@@ -933,7 +933,7 @@ export function createRuleAssistant({
     if (!flow) return failure(RULE_ASSISTANT_CODES.INPUT_INVALID, 'flowId 不存在');
     if (!flow.draft) return failure(RULE_ASSISTANT_CODES.INPUT_INVALID, '当前任务还没有规则草案');
     if (!flow.semantic_confirmation) {
-      return failure(RULE_ASSISTANT_CODES.NOT_CONFIRMED, '历史模拟必须绑定用户最终确认的规则');
+      return failure(RULE_ASSISTANT_CODES.NOT_CONFIRMED, '操作复盘必须绑定用户最终确认的规则');
     }
     if (!isObject(simulation)) return failure(RULE_ASSISTANT_CODES.INPUT_INVALID, 'simulation 非法');
     if (!isObject(context) || !isSymbol(context.symbol) || !isDate(context.date)) {
@@ -952,7 +952,7 @@ export function createRuleAssistant({
     const binding = flow.current_rule
       ?? (flow.rule_drift ? null : flow.semantic_confirmation.saved_rule);
     if (!binding) {
-      return failure(RULE_ASSISTANT_CODES.NOT_CONFIRMED, '当前没有生效的已保存规则；不记录历史模拟');
+      return failure(RULE_ASSISTANT_CODES.NOT_CONFIRMED, '当前没有生效的已保存规则；不记录操作复盘');
     }
     const canonical = canonicalSimulation(simulation, binding.hash);
     if (canonical.results.length === 0) {
@@ -1171,7 +1171,7 @@ export function createRuleAssistant({
       return { ok: false, code: RULE_ASSISTANT_CODES.NOT_EXECUTED, consistency: { ...flow.consistency } };
     }
     if (!isObject(executionRule)) {
-      flow.consistency = { status: 'not_executed', independent_review: false, mismatches: ['尚未执行历史模拟'] };
+      flow.consistency = { status: 'not_executed', independent_review: false, mismatches: ['尚未执行操作复盘'] };
       flow.trace = traceFor(flow);
       return { ok: false, code: RULE_ASSISTANT_CODES.NOT_EXECUTED, consistency: { ...flow.consistency } };
     }

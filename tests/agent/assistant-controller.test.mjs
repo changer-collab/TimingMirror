@@ -257,7 +257,7 @@ function makeSet(state) {
 
   const versionsBeforeActions = state.contracts.versions.length;
   controller.goSimulation();
-  check('前往历史模拟：切到独立测试页，不自动执行模拟、不再调用模型、不改规则版本',
+  check('前往操作复盘：切到独立页面，不自动执行复盘、不再调用模型、不改规则版本',
     state.route === 'scenario'
     && state.contracts.sim.result === null
     && state.contracts.versions.length === versionsBeforeActions

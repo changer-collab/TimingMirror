@@ -58,7 +58,7 @@ function rulesAction(label = '去规则工作区') {
 }
 
 function simulationAction() {
-  return { id: 'open-simulation', label: '先看历史情境', kind: 'simulation' };
+  return { id: 'open-simulation', label: '先看操作复盘', kind: 'simulation' };
 }
 
 function intentLabelOf(intent) {
@@ -441,7 +441,7 @@ function answerContractStatus({ route, versions, bill, bundle, elapsedMs }) {
       intent: 'contract_status',
       route,
       source: 'local',
-      text: '当前没有生效规则，所以还不能回放“守不守得住”。可以在规则工作区登记一条，保存与版本都由你确认；登记后我再用这份账单做历史情境复核。',
+      text: '当前没有生效规则，所以还不能回放“守不守得住”。可以在规则工作区登记一条，保存与版本都由你确认；登记后我再用这份账单做操作复盘。',
       facts: [{ label: '生效规则', value: '0 条' }],
       actions: [rulesAction(), simulationAction()],
       trace: { template_id: 'T-contract-status' },
@@ -507,7 +507,7 @@ function answerContractSetup({ route, bill, elapsedMs }) {
     intent: 'contract_setup',
     route,
     source: 'template',
-    text: '我不能替你定止损、止盈或买卖阈值——这是你的决定。你可以在规则工作区选一个模板，登记阈值与适用范围；保存、版本和停用都由你确认。登记后我可以用历史情境回放，看看它在这份账单上会触发几次。',
+    text: '我不能替你定止损、止盈或买卖阈值——这是你的决定。你可以在规则工作区选一个模板，登记阈值与适用范围；保存、版本和停用都由你确认。登记后我可以用操作复盘，看看它在这份账单上会触发几次。',
     actions: [rulesAction('去规则工作区'), simulationAction()],
     trace: { template_id: 'T-contract-setup' },
     notice: '不内联保存、不自动生成规则；保存必须由你在规则页确认。',

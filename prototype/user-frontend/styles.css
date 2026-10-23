@@ -753,6 +753,10 @@ a.view-option:hover {
   color: var(--gray);
 }
 
+.page-intro-wide {
+  max-width: 100%;
+}
+
 .page-intro p + p {
   margin-top: 10px;
 }
@@ -2654,7 +2658,7 @@ table.ledger tr.is-missing {
 
 .report-meta dl {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 4px 22px;
   margin-top: 12px;
 }
@@ -2675,6 +2679,7 @@ table.ledger tr.is-missing {
   color: var(--ink);
   font-family: var(--font-mono);
   font-size: 11.5px;
+  white-space: nowrap;
 }
 
 .status-dot {
