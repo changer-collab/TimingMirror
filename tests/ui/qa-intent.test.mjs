@@ -13,6 +13,7 @@ import {
   normalizeQuestion,
   extractSlots,
   routeQuestion,
+  isPageHelpQuestion,
   createIntentRouter,
 } from '../../prototype/user-frontend/qaIntent.js';
 import { QA_CHIPS } from '../../src/agent/qaChips.js';
@@ -22,13 +23,35 @@ const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: 
 
 /* ==== ① 示例问法与既有芯片一致 ==== */
 {
-  check('示例问法：共 8 条，前 5 条与既有芯片同题同标签',
+  check('示例问法：共 8 条，前 5 条与既有芯片同题同标签；全部是本地入口',
     QA_SUGGESTIONS.length === 8
     && QA_SUGGESTIONS.slice(0, 5).every((s, i) => s.question === QA_CHIPS[i].question && s.label === QA_CHIPS[i].label)
-    && QA_SUGGESTIONS.filter((s) => s.online).length === 1
-    && QA_SUGGESTIONS.find((s) => s.online).id === 'portfolio', JSON.stringify(QA_SUGGESTIONS));
+    && QA_SUGGESTIONS.filter((s) => s.online).length === 0, JSON.stringify(QA_SUGGESTIONS));
   check('意图标签：12 类均有中文短标签', Object.keys(QA_INTENT_LABELS).length === 12
     && Object.values(QA_INTENT_LABELS).every((v) => typeof v === 'string' && v.length > 0), JSON.stringify(QA_INTENT_LABELS));
+}
+
+/* ==== ①b 页面帮助问题：由本地判定，不进入账单意图 ==== */
+{
+  const helpQuestions = [
+    '原始 CSV 会上传吗？',
+    '清空对话会删除画像吗？',
+    '画像怎么记录？',
+    '证据在哪里看？',
+    '这个页面怎么用？',
+    '页面上哪里看证据？',
+    '页面上的错误提示怎么看？',
+  ];
+  const billingQuestions = [
+    '这些数可信吗？',
+    '我最错的一笔是哪个？',
+    '组合整体表现如何？',
+    '如果那笔卖出没发生，会怎样？',
+  ];
+  check('页面帮助：操作/隐私/画像/证据问题命中本地判定',
+    helpQuestions.every((question) => isPageHelpQuestion(question)), JSON.stringify(helpQuestions.map((q) => [q, isPageHelpQuestion(q)])));
+  check('页面帮助：账单分析问题不被误判',
+    billingQuestions.every((question) => !isPageHelpQuestion(question)), JSON.stringify(billingQuestions.map((q) => [q, isPageHelpQuestion(q)])));
 }
 
 /* ==== ② 12 类代表问法 ==== */
@@ -168,7 +191,7 @@ const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: 
   const failed = await failRouter.route('帮我看看这个账户');
   check('L2：分类失败 → 澄清并说明未发送',
     failed.intent === null && failed.ambiguous === true
-    && failed.notice.includes('未就绪') && failed.notice.includes('没有发送'), JSON.stringify(failed));
+    && failed.notice.includes('没能理解问法') && failed.notice.includes('没有发送'), JSON.stringify(failed));
 
   const throwRouter = createIntentRouter({
     classifyIntent: async () => { throw new Error('network'); },

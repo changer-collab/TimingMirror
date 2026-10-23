@@ -60,6 +60,7 @@ const byId = {
 
 globalThis.window = { innerWidth: 1440 };
 globalThis.HTMLElement = class {};
+globalThis.location = { hash: '' };
 globalThis.document = {
   getElementById: (id) => byId[id] ?? null,
   addEventListener() {},
@@ -73,6 +74,7 @@ globalThis.fetch = async () => { throw new Error('offline-test'); };
 
 const {
   initBridge, toggleAssistant, applyAssistantShell, onViewportChange, getShared,
+  handoffToQa, takeQaHandoff,
 } = await import('../../prototype/user-frontend/realBridge.js');
 
 function setWidth(width) {
@@ -252,6 +254,36 @@ function shellState() {
     state().mobileView === true && shellState().mobileOpen === true
     && shellState().bodyMobile === true && shellState().asideHidden === false
     && shellState().buttonHidden === true);
+}
+
+/* —— 助手到问答页交接：只预填，不自动发送；账单变化丢弃 —— */
+{
+  const shared = getShared();
+  shared.bill = { ...shared.bill, contextId: 'handoff-bill-1' };
+  handoffToQa({ question: '我最错的一笔是哪个？' });
+  const same = takeQaHandoff('handoff-bill-1');
+  check('交接：同账单带回问题，不自动发送',
+    same?.question === '我最错的一笔是哪个？'
+    && shared.chat.messages.length === 0
+    && takeQaHandoff('handoff-bill-1') === null,
+    JSON.stringify({ same, chat: shared.chat }));
+
+  handoffToQa({ question: '组合整体表现如何？' });
+  const dropped = takeQaHandoff('handoff-bill-2');
+  check('交接：账单变化时丢弃并标记',
+    dropped?.dropped === true && dropped?.question === '组合整体表现如何？',
+    JSON.stringify(dropped));
+
+  setWidth(390);
+  shared.assistant.mobileView = true;
+  shared.assistant.open = true;
+  handoffToQa({ question: '这笔交易的证据怎么看？' });
+  const mobileHandoff = takeQaHandoff('handoff-bill-1');
+  check('交接：移动端点击后关闭助手，仍带回问题',
+    shared.assistant.mobileView === false
+    && mobileHandoff?.question === '这笔交易的证据怎么看？',
+    JSON.stringify({ assistant: { mobileView: shared.assistant.mobileView }, mobileHandoff }));
+  setWidth(1440);
 }
 
 if (originalFetch !== undefined) globalThis.fetch = originalFetch;

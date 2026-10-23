@@ -30,7 +30,7 @@ function emptyState(reason = '先导入并确认一份本地账单，画像才�
     <p class="mono-label">PROFILE / 本地画像</p>
     <h2>先有账单，再有画像。</h2>
     <p class="rp-note">${esc(reason)}</p>
-    <p class="rp-note">没有账单时不会用示例数据填充；本地画像只保存在当前浏览器，云端只保存账单统计、报告快照与你在对话中明确说过的事实。</p>
+    <p class="rp-note">没有账单时不会用示例数据填充；本地画像只保存在当前浏览器，云端只保存账单统计、报告快照与你主动选择记入的画像事实。</p>
     <a class="btn btn-outline" href="#/import">去导入账单</a>
   </section>`;
 }
@@ -217,7 +217,7 @@ function renderProfile(host, ctx, bundle, bill) {
       <div>
         <p class="mono-label">PROFILE / 本地画像</p>
         <h2>你的交易习惯，正在被连续记录。</h2>
-        <p class="rp-note">只从已复核报告、行为发现与规则使用记录派生；本地画像不含成交明细、文件名或 CSV。云端只保存账单统计、报告快照与对话事实。</p>
+        <p class="rp-note">只从已复核报告、行为发现与规则使用记录派生；本地画像不含成交明细、文件名或 CSV。云端只保存账单统计、报告快照与你主动记入的画像事实。</p>
       </div>
       <div class="rp-profile-stat"><strong>${esc(profile.observations ?? 0)}</strong><span>次观察</span></div>
     </div>

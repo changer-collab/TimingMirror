@@ -107,6 +107,7 @@ let qaIntentBoundary = null;
 let dataClient = null;
 let profileFactTransport = null;
 let profileFactRecorder = null;
+let qaHandoff = null;
 let currentRoute = 'home';
 let lastMobileLayout = null;
 let demoSelected = false;
@@ -225,6 +226,38 @@ function getProfileFactRecorder() {
   return profileFactRecorder;
 }
 
+function setQaHandoff({ question, contextId = shared.bill?.contextId ?? null } = {}) {
+  const text = String(question ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  if (!text) return;
+  qaHandoff = { question: text, contextId, source: 'assistant', at: Date.now() };
+}
+
+export function takeQaHandoff(contextId) {
+  if (!qaHandoff) return null;
+  const handoff = qaHandoff;
+  qaHandoff = null;
+  if ((handoff.contextId ?? null) !== (contextId ?? null)) {
+    return { dropped: true, question: handoff.question };
+  }
+  return handoff;
+}
+
+export function handoffToQa({ question, contextId = shared.bill?.contextId ?? null } = {}) {
+  setQaHandoff({ question, contextId });
+  if (mobileLayout()) {
+    shared.assistant.mobileView = false;
+    shared.assistant.open = false;
+  }
+  go('chat');
+}
+
+function openAssistantHelp() {
+  shared.assistant.open = true;
+  shared.assistant.mobileView = mobileLayout();
+  renderAssistant();
+  focusAssistant();
+}
+
 const ctx = {
   state: shared,
   set,
@@ -233,15 +266,15 @@ const ctx = {
   importRecovery: getRecoveryClient(),
   ruleAssistantClient: getRuleAssistantClient(),
   assistantTitle: 'AI 助手',
-  assistantSubtitle: '当前页面与已发布报告',
+  assistantSubtitle: '当前页面的说明与操作',
   globalAssistant: true,
   qaDeps: {
     getReportBundle: (bill) => getRealReportBundle(bill),
     getReportState: (bill) => getRealReportState(bill),
     loadReportBundle: (bill) => loadRealReport(bill),
-    askOnline: ({ question, review }) => getQaOnlineClient().ask({ question, review }),
     askQuestion: (args) => getQaAnswerClient().ask(args),
-    recordProfileFacts: (args) => getProfileFactRecorder()?.record(args),
+    extractProfileFacts: (args) => getProfileFactRecorder()?.extract(args),
+    saveProfileFacts: (args) => getProfileFactRecorder()?.save(args),
     ruleStateOf,
     loadProfile,
     openRuleCandidate,
@@ -269,6 +302,10 @@ const ctx = {
   scrollToSimulation,
   isOverlayLayout: mobileLayout,
   focusAssistant,
+  refreshAssistant: renderAssistant,
+  openAssistantHelp,
+  handoffToQa,
+  takeQaHandoff,
   setRuleModal,
 };
 
