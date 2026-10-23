@@ -5,6 +5,7 @@ import { fmtMoney } from '../../src/engine/display.js';
 import { renderGhostChart } from '../../src/ui/components/ghostChart.js';
 import { buildRuleCandidates } from '../../src/engine/userProfile.js';
 import { recordReportObservation, ruleStateOf, syncBehaviorAnalysis } from './profileStore.js';
+import { maybeAutoUpdateProfileSummary } from './profileAutoUpdate.js';
 import { openRuleCandidateInAssistant } from './ruleCandidates.js';
 import { billSyncStatus, cloudStatusText, cloudStatusTitle } from './cloudSync.js';
 import {
@@ -581,6 +582,9 @@ function renderBundle(host, bundle, ctx, bill) {
         Promise.resolve(ctx.cloudDeps.syncSnapshot({ bill, snapshot }))
           .then((result) => { if (result?.ok) ctx.cloudDeps.invalidateCloudProfile?.(); })
           .catch(() => {});
+      }
+      if (observation.recorded) {
+        void maybeAutoUpdateProfileSummary({ ctx, profile, bill, bundle });
       }
     } catch { /* 画像记录失败不阻断报告 */ }
   }

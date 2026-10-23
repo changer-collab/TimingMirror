@@ -8,6 +8,7 @@ import {
   cloudProfileFromBills,
   normalizeCloudBills,
   normalizeCloudFacts,
+  summaryFallbackText,
   summaryResponseView,
   validSummaryValue,
 } from '../../src/agent/cloudProfileModel.js';
@@ -139,6 +140,14 @@ function snapshot(overrides = {}) {
   check('摘要响应：ok=false 或摘要非法返回 null',
     summaryResponseView({ ok: false, source: 'ai', summary: value }) === null
     && summaryResponseView({ ok: true, source: 'ai', summary: { headline: 'x' } }) === null);
+
+  check('摘要回退：已知原因映射为中文', summaryFallbackText('model_timeout') === '模型响应超时。'
+    && summaryFallbackText('model_response_invalid') === '模型返回内容未通过校验。');
+  check('摘要回退：未知原因使用通用文案', summaryFallbackText('something_else') === '模型暂时不可用。'
+    && summaryFallbackText(null) === '模型暂时不可用。');
+  check('摘要回退：页面不出现原始错误码', !/model_/u.test(
+    `${summaryFallbackText('model_timeout')}${summaryFallbackText('model_response_invalid')}${summaryFallbackText('x')}`,
+  ));
 }
 
 const failed = results.filter((r) => !r.ok);
