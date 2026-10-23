@@ -248,31 +248,21 @@ export function createQaNarrative({ transport = null } = {}) {
     if (typeof transport?.qaNarrative !== 'function') return failure(QA_NARRATIVE_CODES.UNAVAILABLE);
     const built = buildNarrativeRequest({ question, intent, facts, evidence });
     if (!built.ok) return failure(built.code, built.message);
-    let lastError = null;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      let result;
-      try {
-        result = await transport.qaNarrative(built.request);
-      } catch (error) {
-        return failure(QA_NARRATIVE_CODES.TRANSPORT, error?.message ? '在线解读服务暂时不可用' : undefined);
-      }
-      const text = parseAnswerText(result);
-      if (text === null) {
-        lastError = failure(QA_NARRATIVE_CODES.RESPONSE);
-        continue;
-      }
-      const checked = checkNarrativeText(text, built.request.allowed);
-      if (!checked.ok) {
-        lastError = failure(QA_NARRATIVE_CODES.CHECK);
-        continue;
-      }
-      return {
-        ok: true,
-        text: text.trim(),
-        number_check: { checked: checked.checked, matched_count: checked.checked, failed_count: 0 },
-      };
+    let result;
+    try {
+      result = await transport.qaNarrative(built.request);
+    } catch {
+      return failure(QA_NARRATIVE_CODES.TRANSPORT);
     }
-    return lastError ?? failure(QA_NARRATIVE_CODES.RESPONSE);
+    const text = parseAnswerText(result);
+    if (text === null) return failure(QA_NARRATIVE_CODES.RESPONSE);
+    const checked = checkNarrativeText(text, built.request.allowed);
+    if (!checked.ok) return failure(QA_NARRATIVE_CODES.CHECK);
+    return {
+      ok: true,
+      text: text.trim(),
+      number_check: { checked: checked.checked, matched_count: checked.checked, failed_count: 0 },
+    };
   }
 
   return Object.freeze({ ask });

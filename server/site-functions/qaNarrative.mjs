@@ -321,48 +321,66 @@ function validateNarrativeNumbers(text, allowed) {
   return { ok: true, checked: text.length };
 }
 
+function responseFailure(field, message, extra = {}) {
+  return {
+    ok: false,
+    code: QA_NARRATIVE_CODES.RESPONSE,
+    field,
+    message,
+    ...extra,
+  };
+}
+
+function responseMeta(rawText) {
+  return {
+    response_type: typeof rawText,
+    raw_length: typeof rawText === 'string' ? [...rawText].length : null,
+  };
+}
+
 export function validateQaNarrativeResponse(rawText, request) {
   if (typeof rawText !== 'string') {
-    return { ok: false, code: QA_NARRATIVE_CODES.RESPONSE, message: '响应不是字符串' };
+    return responseFailure('response', '响应不是字符串', responseMeta(rawText));
   }
   let parsed;
   try {
     parsed = JSON.parse(rawText);
   } catch {
-    return { ok: false, code: QA_NARRATIVE_CODES.RESPONSE, message: '响应不是合法 JSON' };
+    return responseFailure('json', '响应不是合法 JSON', responseMeta(rawText));
   }
   if (!isObject(parsed)) {
-    return { ok: false, code: QA_NARRATIVE_CODES.RESPONSE, message: '响应必须为对象' };
+    return responseFailure('response', '响应必须为对象', responseMeta(rawText));
   }
   if (Object.keys(parsed).length !== 1 || !Object.hasOwn(parsed, 'answer_text')) {
-    return { ok: false, code: QA_NARRATIVE_CODES.RESPONSE, message: '响应字段不符合约定' };
+    return responseFailure('response.keys', '响应字段不符合约定', responseMeta(rawText));
   }
   if (typeof parsed.answer_text !== 'string') {
-    return { ok: false, code: QA_NARRATIVE_CODES.RESPONSE, message: 'answer_text 必须为字符串' };
+    return responseFailure('answer_text', 'answer_text 必须为字符串', responseMeta(rawText));
   }
   const text = parsed.answer_text.trim();
   const length = [...text].length;
+  const meta = { ...responseMeta(rawText), answer_text_length: length };
   if (length < QA_NARRATIVE_MIN_ANSWER_CHARS || length > QA_NARRATIVE_MAX_ANSWER_CHARS) {
-    return { ok: false, code: QA_NARRATIVE_CODES.RESPONSE, message: 'answer_text 长度不符合约定' };
+    return responseFailure('answer_text.length', 'answer_text 长度不符合约定', meta);
   }
   if (CONTROL_RE.test(text)) {
-    return { ok: false, code: QA_NARRATIVE_CODES.RESPONSE, message: 'answer_text 包含换行或控制字符' };
+    return responseFailure('answer_text.control', 'answer_text 包含换行或控制字符', meta);
   }
   if (MARKDOWN_RE.test(text)) {
-    return { ok: false, code: QA_NARRATIVE_CODES.RESPONSE, message: 'answer_text 包含 Markdown 或链接' };
+    return responseFailure('answer_text.markdown', 'answer_text 包含 Markdown 或链接', meta);
   }
   if (FILE_RE.test(text)) {
-    return { ok: false, code: QA_NARRATIVE_CODES.RESPONSE, message: 'answer_text 包含文件名' };
+    return responseFailure('answer_text.file', 'answer_text 包含文件名', meta);
   }
   if (ADVICE_RE.test(text) || ADVICE_SUFFIX_RE.test(text) || PREDICTION_RE.test(text) || PERSONA_RE.test(text)) {
-    return { ok: false, code: QA_NARRATIVE_CODES.RESPONSE, message: 'answer_text 包含建议、预测或人格化表述' };
+    return responseFailure('answer_text.prohibited', 'answer_text 包含建议、预测或人格化表述', meta);
   }
   if (!isObject(request) || !isObject(request.allowed)) {
-    return { ok: false, code: QA_NARRATIVE_CODES.RESPONSE, message: '缺少允许值清单' };
+    return responseFailure('request.allowed', '缺少允许值清单', meta);
   }
   const checked = validateNarrativeNumbers(text, request.allowed);
   if (!checked.ok) {
-    return { ok: false, code: QA_NARRATIVE_CODES.RESPONSE, message: checked.message };
+    return responseFailure('answer_text.numbers', checked.message, meta);
   }
   return { ok: true, answer_text: text, checked: checked.checked };
 }

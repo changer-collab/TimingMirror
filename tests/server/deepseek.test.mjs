@@ -344,8 +344,8 @@ const NARRATIVE_ANSWER = '这笔交易需要按顺序核对：先看 600519 与 
     && user.evidence.length === 1, JSON.stringify(user).slice(0, 400));
   check('解读：请求不包含本地答案原文',
     !JSON.stringify(call.body).includes('确定性引擎已生成') && !('answer' in user), JSON.stringify(user).slice(0, 300));
-  check('解读：temperature 0.2、max_tokens 400、JSON 输出',
-    call.body.temperature === 0.2 && call.body.max_tokens === 400
+  check('解读：temperature 0.2、max_tokens 600、JSON 输出',
+    call.body.temperature === 0.2 && call.body.max_tokens === 600
     && call.body.response_format?.type === 'json_object', JSON.stringify(call.body).slice(0, 300));
   check('解读：读取 content 为 rawText', out.rawText === JSON.stringify({ answer_text: NARRATIVE_ANSWER }), out.rawText);
 }

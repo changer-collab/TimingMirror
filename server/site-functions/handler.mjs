@@ -487,7 +487,19 @@ export function createHandler({
       const result = await callTransport(transport, 'qaNarrative', validated.request);
       if (!result.ok) return errorResponse(result.status, result.code);
       const checked = validateQaNarrativeResponse(result.rawText, validated.request);
-      if (!checked.ok) return errorResponse(502, SITE_FUNCTION_CODES.QA_NARRATIVE_RESPONSE);
+      if (!checked.ok) {
+        // 只回传固定原因、字段路径和长度；不回传模型原文或账单内容。
+        return jsonResponse(502, {
+          ok: false,
+          code: SITE_FUNCTION_CODES.QA_NARRATIVE_RESPONSE,
+          message: MESSAGES[SITE_FUNCTION_CODES.QA_NARRATIVE_RESPONSE],
+          validation_reason: checked.message,
+          field: checked.field ?? null,
+          response_type: checked.response_type ?? typeof result.rawText,
+          raw_length: Number.isInteger(checked.raw_length) ? checked.raw_length : null,
+          answer_text_length: Number.isInteger(checked.answer_text_length) ? checked.answer_text_length : null,
+        });
+      }
       return jsonResponse(200, { rawText: JSON.stringify({ answer_text: checked.answer_text }) });
     }
 

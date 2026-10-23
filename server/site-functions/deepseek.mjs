@@ -233,7 +233,7 @@ export function createDeepSeekTransport({
       return call([
         { role: 'system', content: MODEL_PROMPTS.qaNarrative },
         { role: 'user', content: JSON.stringify({ question, intent, facts, evidence, allowed }) },
-      ], { temperature: 0.2, max_tokens: 400 });
+      ], { temperature: 0.2, max_tokens: 600 });
     },
     vision({ images }) {
       return callVision(images);

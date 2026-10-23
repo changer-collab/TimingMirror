@@ -99,22 +99,35 @@ function build(args = {}) {
   check('客户端：未配置 transport → UNAVAILABLE', noTransport.ok === false && noTransport.code === QA_NARRATIVE_CODES.UNAVAILABLE);
 
   const calls = [];
-  const flaky = createQaNarrative({
+  const single = createQaNarrative({
     transport: {
       async qaNarrative(request) {
         calls.push(request);
-        return calls.length === 1 ? { rawText: '{}' } : { rawText: VALID_RAW };
+        return { rawText: VALID_RAW };
       },
     },
   });
-  const recovered = await flaky.ask({ question: QUESTION, intent: 'worst_trade', facts: FACTS, evidence: EVIDENCE });
-  check('客户端：首次格式失败后第二次成功', recovered.ok === true
-    && recovered.text === VALID_TEXT && calls.length === 2, JSON.stringify({ recovered, calls: calls.length }));
-  check('客户端：发送体不含答案原文，且带允许值', calls.length === 2
+  const answered = await single.ask({ question: QUESTION, intent: 'worst_trade', facts: FACTS, evidence: EVIDENCE });
+  check('客户端：单次点击只请求一次并成功', answered.ok === true
+    && answered.text === VALID_TEXT && calls.length === 1, JSON.stringify({ answered, calls: calls.length }));
+  check('客户端：发送体不含答案原文，且带允许值', calls.length === 1
     && Object.keys(calls[0]).join(',') === 'question,intent,facts,evidence,allowed'
     && !JSON.stringify(calls[0]).includes('这笔交易的差额是')
     && calls[0].allowed.displays.includes('¥1,200.00'), JSON.stringify(calls[0]));
-  check('客户端：成功后返回数字校验计数', recovered.number_check && recovered.number_check.checked === [...VALID_TEXT].length, JSON.stringify(recovered.number_check));
+  check('客户端：成功后返回数字校验计数', answered.number_check && answered.number_check.checked === [...VALID_TEXT].length, JSON.stringify(answered.number_check));
+
+  const flakyCalls = [];
+  const flaky = createQaNarrative({
+    transport: {
+      async qaNarrative() {
+        flakyCalls.push(1);
+        return flakyCalls.length === 1 ? { rawText: '{}' } : { rawText: VALID_RAW };
+      },
+    },
+  });
+  const notRecovered = await flaky.ask({ question: QUESTION, intent: 'worst_trade', facts: FACTS, evidence: EVIDENCE });
+  check('客户端：格式失败后不自动重试', notRecovered.ok === false
+    && notRecovered.code === QA_NARRATIVE_CODES.RESPONSE && flakyCalls.length === 1, JSON.stringify({ notRecovered, calls: flakyCalls.length }));
 
   const invalidCalls = [];
   const invalid = createQaNarrative({
@@ -126,24 +139,29 @@ function build(args = {}) {
     },
   });
   const rejected = await invalid.ask({ question: QUESTION, intent: 'worst_trade', facts: FACTS, evidence: EVIDENCE });
-  check('客户端：校验失败两次 → CHECK 且不返回文本', rejected.ok === false
+  check('客户端：校验失败只请求一次 → CHECK 且不返回文本', rejected.ok === false
     && rejected.code === QA_NARRATIVE_CODES.CHECK
     && !('text' in rejected)
     && !JSON.stringify(rejected).includes('¥9,999.00')
-    && invalidCalls.length === 2, JSON.stringify(rejected));
+    && invalidCalls.length === 1, JSON.stringify(rejected));
 
+  const garbageCalls = [];
   const garbage = createQaNarrative({
-    transport: { async qaNarrative() { return { rawText: 'not-json' }; } },
+    transport: { async qaNarrative() { garbageCalls.push(1); return { rawText: 'not-json' }; } },
   });
   const garbageResult = await garbage.ask({ question: QUESTION, intent: 'worst_trade', facts: FACTS, evidence: EVIDENCE });
-  check('客户端：格式非法两次 → RESPONSE 且不返回文本', garbageResult.ok === false
-    && garbageResult.code === QA_NARRATIVE_CODES.RESPONSE && !('text' in garbageResult), JSON.stringify(garbageResult));
+  check('客户端：格式非法只请求一次 → RESPONSE 且不返回文本', garbageResult.ok === false
+    && garbageResult.code === QA_NARRATIVE_CODES.RESPONSE && !('text' in garbageResult)
+    && garbageCalls.length === 1, JSON.stringify({ garbageResult, calls: garbageCalls.length }));
 
+  const throwingCalls = [];
   const throwing = createQaNarrative({
-    transport: { async qaNarrative() { throw new Error('offline'); } },
+    transport: { async qaNarrative() { throwingCalls.push(1); throw new Error('offline'); } },
   });
   const thrown = await throwing.ask({ question: QUESTION, intent: 'worst_trade', facts: FACTS, evidence: EVIDENCE });
-  check('客户端：网络异常 → TRANSPORT', thrown.ok === false && thrown.code === QA_NARRATIVE_CODES.TRANSPORT);
+  check('客户端：网络/上游 5xx 失败 → TRANSPORT，只尝试一次且不返回文本', thrown.ok === false
+    && thrown.code === QA_NARRATIVE_CODES.TRANSPORT
+    && !('text' in thrown) && throwingCalls.length === 1, JSON.stringify({ thrown, throwingCalls: throwingCalls.length }));
 
   check('失败文案：映射稳定', qaNarrativeFailureText(QA_NARRATIVE_CODES.CHECK).includes('数字校验')
     && qaNarrativeFailureText('E_UNKNOWN').includes('未完成'));

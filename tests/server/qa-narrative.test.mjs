@@ -13,6 +13,7 @@ import {
   normalizeQaNarrativeRequest,
   validateQaNarrativeResponse,
 } from '../../server/site-functions/qaNarrative.mjs';
+import { MODEL_PROMPTS } from '../../server/site-functions/dashscope.mjs';
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -90,23 +91,31 @@ async function invoke(handler, path, body) {
     answer_text: '在 2024-09-27 卖出 000000 这笔交易的差额是 ¥1,200.00，来自卖出前后的价差对照；它只说明这次操作的结果。',
   });
   check('响应：已提供日期与代码通过', validateQaNarrativeResponse(withDate, request).ok === true);
+  check('提示词：要求逐字符复制 allowed、单字段 JSON 和输出前自检', MODEL_PROMPTS.qaNarrative.includes('allowed.displays')
+    && MODEL_PROMPTS.qaNarrative.includes('只能有 answer_text 一个字段')
+    && MODEL_PROMPTS.qaNarrative.includes('输出前自检')
+    && MODEL_PROMPTS.qaNarrative.includes('不要改写成“元”'), MODEL_PROMPTS.qaNarrative);
 
   const cases = [
-    ['额外字段', JSON.stringify({ answer_text: VALID_TEXT, extra: 1 })],
-    ['非 JSON', 'not-json'],
-    ['过短', JSON.stringify({ answer_text: '差额是 ¥1,200.00。' })],
-    ['含换行', JSON.stringify({ answer_text: `${VALID_TEXT}\n第二段` })],
-    ['Markdown', JSON.stringify({ answer_text: `# ${VALID_TEXT}` })],
-    ['新金额', JSON.stringify({ answer_text: '这笔交易的差额是 ¥9,999.00，来自卖出前后的价差对照；它只说明这次操作的结果，不涉及其他交易。' })],
-    ['新日期', JSON.stringify({ answer_text: '在 2024-09-28 卖出 000000 这笔交易的差额是 ¥1,200.00，来自卖出前后的价差对照；它只说明这次操作的结果。' })],
-    ['新代码', JSON.stringify({ answer_text: '600519 这笔交易的差额是 ¥1,200.00，来自卖出前后的价差对照；它只说明这次操作的结果，不涉及其他交易。' })],
-    ['新计数', JSON.stringify({ answer_text: '这笔交易的差额是 ¥1,200.00，共有 7 个同类交易；它只说明这次操作的结果，不涉及对其他交易的判断。' })],
-    ['中文计数', JSON.stringify({ answer_text: '这笔交易共一笔，差额是 ¥1,200.00，来自卖出前后的价差对照；它只说明这次操作的结果，不涉及其他交易。' })],
-    ['买卖建议', JSON.stringify({ answer_text: '建议卖出这只股票，这笔交易的差额是 ¥1,200.00，来自卖出前后的价差对照；只说明这次操作的结果。' })],
-    ['预测措辞', JSON.stringify({ answer_text: '预计后市会涨，这笔交易的差额是 ¥1,200.00，来自卖出前后的价差对照；只说明这次操作的结果。' })],
+    ['额外字段', JSON.stringify({ answer_text: VALID_TEXT, extra: 1 }), 'response.keys'],
+    ['非 JSON', 'not-json', 'json'],
+    ['空响应', '', 'json'],
+    ['空文本', JSON.stringify({ answer_text: '' }), 'answer_text.length'],
+    ['过短', JSON.stringify({ answer_text: '差额是 ¥1,200.00。' }), 'answer_text.length'],
+    ['含换行', JSON.stringify({ answer_text: `${VALID_TEXT}\n第二段` }), 'answer_text.control'],
+    ['Markdown', JSON.stringify({ answer_text: `# ${VALID_TEXT}` }), 'answer_text.markdown'],
+    ['新金额', JSON.stringify({ answer_text: '这笔交易的差额是 ¥9,999.00，来自卖出前后的价差对照；它只说明这次操作的结果，不涉及其他交易。' }), 'answer_text.numbers'],
+    ['新日期', JSON.stringify({ answer_text: '在 2024-09-28 卖出 000000 这笔交易的差额是 ¥1,200.00，来自卖出前后的价差对照；它只说明这次操作的结果。' }), 'answer_text.numbers'],
+    ['新代码', JSON.stringify({ answer_text: '600519 这笔交易的差额是 ¥1,200.00，来自卖出前后的价差对照；它只说明这次操作的结果，不涉及其他交易。' }), 'answer_text.numbers'],
+    ['新计数', JSON.stringify({ answer_text: '这笔交易的差额是 ¥1,200.00，共有 7 个同类交易；它只说明这次操作的结果，不涉及对其他交易的判断。' }), 'answer_text.numbers'],
+    ['中文计数', JSON.stringify({ answer_text: '这笔交易共一笔，差额是 ¥1,200.00，来自卖出前后的价差对照；它只说明这次操作的结果，不涉及其他交易。' }), 'answer_text.numbers'],
+    ['买卖建议', JSON.stringify({ answer_text: '建议卖出这只股票，这笔交易的差额是 ¥1,200.00，来自卖出前后的价差对照；只说明这次操作的结果。' }), 'answer_text.prohibited'],
+    ['预测措辞', JSON.stringify({ answer_text: '预计后市会涨，这笔交易的差额是 ¥1,200.00，来自卖出前后的价差对照；只说明这次操作的结果。' }), 'answer_text.prohibited'],
   ];
-  for (const [name, raw] of cases) {
-    check(`响应：${name}拒绝`, validateQaNarrativeResponse(raw, request).ok === false);
+  for (const [name, raw, field] of cases) {
+    const checkedCase = validateQaNarrativeResponse(raw, request);
+    check(`响应：${name}拒绝并给出字段路径`, checkedCase.ok === false && checkedCase.field === field,
+      JSON.stringify(checkedCase));
   }
 }
 
@@ -159,6 +168,22 @@ async function invoke(handler, path, body) {
     && leaking.json?.code === SITE_FUNCTION_CODES.QA_NARRATIVE_RESPONSE
     && !leaking.text.includes('9,999.00')
     && !leaking.text.includes('候选文本'), leaking.text);
+  check('handler：502 只返回脱敏诊断，含原因/字段/类型/长度', leaking.json?.validation_reason === '解读包含未提供的金额'
+    && leaking.json?.field === 'answer_text.numbers'
+    && leaking.json?.response_type === 'string'
+    && Number.isInteger(leaking.json?.raw_length) && leaking.json.raw_length > 0
+    && Number.isInteger(leaking.json?.answer_text_length) && leaking.json.answer_text_length > 0,
+  JSON.stringify(leaking.json));
+
+  const badJson = await invoke(createHandler({
+    transport: { async qaNarrative() { return { rawText: 'not-json' }; } },
+  }), '/api/llm/qa-narrative', requestBody());
+  check('handler：非 JSON 502 诊断字段为 json 且不回传原文', badJson.status === 502
+    && badJson.json?.validation_reason === '响应不是合法 JSON'
+    && badJson.json?.field === 'json'
+    && badJson.json?.response_type === 'string'
+    && badJson.json?.raw_length === 8
+    && !badJson.text.includes('not-json'), JSON.stringify(badJson.json));
 
   const noMethod = await invoke(createHandler({ transport: { intent: async () => ({ rawText: '{}' }) } }),
     '/api/llm/qa-narrative', requestBody());
