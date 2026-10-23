@@ -1,6 +1,6 @@
-// 全局 AI 助手 · 当前页面帮助（用户端；接口候选，未冻结）
-// 只做页面说明、操作步骤、隐私说明和当前可见状态/数字的解释；
-// 不做账单问答、不调用在线复述、不做画像记录，也不加载报告或行情。
+// 全局 AI 助手 · 说明视图 / 对话视图（用户端；接口候选，未冻结）
+// 说明视图只做页面说明、操作入口和本地帮助提示；对话视图承载完整助手对话。
+// 页面帮助和帮助提示不调用模型、行情或云端写入。
 import { el } from './components.js';
 import { isPageHelpQuestion } from '../agent/pageHelp.js';
 
@@ -22,6 +22,10 @@ const FACT_LABELS = Object.freeze({
   dragMoney: '择时差额',
   drag: '择时差',
 });
+
+const HELP_CHIP_COUNT = 3;
+const PORTFOLIO_KEYS = Object.freeze(['actualRet', 'ghostRet', 'drag', 'dragMoney']);
+const VISIBLE_KINDS = Object.freeze(['help', 'help-user', 'ai']);
 
 let seq = 0;
 
@@ -105,34 +109,47 @@ function routeHelpKey(route) {
 function pageIntro(state) {
   if (state.route === 'import') return '我说明导入格式、确认前检查和数据边界；不会读取或上传原始 CSV。';
   if (state.route === 'report') return '我说明当前页可见数字的含义、来源和状态；完整证据与追问请去报告细节或问答页。';
-  if (state.route === 'chat') return '问答页的完整问答在下方输入区；这里只说明本页操作、画像记录和隐私。';
+  if (state.route === 'chat') return '完整问答请在下方输入区继续；这里只说明本页操作、画像记录和隐私。';
   if (state.route === 'contract') return '我说明规则保存与测试的入口；具体判定以你保存的规则为准。';
   return '我说明当前页面的操作、隐私和可见状态；账单的完整复盘请在导入并确认后去问答页。';
 }
 
+function billLabelOf(bill) {
+  return bill?.demo === true
+    ? '示例账单'
+    : isConfirmedLocal(bill) ? '已确认本地账单' : (BILL_LABEL[bill?.status] ?? '未选择');
+}
+
 function pageContext(state, deps) {
   const bill = state.bill ?? {};
-  const confirmed = isConfirmedLocal(bill);
   const bundle = typeof deps?.getReportBundle === 'function' ? deps.getReportBundle(bill) : null;
   const published = bundle?.review?.portfolio_published === true;
   const report = bundle ? (published ? '已发布' : '未发布') : '尚未载入';
   const asOf = bundle?.asOfDate ?? bundle?.valuation?.effective_date ?? bill.supportScope?.asOfDate ?? null;
-  const billLabel = bill.demo === true
-    ? '示例账单'
-    : confirmed ? '已确认本地账单' : (BILL_LABEL[bill.status] ?? '未选择');
-  return `当前页：${PAGE_LABEL[state.route] ?? '首页'} · 账单：${billLabel} · 报告：${report}${asOf ? ` · 行情截止：${asOf}` : ''}`;
+  return `当前页：${PAGE_LABEL[state.route] ?? '首页'} · 账单：${billLabelOf(bill)} · 报告：${report}${asOf ? ` · 行情截止：${asOf}` : ''}`;
+}
+
+function compactContext(state, deps) {
+  const bill = state.bill ?? {};
+  const bundle = typeof deps?.getReportBundle === 'function' ? deps.getReportBundle(bill) : null;
+  const report = bundle ? (bundle.review?.portfolio_published === true ? '已发布' : '未发布') : '尚未载入';
+  return `当前页：${PAGE_LABEL[state.route] ?? '首页'} · 账单：${billLabelOf(bill)} · 报告：${report}`;
 }
 
 function publishedPortfolioValues(bundle) {
   const facts = Array.isArray(bundle?.review?.published_facts) ? bundle.review.published_facts : [];
   const byKey = new Map(facts.filter((f) => f?.scope === 'portfolio').map((f) => [f.key, f]));
-  const keys = ['actualRet', 'ghostRet', 'drag', 'dragMoney'];
   const values = {};
-  for (const key of keys) {
+  for (const key of PORTFOLIO_KEYS) {
     const fact = byKey.get(key);
     if (fact && typeof fact.display === 'string') values[key] = fact.display;
   }
   return values;
+}
+
+function hasCompletePortfolio(bundle) {
+  const values = publishedPortfolioValues(bundle);
+  return PORTFOLIO_KEYS.every((key) => typeof values[key] === 'string');
 }
 
 function importStatus(state) {
@@ -222,7 +239,7 @@ function reportStatus(state, deps) {
     };
   }
   const values = publishedPortfolioValues(bundle);
-  const complete = ['actualRet', 'ghostRet', 'drag', 'dragMoney'].every((key) => typeof values[key] === 'string');
+  const complete = PORTFOLIO_KEYS.every((key) => typeof values[key] === 'string');
   const lines = complete
     ? [
       `实际收益 ${values.actualRet} · 对照收益 ${values.ghostRet}`,
@@ -259,6 +276,111 @@ function pageStatus(state, deps) {
   return null;
 }
 
+function primaryAction(state, deps) {
+  if (state.route === 'home') {
+    return {
+      id: 'home-start',
+      kind: 'link',
+      label: '开始流程',
+      href: '#/import',
+      note: '先导入并确认账单；页面帮助不发送，原始 CSV 不上传。',
+    };
+  }
+  if (state.route === 'import') {
+    const rec = state.importRecovery ?? {};
+    const images = Array.isArray(rec.vision?.images) ? rec.vision.images.length : 0;
+    const visionReady = images > 0 && rec.vision?.status === 'ready';
+    const textReady = !visionReady && String(rec.content ?? '').trim() !== '' && rec.status === 'needs_ai';
+    if (!visionReady && !textReady) return null;
+    const pending = rec.pending === true;
+    const exhausted = rec.budgetExhausted === true;
+    const wired = typeof deps?.runImportAi === 'function';
+    return {
+      id: visionReady ? 'import-vision' : 'import-text',
+      kind: visionReady ? 'import-vision' : 'import-text',
+      label: pending ? '识别进行中…' : exhausted ? 'AI 识别次数已用完' : visionReady ? '让 AI 识别图片/PDF' : '让 AI 整理账单文字',
+      note: visionReady
+        ? `会发送所选 ${images} 张压缩图片或 PDF 页面，不发送原始文件；不会自动确认账单。`
+        : '会发送提取出的账单文字，不发送原始文件；不会自动确认账单。',
+      disabled: pending || exhausted || !wired,
+    };
+  }
+  if (state.route === 'report') {
+    const bundle = typeof deps?.getReportBundle === 'function' ? deps.getReportBundle(state.bill) : null;
+    const scope = state.report?.symbol || 'pool';
+    if (scope !== 'pool') {
+      return {
+        id: 'report-scope',
+        kind: 'link',
+        label: '查看报告页',
+        href: '#/report',
+        note: '当前是单标的视图；AI 解释只针对组合已发布数字，请先在报告页切回组合。',
+      };
+    }
+    if (!isConfirmedLocal(state.bill) || !bundle) {
+      return {
+        id: 'report-open',
+        kind: 'link',
+        label: '打开报告页',
+        href: '#/report',
+        note: '报告载入后可解释当前页面已发布的数字。',
+      };
+    }
+    if (bundle.review?.portfolio_published !== true || !hasCompletePortfolio(bundle)) {
+      return {
+        id: 'report-reason',
+        kind: 'link',
+        label: '查看报告原因',
+        href: '#/report',
+        note: '当前没有可解释的完整已发布组合数字；报告页会说明原因。',
+      };
+    }
+    return {
+      id: 'report-ai',
+      kind: 'report-ai',
+      label: '让 AI 解释当前数字',
+      note: '将发送当前页面已发布的数字和你的问题，不发送原始账单文件。',
+      disabled: state.assistant?.qaAiPending === true || typeof deps?.explainReport !== 'function',
+    };
+  }
+  if (state.route === 'contract') {
+    if (state.assistant?.marketNotice) {
+      return {
+        id: 'review-open',
+        kind: 'link',
+        label: '查看操作复盘',
+        href: '#/scenario',
+        note: '行情暂不可用，暂时不能解释复盘结果。',
+      };
+    }
+    if (state.assistant?.simulation || state.assistant?.resultExplanation) {
+      return {
+        id: 'review-ai',
+        kind: 'review-ai',
+        label: '让 AI 解释复盘结果',
+        note: '只发送本次复盘已核对的规则与结果摘要，不发送原始账单文件。',
+        disabled: state.assistant?.qaAiPending === true || typeof deps?.explainReviewResult !== 'function',
+      };
+    }
+    return {
+      id: 'review-open',
+      kind: 'link',
+      label: '去操作复盘',
+      href: '#/scenario',
+      note: '生成复盘结果后，可在这里让 AI 解释本次结果。',
+    };
+  }
+  if (state.route === 'chat') {
+    return {
+      id: 'chat-focus',
+      kind: 'focus-qa',
+      label: '定位到问答输入区',
+      note: '完整问答请使用下方输入框。',
+    };
+  }
+  return null;
+}
+
 export function pageHelpInfo(state, deps = {}) {
   const key = routeHelpKey(state.route);
   const bundle = typeof deps?.getReportBundle === 'function' ? deps.getReportBundle(state.bill) : null;
@@ -267,8 +389,10 @@ export function pageHelpInfo(state, deps = {}) {
   return {
     intro: pageIntro(state),
     context: pageContext(state, deps),
+    compactContext: compactContext(state, deps),
     topics: HELP[key],
     status: pageStatus(state, deps),
+    primary: primaryAction(state, deps),
     canHandoff,
     reportBlocked,
     showInput: state.route !== 'chat',
@@ -288,8 +412,17 @@ function findTopic(text) {
 export function visibleHelpMessages(state) {
   const contextId = billContextId(state);
   return (Array.isArray(state.assistant?.qaMessages) ? state.assistant.qaMessages : [])
-    .filter((message) => (message?.kind === 'help' || message?.kind === 'help-user')
+    .filter((message) => VISIBLE_KINDS.includes(message?.kind)
       && (message.billContextId === null || message.billContextId === undefined || message.billContextId === contextId));
+}
+
+function setAssistant(ctx, extra) {
+  ctx.set({ assistant: { ...ctx.state.assistant, ...extra } });
+}
+
+function setView(ctx, view) {
+  if (ctx.state.assistant?.view === view) return;
+  setAssistant(ctx, { view });
 }
 
 function appendHelp(ctx, text, assistant) {
@@ -300,7 +433,7 @@ function appendHelp(ctx, text, assistant) {
     { id: nextId(), role: 'user', kind: 'help-user', text, billContextId: contextId },
     { id: nextId(), role: 'assistant', kind: 'help', tag: '页面帮助', billContextId: contextId, ...assistant },
   ];
-  ctx.set({ assistant: { ...state.assistant, qaMessages: messages, qaInput: '' } });
+  setAssistant(ctx, { qaMessages: messages, qaInput: '', view: 'conversation' });
 }
 
 export function sendHelpText(ctx, raw) {
@@ -353,39 +486,6 @@ function handoffButton(question, label, ctx) {
   }, [label]);
 }
 
-function statusNode(status, ctx, info) {
-  if (!status) return null;
-  const box = el('div', { class: 'qa-status-card' }, [
-    el('div', { class: 'qa-status-title' }, [status.title]),
-    ...status.lines.map((line) => el('p', { class: 'qa-status-line' }, [line])),
-  ]);
-  const actions = [];
-  for (const action of Array.isArray(status.actions) ? status.actions : []) {
-    if (action.handoffQuestion && info.canHandoff) {
-      actions.push(handoffButton(action.handoffQuestion, action.label, ctx));
-    } else if (action.href) {
-      actions.push(el('a', { class: 'btn small', href: action.href }, [action.label]));
-    }
-  }
-  if (actions.length) box.append(el('div', { class: 'row qa-actions' }, actions));
-  return box;
-}
-
-function topicsNode(topics, ctx, info) {
-  const box = el('div', { class: 'qa-help-topics' });
-  for (const item of topics) {
-    const details = el('details', { class: 'qa-help-topic' }, [
-      el('summary', {}, [item.label]),
-      el('p', { class: 'qa-help-answer' }, [item.answer]),
-    ]);
-    if (item.handoffQuestion && info.canHandoff) {
-      details.append(el('div', { class: 'row qa-actions' }, [handoffButton(item.handoffQuestion, '去问答页继续', ctx)]));
-    }
-    box.append(details);
-  }
-  return box;
-}
-
 function helpMessageNode(message, ctx, info) {
   const box = el('div', { class: 'assistant-msg assistant qa-msg' }, [
     el('div', { class: 'qa-msg-text' }, [message.text]),
@@ -404,11 +504,47 @@ function helpMessageNode(message, ctx, info) {
   return box;
 }
 
+function aiMessageNode(message, ctx) {
+  const status = message.status === 'pending' ? 'pending' : message.status === 'failed' ? 'failed' : 'ok';
+  const box = el('div', {
+    class: `assistant-msg assistant qa-msg qa-ai-msg is-${status}`,
+    'data-role': 'assistant-ai-msg',
+    'data-status': status,
+    'aria-busy': status === 'pending' ? 'true' : 'false',
+  }, [
+    el('div', { class: 'qa-msg-text' }, [message.text]),
+  ]);
+  if (message.tag) box.append(el('div', { class: 'qa-tag' }, [message.tag]));
+  if (status === 'failed') {
+    box.append(el('div', { class: 'row qa-actions' }, [
+      el('button', {
+        class: 'btn small',
+        type: 'button',
+        'data-role': 'assistant-collapse',
+        'aria-label': '收起对话并查看页面说明',
+        onclick: () => setView(ctx, 'explain'),
+      }, ['查看页面说明']),
+    ]));
+  }
+  return box;
+}
+
 function messagesNode(messages, ctx, info) {
-  const box = el('div', { class: 'assistant-messages qa-messages', role: 'log', 'aria-live': 'polite' });
+  const box = el('div', {
+    class: 'assistant-messages qa-messages',
+    role: 'log',
+    'aria-live': 'polite',
+    'data-role': 'assistant-thread',
+  });
+  if (!messages.length) {
+    box.append(el('p', { class: 'qa-empty' }, ['还没有对话。可以点上面的帮助提示，或直接提问当前页面。']));
+    return box;
+  }
   for (const message of messages) {
     if (message.kind === 'help-user') {
       box.append(el('div', { class: 'assistant-msg user qa-msg' }, [message.text]));
+    } else if (message.kind === 'ai') {
+      box.append(aiMessageNode(message, ctx));
     } else {
       box.append(helpMessageNode(message, ctx, info));
     }
@@ -416,27 +552,64 @@ function messagesNode(messages, ctx, info) {
   return box;
 }
 
+function scrollMessagesToEnd() {
+  const run = () => {
+    if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return;
+    const node = document.querySelector('[data-role="assistant-thread"]');
+    if (node) node.scrollTop = node.scrollHeight;
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+  else setTimeout(run, 0);
+}
+
 function helpForm(ctx, info) {
-  const form = el('form', { class: 'qa-form' });
+  const form = el('form', { class: 'qa-form', 'aria-label': '页面帮助提问' });
   const input = el('textarea', {
     class: 'input qa-input assistant-help-input',
     rows: '2',
     maxlength: '200',
     placeholder: '问当前页面的操作或说明…',
     'data-role': 'assistant-help-input',
+    'aria-label': '页面帮助问题',
   });
   input.value = ctx.state.assistant.qaInput ?? '';
-  input.addEventListener('input', () => { ctx.state.assistant.qaInput = input.value; });
+  const submit = el('button', {
+    class: 'btn primary small',
+    type: 'submit',
+    'data-role': 'assistant-help-send',
+    'aria-label': '发送页面帮助问题',
+  }, ['发送']);
+  const syncDisabled = () => {
+    const empty = !String(input.value ?? '').trim();
+    submit.disabled = empty;
+    submit.setAttribute('aria-disabled', String(empty));
+  };
+  syncDisabled();
+  input.addEventListener('input', () => {
+    ctx.state.assistant.qaInput = input.value;
+    syncDisabled();
+  });
   input.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
+      if (!String(input.value ?? '').trim()) {
+        syncDisabled();
+        return;
+      }
       if (typeof form.requestSubmit === 'function') form.requestSubmit();
     }
   });
-  form.append(input, el('button', { class: 'btn primary small', type: 'submit' }, ['查看说明']));
+  form.append(input);
+  form.append(el('div', { class: 'row qa-form-row' }, [submit]));
+  form.append(el('p', { class: 'qa-send-hint' }, ['回答会显示在上方对话中，不会跳转页面。']));
   form.addEventListener('submit', (event) => {
     event.preventDefault();
-    sendHelpText(ctx, input.value);
+    const text = String(input.value ?? '').trim();
+    if (!text) {
+      syncDisabled();
+      return;
+    }
+    sendHelpText(ctx, text);
   });
   if (!info.canHandoff) {
     form.append(el('p', { class: 'qa-fine' }, [
@@ -448,28 +621,238 @@ function helpForm(ctx, info) {
   return form;
 }
 
-export function renderQaAssistant(ctx) {
-  const state = ctx.state;
+function topicChipsNode(topics, ctx) {
+  const box = el('div', { class: 'qa-chips qa-topic-chips', 'aria-label': '常见页面帮助' });
+  for (const item of topics.slice(0, HELP_CHIP_COUNT)) {
+    box.append(el('button', {
+      class: 'qa-chip',
+      type: 'button',
+      'data-role': 'assistant-topic',
+      'aria-label': `查看帮助：${item.label}`,
+      onclick: () => sendHelpText(ctx, item.question),
+    }, [item.label]));
+  }
+  return box;
+}
+
+function lastAnswerSummary(state) {
+  const messages = visibleHelpMessages(state);
+  const last = [...messages].reverse().find((message) => message.role === 'assistant'
+    && typeof message.text === 'string' && message.text.trim() !== '');
+  if (!last) return null;
+  const text = last.text.replace(/\s+/g, ' ').trim();
+  return text.length > 72 ? `${text.slice(0, 72)}…` : text;
+}
+
+function importFailureText(code) {
+  if (code === 'E_IMPORT_AI_BUDGET') return '本次 AI 识别次数已用完；本地解析结果仍然可用，可手动补全。';
+  if (code === 'E_IMPORT_AI_NO_SOURCE') return '当前没有可识别的截图、PDF 页面或账单文字。';
+  return 'AI 识别未完成；本地解析结果仍然可用，可在导入页手动补全或稍后重试。';
+}
+
+function pushAiTurn(ctx, userText, pendingText, tag) {
+  const contextId = billContextId(ctx.state);
+  const id = nextId();
+  const messages = [
+    ...(Array.isArray(ctx.state.assistant.qaMessages) ? ctx.state.assistant.qaMessages : []),
+    { id: nextId(), role: 'user', kind: 'help-user', text: userText, billContextId: contextId },
+    { id, role: 'assistant', kind: 'ai', tag, status: 'pending', text: pendingText, billContextId: contextId },
+  ];
+  setAssistant(ctx, { qaMessages: messages, qaInput: '', view: 'conversation', qaAiPending: true });
+  return id;
+}
+
+function finishAiTurn(ctx, id, { ok, text }) {
+  const messages = (Array.isArray(ctx.state.assistant.qaMessages) ? ctx.state.assistant.qaMessages : [])
+    .map((message) => (message.id === id ? { ...message, status: ok ? 'ok' : 'failed', text } : message));
+  setAssistant(ctx, { qaMessages: messages, qaAiPending: false });
+}
+
+async function runReportExplain(ctx) {
   const deps = ctx.qaDeps ?? {};
-  const info = pageHelpInfo(state, deps);
-  const root = el('section', { class: 'qa-assistant', 'aria-label': 'AI 页面帮助' });
-  root.append(el('div', { class: 'qa-page' }, [
-    el('p', { class: 'qa-page-intro' }, [info.intro]),
-    el('p', { class: 'qa-context' }, [info.context]),
+  if (ctx.state.assistant?.qaAiPending || typeof deps.explainReport !== 'function') return;
+  const bundle = typeof deps.getReportBundle === 'function' ? deps.getReportBundle(ctx.state.bill) : null;
+  if (!bundle || bundle.review?.portfolio_published !== true || !isConfirmedLocal(ctx.state.bill) || !hasCompletePortfolio(bundle)) return;
+  const id = pushAiTurn(ctx, '让 AI 解释当前数字', '正在请 AI 解释当前页面已发布的数字…', 'AI 解释');
+  let result;
+  try {
+    result = await deps.explainReport({
+      question: '解释当前页面已发布的组合数字及其含义',
+      bundle,
+      bill: ctx.state.bill,
+    });
+  } catch {
+    result = { ok: false };
+  }
+  if (result?.ok && typeof result.text === 'string' && result.text.trim()) {
+    finishAiTurn(ctx, id, { ok: true, text: result.text.trim() });
+  } else {
+    finishAiTurn(ctx, id, {
+      ok: false,
+      text: 'AI 解释未完成；本地页面说明仍然有效。可稍后重试，或查看页面说明。',
+    });
+  }
+}
+
+async function runImportAi(ctx, action) {
+  const deps = ctx.qaDeps ?? {};
+  if (ctx.state.assistant?.qaAiPending || typeof deps.runImportAi !== 'function') return;
+  const vision = action.kind === 'import-vision';
+  const id = pushAiTurn(
+    ctx,
+    action.label,
+    vision ? '正在发送所选图片/PDF 页面并整理交易草稿…' : '正在发送提取出的文字并整理交易草稿…',
+    'AI 识别',
+  );
+  let result;
+  try {
+    result = await deps.runImportAi({ bill: ctx.state.bill });
+  } catch {
+    result = { ok: false, code: 'E_IMPORT_AI_UNEXPECTED' };
+  }
+  if (result?.ok) {
+    const count = Number.isFinite(result.draftCount) ? result.draftCount : 0;
+    finishAiTurn(ctx, id, {
+      ok: true,
+      text: count > 0
+        ? `AI 已生成可编辑草稿（${count} 条交易）。请在导入页逐条核对；尚未确认账单，也不会生成报告。`
+        : 'AI 没有整理出新的交易。可在导入页手动补全；尚未确认账单，也不会生成报告。',
+    });
+    return;
+  }
+  finishAiTurn(ctx, id, { ok: false, text: importFailureText(result?.code) });
+}
+
+async function runReviewExplain(ctx) {
+  const deps = ctx.qaDeps ?? {};
+  if (ctx.state.assistant?.qaAiPending || typeof deps.explainReviewResult !== 'function') return;
+  const id = pushAiTurn(ctx, '让 AI 解释复盘结果', '正在请 AI 解释本次复盘结果…', 'AI 解释');
+  let result;
+  try {
+    result = await deps.explainReviewResult({});
+  } catch {
+    result = { ok: false };
+  }
+  if (result?.ok && typeof result.text === 'string' && result.text.trim()) {
+    finishAiTurn(ctx, id, { ok: true, text: result.text.trim() });
+  } else {
+    finishAiTurn(ctx, id, {
+      ok: false,
+      text: 'AI 解释未完成；本地复盘摘要仍然有效。可稍后重试，或查看页面说明。',
+    });
+  }
+}
+
+function runPrimaryAction(ctx, action) {
+  if (!action || action.disabled) return;
+  if (action.kind === 'link') {
+    const route = String(action.href ?? '').replace(/^#\//, '');
+    if (route && typeof ctx.go === 'function') ctx.go(route);
+    return;
+  }
+  if (action.kind === 'focus-qa') {
+    if (typeof ctx.qaDeps?.focusQaInput === 'function') ctx.qaDeps.focusQaInput();
+    return;
+  }
+  if (action.kind === 'report-ai') { runReportExplain(ctx); return; }
+  if (action.kind === 'import-vision' || action.kind === 'import-text') { runImportAi(ctx, action); return; }
+  if (action.kind === 'review-ai') runReviewExplain(ctx);
+}
+
+function primaryNode(action, ctx) {
+  if (!action) return null;
+  const box = el('div', { class: 'qa-primary', 'data-role': 'assistant-primary-area' });
+  if (action.note) box.append(el('p', { class: 'qa-primary-note' }, [action.note]));
+  box.append(el('div', { class: 'row qa-actions' }, [
+    el('button', {
+      class: 'btn primary small',
+      type: 'button',
+      'data-role': 'assistant-primary',
+      'data-action': action.id,
+      'aria-label': action.label,
+      disabled: action.disabled ? '' : null,
+      onclick: () => runPrimaryAction(ctx, action),
+    }, [action.label]),
   ]));
-  const status = statusNode(info.status, ctx, info);
-  if (status) root.append(status);
-  root.append(topicsNode(info.topics, ctx, info));
+  return box;
+}
+
+function explainView(ctx, info) {
+  const state = ctx.state;
+  const root = el('div', { class: 'qa-explain', 'data-role': 'assistant-explain' });
+  root.append(el('div', { class: 'qa-page' }, [
+    el('p', { class: 'qa-context' }, [info.context]),
+    el('p', { class: 'qa-page-intro' }, [info.intro]),
+  ]));
+  const primary = primaryNode(info.primary, ctx);
+  if (primary) root.append(primary);
+  root.append(topicChipsNode(info.topics, ctx));
+  root.append(el('div', { class: 'row qa-actions qa-expand-row' }, [
+    el('button', {
+      class: 'btn small',
+      type: 'button',
+      'data-role': 'assistant-expand',
+      'aria-label': '展开对话',
+      onclick: () => setView(ctx, 'conversation'),
+    }, ['展开对话']),
+  ]));
+  const summary = lastAnswerSummary(state);
+  if (summary) root.append(el('p', { class: 'qa-last-answer' }, [`上次回答：${summary}`]));
+  root.append(el('p', { class: 'qa-fine' }, [
+    '页面帮助在本机回答，不发送；账单分析请去问答页。原始 CSV 不上传。',
+  ]));
+  return root;
+}
+
+function conversationView(ctx, info) {
+  const state = ctx.state;
+  const root = el('div', { class: 'qa-conversation', 'data-role': 'assistant-conversation' });
+  root.append(el('div', { class: 'qa-conv-bar' }, [
+    el('p', { class: 'qa-context qa-context-line' }, [info.compactContext]),
+    el('button', {
+      class: 'btn small',
+      type: 'button',
+      'data-role': 'assistant-collapse',
+      'aria-label': '收起对话',
+      onclick: () => setView(ctx, 'explain'),
+    }, ['收起对话']),
+  ]));
+  root.append(messagesNode(visibleHelpMessages(state), ctx, info));
   if (info.showInput) {
-    root.append(messagesNode(visibleHelpMessages(state), ctx, info));
     root.append(helpForm(ctx, info));
     root.append(el('p', { class: 'qa-fine' }, [
       '页面帮助在本机回答，不发送；账单分析请去问答页。原始 CSV 不上传。',
     ]));
   } else {
-    root.append(el('p', { class: 'qa-fine' }, [
-      '这里只说明本页操作与隐私；完整问答请在下方输入区继续。',
+    root.append(el('div', { class: 'qa-chat-dock' }, [
+      el('p', { class: 'qa-fine' }, ['完整问答请使用下方输入框。']),
+      el('div', { class: 'row qa-actions' }, [
+        el('button', {
+          class: 'btn small',
+          type: 'button',
+          'data-role': 'assistant-focus-qa',
+          'aria-label': '定位到问答输入区',
+          onclick: () => {
+            if (typeof ctx.qaDeps?.focusQaInput === 'function') ctx.qaDeps.focusQaInput();
+          },
+        }, ['定位到问答输入区']),
+      ]),
     ]));
   }
+  return root;
+}
+
+export function renderQaAssistant(ctx) {
+  const state = ctx.state;
+  const deps = ctx.qaDeps ?? {};
+  const info = pageHelpInfo(state, deps);
+  const view = state.assistant?.view === 'conversation' ? 'conversation' : 'explain';
+  const root = el('section', {
+    class: 'qa-assistant',
+    'aria-label': 'AI 助手',
+    'data-view': view,
+  });
+  root.append(view === 'conversation' ? conversationView(ctx, info) : explainView(ctx, info));
+  if (view === 'conversation') scrollMessagesToEnd();
   return root;
 }

@@ -114,6 +114,8 @@ export function defaultAssistant() {
     marketNotice: null,
     qaMessages: [],
     qaInput: '',
+    view: 'explain',
+    qaAiPending: false,
     qaPending: false,
     qaRequestId: null,
     qaContextId: null,
