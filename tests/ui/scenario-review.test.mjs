@@ -23,10 +23,11 @@ check('入口：scenario 委托到操作复盘视图',
   /if \(section === 'scenario'\) \{\s*renderScenarioReview\(root, ctx\);\s*return;/.test(contract)
   && /export function renderScenarioReview\(root, ctx\)/.test(view));
 
-check('数据：适配器一次返回账本、画像与逐笔复盘',
+check('数据：适配器一次返回账本、画像与逐笔复盘（含自定义规则判定）',
   /const ledger = buildRuleLedger\(\{ rules, trades, market \}\)/.test(adapter)
   && /const patterns = trades\.length \? buildPatternList\(\{ trades, market \}\) : null/.test(adapter)
-  && /review: buildTradeReview\(\{ trades, ledger, patterns, market \}\)/.test(adapter));
+  && /const review = buildTradeReview\(\{ trades, ledger, patterns, market \}\)/.test(adapter)
+  && /enrichReviewWithCustomRules/.test(adapter));
 
 check('引擎：按 trade_id 聚合，汇总按唯一操作计数',
   /eventsByTrade\.get\(event\.trade_id\)/.test(engine)
@@ -51,10 +52,9 @@ check('汇总：结果先行，显示操作/违背/符合/无法确认',
   && /stat\('符合', s\.compliant_n, 'ok'\)/.test(view)
   && /stat\('无法确认', s\.missing_n, 'mode'\)/.test(view));
 
-check('自定义规则：明确披露未参与逐笔复盘，不计作符合',
+check('自定义规则：AI 判定结果纳入复盘展示',
   /const customRules = ruleSet\.customCurrent \?\? \[\]/.test(view)
-  && /自定义规则暂不参与逐笔复盘/.test(view)
-  && /不把它们算作“符合”/.test(view)
+  && !/暂不参与逐笔复盘/.test(view)
   && /customN/.test(view));
 
 check('习惯条：展示已成立习惯并声明不是合规结论',

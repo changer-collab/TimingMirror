@@ -35,6 +35,8 @@ import {
   actionApplies, notApplicableActionMessage, actionLabel, RULE_SCHEMA_V1, RULE_SCHEMA_V2, RULE_SPEC_CODES, RULE_CAPABILITIES,
 } from '../engine/ruleSpec.js';
 import { recognizeRule, confirmationState, RULE_TEXT_MAX_CHARS, SUPPORTED_RULE_EXAMPLES } from '../agent/ruleIntent.js';
+import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../agent/httpTransport.js';
+import { createCustomRuleJudgment, CUSTOM_RULE_JUDGMENT_CODES } from '../agent/customRuleJudgment.js';
 
 // 动态行情 Endpoint（同源；服务端注入 TUSHARE_TOKEN，浏览器不接触 token）
 export const MARKET_SNAPSHOT_URL = '/functions/v1/app/api/market/snapshot';
@@ -1738,9 +1740,16 @@ export async function contractSimContext({ bill, marketSource = DEFAULT_MARKET_S
     const mkt = await loadMarket(labels.id, scope);
     const market = mkt.market;
     const symbols = [...billSymbols, ...market.symbols.filter((s) => !billSymbols.includes(s))];
-    const rules = contractRuleSet(versions).current;
+    const ruleSet = contractRuleSet(versions);
+    const rules = ruleSet.current;
     const ledger = buildRuleLedger({ rules, trades, market });
     const patterns = trades.length ? buildPatternList({ trades, market }) : null;
+    const review = buildTradeReview({ trades, ledger, patterns, market });
+
+    // 自定义规则判定：逐笔调用 AI 判定，合并到 review
+    const customResults = await judgeCustomRulesForReview({ versions, trades, market, bill, marketSource });
+    const enrichedReview = enrichReviewWithCustomRules(review, customResults, ruleSet.customCurrent ?? []);
+
     return {
       ...meta,
       marketSource: marketMeta(mkt),
@@ -1754,7 +1763,7 @@ export async function contractSimContext({ bill, marketSource = DEFAULT_MARKET_S
       buys: trades.filter((t) => t.side === 'buy').map((t) => ({ trade_id: t.trade_id, symbol: t.symbol, trade_date: t.trade_date })),
       ledger,
       patterns,
-      review: buildTradeReview({ trades, ledger, patterns, market }),
+      review: enrichedReview,
     };
   } catch (e) {
     return { ...meta, error: String(e && e.message ? e.message : e) };
@@ -1913,6 +1922,189 @@ async function evaluateCustomRule(rule, { symbol, date, bill, marketSource, acti
       ? { ...out, code: 'E_MARKET_SOURCE', message: `动态行情获取失败：${message}` }
       : { ...out, code: CONTRACT_SIM_INPUT_INVALID, message: `情境输入无效：${message}` };
   }
+}
+
+// 批量自定义规则判定：对账单中所有匹配交易逐笔调用判定 API，返回每笔交易的判定结果。
+// 用于操作复盘场景：模板规则走确定性引擎，自定义规则走 AI 判定。
+async function judgeCustomRulesForReview({ versions, trades, market, bill, marketSource }) {
+  const ruleSet = contractRuleSet(versions);
+  const customRules = ruleSet.customCurrent ?? [];
+  if (!customRules.length) return [];
+
+  const transport = createHttpTransport({ baseUrl: SAME_ORIGIN_BASE, paths: SITE_FUNCTION_PATHS });
+  const judge = createCustomRuleJudgment({ transport, timeoutMs: 12000 });
+  const runId = `review-${Date.now()}`;
+
+  // 按规则分组匹配的交易
+  const results = [];
+  for (const rule of customRules) {
+    if (!rule.integrity.ok) continue;
+    const matchingTrades = trades.filter((t) => scopeApplies(rule.scope, t.symbol) && actionApplies(rule.action, t.side));
+    if (!matchingTrades.length) continue;
+
+    // 收集该规则涉及的所有买卖日期（作为上下文）
+    const tradingDays = market.tradingDays ?? [];
+
+    for (const trade of matchingTrades) {
+      // 只收集当前标的、当前交易日及之前的交易日期（不泄露未来信息）
+      const symbolBuys = trades.filter((t) => t.side === 'buy' && t.symbol === trade.symbol && t.trade_date <= trade.trade_date).map((t) => t.trade_date).sort();
+      const symbolSells = trades.filter((t) => t.side === 'sell' && t.symbol === trade.symbol && t.trade_date <= trade.trade_date).map((t) => t.trade_date).sort();
+
+      // 获取实际涨跌幅
+      const change = dayChangePct(market, trade.symbol, trade.trade_date);
+      const changePct = change.complete ? change.change_pct : null;
+
+      const entry = {
+        rule: simRuleOut(rule),
+        scenario_action: trade.side,
+        custom: {
+          status: 'pending',
+          data: {
+            symbol: trade.symbol,
+            requested_date: trade.trade_date,
+            effective_date: change.complete ? change.effective_date : trade.trade_date,
+            change_pct: changePct,
+            market_label: null,
+            buys: symbolBuys,
+            sells: symbolSells,
+            trading_days: tradingDays.slice(-500),
+          },
+        },
+      };
+
+      const judgment = await judge.judgeRule({ entry, runId });
+      let verdict, reason, code;
+      if (!judgment.ok) {
+        verdict = 'unable';
+        reason = '无法确认';
+        code = judgment.code ?? CUSTOM_RULE_JUDGMENT_CODES.UNAVAILABLE;
+      } else {
+        verdict = judgment.verdict === 'triggered' ? 'triggered' : judgment.verdict === 'not_triggered' ? 'not_triggered' : 'unable';
+        reason = judgment.reason ?? '';
+        code = null;
+      }
+
+      results.push({
+        trade_id: trade.trade_id,
+        rule_hash: rule.hash,
+        rule_text: rule.text,
+        template_id: null,
+        template_name: '自定义规则',
+        kind: 'custom',
+        verdict,
+        reason,
+        code,
+        enforcement: rule.enforcement ?? 'remind',
+        enforcement_label: rule.enforcement_label ?? '提醒',
+      });
+    }
+  }
+  return results;
+}
+
+// 将自定义规则判定结果合并到 review 结构中
+function enrichReviewWithCustomRules(review, customResults, rules) {
+  // 构建自定义规则摘要（字段名与模板规则保持一致）
+  const customRuleMap = new Map();
+  for (const r of rules) {
+    if (r.kind === 'custom') {
+      customRuleMap.set(r.hash, {
+        hash: r.hash,
+        template_id: null,
+        template_name: '自定义规则',
+        rule_text: r.text,
+        enforcement: r.enforcement ?? 'remind',
+        enforcement_label: r.enforcement_label ?? '提醒',
+        scope_text: r.scope_text ?? '全部股票',
+        applies_n: 0,
+        violated_n: 0,
+        warned_n: 0,
+        compliant_n: 0,
+        missing_n: 0,
+        not_applicable_n: 0,
+      });
+    }
+  }
+
+  // 统计每个规则的命中情况（按规则维度计数）
+  for (const cr of customResults) {
+    const summary = customRuleMap.get(cr.rule_hash);
+    if (!summary) continue;
+    summary.applies_n += 1;
+    const outcome = cr.verdict === 'triggered' ? (cr.enforcement === 'block' ? 'violated' : 'warned') : cr.verdict === 'not_triggered' ? 'compliant' : 'missing';
+    summary[`${outcome}_n`] += 1;
+  }
+
+  // 将自定义规则事件添加到对应操作的 events 中
+  const eventsByTrade = new Map();
+  for (const cr of customResults) {
+    if (!eventsByTrade.has(cr.trade_id)) eventsByTrade.set(cr.trade_id, []);
+    const outcomeLabel = cr.verdict === 'triggered'
+      ? (cr.enforcement === 'block' ? '违背规则' : '已提醒')
+      : cr.verdict === 'not_triggered'
+        ? '符合'
+        : '无法确认';
+    eventsByTrade.get(cr.trade_id).push({
+      rule_hash: cr.rule_hash,
+      template_id: null,
+      template_name: '自定义规则',
+      rule_text: cr.rule_text,
+      enforcement: cr.enforcement,
+      enforcement_label: cr.enforcement_label,
+      outcome: cr.verdict === 'triggered' ? (cr.enforcement === 'block' ? 'violated' : 'warned') : cr.verdict === 'not_triggered' ? 'compliant' : 'missing',
+      outcome_label: outcomeLabel,
+      message: cr.reason,
+      code: cr.code,
+      fact: null,
+      at: null,
+    });
+  }
+
+  // 更新 operations（重新计算每笔操作的 outcome）
+  const OUTCOME_PRIORITY = { violated: 5, warned: 4, missing: 3, compliant: 2, not_applicable: 1, no_rule: 0 };
+  const OUTCOME_LABEL = { violated: '违背规则', warned: '已提醒', missing: '无法确认', compliant: '符合', not_applicable: '无此情境', no_rule: '未参与复核' };
+
+  const updatedOperations = review.operations.map((op) => {
+    const customEvents = eventsByTrade.get(op.trade_id) ?? [];
+    if (!customEvents.length) return op;
+    const allEvents = [...op.events, ...customEvents];
+    const outcome = allEvents.reduce((best, e) => (OUTCOME_PRIORITY[e.outcome] > OUTCOME_PRIORITY[best] ? e.outcome : best), 'not_applicable');
+    return {
+      ...op,
+      events: allEvents.sort((a, b) => (OUTCOME_PRIORITY[b.outcome] - OUTCOME_PRIORITY[a.outcome]) || String(a.rule_hash).localeCompare(String(b.rule_hash))),
+      outcome,
+      outcome_label: OUTCOME_LABEL[outcome] ?? outcome,
+    };
+  });
+
+  // 从最终每笔操作的结果重新计算汇总（确保每笔只计一次，混合模板与自定义规则时不重复）
+  const finalSummary = {
+    trades_n: updatedOperations.length,
+    rules_n: review.rules.length + customRuleMap.size,
+    violated_n: 0,
+    warned_n: 0,
+    missing_n: 0,
+    compliant_n: 0,
+    not_applicable_n: 0,
+    no_rule_n: 0,
+    habits_n: review.summary.habits_n ?? 0,
+  };
+
+  for (const op of updatedOperations) {
+    if (op.outcome === 'violated') finalSummary.violated_n++;
+    else if (op.outcome === 'warned') finalSummary.warned_n++;
+    else if (op.outcome === 'missing') finalSummary.missing_n++;
+    else if (op.outcome === 'compliant') finalSummary.compliant_n++;
+    else if (op.outcome === 'not_applicable') finalSummary.not_applicable_n++;
+    else if (op.outcome === 'no_rule') finalSummary.no_rule_n++;
+  }
+
+  return {
+    ...review,
+    operations: updatedOperations,
+    rules: [...review.rules, ...customRuleMap.values()],
+    summary: finalSummary,
+  };
 }
 
 // 一次情境、所有当前规则逐条判定（各自走引擎链路，结果按规则分别返回，互不覆盖）；
