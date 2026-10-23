@@ -2,7 +2,7 @@
 /**
  * M1-C10 · 离线二十问候选验收矩阵（candidate-1；非冻结、非最终验收）
  *
- * 性质：candidate fixture + 结构/安全边界断言。题目取自当前已实现的 12 类 intent、planner 模板与
+ * 性质：candidate fixture + 结构/安全边界断言。题目取自当前已实现的 13 类 intent、planner 模板与
  *       factExport/answerFacts 离线能力；不代表 20 问清单已定稿，也不代表 R3 在线降级演练通过。
  * 覆盖：
  *   a 成功路径（loss_overview + portfolio）     b unsupported intent
@@ -67,7 +67,7 @@ const QUESTIONS = Object.freeze([
   { id: 'Q04', coverage: 'a', question: '我的组合比买入不动差了多少？', intent: 'loss_overview', scope: 'portfolio', review: buildFull, expect: passed() },
   { id: 'Q05', coverage: 'a', question: '帮我看一下组合层面的收益总览。', intent: 'loss_overview', scope: 'portfolio', review: buildFull, expect: passed() },
 
-  /* b. unsupported intent（均为 planner 已定义的 12 类意图；本阶段对话层仅支持 loss_overview） */
+  /* b. unsupported intent（均为 planner 已定义的 13 类意图；本阶段对话层仅支持 loss_overview） */
   { id: 'Q06', coverage: 'b', question: '我最错的一笔是哪个？', intent: 'worst_trade', scope: 'portfolio', review: buildFull, expect: combo() },
   { id: 'Q07', coverage: 'b', question: '为什么说我追高？', intent: 'pattern_explain', scope: 'portfolio', review: buildFull, expect: combo() },
   { id: 'Q08', coverage: 'b', question: '我该怎么改？', intent: 'how_to_change', scope: 'portfolio', review: buildFull, expect: combo() },
@@ -117,7 +117,7 @@ for (const q of QUESTIONS) {
 
 /* —— 数据集与题目来源 —— */
 check('数据集标记：candidate（非 frozen、非 accepted、非最终验收结论）', CANDIDATE_DATASET.status === 'candidate' && CANDIDATE_DATASET.frozen === false);
-check('题目：恰 20 条，intent 均属 planner 已定义 12 类（不发明能力）', QUESTIONS.length === 20 && QUESTIONS.every((q) => INTENTS.includes(q.intent)));
+check('题目：恰 20 条，intent 均属 planner 已定义 13 类（不发明能力）', QUESTIONS.length === 20 && QUESTIONS.every((q) => INTENTS.includes(q.intent)));
 const coverage = new Set(QUESTIONS.map((q) => q.coverage));
 check('题目：a–h 分组齐备', ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].every((c) => coverage.has(c)), JSON.stringify([...coverage]));
 

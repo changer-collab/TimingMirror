@@ -14,7 +14,7 @@ import {
   createDeepSeekTransport,
 } from '../../server/site-functions/deepseek.mjs';
 import { createModelTransport } from '../../server/site-functions/provider.mjs';
-import { ModelTransportError } from '../../server/site-functions/dashscope.mjs';
+import { MODEL_PROMPTS, ModelTransportError } from '../../server/site-functions/dashscope.mjs';
 import {
   IMPORT_VISION_CODES,
   IMPORT_VISION_STAGE,
@@ -305,6 +305,79 @@ async function invoke(handler, path, body) {
   await custom.intent({ question: QUESTION });
   check('Provider：DEEPSEEK_MODEL 可覆盖模型', fakeCustom.calls[0].body.model === 'custom-deepseek-model',
     fakeCustom.calls[0].body.model);
+}
+
+/* ==== qaNarrative：请求形状与 handler 校验 ==== */
+const NARRATIVE_REQUEST = {
+  question: '我最错的一笔是哪个？',
+  intent: 'worst_trade',
+  facts: [
+    { label: '最错一笔', value: '600519 于 2025-03-14 卖出 200 股，亏损 ¥1,200.00' },
+    { label: '卖出后走势', value: '5 个交易日内上涨 6.2%' },
+  ],
+  evidence: [{ label: '成交记录', detail: '卖出价与成本价之差确认亏损 ¥1,200.00' }],
+  allowed: {
+    numbers: ['200', '1200.00', '5', '6.2'],
+    counts: ['200股', '5个'],
+    dates: ['2025-03-14'],
+    symbols: ['600519'],
+    displays: ['¥1,200.00', '6.2%'],
+  },
+};
+const NARRATIVE_ANSWER = '这笔交易需要按顺序核对：先看 600519 与 2025-03-14 是否对应你想问的标的和日期，'
+  + '再看 200 股卖出与 ¥1,200.00 亏损确认规模，最后把卖出后 5 个交易日上涨 6.2% 放在一起理解这次离场的时间差。'
+  + '整段只复述上方事实，不评价买卖对错。';
+
+{
+  const fake = fakeFetch(() => reply(200, { choices: [{ message: { content: JSON.stringify({ answer_text: NARRATIVE_ANSWER }) } }] }));
+  const transport = createDeepSeekTransport({ apiKey: 'test-key', model: 'deepseek-flash', fetchImpl: fake.fetchImpl });
+  const out = await transport.qaNarrative(NARRATIVE_REQUEST);
+  const call = fake.calls[0];
+  const user = JSON.parse(call.body.messages[1].content);
+  check('解读：使用 qaNarrative 固定提示词', call.body.messages[0].role === 'system'
+    && call.body.messages[0].content === MODEL_PROMPTS.qaNarrative, call.body.messages[0].content.slice(0, 120));
+  check('解读：user 只含 question/intent/facts/evidence/allowed 五字段',
+    Object.keys(user).sort().join(',') === 'allowed,evidence,facts,intent,question'
+    && user.question === NARRATIVE_REQUEST.question
+    && user.intent === 'worst_trade'
+    && user.facts.length === 2
+    && user.evidence.length === 1, JSON.stringify(user).slice(0, 400));
+  check('解读：请求不包含本地答案原文',
+    !JSON.stringify(call.body).includes('确定性引擎已生成') && !('answer' in user), JSON.stringify(user).slice(0, 300));
+  check('解读：temperature 0.2、max_tokens 400、JSON 输出',
+    call.body.temperature === 0.2 && call.body.max_tokens === 400
+    && call.body.response_format?.type === 'json_object', JSON.stringify(call.body).slice(0, 300));
+  check('解读：读取 content 为 rawText', out.rawText === JSON.stringify({ answer_text: NARRATIVE_ANSWER }), out.rawText);
+}
+
+{
+  const fake = fakeFetch(() => reply(200, { choices: [{ message: { content: JSON.stringify({ answer_text: NARRATIVE_ANSWER }) } }] }));
+  const handler = createHandler({ transport: createDeepSeekTransport({ apiKey: 'test-key', fetchImpl: fake.fetchImpl }) });
+  const out = await invoke(handler, '/api/llm/qa-narrative', NARRATIVE_REQUEST);
+  check('解读 handler：合法请求 200 且回传已校验文本', out.status === 200
+    && JSON.parse(out.json?.rawText ?? '{}').answer_text === NARRATIVE_ANSWER, out.text);
+
+  const bad = await invoke(handler, '/api/llm/qa-narrative', {
+    question: NARRATIVE_REQUEST.question,
+    intent: NARRATIVE_REQUEST.intent,
+    facts: NARRATIVE_REQUEST.facts,
+    evidence: NARRATIVE_REQUEST.evidence,
+  });
+  check('解读 handler：缺少 allowed → 400 E_QA_NARRATIVE_REQUEST_INVALID', bad.status === 400
+    && bad.json?.code === SITE_FUNCTION_CODES.QA_NARRATIVE_REQUEST_INVALID, bad.text);
+
+  const leaky = createHandler({
+    transport: createDeepSeekTransport({
+      apiKey: 'test-key',
+      fetchImpl: async () => reply(200, {
+        choices: [{ message: { content: JSON.stringify({ answer_text: `${NARRATIVE_ANSWER}另有 3 笔交易未展示。` }) } }],
+      }),
+    }),
+  });
+  const rejected = await invoke(leaky, '/api/llm/qa-narrative', NARRATIVE_REQUEST);
+  check('解读 handler：模型新增未提供数字 → 502 且不回传候选文本', rejected.status === 502
+    && rejected.json?.code === SITE_FUNCTION_CODES.QA_NARRATIVE_RESPONSE
+    && !rejected.text.includes('另有'), rejected.text);
 }
 
 const failed = results.filter((r) => !r.ok);

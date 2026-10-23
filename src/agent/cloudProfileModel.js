@@ -6,6 +6,14 @@ const MODES = new Set(['summary', 'full']);
 const FACT_KINDS = new Set(['goal', 'preference', 'constraint', 'habit', 'risk_tolerance']);
 const SUMMARY_CONFIDENCE = new Set(['high', 'medium', 'low']);
 
+export const PROFILE_FACT_KIND_LABELS = Object.freeze({
+  goal: '目标',
+  preference: '偏好',
+  constraint: '约束',
+  habit: '习惯',
+  risk_tolerance: '风险承受',
+});
+
 export const SUMMARY_FALLBACK_LABELS = Object.freeze({
   model_not_configured: '服务端尚未配置模型。',
   model_unavailable: '模型服务暂时不可用。',

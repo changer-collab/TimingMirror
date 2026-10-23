@@ -4,19 +4,12 @@ import {
   buildProfileDigest, profileDigestHash, profileSummaryIsFresh,
 } from '../../src/agent/profileDigest.js';
 import {
-  cloudProfileFromBills, normalizeCloudBills, normalizeCloudFacts, summaryFallbackText,
-  summaryResponseView, validSummaryValue,
+  PROFILE_FACT_KIND_LABELS, cloudProfileFromBills, normalizeCloudBills, normalizeCloudFacts,
+  summaryFallbackText, summaryResponseView, validSummaryValue,
 } from '../../src/agent/cloudProfileModel.js';
 import { markCloudBillRemoved } from './cloudSync.js';
 
 const CACHE_TTL_MS = 15000;
-const FACT_KIND_LABELS = Object.freeze({
-  goal: '目标',
-  preference: '偏好',
-  constraint: '约束',
-  habit: '习惯',
-  risk_tolerance: '风险承受',
-});
 const CONFIDENCE_LABELS = Object.freeze({ high: '较高', medium: '中等', low: '偏低' });
 
 let cache = { status: 'idle', at: 0, data: null, error: null, promise: null };
@@ -45,6 +38,35 @@ function cloudErrorMessage(error) {
 
 export function invalidateCloudProfile() {
   cache = { status: 'idle', at: 0, data: null, error: null, promise: null };
+}
+
+// 问答页只读取已缓存的画像事实；缓存冷时由 loadCloudFacts 单独按需拉取，不触发账单列表请求。
+export function getCachedCloudFacts() {
+  if (cache.status === 'ready' && cache.data && Date.now() - cache.at < CACHE_TTL_MS) {
+    return cache.data.facts;
+  }
+  return null;
+}
+
+export async function loadCloudFacts(ctx) {
+  const cached = getCachedCloudFacts();
+  if (cached) return cached;
+  if (!ctx?.cloudDeps || typeof ctx.cloudDeps.getProfile !== 'function') return [];
+  const payload = await ctx.cloudDeps.getProfile();
+  const facts = normalizeCloudFacts(payload);
+  if (cache.status === 'ready' && cache.data) {
+    cache = { ...cache, at: Date.now(), data: { ...cache.data, facts } };
+  }
+  return facts;
+}
+
+export function appendCachedCloudFacts(facts) {
+  if (cache.status !== 'ready' || !cache.data) return;
+  const rows = Array.isArray(facts) ? facts.filter((fact) => fact && typeof fact.id === 'string') : [];
+  if (!rows.length) return;
+  const seen = new Set(cache.data.facts.map((fact) => fact.id));
+  const merged = [...rows.filter((fact) => !seen.has(fact.id)), ...cache.data.facts];
+  cache = { ...cache, at: Date.now(), data: { ...cache.data, facts: merged } };
 }
 
 function ensureData(ctx, { force = false } = {}) {
@@ -173,7 +195,7 @@ function factsHTML(data) {
   }
   const shown = facts.slice(0, 20);
   return `<div class="rp-cloud-fact-list">${shown.map((fact) => `<article class="rp-cloud-fact" data-fact-id="${esc(fact.id)}">
-    <div class="rp-cloud-fact-top"><span class="rp-cloud-kind">${esc(FACT_KIND_LABELS[fact.kind] ?? '事实')}</span><p>${esc(fact.value)}</p></div>
+    <div class="rp-cloud-fact-top"><span class="rp-cloud-kind">${esc(PROFILE_FACT_KIND_LABELS[fact.kind] ?? '事实')}</span><p>${esc(fact.value)}</p></div>
     ${fact.evidence ? `<p class="rp-cloud-evidence">原话：${esc(fact.evidence)}</p>` : ''}
     <div class="rp-cloud-fact-foot"><span>${esc(fmtAt(fact.created_at))} · ${fact.source === 'manual' ? '手动记录' : '来自你的陈述'}</span><button type="button" class="rp-cloud-delete" data-cloud-action="delete-fact" data-id="${esc(fact.id)}">删除</button></div>
   </article>`).join('')}${facts.length > shown.length ? `<p class="rp-note">只显示最近 ${shown.length} 条，共 ${facts.length} 条。</p>` : ''}</div>`;

@@ -1,20 +1,21 @@
 // M1-C6 · 确定性 planner（离线最小实现；接口候选，未冻结——依据 implementation-baseline 附A.1 与 F-8）
 // 职责：意图 JSON + 工具注册表 → 确定性 plan；不调用模型、不操作 DOM / localStorage / 网络。
 // 语义（候选）：
-//   · 复用 F-8 既定 12 类意图，不新增类别；越界/未匹配 → 零工具调用合规模板；
+//   · 复用 F-8 既定意图（含 best_trade），不新增工具；越界/未匹配 → 零工具调用合规模板；
 //   · 意图 JSON 非法 → 允许调用方重试 1 次（写入 retryIntentJson）→ 仍非法则兜底管线（零工具调用）；
 //   · 步骤参数由调用方上下文按名提供（不引入跨步骤隐式数据流）；缺参 → needs_context（澄清，不猜测）；
 //   · 工具异常/未知工具/参数非法 → 中止该步并记录降级，不吞错继续。
 import { TOOL_REGISTRY } from './toolRegistry.js';
 
 export const INTENTS = Object.freeze([
-  'worst_trade', 'loss_overview', 'pattern_explain', 'profile', 'what_if', 'similar_context',
+  'worst_trade', 'best_trade', 'loss_overview', 'pattern_explain', 'profile', 'what_if', 'similar_context',
   'how_to_change', 'contract_setup', 'contract_status', 'meta_calc', 'meta_trust', 'out_of_scope',
 ]);
 
 // 计划模板（候选：工具序列与理由；参数在 buildPlan 时按 context 解析）
 export const PLAN_TEMPLATES = Object.freeze({
   worst_trade: { template_id: 'T-worst-trade', steps: ['decompose.drag'], composition_reason: '最错一笔＝逐笔损耗分解降序取首（report 由调用方上下文提供）' },
+  best_trade: { template_id: 'T-best-trade', steps: ['decompose.drag'], composition_reason: '最赚一笔＝逐笔损耗分解升序取首（负损耗最大）' },
   loss_overview: { template_id: 'T-loss-overview', steps: ['indicators.compute', 'decompose.drag'], composition_reason: '整体表现：三指标＋逐笔损耗分解' },
   pattern_explain: { template_id: 'T-pattern-explain', steps: ['behavior.patternList'], composition_reason: '行为模式清单（当前仅“追高买入”实现；三态照实）' },
   profile: { template_id: 'T-profile', steps: ['behavior.patternList'], composition_reason: '画像四标签为 T3 暂缓；当前以行为清单为可用证据' },
@@ -44,11 +45,11 @@ export function hashQuestion(question) {
   return fnv1a64(String(question ?? ''));
 }
 
-/* 意图 JSON 形状校验：{ intent ∈ 12 类, slots: object, confidence: 0..1 } */
+/* 意图 JSON 形状校验：{ intent ∈ INTENTS, slots: object, confidence: 0..1 } */
 export function validateIntentJson(v) {
   const errors = [];
   if (v === null || typeof v !== 'object' || Array.isArray(v)) return { ok: false, errors: ['意图 JSON 必须为对象'] };
-  if (!INTENTS.includes(v.intent)) errors.push(`intent 非法：${String(v.intent)}（须为 F-8 的 12 类之一）`);
+  if (!INTENTS.includes(v.intent)) errors.push(`intent 非法：${String(v.intent)}（须为已定义意图之一）`);
   if (v.slots === null || typeof v.slots !== 'object' || Array.isArray(v.slots)) errors.push('slots 必须为对象');
   if (typeof v.confidence !== 'number' || !Number.isFinite(v.confidence) || v.confidence < 0 || v.confidence > 1) errors.push('confidence 必须为 [0,1] 数值');
   return { ok: errors.length === 0, errors };

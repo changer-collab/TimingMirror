@@ -2,7 +2,7 @@
 /**
  * 在线意图评测集 —— 离线校验（不联网）
  *
- * 覆盖：用例 ID/问题唯一、12 类各至少两条、主判定与可接受集合法、
+ * 覆盖：用例 ID/问题唯一、13 类各至少两条、主判定与可接受集合法、
  *       每条都绕过 L1（否则在线准确率没有意义）、槽位标注合法。
  * 运行：node tests/agent/intent-eval.test.mjs（或 npm run check）
  */
@@ -20,8 +20,8 @@ const ids = cases.map((c) => c.id);
 const questions = cases.map((c) => c.question);
 const unique = (list) => new Set(list).size === list.length;
 
-check('用例：共 25 条，ID 与问题不重复', cases.length === 25 && unique(ids) && unique(questions), `${cases.length}`);
-check('用例：expected 都在 12 类内', cases.every((c) => INTENTS.includes(c.expected)),
+check('用例：共 27 条，ID 与问题不重复', cases.length === 27 && unique(ids) && unique(questions), `${cases.length}`);
+check('用例：expected 都在 13 类内', cases.every((c) => INTENTS.includes(c.expected)),
   JSON.stringify(cases.filter((c) => !INTENTS.includes(c.expected)).map((c) => c.id)));
 check('用例：acceptable 合法且包含 expected', cases.every((c) => {
   const acceptable = c.acceptable ?? [c.expected];
@@ -33,7 +33,7 @@ check('用例：acceptable 合法且包含 expected', cases.every((c) => {
 
 const counts = new Map(INTENTS.map((intent) => [intent, 0]));
 for (const item of cases) counts.set(item.expected, (counts.get(item.expected) ?? 0) + 1);
-check('用例：12 类各至少 2 条', [...counts.values()].every((count) => count >= 2),
+check('用例：13 类各至少 2 条', [...counts.values()].every((count) => count >= 2),
   JSON.stringify(Object.fromEntries(counts)));
 
 const l1Hits = cases.filter((c) => routeQuestion(c.question).intent !== null);

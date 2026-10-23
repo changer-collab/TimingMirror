@@ -116,6 +116,10 @@ function streamOfChunks(chunks) {
   check('意图 schema：缺省 slots → 空对象',
     noSlots.ok && Object.keys(noSlots.value.slots).length === 0, JSON.stringify(noSlots));
 
+  const bestTrade = validateChatIntentResponse('{"intent":"best_trade","slots":{},"confidence":0.96}');
+  check('意图 schema：best_trade 与服务端类别一致，不被当作未知意图',
+    bestTrade.ok && bestTrade.value.intent === 'best_trade', JSON.stringify(bestTrade));
+
   const invalids = [
     ['未知意图', '{"intent":"market_forecast","slots":{},"confidence":0.9}'],
     ['置信度越界', '{"intent":"profile","slots":{},"confidence":1.2}'],
@@ -277,11 +281,12 @@ function streamOfChunks(chunks) {
   check('DashScope transport：Authorization 仅服务端持有', String(calls[0].options.headers.Authorization).startsWith('Bearer '));
   check('DashScope transport：返回 rawText', result.rawText.includes('loss_overview'));
   const intentMsgs = sent.input.messages;
-  check('DashScope intent：提示包含 12 类定义、口语示例与低置信度规则', intentMsgs[0].role === 'system'
-    && ['worst_trade', 'loss_overview', 'pattern_explain', 'profile', 'what_if', 'similar_context',
+  check('DashScope intent：提示包含 13 类定义、口语示例与低置信度规则', intentMsgs[0].role === 'system'
+    && ['worst_trade', 'best_trade', 'loss_overview', 'pattern_explain', 'profile', 'what_if', 'similar_context',
       'how_to_change', 'contract_setup', 'contract_status', 'meta_calc', 'meta_trust', 'out_of_scope']
       .every((intent) => intentMsgs[0].content.includes(intent))
     && intentMsgs[0].content.includes('示例：')
+    && intentMsgs[0].content.includes('问：我获利最高的一笔是哪个？ → {"intent":"best_trade"')
     && intentMsgs[0].content.includes('问：给我加一条买入前的提醒规则 → {"intent":"contract_setup"')
     && intentMsgs[0].content.includes('问：我的提醒最近触发过几次 → {"intent":"contract_status"')
     && intentMsgs[0].content.includes('confidence 低于 0.5'), intentMsgs[0].content);

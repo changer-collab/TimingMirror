@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * 操作复盘页（#/scenario）静态契约回归（不联网）。
- * 覆盖：真实成交聚合、汇总/习惯/时间线、状态分支、口径披露与移动端样式。
+ * 覆盖：真实成交聚合、汇总/习惯/时间线、状态分支、报告发布后预加载、口径披露与移动端样式。
  * 运行：node tests/ui/scenario-review.test.mjs
  */
 import { readFileSync } from 'node:fs';
@@ -15,6 +15,8 @@ const adapter = readFileSync(join(ROOT, 'src/demo/adapter.js'), 'utf8');
 const contract = readFileSync(join(ROOT, 'src/ui/views/contractView.js'), 'utf8');
 const css = readFileSync(join(ROOT, 'src/ui/styles.css'), 'utf8');
 const pkg = readFileSync(join(ROOT, 'package.json'), 'utf8');
+const bridge = readFileSync(join(ROOT, 'prototype/user-frontend/realBridge.js'), 'utf8');
+const report = readFileSync(join(ROOT, 'prototype/user-frontend/realReport.js'), 'utf8');
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -116,6 +118,14 @@ check('样式：使用 tr-* 命名并提供移动端 2×2 统计与单列事件'
   && /\.tr-op-head\s*\{/.test(css)
   && /@media \(max-width: 680px\) \{[\s\S]*?\.tr-stats, \.tr-stats-plain \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\); \}/.test(css)
   && /\.tr-op-main \{ flex-basis: 100%; order: 3; \}/.test(css));
+
+check('预加载：报告发布后按与页面相同的 reviewKey 预取复盘上下文',
+  /async function prewarmScenarioReview\(bill\)/.test(bridge)
+  && /reviewKey = `\$\{src\.key\}\|\$\{currentRules\.map\(\(rule\) => rule\.hash\)\.join\('\|'\)\}`/.test(bridge)
+  && /shared\.contracts = \{ \.\.\.\(shared\.contracts \?\? \{\}\), simContext: \{ \.\.\.context, reviewKey \} \}/.test(bridge)
+  && /prewarmScenario: prewarmScenarioReview/.test(bridge)
+  && /if \(!demo\) void ctx\?\.prewarmScenario\?\.\(bill\);/.test(report)
+  && /const contextKey = `\$\{src\.key\}\|\$\{currentRules\.map\(\(r\) => r\.hash\)\.join\('\|'\)\}`/.test(view));
 
 check('脚本：引擎与页面测试均加入 npm run check',
   /node tests\/trade-review\.test\.mjs/.test(pkg)

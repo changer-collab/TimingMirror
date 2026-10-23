@@ -3,7 +3,10 @@
 // expected 为主判定；acceptable 用于语义上同样合理的近义类别（仍要求包含 expected）。
 export const INTENT_EVAL_CASES = Object.freeze([
   Object.freeze({ id: 'worst-01', question: '这一堆操作里哪一次最让我后悔', expected: 'worst_trade' }),
-  Object.freeze({ id: 'worst-02', question: '帮我找出代价最高的那一次操作', expected: 'worst_trade' }),
+  Object.freeze({ id: 'worst-02', question: '哪一回操作事后看最拖后腿', expected: 'worst_trade' }),
+
+  Object.freeze({ id: 'best-01', question: '哪一次卖出事后看最加分', expected: 'best_trade' }),
+  Object.freeze({ id: 'best-02', question: '盘一下哪次操作卖得最漂亮', expected: 'best_trade' }),
 
   Object.freeze({ id: 'loss-01', question: '这段时间我的账户到底做得怎么样', expected: 'loss_overview' }),
   Object.freeze({ id: 'loss-02', question: '帮我概括一下这份账单的结果', expected: 'loss_overview' }),

@@ -588,6 +588,7 @@ function renderBundle(host, bundle, ctx, bill) {
       }
     } catch { /* 画像记录失败不阻断报告 */ }
   }
+  if (!demo) void ctx?.prewarmScenario?.(bill);
   let candidatePack = null;
   try {
     candidatePack = buildRuleCandidates({

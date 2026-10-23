@@ -22,6 +22,7 @@ export const SITE_FUNCTION_PATHS = Object.freeze({
   importVision: '/functions/v1/app/api/llm/import-vision',
   profileSummary: '/functions/v1/app/api/llm/profile-summary',
   profileFact: '/functions/v1/app/api/llm/profile-fact',
+  qaNarrative: '/functions/v1/app/api/llm/qa-narrative',
 });
 
 export const HTTP_TRANSPORT_CODES = Object.freeze({
@@ -69,10 +70,10 @@ function normalizePaths(paths) {
     throw new TypeError('paths 必须为对象');
   }
   const out = {};
-  for (const key of ['intent', 'restate', 'ruleIntent', 'resultExplanation', 'scenarioJudgment', 'customRuleJudgment', 'importRecover', 'importVision', 'profileSummary', 'profileFact']) {
+  for (const key of ['intent', 'restate', 'ruleIntent', 'resultExplanation', 'scenarioJudgment', 'customRuleJudgment', 'importRecover', 'importVision', 'profileSummary', 'profileFact', 'qaNarrative']) {
     const value = paths[key];
     if (value === undefined) {
-      if (key === 'ruleIntent' || key === 'resultExplanation' || key === 'scenarioJudgment' || key === 'customRuleJudgment' || key === 'importRecover' || key === 'importVision' || key === 'profileSummary' || key === 'profileFact') continue;
+      if (key === 'ruleIntent' || key === 'resultExplanation' || key === 'scenarioJudgment' || key === 'customRuleJudgment' || key === 'importRecover' || key === 'importVision' || key === 'profileSummary' || key === 'profileFact' || key === 'qaNarrative') continue;
       throw new TypeError(`paths.${key} 缺失`);
     }
     if (typeof value !== 'string' || !value.startsWith('/')
@@ -164,6 +165,10 @@ export function createHttpTransport({
     profileFact({ message, signal } = {}) {
       if (!routes.profileFact) throw transportError(HTTP_TRANSPORT_CODES.CONFIG);
       return request(routes.profileFact, { message }, signal);
+    },
+    qaNarrative({ question, intent, facts, evidence, allowed, signal } = {}) {
+      if (!routes.qaNarrative) throw transportError(HTTP_TRANSPORT_CODES.CONFIG);
+      return call(routes.qaNarrative, { question, intent, facts, evidence, allowed }, signal);
     },
     ruleIntent({ question, stage, allowed_intents, allowed_templates, allowed_tools, context_summary, signal } = {}) {
       if (!routes.ruleIntent) throw transportError(HTTP_TRANSPORT_CODES.CONFIG);

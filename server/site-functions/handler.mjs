@@ -56,6 +56,11 @@ import {
   normalizeCustomRuleJudgmentRequest,
   validateCustomRuleJudgmentResponse,
 } from './customRuleJudgment.mjs';
+import {
+  QA_NARRATIVE_CODES,
+  normalizeQaNarrativeRequest,
+  validateQaNarrativeResponse,
+} from './qaNarrative.mjs';
 
 export const SITE_FUNCTION_CODES = Object.freeze({
   NOT_FOUND: 'E_FUNCTION_NOT_FOUND',
@@ -91,6 +96,8 @@ export const SITE_FUNCTION_CODES = Object.freeze({
   SCENARIO_JUDGMENT_RESPONSE: SCENARIO_JUDGMENT_CODES.RESPONSE,
   CUSTOM_RULE_JUDGMENT_REQUEST_INVALID: CUSTOM_RULE_JUDGMENT_CODES.REQUEST_INVALID,
   CUSTOM_RULE_JUDGMENT_RESPONSE: CUSTOM_RULE_JUDGMENT_CODES.RESPONSE,
+  QA_NARRATIVE_REQUEST_INVALID: QA_NARRATIVE_CODES.REQUEST_INVALID,
+  QA_NARRATIVE_RESPONSE: QA_NARRATIVE_CODES.RESPONSE,
   MARKET_NOT_CONFIGURED: 'E_MARKET_NOT_CONFIGURED',
   MARKET_REQUEST_INVALID: 'E_MARKET_REQUEST_INVALID',
   MARKET_SYMBOL_UNKNOWN: 'E_MARKET_SYMBOL_UNKNOWN',
@@ -134,6 +141,8 @@ const MESSAGES = Object.freeze({
   [SITE_FUNCTION_CODES.SCENARIO_JUDGMENT_RESPONSE]: '情景判断响应未通过服务端校验',
   [SITE_FUNCTION_CODES.CUSTOM_RULE_JUDGMENT_REQUEST_INVALID]: '自定义规则判定请求未通过服务端校验',
   [SITE_FUNCTION_CODES.CUSTOM_RULE_JUDGMENT_RESPONSE]: '自定义规则判定响应未通过服务端校验',
+  [SITE_FUNCTION_CODES.QA_NARRATIVE_REQUEST_INVALID]: '问答解读请求未通过服务端校验',
+  [SITE_FUNCTION_CODES.QA_NARRATIVE_RESPONSE]: '问答解读响应未通过服务端校验',
   [SITE_FUNCTION_CODES.MARKET_NOT_CONFIGURED]: '行情未启用：服务端尚未配置 TUSHARE_TOKEN',
   [SITE_FUNCTION_CODES.MARKET_REQUEST_INVALID]: '行情请求未通过服务端校验',
   [SITE_FUNCTION_CODES.MARKET_SYMBOL_UNKNOWN]: '行情标的未在股票列表中找到（请核对 6 位 A 股代码）',
@@ -345,6 +354,8 @@ export function createHandler({
                   ? 'profileSummary'
                   : path.endsWith('/api/llm/profile-fact')
                     ? 'profileFact'
+                    : path.endsWith('/api/llm/qa-narrative')
+                      ? 'qaNarrative'
                     : path.endsWith('/api/llm/intent')
                   ? 'intent'
                   : path.endsWith('/api/llm/restate')
@@ -468,6 +479,16 @@ export function createHandler({
       const checked = validateProfileFactResponse(result.rawText, validated.message);
       if (!checked.ok) return errorResponse(502, SITE_FUNCTION_CODES.PROFILE_FACT_RESPONSE);
       return jsonResponse(200, { ok: true, facts: checked.facts });
+    }
+
+    if (stage === 'qaNarrative') {
+      const validated = normalizeQaNarrativeRequest(body);
+      if (!validated.ok) return errorResponse(400, SITE_FUNCTION_CODES.QA_NARRATIVE_REQUEST_INVALID);
+      const result = await callTransport(transport, 'qaNarrative', validated.request);
+      if (!result.ok) return errorResponse(result.status, result.code);
+      const checked = validateQaNarrativeResponse(result.rawText, validated.request);
+      if (!checked.ok) return errorResponse(502, SITE_FUNCTION_CODES.QA_NARRATIVE_RESPONSE);
+      return jsonResponse(200, { rawText: JSON.stringify({ answer_text: checked.answer_text }) });
     }
 
     let requestBody;

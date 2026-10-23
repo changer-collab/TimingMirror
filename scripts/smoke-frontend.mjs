@@ -854,7 +854,7 @@ state.report = { scenario: 'A', symbol: 'pool' };
       && chips().every((b) => !labelOf(b).includes('ONLINE'))
       && !pageVisibleTxt().includes('规则 v0 · 生效 0 条') && !findByClass(current, 'tm-qa-context').length
       && pageVisibleTxt().includes('本地回答不上传')
-      && pageVisibleTxt().includes('在线复述和画像记录只在你主动选择后发送')
+      && pageVisibleTxt().includes('在线复述、AI 解读和画像记录只在你主动选择后发送')
       && entries().length === 0, pageTxt().slice(0, 360));
   }
 
@@ -2589,6 +2589,56 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
   try { adapterMod.marketScopeFromTrades(many); } catch (e) { limitError = e; }
   check('动态行情：超过单次 10 只标的 → 明确阻断（不截断、不用部分标的冒充完整组合）',
     !!limitError && limitError.message.includes('上限 10') && limitError.message.includes('不截断'), limitError && limitError.message);
+}
+
+/* ==== AI 解读与画像事实回流：静态接线 ==== */
+{
+  const qaNarrativeMod = readFileSync(join(ROOT, 'src/agent/qaNarrative.js'), 'utf8');
+  const httpTransportSrc = readFileSync(join(ROOT, 'src/agent/httpTransport.js'), 'utf8');
+  const qaAnswerSrc = readFileSync(join(ROOT, 'prototype/user-frontend/qaAnswer.js'), 'utf8');
+  const qaChatSrc = readFileSync(join(ROOT, 'prototype/user-frontend/realChat.js'), 'utf8');
+  const qaBridgeSrc = readFileSync(join(ROOT, 'prototype/user-frontend/realBridge.js'), 'utf8');
+  const cloudProfileSrc = readFileSync(join(ROOT, 'prototype/user-frontend/cloudProfile.js'), 'utf8');
+  const narrativeIntents = qaAnswerSrc.slice(
+    qaAnswerSrc.indexOf('const NARRATIVE_INTENTS'),
+    qaAnswerSrc.indexOf('const FACT_LABELS'),
+  );
+
+  check('AI 解读：请求只由问题/意图/展示事实与允许值构造，不读取本地答案正文',
+    qaNarrativeMod.includes('export function buildNarrativeRequest')
+    && qaNarrativeMod.includes('export function checkNarrativeText')
+    && !qaNarrativeMod.includes('answer.text'), qaNarrativeMod.slice(0, 200));
+  check('AI 解读：站内路径与五字段 transport（signal 不进入请求体）',
+    httpTransportSrc.includes("qaNarrative: '/functions/v1/app/api/llm/qa-narrative'")
+    && httpTransportSrc.includes('qaNarrative({ question, intent, facts, evidence, allowed, signal } = {})')
+    && httpTransportSrc.includes('call(routes.qaNarrative, { question, intent, facts, evidence, allowed }, signal)'),
+    httpTransportSrc.slice(0, 200));
+  check('AI 解读：仅手动策略，覆盖 8 类意图并排除 loss_overview 与示例账单',
+    narrativeIntents.length > 0 && !narrativeIntents.includes('loss_overview')
+    && qaAnswerSrc.includes("narrative_policy: status === 'local' && NARRATIVE_INTENTS.has(intent) && bill?.demo !== true"),
+    narrativeIntents);
+  check('AI 解读：答疑服务提供 narrate，桥接注入 askNarrative 与 narrateAnswer',
+    qaAnswerSrc.includes('async function narrate(')
+    && qaAnswerSrc.includes('return Object.freeze({ ask, narrate })')
+    && qaBridgeSrc.includes('createQaNarrative')
+    && qaBridgeSrc.includes('narrateAnswer: (args) => getQaAnswerClient().narrate(args)'),
+    qaBridgeSrc.slice(0, 200));
+  check('画像事实：独立 saved_facts 通道 + 缓存/冷加载/追加接线',
+    qaAnswerSrc.includes('saved_facts: cleanSavedFacts')
+    && qaBridgeSrc.includes('getSavedFacts: () => getCachedCloudFacts()')
+    && qaBridgeSrc.includes('loadSavedFacts: () => loadCloudFacts(ctx)')
+    && qaBridgeSrc.includes('appendCachedCloudFacts')
+    && cloudProfileSrc.includes('export function getCachedCloudFacts')
+    && cloudProfileSrc.includes('export async function loadCloudFacts'),
+    qaBridgeSrc.slice(0, 200));
+  check('画像事实：对话内只读展示并提供个人中心入口',
+    qaChatSrc.includes('function savedFactsHTML')
+    && qaChatSrc.includes('你主动记入的画像事实')
+    && qaChatSrc.includes('href="#/me"'), qaChatSrc.slice(0, 200));
+  check('画像事实：保存后提示旧解读需重新生成，不自动重算摘要',
+    qaChatSrc.includes('summary_stale: true')
+    && qaChatSrc.includes('画像已更新；')
+    && !qaChatSrc.includes('generateProfileSummary('), qaChatSrc.slice(0, 200));
 }
 
 /* ---- 输出 ---- */

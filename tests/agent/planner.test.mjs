@@ -175,7 +175,7 @@ const REPORT = computeIndicators({ trades: TRADES, closes: CLOSES });
   const c = buildPlan({ ...args, question: '换个问题' });
   check('确定性：问题不同 → plan_id 不同', a.plan_id !== c.plan_id);
   check('确定性：hashQuestion 稳定（同题同值）', hashQuestion('abc') === hashQuestion('abc') && hashQuestion('abc') !== hashQuestion('abd'));
-  check('意图全集：12 类且每类均有模板', INTENTS.length === 12 && INTENTS.every((i) => PLAN_TEMPLATES[i] !== undefined));
+  check('意图全集：13 类且每类均有模板', INTENTS.length === 13 && INTENTS.every((i) => PLAN_TEMPLATES[i] !== undefined));
 
   const line = toLogLine(a, { ts: 'T0' });
   check('日志：含附A.1 关键字段', line.ts === 'T0' && line.plan_id === a.plan_id && line.intent === 'worst_trade' && line.template === 'T-worst-trade'
