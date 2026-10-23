@@ -37,6 +37,17 @@ function normalizeText(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
 }
 
+function sanitizeAiText(value) {
+  let text = String(value ?? '');
+  text = text.replace(/[（(][^（）()]*CALC_[A-Z0-9_]+[^（）()]*[）)]/gu, '');
+  text = text.replace(/CALC_[A-Z0-9_]+/gu, '');
+  text = text.replace(/\bE_[A-Z0-9_]+\b/gu, '');
+  text = text.replace(/\bsrc-[0-9a-f]{8}\b/gu, '');
+  text = text.replace(/\b(?:formula_ref|fact_ref|request_id|trace_id|flow_id)\b/gu, '');
+  text = text.replace(/[ \t]{2,}/gu, ' ').replace(/\s+([，。；：、])/gu, '$1');
+  return text.trim();
+}
+
 function isConfirmedLocal(bill) {
   return !!bill && bill.status === 'confirmed' && bill.sourceType === 'local' && !bill.blocked
     && Array.isArray(bill.trades) && bill.trades.length > 0;
@@ -512,7 +523,7 @@ function aiMessageNode(message, ctx) {
     'data-status': status,
     'aria-busy': status === 'pending' ? 'true' : 'false',
   }, [
-    el('div', { class: 'qa-msg-text' }, [message.text]),
+    el('div', { class: 'qa-msg-text' }, [sanitizeAiText(message.text)]),
   ]);
   if (message.tag) box.append(el('div', { class: 'qa-tag' }, [message.tag]));
   if (status === 'failed') {
@@ -663,8 +674,9 @@ function pushAiTurn(ctx, userText, pendingText, tag) {
 }
 
 function finishAiTurn(ctx, id, { ok, text }) {
+  const cleaned = sanitizeAiText(text) || (ok ? 'AI 已返回结果。' : 'AI 未完成；本地说明仍然有效。');
   const messages = (Array.isArray(ctx.state.assistant.qaMessages) ? ctx.state.assistant.qaMessages : [])
-    .map((message) => (message.id === id ? { ...message, status: ok ? 'ok' : 'failed', text } : message));
+    .map((message) => (message.id === id ? { ...message, status: ok ? 'ok' : 'failed', text: cleaned } : message));
   setAssistant(ctx, { qaMessages: messages, qaAiPending: false });
 }
 
