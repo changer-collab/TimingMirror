@@ -578,18 +578,20 @@ export function renderRealChat(host, ctx) {
     : emptyHTML();
 
   host.innerHTML = `<div class="tm-qa-page">
-    <div class="tm-qa-layout">
-      <div class="tm-qa-main">
-        <div class="tm-qa-scroll" data-role="qa-scroll">
-          ${headHTML(entries.length > 0 || pending, isDemo, clearArmed)}
-          <div class="tm-qa-log" data-role="qa-ledger" aria-live="polite">${logHTML}</div>
+    <div class="container">
+      <div class="tm-qa-layout">
+        <div class="tm-qa-main">
+          <div class="tm-qa-scroll" data-role="qa-scroll">
+            ${headHTML(entries.length > 0 || pending, isDemo, clearArmed)}
+            <div class="tm-qa-log" data-role="qa-ledger" aria-live="polite">${logHTML}</div>
+          </div>
+          <div class="tm-qa-dock" data-role="qa-dock" aria-label="提问区">
+            ${suggestHTML(pending)}
+            ${askHTML(pending, privacyLine(draft), handoffNotice)}
+          </div>
         </div>
-        <div class="tm-qa-dock" data-role="qa-dock" aria-label="提问区">
-          ${suggestHTML(pending)}
-          ${askHTML(pending, privacyLine(draft), handoffNotice)}
-        </div>
+        ${sideHTML(state, ctx)}
       </div>
-      ${sideHTML(state, ctx)}
     </div>
   </div>`;
 
