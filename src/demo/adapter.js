@@ -1111,6 +1111,14 @@ export const CONTRACT_MARKET_OPTIONS = Object.freeze([
 ]);
 
 export function contractSimLabels(sourceId = DEFAULT_MARKET_SOURCE) {
+  if (sourceId === 'demo-frozen') {
+    return {
+      id: 'demo-frozen',
+      label: '示例行情（Tushare 历史日线快照）· 非实时',
+      scopeNote: '示例场景冻结行情（估值日固定）· 历史模拟，非实时提醒 · 不构成投资建议',
+      marketLabel: MARKET_SOURCE_META['demo-frozen'].label,
+    };
+  }
   if (sourceId === 'signed-cache') {
     return {
       id: 'signed-cache',
@@ -1677,9 +1685,25 @@ function isLocalBill(bill) {
   return !!bill && bill.status === 'confirmed' && bill.sourceType === 'local';
 }
 
+export function isDemoFrozenBill(bill) {
+  return !!bill && bill.demo === true && bill.marketSource === 'demo-frozen';
+}
+
 export function contractTradeSource(bill, marketSource = DEFAULT_MARKET_SOURCE) {
+  const demoFrozen = isDemoFrozenBill(bill);
   if (isLocalBill(bill)) {
     const name = String(bill.fileName || 'user-bill.csv');
+    if (demoFrozen) {
+      const scenarioId = bill.demoScenarioId ?? bill.demoScenario?.id ?? '';
+      return {
+        kind: 'user_bill',
+        label: `示例场景账单（${name}）`,
+        fileName: name,
+        market_label: MARKET_SOURCE_META['demo-frozen'].label,
+        marketSource: 'demo-frozen',
+        key: `demo-frozen:${scenarioId}:${name}:${JSON.stringify(bill.trades)}`,
+      };
+    }
     return {
       kind: 'user_bill',
       label: `已确认本地账单（${name}）`,
@@ -1727,16 +1751,21 @@ function contractMarketScope(trades, local) {
 // 情境上下文：本地账单与示例账单均按所选行情来源（默认 Tushare 动态日线）取数。
 // 本地账单先过已知公司行为边界；取数/校验失败原样返回 error，不回落示例账单或其他行情来源。
 export async function contractSimContext({ bill, marketSource = DEFAULT_MARKET_SOURCE, versions = [] } = {}) {
-  const labels = contractSimLabels(marketSource);
+  const demoFrozen = isDemoFrozenBill(bill);
+  const labels = contractSimLabels(demoFrozen ? 'demo-frozen' : marketSource);
   const local = isLocalBill(bill);
+  const scenarioId = bill?.demoScenarioId ?? bill?.demoScenario?.id ?? null;
   const { source, trades } = await sourceTrades(bill, labels.id);
   const meta = { label: labels.label, scopeNote: labels.scopeNote, sourceKey: source.key };
+  if (demoFrozen && !scenarioId) return { ...meta, error: '示例场景账单缺少场景标识：不回落其他行情。' };
   if (local && !isConfirmedLocalBill(bill)) return { ...meta, error: 'E_BILL_NOT_CONFIRMED · 本地账单校验未通过，禁止回退演示数据。' };
   const boundary = local ? localTradeBoundary(trades) : [];
   if (boundary.length) return { ...meta, error: boundary.map((e) => `${e.code} · ${e.message}`).join('；') };
   try {
     const billSymbols = [...new Set(trades.map((t) => t.symbol))].sort();
-    const scope = labels.id === 'dynamic-tushare' ? contractMarketScope(trades, local) : null;
+    const scope = labels.id === 'dynamic-tushare'
+      ? contractMarketScope(trades, local)
+      : labels.id === 'demo-frozen' ? { scenarioId } : null;
     const mkt = await loadMarket(labels.id, scope);
     const market = mkt.market;
     const symbols = [...billSymbols, ...market.symbols.filter((s) => !billSymbols.includes(s))];
@@ -1810,9 +1839,11 @@ function dateMappingOf(requestedDate, change, market) {
 }
 
 async function evaluateRuleDemo(rule, { symbol, date, bill, marketSource, action }) {
-  const labels = contractSimLabels(marketSource);
+  const demoFrozen = isDemoFrozenBill(bill);
+  const labels = contractSimLabels(demoFrozen ? 'demo-frozen' : marketSource);
   const applies = scopeApplies(rule.scope, symbol) && actionApplies(rule.action, action);
   const local = isLocalBill(bill);
+  const scenarioId = bill?.demoScenarioId ?? bill?.demoScenario?.id ?? null;
   const out = {
     ok: false, label: labels.label, scopeNote: labels.scopeNote, symbol: symbol ?? null, requested_date: date ?? null, scenario_action: action,
     rule: simRuleOut(rule),
@@ -1823,6 +1854,7 @@ async function evaluateRuleDemo(rule, { symbol, date, bill, marketSource, action
   const gated = scopeGate(out, rule, symbol, action);
   if (gated) return gated;
   if (local && !isConfirmedLocalBill(bill)) return { ...out, code: 'E_BILL_NOT_CONFIRMED', message: '本地账单校验未通过，禁止回退演示数据。' };
+  if (demoFrozen && !scenarioId) return { ...out, code: 'E_DEMO_SCENARIO_MISSING', message: '示例场景账单缺少场景标识：不回落其他行情。' };
   const parsed = rule.parsed;
   try {
     const { source, trades } = await sourceTrades(bill, labels.id);
@@ -1830,7 +1862,9 @@ async function evaluateRuleDemo(rule, { symbol, date, bill, marketSource, action
       const boundary = localTradeBoundary(trades);
       if (boundary.length) return { ...out, code: boundary[0].code, message: boundary.map((e) => e.message).join('；'), tradesSource: source };
     }
-    const scope = labels.id === 'dynamic-tushare' ? contractMarketScope(trades, local) : null;
+    const scope = labels.id === 'dynamic-tushare'
+      ? contractMarketScope(trades, local)
+      : labels.id === 'demo-frozen' ? { scenarioId } : null;
     const market = (await loadMarket(labels.id, scope)).market;
     out.in_market_cache = market.symbols.includes(symbol);
     // 签收缓存路径沿用 v1 口径：范围内非交易日不映射、不补价；日期超范围由缓存引擎报 OUT_OF_RANGE。
@@ -1874,9 +1908,11 @@ function simulationDisplay(result) {
 // 适用的规则由页面层逐条请求模型辅助判定，这里只负责整理判定所需的最小情境数据（不上传价格、金额与其他标的记录）。
 const CUSTOM_CALENDAR_MAX_DAYS = 500;
 async function evaluateCustomRule(rule, { symbol, date, bill, marketSource, action }) {
-  const labels = contractSimLabels(marketSource);
+  const demoFrozen = isDemoFrozenBill(bill);
+  const labels = contractSimLabels(demoFrozen ? 'demo-frozen' : marketSource);
   const applies = scopeApplies(rule.scope, symbol) && actionApplies(rule.action, action);
   const local = isLocalBill(bill);
+  const scenarioId = bill?.demoScenarioId ?? bill?.demoScenario?.id ?? null;
   const out = {
     ok: false, label: labels.label, scopeNote: labels.scopeNote, symbol: symbol ?? null, requested_date: date ?? null, scenario_action: action,
     rule: simRuleOut(rule),
@@ -1888,13 +1924,16 @@ async function evaluateCustomRule(rule, { symbol, date, bill, marketSource, acti
   const gated = scopeGate(out, rule, symbol, action);
   if (gated) return gated;
   if (local && !isConfirmedLocalBill(bill)) return { ...out, code: 'E_BILL_NOT_CONFIRMED', message: '本地账单校验未通过，禁止回退演示数据。' };
+  if (demoFrozen && !scenarioId) return { ...out, code: 'E_DEMO_SCENARIO_MISSING', message: '示例场景账单缺少场景标识：不回落其他行情。' };
   try {
     const { source, trades } = await sourceTrades(bill, labels.id);
     if (local) {
       const boundary = localTradeBoundary(trades);
       if (boundary.length) return { ...out, code: boundary[0].code, message: boundary.map((e) => e.message).join('；'), tradesSource: source };
     }
-    const scope = labels.id === 'dynamic-tushare' ? contractMarketScope(trades, local) : null;
+    const scope = labels.id === 'dynamic-tushare'
+      ? contractMarketScope(trades, local)
+      : labels.id === 'demo-frozen' ? { scenarioId } : null;
     const market = (await loadMarket(labels.id, scope)).market;
     out.in_market_cache = market.symbols.includes(symbol);
     const change = dayChangePct(market, symbol, date);
@@ -2120,7 +2159,8 @@ export async function simulateContracts({ versions, symbol, date, bill, marketSo
   }));
   const rulesUsed = executable.map((r) => ({ hash: r.hash, v: r.v, text: r.text, template_name: r.template_name, scope_text: r.scope_text, action: r.action, action_label: actionLabel(r.action) }));
   const summary = { triggered: 0, not_triggered: 0, missing_data: 0, not_applicable: 0, error: 0, unable: 0, custom_pending: 0 };
-  const labels = contractSimLabels(marketSource);
+  const demoFrozen = isDemoFrozenBill(bill);
+  const labels = contractSimLabels(demoFrozen ? 'demo-frozen' : marketSource);
   const results = [];
   for (const rule of executable) {
     if (rule.is_custom) results.push(simulationDisplay(await evaluateCustomRule(rule, { symbol, date, bill, marketSource, action })));

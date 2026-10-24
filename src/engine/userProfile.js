@@ -350,12 +350,11 @@ function trendOf(previous, current) {
   };
 }
 
-export function mergeProfile(previous, snapshot, { at = snapshot?.at ?? new Date().toISOString() } = {}) {
-  if (!snapshot) throw new TypeError('mergeProfile：snapshot 缺失');
-  const base = previous && previous.version === PROFILE_VERSION ? previous : emptyProfile();
-  const historyEntry = {
+export function historyEntryOf(snapshot, { at = snapshot?.at ?? new Date().toISOString(), reportKey = null } = {}) {
+  return {
     at,
     profile_key: snapshot.profile_key,
+    report_key: typeof reportKey === 'string' && reportKey ? reportKey : null,
     trade_count: snapshot.bill.trade_count,
     drag: snapshot.outcome?.drag ?? null,
     drag_money: snapshot.outcome?.drag_money ?? null,
@@ -370,8 +369,14 @@ export function mergeProfile(previous, snapshot, { at = snapshot?.at ?? new Date
     behavior_n: behaviorHitCount(snapshot),
     behavior_active_patterns: (snapshot.behavior?.patterns ?? []).filter((p) => p.status === '成立').map((p) => p.pattern_id),
     tag_ids: (snapshot.tags ?? []).map((t) => t.tag_id),
-    rule_count: snapshot.rules.active_count,
+    rule_count: snapshot.rules?.active_count ?? 0,
   };
+}
+
+export function mergeProfile(previous, snapshot, { at = snapshot?.at ?? new Date().toISOString(), reportKey = null } = {}) {
+  if (!snapshot) throw new TypeError('mergeProfile：snapshot 缺失');
+  const base = previous && previous.version === PROFILE_VERSION ? previous : emptyProfile();
+  const historyEntry = historyEntryOf(snapshot, { at, reportKey });
   const history = [...(Array.isArray(base.history) ? base.history : []), historyEntry].slice(-12);
   const observations = (Number.isFinite(base.observations) ? base.observations : 0) + 1;
   return {

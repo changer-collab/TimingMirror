@@ -63,18 +63,18 @@ assert.ok(set.customCurrent.some((r) => r.rule_id === 'custom-a'));
 assert.ok(!set.customCurrent.some((r) => r.rule_id === 'custom-c'));
 console.log('自定义规则识别、隔离、版本和恢复检查通过');
 
-// 用户端启动应从本地存储恢复，重复初始化不能覆盖运行时新规则。
-const store = new Map([['tm.contracts.demo', JSON.stringify({ versions })]]);
-globalThis.localStorage = { getItem: (key) => store.get(key) ?? null, setItem: (key, value) => store.set(key, String(value)) };
+// 用户端启动不再读本机规则：内存从空开始，异步云端恢复失败也不能覆盖运行时规则。
+globalThis.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+globalThis.fetch = async () => { throw new TypeError('offline'); };
 const bridge = await import('../prototype/user-frontend/realBridge.js');
 bridge.initBridge();
-assert.deepEqual(bridge.getShared().contracts.versions, versions);
+assert.deepEqual(bridge.getShared().contracts.versions, []);
 assert.equal(bridge.getMode('rules'), 'real');
 const runtime = [...versions, { marker: 'runtime' }];
 bridge.getShared().contracts.versions = runtime;
 bridge.initBridge();
 assert.equal(bridge.getShared().contracts.versions, runtime);
-console.log('用户端恢复已保存规则及重复初始化检查通过');
+console.log('用户端规则只从云端恢复且重复初始化不覆盖内存检查通过');
 
 /* ==== 自定义规则参与情境测试：不经模板引擎；范围/动作筛选；只整理最小判定数据 ==== */
 {

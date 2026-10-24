@@ -223,7 +223,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     return;
   }
   const { state, set } = ctx;
-  const scenarioOnly = section === 'scenario';
+  const standalone = section === 'selfcheck';
   state.contracts = { ...defaultContracts(), ...state.contracts };
   const c = state.contracts;
   const templates = adapter.contractTemplates();
@@ -234,7 +234,13 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     if (!recs || !recs.length) return;
     simToken = null;
     simContextLoadingKey = null;
-    set({ contracts: { versions: [...c.versions, ...recs], simContext: null, sim: { ...c.sim, result: null, running: false, runId: null, fallback: null }, ...extra } });
+    const versions = [...c.versions, ...recs];
+    set({ contracts: { versions, simContext: null, sim: { ...c.sim, result: null, running: false, runId: null, fallback: null }, ...extra } });
+    const saveRules = ctx?.cloudDeps?.saveRules;
+    if (typeof saveRules === 'function') {
+      Promise.resolve(saveRules({ versions })).catch(() => {});
+      return;
+    }
     saveContractsDemo();
   }
   function openEditor(mode, { rule = null, template_id = null, action = null } = {}) {
@@ -264,7 +270,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
   const page = el('div', { class: 'stack cv-page' });
 
   /* —— 页头 —— */
-  if (!scenarioOnly) page.append(el('div', { class: 'card cv-head' }, [
+  if (!standalone) page.append(el('div', { class: 'card cv-head' }, [
     el('div', { class: 'cv-head-main' }, [
       el('h2', { class: 'cv-title' }, ['交易规则']),
       el('div', { class: 'cv-intro' }, [INTRO]),
@@ -413,10 +419,10 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     currentBox.replaceChildren(...nodes);
   }
   paintCurrent();
-  if (!scenarioOnly) page.append(currentBox);
+  if (!standalone) page.append(currentBox);
 
   /* —— 待重新确认（异常）：不计入当前规则、不参与测试 —— */
-  if (!scenarioOnly && ruleSet.needsReconfirm.length) {
+  if (!standalone && ruleSet.needsReconfirm.length) {
     page.append(el('div', { class: 'card cv-reconfirm-box' }, [
       el('div', { class: 'cv-group-title' }, [`待重新确认的规则（${ruleSet.needsReconfirm.length}）`]),
       el('div', { class: 'muted small' }, ['以下规则不计入当前生效规则，也不参与操作复盘。']),
@@ -466,7 +472,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     el('div', { class: 'cv-hist-reason' }, ['未经规则引擎解析：不参与测试，不能恢复。']),
   ]);
   const histCount = ruleSet.history.length + ruleSet.legacy.length;
-  if (!scenarioOnly) page.append(el('details', { class: 'card cv-history', 'data-role': 'history', open: c.restorePending ? '' : null }, [
+  if (!standalone) page.append(el('details', { class: 'card cv-history', 'data-role': 'history', open: c.restorePending ? '' : null }, [
     el('summary', {}, [`历史规则（${histCount}）`]),
     el('div', { class: 'muted small' }, [HISTORY_NOTE]),
     histCount ? null : el('div', { class: 'muted small' }, ['暂无历史规则。']),
@@ -484,25 +490,29 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
   const hasBuySell = current.some((r) => r.kind === 'buy_sell_window');
   const hasTrades = hasBuyback || hasBuySell;
   const hasSurge = current.some((r) => r.kind === 'change_pct_threshold');
-  const localBill = !!(state.bill && state.bill.status === 'confirmed' && state.bill.sourceType === 'local');
+  const demoFrozen = adapter.isDemoFrozenBill(state.bill);
+  const localBill = !demoFrozen && !!(state.bill && state.bill.status === 'confirmed' && state.bill.sourceType === 'local');
   const demoSimulationAllowed = ctx.allowDemoSimulation !== false;
-  const marketSource = localBill ? adapter.DEFAULT_MARKET_SOURCE : (c.marketSource === 'synthetic-fixture' ? 'synthetic-fixture' : adapter.DEFAULT_MARKET_SOURCE);
+  const marketSource = demoFrozen
+    ? 'demo-frozen'
+    : localBill ? adapter.DEFAULT_MARKET_SOURCE : (c.marketSource === 'synthetic-fixture' ? 'synthetic-fixture' : adapter.DEFAULT_MARKET_SOURCE);
   const sim = el('div', { class: 'card', 'data-role': 'sim-section' });
   simResultBox = el('div', { class: 'cv-sim-out' });
-  if (!localBill && !demoSimulationAllowed) {
-    sim.append(el('div', { class: 'section-title' }, ['操作复盘']));
+  if (!localBill && !demoFrozen && !demoSimulationAllowed) {
+    sim.append(el('div', { class: 'section-title' }, ['申报前自检']));
     sim.append(el('div', { class: 'cv-sim-empty' }, [
-      el('div', { class: 'muted' }, ['导入并确认一份账单后，可在上方用当前规则做操作复盘。没有账单时不会自动加载行情，也不会用示例数据代替。']),
+      el('div', { class: 'muted' }, ['导入并确认一份账单后，可用当前规则做申报前自检。没有账单时不会自动加载行情，也不会用示例数据代替。']),
       el('a', { class: 'btn small', href: '#/import' }, ['去导入账单']),
     ]));
   } else {
-  sim.append(el('div', { class: 'section-title' }, [localBill
-    ? '操作复盘（Tushare 动态行情）'
+  sim.append(el('div', { class: 'section-title' }, [demoFrozen
+    ? '申报前自检（示例行情 · 历史模拟）'
     : marketSource === 'synthetic-fixture'
-      ? '操作复盘（合成行情）'
-      : '操作复盘（Tushare 动态行情）']));
-  // 本地已确认账单固定使用 Tushare 动态行情（无行情来源切换）；示例账单可切换 Tushare 动态 / 合成回归。
-  if (!localBill) {
+      ? '申报前自检（合成行情）'
+      : '申报前自检（Tushare 动态行情）']));
+  sim.append(el('div', { class: 'muted small cv-selfcheck-note' }, ['这是历史模拟，不是实时提醒；不会下单，也不会阻止交易。']));
+  // 示例场景账单固定使用冻结行情（无行情来源切换）；其他示例账单可切换 Tushare 动态 / 合成回归。
+  if (!localBill && !demoFrozen) {
     const srcGroup = el('div', { class: 'rp-control-group' });
     srcGroup.append(el('span', { class: 'rp-control-label' }, ['行情来源']));
     const srcSeg = el('div', { class: 'rp-seg' });
@@ -530,7 +540,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
   }
   const sc = c.simContext;
   const marketLabel = sc?.marketSource?.label ?? src.market_label;
-  if (localBill) {
+  if (localBill || demoFrozen) {
     sim.append(el('div', { class: 'row' }, [chip(`${marketLabel} · 非实时行情 · 不构成投资建议`, 'mode')]));
     sim.append(el('div', { class: 'muted small' }, [SIM_CANDIDATE_LINE]));
   }
@@ -566,9 +576,11 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     `支持标的：${sc.supportScope.symbols.join('、')}；支持日期范围：${sc.supportScope.range.start} 至 ${sc.supportScope.range.end}；asOfDate：${sc.asOfDate}；快照：${sc.marketSource.snapshotId ?? '无'}；拉取时间：${sc.marketSource.fetchedAt ? fmtAt(sc.marketSource.fetchedAt) : '无'}。`,
   ]));
   if (!sc) {
-    sim.append(el('div', { class: 'muted' }, [localBill
-      ? '正在获取 Tushare 动态行情与交易来源…'
-      : `正在加载${marketSource === 'synthetic-fixture' ? '合成回归' : 'Tushare 动态'}行情与交易来源…`]));
+    sim.append(el('div', { class: 'muted' }, [demoFrozen
+      ? '正在读取示例账单与历史行情快照…'
+      : localBill
+        ? '正在获取 Tushare 动态行情与交易来源…'
+        : `正在加载${marketSource === 'synthetic-fixture' ? '合成回归' : 'Tushare 动态'}行情与交易来源…`]));
     if (simContextLoadingKey !== src.key) {
       simContextLoadingKey = src.key;
       adapter.contractSimContext({ bill: state.bill, marketSource, versions: c.versions })
@@ -586,7 +598,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
         });
     }
   } else if (sc.error) {
-    sim.append(el('div', { class: 'error' }, [`${localBill ? '操作复盘阻断' : '行情加载失败'}：${sc.error}`]));
+    sim.append(el('div', { class: 'error' }, [`${localBill || demoFrozen ? '自检阻断' : '行情加载失败'}：${sc.error}`]));
   } else {
     const simAction = c.sim.action === 'sell' ? 'sell' : 'buy';
     sim.append(el('div', { class: 'muted small' }, [
@@ -643,7 +655,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
       },
     }, [c.sim.running ? '测试中…' : `测试该日${simAction === 'sell' ? '卖出' : '买入'}是否触发规则`]);
     sim.append(el('div', { class: 'row' }, [
-      el('label', { class: 'cv-field' }, [el('span', { class: 'muted small' }, [localBill ? '标的（账单标的 + 本次行情标的）' : '标的（账单标的 + 示例标的）']), symSelect]),
+      el('label', { class: 'cv-field' }, [el('span', { class: 'muted small' }, [demoFrozen ? '标的（示例账单标的 + 示例行情标的）' : localBill ? '标的（账单标的 + 本次行情标的）' : '标的（账单标的 + 示例标的）']), symSelect]),
       el('label', { class: 'cv-field' }, [el('span', { class: 'muted small' }, ['申报日期']), dateInput]),
       simBtn,
     ]));
@@ -666,15 +678,19 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     if (simBtn) simBtn.disabled = !!c.sim.running;
     simResultBox.replaceChildren(...(c.sim.result ? [simBatch(c.sim.result, c.sim.fallback)] : []));
   }
-  if (scenarioOnly) {
+  if (standalone) {
+    page.append(el('div', { class: 'card cv-selfcheck-head' }, [
+      el('h2', { class: 'cv-title' }, ['申报前自检']),
+      el('div', { class: 'cv-intro' }, ['用当前生效规则重放历史行情，看看某个标的在某个日期会触发哪条规则。这是历史模拟，不是实时提醒；不会下单，也不会阻止交易。']),
+    ]));
     page.append(buildSimulation());
     paintSim();
   }
 
   /* —— 新增 / 修改弹窗：背景不可操作；Esc / 关闭 / 取消均不写记录 —— */
-  const backdrop = !scenarioOnly && c.modal ? renderModal() : null;
-  closeActiveModal = !scenarioOnly && c.modal ? closeEditor : null;
-  if (!scenarioOnly && c.modal) {
+  const backdrop = !standalone && c.modal ? renderModal() : null;
+  closeActiveModal = !standalone && c.modal ? closeEditor : null;
+  if (!standalone && c.modal) {
     bindEsc();
     page.setAttribute('inert', '');
     page.setAttribute('aria-hidden', 'true');

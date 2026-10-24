@@ -2,8 +2,8 @@
 /**
  * 独立问答页意图路由 —— 离线单测（不调用模型/行情/网络）
  *
- * 覆盖：13 类意图代表问法、规则优先级、五个既有芯片、L2 命中/低置信度/失败降级、
- *       槽位提取与问题归一化。
+ * 覆盖：14 类事实意图代表问法、规则优先级、六个既有芯片、L2 命中/低置信度/失败降级、
+ *       跨账单不被相似情境抢、槽位提取与问题归一化。
  * 运行：node tests/ui/qa-intent.test.mjs（或 npm run check）
  */
 import {
@@ -23,11 +23,13 @@ const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: 
 
 /* ==== ① 示例问法与既有芯片一致 ==== */
 {
-  check('示例问法：共 8 条，前 5 条与既有芯片同题同标签；全部是本地入口',
-    QA_SUGGESTIONS.length === 8
+  check('示例问法：共 10 条，前 5 条与既有芯片同题同标签；全部是本地入口',
+    QA_SUGGESTIONS.length === 10
     && QA_SUGGESTIONS.slice(0, 5).every((s, i) => s.question === QA_CHIPS[i].question && s.label === QA_CHIPS[i].label)
+    && QA_SUGGESTIONS.some((s) => s.id === 'similar_context' && s.question === '这份账单里有没有类似的情况？' && s.online === false)
+    && QA_SUGGESTIONS.some((s) => s.id === 'cross_bill' && s.label === '跨账单看看' && s.online === false)
     && QA_SUGGESTIONS.filter((s) => s.online).length === 0, JSON.stringify(QA_SUGGESTIONS));
-  check('意图标签：13 类均有中文短标签', Object.keys(QA_INTENT_LABELS).length === 13
+  check('意图标签：18 类（14 类事实意图 + 4 类范围标签）均有中文短标签', Object.keys(QA_INTENT_LABELS).length === 18
     && Object.values(QA_INTENT_LABELS).every((v) => typeof v === 'string' && v.length > 0), JSON.stringify(QA_INTENT_LABELS));
 }
 
@@ -54,7 +56,7 @@ const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: 
     billingQuestions.every((question) => !isPageHelpQuestion(question)), JSON.stringify(billingQuestions.map((q) => [q, isPageHelpQuestion(q)])));
 }
 
-/* ==== ② 13 类代表问法 ==== */
+/* ==== ② 14 类事实意图代表问法 ==== */
 {
   const cases = [
     ['我最错的一笔是哪个？', 'worst_trade'],
@@ -64,6 +66,7 @@ const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: 
     ['我是谁？', 'profile'],
     ['如果那笔卖出没发生，会怎样？', 'what_if'],
     ['历史上类似情况怎么样？', 'similar_context'],
+    ['跨账单看看以前的类似情况', 'cross_bill'],
     ['我该怎么改？', 'how_to_change'],
     ['帮我定个止损。', 'contract_setup'],
     ['我的规则守得住吗？', 'contract_status'],
@@ -90,6 +93,9 @@ const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: 
   check('优先级：规则守得住吗 → contract_status', routeQuestion('规则守得住吗？').intent === 'contract_status');
   check('优先级：帮我定个止损 → contract_setup', routeQuestion('帮我定个止损。').intent === 'contract_setup');
   check('优先级：收益怎么样 → loss_overview', routeQuestion('收益怎么样？').intent === 'loss_overview');
+  check('优先级：跨账单问法不被相似情境抢', routeQuestion('历史上所有账单里类似的情况？').intent === 'cross_bill'
+    && routeQuestion('其他账单里我以前也追高吗？').intent === 'cross_bill');
+  check('优先级：单账单相似情境仍归 similar_context', routeQuestion('这份账单里有没有类似的情况？').intent === 'similar_context');
   check('未命中：帮我看看 → 澄清', (() => {
     const r = routeQuestion('帮我看看');
     return r.intent === null && r.ambiguous === true && r.layer === 'L3';
@@ -117,6 +123,9 @@ const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: 
       withMark.intent === chip.intent && withMark.chip_id === chip.id
       && withoutMark.intent === chip.intent && withoutMark.matchedBy === 'chip', JSON.stringify({ withMark, withoutMark }));
   }
+  const crossChip = routeQuestion('我在其他账单里有没有类似的操作？');
+  check('芯片：跨账单建议精确命中且带 chip_id',
+    crossChip.intent === 'cross_bill' && crossChip.chip_id === 'cross_bill' && crossChip.matchedBy === 'chip', JSON.stringify(crossChip));
 }
 
 /* ==== ⑤ 归一化与槽位 ==== */

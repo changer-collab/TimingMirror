@@ -61,6 +61,11 @@ import {
   normalizeQaNarrativeRequest,
   validateQaNarrativeResponse,
 } from './qaNarrative.mjs';
+import {
+  QA_REWRITE_CODES,
+  normalizeQaRewriteRequest,
+  validateQaRewriteResponse,
+} from './qaRewrite.mjs';
 
 export const SITE_FUNCTION_CODES = Object.freeze({
   NOT_FOUND: 'E_FUNCTION_NOT_FOUND',
@@ -98,6 +103,8 @@ export const SITE_FUNCTION_CODES = Object.freeze({
   CUSTOM_RULE_JUDGMENT_RESPONSE: CUSTOM_RULE_JUDGMENT_CODES.RESPONSE,
   QA_NARRATIVE_REQUEST_INVALID: QA_NARRATIVE_CODES.REQUEST_INVALID,
   QA_NARRATIVE_RESPONSE: QA_NARRATIVE_CODES.RESPONSE,
+  QA_REWRITE_REQUEST_INVALID: QA_REWRITE_CODES.REQUEST_INVALID,
+  QA_REWRITE_RESPONSE: QA_REWRITE_CODES.RESPONSE,
   MARKET_NOT_CONFIGURED: 'E_MARKET_NOT_CONFIGURED',
   MARKET_REQUEST_INVALID: 'E_MARKET_REQUEST_INVALID',
   MARKET_SYMBOL_UNKNOWN: 'E_MARKET_SYMBOL_UNKNOWN',
@@ -143,6 +150,8 @@ const MESSAGES = Object.freeze({
   [SITE_FUNCTION_CODES.CUSTOM_RULE_JUDGMENT_RESPONSE]: '自定义规则判定响应未通过服务端校验',
   [SITE_FUNCTION_CODES.QA_NARRATIVE_REQUEST_INVALID]: '问答解读请求未通过服务端校验',
   [SITE_FUNCTION_CODES.QA_NARRATIVE_RESPONSE]: '问答解读响应未通过服务端校验',
+  [SITE_FUNCTION_CODES.QA_REWRITE_REQUEST_INVALID]: '问答改写请求未通过服务端校验',
+  [SITE_FUNCTION_CODES.QA_REWRITE_RESPONSE]: '问答改写响应未通过服务端校验',
   [SITE_FUNCTION_CODES.MARKET_NOT_CONFIGURED]: '行情未启用：服务端尚未配置 TUSHARE_TOKEN',
   [SITE_FUNCTION_CODES.MARKET_REQUEST_INVALID]: '行情请求未通过服务端校验',
   [SITE_FUNCTION_CODES.MARKET_SYMBOL_UNKNOWN]: '行情标的未在股票列表中找到（请核对 6 位 A 股代码）',
@@ -399,7 +408,9 @@ export function createHandler({
                   ? 'profileSummary'
                   : path.endsWith('/api/llm/profile-fact')
                     ? 'profileFact'
-                    : path.endsWith('/api/llm/qa-narrative')
+                    : path.endsWith('/api/llm/qa-rewrite')
+                      ? 'qaRewrite'
+                      : path.endsWith('/api/llm/qa-narrative')
                       ? 'qaNarrative'
                     : path.endsWith('/api/llm/intent')
                   ? 'intent'
@@ -524,6 +535,25 @@ export function createHandler({
       const checked = validateProfileFactResponse(result.rawText, validated.message);
       if (!checked.ok) return errorResponse(502, SITE_FUNCTION_CODES.PROFILE_FACT_RESPONSE);
       return jsonResponse(200, { ok: true, facts: checked.facts });
+    }
+
+    if (stage === 'qaRewrite') {
+      const validated = normalizeQaRewriteRequest(body);
+      if (!validated.ok) return errorResponse(400, SITE_FUNCTION_CODES.QA_REWRITE_REQUEST_INVALID);
+      const result = await callTransport(transport, 'qaRewrite', validated.request);
+      if (!result.ok) return errorResponse(result.status, result.code);
+      const checked = validateQaRewriteResponse(result.rawText, validated.request);
+      if (!checked.ok) {
+        // 只回传固定原因与字段路径；不回传模型原文或账单内容。
+        return jsonResponse(502, {
+          ok: false,
+          code: SITE_FUNCTION_CODES.QA_REWRITE_RESPONSE,
+          message: MESSAGES[SITE_FUNCTION_CODES.QA_REWRITE_RESPONSE],
+          validation_reason: checked.message,
+          field: checked.field ?? null,
+        });
+      }
+      return jsonResponse(200, { rawText: JSON.stringify(checked.value) });
     }
 
     if (stage === 'qaNarrative') {

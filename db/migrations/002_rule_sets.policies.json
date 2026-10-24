@@ -1,0 +1,8 @@
+[
+  {
+    "table": "rule_sets",
+    "principal": "anonymous",
+    "actions": ["select", "insert", "update"],
+    "template": "public"
+  }
+]

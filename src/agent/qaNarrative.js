@@ -243,6 +243,15 @@ export function qaNarrativeFailureText(code) {
   return FAILURE_TEXT[code] ?? 'AI 解读未完成';
 }
 
+// rewrite-v2 复用同一套允许值收集与数字校验，避免两份规则漂移。
+export function collectAllowedValues(parts) {
+  return collectAllowed(Array.isArray(parts) ? parts : []);
+}
+
+export function validateTextNumbers(text, allowed) {
+  return validateNumbers(text, allowed);
+}
+
 export function createQaNarrative({ transport = null } = {}) {
   async function ask({ question, intent, facts, evidence } = {}) {
     if (typeof transport?.qaNarrative !== 'function') return failure(QA_NARRATIVE_CODES.UNAVAILABLE);

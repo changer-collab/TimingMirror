@@ -166,6 +166,9 @@ body {
   font-size: 11.5px;
 }
 
+.tm-me-selfcheck { margin-top: 26px; }
+.tm-me-selfcheck #tm-real-selfcheck { margin-top: 4px; }
+
 .tm-mode-chip.real {
   border-color: var(--ink);
   color: var(--ink);
@@ -2106,6 +2109,53 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
   font-size: 11px;
   line-height: 1.5;
 }
+.tm-qa-plain {
+  margin: 10px 0 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--ink);
+  border-radius: 6px;
+  background: var(--sheet-2);
+}
+.tm-qa-plain-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--gray);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.tm-qa-plain-headline {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.tm-qa-plain-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.7;
+}
+.tm-qa-plain-list li { font-size: 13.5px; }
+.tm-qa-terms,
+.tm-qa-draft {
+  margin-top: 10px;
+  color: var(--gray);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.tm-qa-terms summary,
+.tm-qa-draft summary { cursor: pointer; }
+.tm-qa-draft p { margin: 8px 0 0; color: var(--gray); line-height: 1.7; }
+.tm-qa-rewrite-hint {
+  margin: 8px 0 0;
+  color: var(--gray);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
 .tm-qa-send {
   flex: 0 0 auto;
   min-height: 40px;
@@ -2219,6 +2269,58 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
   overflow-wrap: anywhere;
 }
 
+/* 运行过程：位于回答上方，默认收起；只展示真实阶段、工具与耗时。 */
+.tm-qa-trace-host { margin-top: 9px; }
+.tm-qa-trace {
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--sheet-2);
+}
+.tm-qa-trace > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  color: var(--gray);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  list-style: none;
+}
+.tm-qa-trace > summary::-webkit-details-marker { display: none; }
+.tm-qa-trace > summary::before {
+  content: "▸";
+  color: var(--faint);
+  font-size: 9px;
+}
+.tm-qa-trace[open] > summary::before { content: "▾"; }
+.tm-qa-trace-hint { margin-left: auto; color: var(--faint); }
+.tm-qa-trace-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 2px 9px 8px;
+  list-style: none;
+}
+.tm-qa-trace-step {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  color: var(--gray);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.6;
+}
+.tm-qa-trace-icon { flex: 0 0 12px; color: var(--faint); text-align: center; }
+.tm-qa-trace-step.is-done .tm-qa-trace-icon { color: var(--ink); }
+.tm-qa-trace-step.is-running .tm-qa-trace-icon { color: var(--ink-soft); animation: tm-qa-pulse 1.4s ease-in-out infinite; }
+.tm-qa-trace-step.is-failed .tm-qa-trace-icon { color: var(--loss); }
+.tm-qa-trace-label { color: var(--ink-soft); }
+.tm-qa-trace-detail { color: var(--faint); overflow-wrap: anywhere; }
+.tm-qa-trace-ms { margin-left: auto; color: var(--faint); white-space: nowrap; }
+
 .tm-qa-route {
   display: flex;
   flex-wrap: wrap;
@@ -2249,6 +2351,7 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
 }
 .tm-qa-badge.is-online { background: var(--sheet-2); }
 .tm-qa-badge.is-refusal { border-color: var(--line-strong); color: var(--ink); }
+.tm-qa-badge.is-withheld { border-color: var(--line-strong); color: var(--ink); }
 .tm-qa-badge.is-error { border-color: var(--loss); color: var(--loss); }
 .tm-qa-badge.is-pending {
   border-style: dashed;
@@ -2573,3 +2676,95 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
 .tm-qa-profilefact a { color: var(--ink-soft); text-decoration: underline; }
 .tm-qa-profilefact.is-muted { color: var(--faint); }
 .tm-qa-profilefact.is-warn { border-color: rgba(196, 64, 44, 0.35); color: var(--loss); }
+
+/* 报告：人话解读 / 路径区间 / 假设检查 */
+.rp-readout {
+  padding: 4px clamp(18px, 3vw, 28px);
+  border-left: 3px solid var(--ink);
+}
+.rp-readout-row {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: 14px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line-soft);
+}
+.rp-readout-row:first-child { border-top: 0; }
+.rp-readout-row > span {
+  color: var(--gray);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+}
+.rp-readout-row p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14.5px;
+  line-height: 1.8;
+}
+.rp-method {
+  margin-top: 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.45);
+  color: var(--gray);
+  font-size: 12px;
+}
+.rp-method summary {
+  cursor: pointer;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+}
+.rp-method[open] summary { margin-bottom: 9px; }
+.rp-method-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 7px;
+}
+.rp-method-list li { line-height: 1.65; }
+.rp-method-list strong {
+  margin-right: 6px;
+  color: var(--ink);
+  font-size: 12.5px;
+}
+.rp-method-list p { display: inline; margin: 0; }
+.rp-cf-range {
+  margin: 8px 0 0;
+  color: var(--gray);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.rp-hyp-list { margin: 0; padding: 0; list-style: none; }
+.rp-hyp-row {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr) auto;
+  gap: 6px 12px;
+  align-items: baseline;
+  padding: 13px 0;
+  border-top: 1px solid var(--line-soft);
+}
+.rp-hyp-row:first-child { border-top: 0; }
+.rp-hyp-row strong { font-size: 14px; font-weight: 500; }
+.rp-hyp-row p {
+  grid-column: 2 / -1;
+  margin: 0;
+  color: var(--gray);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+.rp-hyp-status {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+.rp-hyp-status.ok { color: var(--loss); }
+.rp-hyp-status.flat { color: var(--ink-soft); }
+.rp-hyp-status.muted { color: var(--faint); }
+.rp-hyp-sample { color: var(--gray); font-size: 11px; }
+@media (max-width: 680px) {
+  .rp-readout-row { grid-template-columns: 1fr; gap: 4px; }
+  .rp-hyp-row { grid-template-columns: 60px minmax(0, 1fr); }
+  .rp-hyp-sample { grid-column: 2; }
+  .rp-hyp-row p { grid-column: 1 / -1; }
+}

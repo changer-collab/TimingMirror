@@ -4,6 +4,9 @@ import { loadUserBillReport } from '../../src/demo/adapter.js';
 import { fmtMoney } from '../../src/engine/display.js';
 import { renderGhostChart } from '../../src/ui/components/ghostChart.js';
 import { buildRuleCandidates } from '../../src/engine/userProfile.js';
+import { buildOperationAttribution } from '../../src/engine/operationAttribution.js';
+import { pathRangeOf } from '../../src/engine/counterfactual.js';
+import { buildReportSnapshot } from '../../src/agent/reportSnapshot.js';
 import { recordReportObservation, ruleStateOf, syncBehaviorAnalysis } from './profileStore.js';
 import { maybeAutoUpdateProfileSummary } from './profileAutoUpdate.js';
 import { openRuleCandidateInAssistant } from './ruleCandidates.js';
@@ -113,7 +116,7 @@ function sourceChips(bundle, demo, bill = null) {
     if (bundle.asOfDate) chips.push(`估值日 ${bundle.asOfDate}`);
     chips.push('演示结果');
   } else {
-    chips.push('CSV 未上传');
+    chips.push('原始 CSV 未上传');
     if (bill) {
       const sync = billSyncStatus(bill);
       cloudChip = `<span class="rp-chip tm-cloud-chip" data-role="cloud-sync" data-context="${esc(bill.contextId ?? '')}" data-state="${esc(sync.state)}" title="${esc(cloudStatusTitle(sync))}">${esc(cloudStatusText(sync))}</span>`;
@@ -157,6 +160,12 @@ export function reportVisibility({ bundle = null, insights = null, candidatePack
     basis: (bundle?.review?.published_facts ?? []).some((fact) => (fact.scope || 'portfolio') === 'portfolio'),
     hasSells: items.length > 0,
     patterns,
+    allPatterns,
+    patternStats: {
+      established: allPatterns.filter((p) => p?.status === '成立').length,
+      rejected: allPatterns.filter((p) => p?.status === '不成立').length,
+      insufficient: allPatterns.filter((p) => p?.status !== '成立' && p?.status !== '不成立').length,
+    },
     pattern,
     pgrData: pgr,
     candidates,
@@ -205,14 +214,14 @@ function deltaCard(bundle, bill, vis, demo) {
       ? `如果这些卖出没有发生，按买入不动计算会多亏 ${moneyOf(-dragMoney)}。`
       : '这份账单没有卖出交易，所以没有单笔对照。';
   const top = topDragItem(bundle.insights?.portfolio?.decomposition?.items);
-  const highlight = top ? `<p class="delta-highlight">最大的一笔：${esc(top.trade_date)} 卖出 ${esc(top.symbol)} ${esc(top.quantity)} 股，${top.dragMoney >= 0 ? '少拿' : '少亏'} ${moneyOf(Math.abs(top.dragMoney))}</p>` : '';
+  const highlight = top ? `<p class="delta-highlight">绝对差额最大的一笔：${esc(top.trade_date)} 卖出 ${esc(top.symbol)} ${esc(top.quantity)} 股，${top.dragMoney >= 0 ? '少拿' : '少亏'} ${moneyOf(Math.abs(top.dragMoney))}</p>` : '';
   const tradeLabel = direction === 'loss' ? `少赚 ${moneyOf(dragMoney)}` : direction === 'good' ? `少亏 ${moneyOf(-dragMoney)}` : '持平';
   const stock = vis.stockSelf
     ? `<p class="delta-foot">标的自身涨幅 ${esc(bundle.insights.stock_self.data.display?.ret ?? '—')}（候选口径，不是买入不动）</p>`
     : '';
   return `<section class="delta-card reveal ${direction}" aria-labelledby="real-delta-title">
     <div class="delta-main">
-      <p class="delta-eyebrow">${demo ? '示例场景 · 同尺对比' : '本机账单 · 同尺对比'}</p>
+      <p class="delta-eyebrow">${demo ? '示例场景 · 同尺对比' : bill?.cloudRestored ? '云端账单 · 同尺对比' : '本机账单 · 同尺对比'}</p>
       <p class="delta-label" id="real-delta-title">${headline}</p>
       <p class="delta-number">${dragMoney === 0 ? '¥0' : moneyOf(Math.abs(dragMoney))}</p>
       <p class="delta-note">${esc(note)}</p>
@@ -225,6 +234,104 @@ function deltaCard(bundle, bill, vis, demo) {
         : `<div class="delta-stat"><span>实际收益</span><strong>${esc(displayOf(facts.actualRet))}</strong><small>到手 ${esc(displayOf(facts.actualValue))}</small></div>
       <div class="delta-stat"><span>一直持有</span><strong>${esc(displayOf(facts.ghostRet))}</strong><small>价值 ${esc(displayOf(facts.ghostValue))}</small></div>
       <div class="delta-stat"><span>择时差</span><strong class="orange">${esc(displayOf(facts.drag))}</strong><small>${esc(tradeLabel)}</small></div>`}
+    </div>
+  </section>`;
+}
+
+function gapText(gap) {
+  if (!Number.isFinite(gap)) return '缺价';
+  if (Math.abs(gap) < 0.005) return '基本持平';
+  return gap > 0 ? `少拿 ${moneyOf(gap)}` : `少亏 ${moneyOf(-gap)}`;
+}
+
+// 只把已复核事实翻成一句人话，不引入新的计算或评价。
+function methodDisclosure(bill, demo) {
+  const trades = Array.isArray(bill?.trades) ? bill.trades : null;
+  const buys = trades ? trades.filter((t) => t.side === 'buy').length : null;
+  const sells = trades ? trades.filter((t) => t.side === 'sell').length : null;
+  const source = trades
+    ? `${trades.length} 笔成交（买入 ${buys} / 卖出 ${sells}），按成交价与数量入账。`
+    : '账单里的成交，按成交价与数量入账。';
+  return `<details class="rp-method" data-role="method">
+    <summary>这个结论怎么来的</summary>
+    <ol class="rp-method-list">
+      <li><strong>读取账单</strong><p>${esc(source)}</p></li>
+      <li><strong>确定性计算</strong><p>同一笔本金、同一段行情，计算实际收益、买入不动收益与每笔卖出差额。</p></li>
+      <li><strong>发布前核对</strong><p>逐笔加总与总差额一致、每笔能回到原始成交行，报告才发布。</p></li>
+      <li><strong>语言层只做复述</strong><p>模型只把已核对的事实换成一句话，不新增数字、不改结论。${demo ? '示例账单不进入在线复述。' : '在线复述不可用时，页面只用本地事实回答。'}</p></li>
+    </ol>
+  </details>`;
+}
+
+function interpretationSection(bundle, vis, demo, bill) {
+  const facts = bundle.factsByScope?.portfolio ?? {};
+  const report = bundle.insights?.portfolio?.report?.portfolio ?? {};
+  const drag = Number.isFinite(facts.dragMoney?.value) ? facts.dragMoney.value : (report.dragMoney ?? 0);
+  const items = bundle.insights?.portfolio?.decomposition?.items ?? [];
+  const top = topDragItem(items);
+  const rows = [];
+  const result = drag > 0
+    ? `按同一笔本金和同一段行情，你实际拿到 ${displayOf(facts.actualRet)}，买入不动是 ${displayOf(facts.ghostRet)}：这些卖出让你少赚 ${moneyOf(drag)}。`
+    : drag < 0
+      ? `按同一笔本金和同一段行情，你实际拿到 ${displayOf(facts.actualRet)}，买入不动是 ${displayOf(facts.ghostRet)}：这些卖出让你少亏 ${moneyOf(-drag)}。`
+      : `按同一笔本金和同一段行情，实际收益 ${displayOf(facts.actualRet)}，与买入不动持平。`;
+  rows.push({ key: '结果', text: result });
+  if (top) {
+    rows.push({
+      key: '集中',
+      text: `差额最大的一笔是 ${top.trade_date} 卖出 ${top.symbol} ${top.quantity} 股：${top.dragMoney >= 0 ? '少拿' : '少亏'} ${moneyOf(Math.abs(top.dragMoney))}。`,
+    });
+  }
+  if (vis.patterns.length) {
+    const p = vis.patterns[0];
+    rows.push({ key: '重复', text: `同一份账单里还出现了「${p.name}」：${patternLead(p)}` });
+  } else if (vis.allPatterns.length) {
+    rows.push({ key: '重复', text: '行为假设都还没有达到成立条件，这份账单不写成结论。' });
+  }
+  rows.push({
+    key: '下一步',
+    text: vis.candidateData?.text
+      ? `可以把「${vis.candidateData.text}」当作候选规则，由你确认、改写或拒绝。`
+      : '可以打开下面每一笔卖出的对照，看看差额发生在哪一天。',
+  });
+  return `<section class="report-section rp-insight">
+    ${sectionHead('这份账单说明了什么', demo ? '示例数据 · 只描述这份账单' : '三句话读完，每个数字都能往下展开')}
+    <div class="rp-card rp-readout">
+      ${rows.map((row) => `<div class="rp-readout-row"><span>${esc(row.key)}</span><p>${esc(row.text)}</p></div>`).join('')}
+    </div>
+    ${methodDisclosure(bill, demo)}
+  </section>`;
+}
+
+function hypothesisLead(pattern) {
+  if (pattern?.status === '成立') return patternLead(pattern);
+  const sample = pattern?.sample_n ?? 0;
+  if (pattern?.status === '不成立') {
+    return sample > 0
+      ? `检查了 ${esc(sample)} 次候选事件，没有达到成立条件。`
+      : '这份账单里没有找到符合条件的成交。';
+  }
+  return `目前只有 ${esc(sample)} 次候选事件，暂不判定。`;
+}
+
+function hypothesisSection(vis) {
+  const all = vis.allPatterns;
+  if (all.length < 2) return '';
+  const rows = all.map((pattern) => {
+    const status = pattern?.status || '证据不足';
+    const tone = status === '成立' ? 'ok' : status === '不成立' ? 'flat' : 'muted';
+    return `<li class="rp-hyp-row">
+      <span class="rp-hyp-status ${tone}">${esc(status)}</span>
+      <strong>${esc(pattern?.name ?? '未命名假设')}</strong>
+      <span class="rp-hyp-sample">候选 ${esc(pattern?.sample_n ?? 0)} 次</span>
+      <p>${hypothesisLead(pattern)}</p>
+    </li>`;
+  }).join('');
+  return `<section class="report-section rp-insight">
+    ${sectionHead('哪些假设成立，哪些没有', `成立 ${vis.patternStats.established} · 不成立 ${vis.patternStats.rejected} · 证据不足 ${vis.patternStats.insufficient}`)}
+    <div class="rp-card rp-hypothesis">
+      <ul class="rp-hyp-list">${rows}</ul>
+      <p class="rp-caption">同一套阈值逐条检查；不成立和证据不足也列出，不用别的说法补成结论。</p>
     </div>
   </section>`;
 }
@@ -247,6 +354,7 @@ function ghostSection(bundle) {
         <label class="rp-control"><span>持有到</span><select class="rp-select rp-select-sm" data-role="cf-date"></select></label>
       </div>
       <p class="rp-cf-summary" data-role="cf-summary"></p>
+      <p class="rp-cf-range" data-role="cf-range"></p>
       <div data-role="ghost-chart"></div>
       ${errorNote}
     </div>
@@ -291,6 +399,33 @@ function waterfallSection(bundle) {
   </section>`;
 }
 
+function operationTypeSection(bundle) {
+  const portfolio = bundle.insights?.portfolio ?? {};
+  const items = Array.isArray(portfolio.decomposition?.items) ? portfolio.decomposition.items : [];
+  if (!items.length) return '';
+  const result = buildOperationAttribution({
+    decomposition: portfolio.decomposition,
+    behavior: bundle.insights?.behavior,
+  });
+  if (!result.ok) return '';
+  const rows = result.buckets.map((bucket) => {
+    const width = bucket.share === null ? 0 : Math.min(100, Math.abs(bucket.share) * 100);
+    const tone = bucket.money > 0 ? 'loss' : bucket.money < 0 ? 'good' : 'flat';
+    return `<div class="rp-optype-row" data-bucket="${esc(bucket.id)}" title="${esc(bucket.hint)}">
+      <div class="rp-optype-main"><strong>${esc(bucket.label)}</strong><span>${esc(bucket.count)} 笔</span></div>
+      <div class="rp-optype-bar tone-${tone}"><i style="width:${width.toFixed(1)}%"></i></div>
+      <div class="rp-optype-value"><span>${esc(bucket.display.money)}</span><small>${esc(bucket.display.share)}</small></div>
+    </div>`;
+  }).join('');
+  return `<section class="report-section rp-insight">
+    ${sectionHead('按操作类型看差额', '同一笔卖出只归一类 · 金额以逐笔分解为准')}
+    <div class="rp-card rp-optype">
+      ${rows}
+      <p class="rp-caption">${esc(result.basis)}</p>
+    </div>
+  </section>`;
+}
+
 function attributionSection(bundle) {
   const d = bundle.insights?.portfolio?.decomposition;
   const items = [...(d.items ?? [])].sort((a, b) => Math.abs(b.dragMoney) - Math.abs(a.dragMoney));
@@ -323,6 +458,33 @@ function attributionSection(bundle) {
       </div>`;
     }).join('');
   const title = (bundle.insights?.portfolio?.report?.portfolio?.dragMoney ?? 0) >= 0 ? '代价集中在哪几笔' : '改善来自哪几笔';
+  const cfByTrade = new Map();
+  for (const cf of (bundle.insights?.portfolio?.counterfactuals ?? [])) {
+    const tradeId = cf?.trade_id ?? cf?.replace?.replaced?.trade_id;
+    if (tradeId) cfByTrade.set(tradeId, cf);
+  }
+  const rangeRows = items.map((item) => {
+    const range = sellGapRange(cfByTrade.get(item.trade_id));
+    const rangeText = range
+      ? `${gapText(range.low.gap)}（${range.low.date}）→ ${gapText(range.high.gap)}（${range.high.date}）`
+      : '这笔对照暂不可用';
+    return `<tr>
+      <td>${esc(item.trade_date)}</td>
+      <td><span class="sym">${esc(item.symbol)}</span></td>
+      <td class="num">${esc(moneyText(item.display.dragMoney))}</td>
+      <td>${esc(rangeText)}</td>
+    </tr>`;
+  }).join('');
+  const rangeBlock = cfByTrade.size ? `<details class="rp-details rp-sell-ranges" data-role="sell-ranges">
+    <summary>每笔卖出的路径区间</summary>
+    <div class="table-wrap">
+      <table class="ledger">
+        <thead><tr><th>卖出日期</th><th>标的</th><th class="num">差额</th><th>路径区间</th></tr></thead>
+        <tbody>${rangeRows}</tbody>
+      </table>
+    </div>
+    <p class="scale-note">这是路径区间，不是概率预测：同一笔卖出持有到不同日期，差额会落在最低与最高之间。</p>
+  </details>` : '';
   return `<section class="report-section rp-insight">
     ${sectionHead(title, '按卖出笔计算')}
     <div class="breakdown-grid">
@@ -338,6 +500,7 @@ function attributionSection(bundle) {
       </div>
       <aside class="sell-notes">${notes}</aside>
     </div>
+    ${rangeBlock}
   </section>`;
 }
 
@@ -596,8 +759,8 @@ function renderBundle(host, bundle, ctx, bill) {
       const observation = recordReportObservation({ bundle, bill, ruleState: ruleStateOf(ctx?.state?.contracts?.versions) });
       profile = observation.profile;
       profileKey = observation.snapshot?.profile_key ?? null;
-      const snapshot = observation.profile?.latest;
-      if (snapshot && snapshot.profile_key === profileKey && snapshot.review?.portfolio_published === true
+      const snapshot = buildReportSnapshot({ profile, bundle, reportKey: observation.key });
+      if (snapshot && snapshot.profile_key === profileKey
         && typeof ctx?.cloudDeps?.syncSnapshot === 'function') {
         Promise.resolve(ctx.cloudDeps.syncSnapshot({ bill, snapshot }))
           .then((result) => { if (result?.ok) ctx.cloudDeps.invalidateCloudProfile?.(); })
@@ -627,6 +790,7 @@ function renderBundle(host, bundle, ctx, bill) {
 
   const behaviorBlock = vis.behavior ? behaviorSection(vis) : '';
   const pgrBlock = vis.pgr ? pgrSection(vis.pgrData) : '';
+  const operationTypeBlock = operationTypeSection(bundle);
   const compactMods = vis.behavior && vis.pgr
     ? `<div class="mod-grid">${behaviorBlock}<div class="mod-col">${pgrBlock}</div></div>`
     : `${behaviorBlock}${pgrBlock}`;
@@ -634,10 +798,13 @@ function renderBundle(host, bundle, ctx, bill) {
   host.innerHTML = `<div class="container report-body real-report">
     ${source}
     ${deltaCard(bundle, bill, vis, demo)}
+    ${interpretationSection(bundle, vis, demo, bill)}
+    ${operationTypeBlock}
     ${vis.ghost ? ghostSection(bundle) : ''}
     ${vis.waterfall ? waterfallSection(bundle) : ''}
     ${vis.attribution ? attributionSection(bundle) : ''}
     ${compactMods}
+    ${hypothesisSection(vis)}
     <div class="rp-analysis-slot" data-role="behavior-analysis"></div>
     ${vis.candidate ? candidateSection(vis.candidates) : ''}
     ${vis.basis ? basisSection(bundle, demo) : ''}
@@ -681,11 +848,23 @@ function sandboxDates(cf) {
     .map((p) => p.date);
 }
 
+function sellGapRange(cf) {
+  return pathRangeOf(cf);
+}
+
+function pathRangeText(cf) {
+  const range = sellGapRange(cf);
+  if (!range) return '';
+  if (range.flat) return `路径区间：持有到不同日期，差额基本不变（${gapText(range.high.gap)}）。`;
+  return `路径区间：同一笔卖出，持有到不同日期，差额落在 ${gapText(range.low.gap)}（${range.low.date}）到 ${gapText(range.high.gap)}（${range.high.date}）之间。这是路径区间，不是概率预测。`;
+}
+
 function mountGhostChart(host, bundle) {
   const chartHost = host.querySelector('[data-role="ghost-chart"]');
   const select = host.querySelector('[data-role="cf-select"]');
   const dateSelect = host.querySelector('[data-role="cf-date"]');
   const summary = host.querySelector('[data-role="cf-summary"]');
+  const range = host.querySelector('[data-role="cf-range"]');
   const list = orderedCounterfactuals(bundle.insights?.portfolio?.counterfactuals);
   if (!chartHost || !list.length) return;
   let chartApi = null;
@@ -709,6 +888,7 @@ function mountGhostChart(host, bundle) {
     }
     const point = cf.series.points[cf.series.points.length - 1] ?? null;
     if (summary) summary.textContent = sandboxText(point);
+    if (range) range.textContent = pathRangeText(cf);
     if (chartApi && point) chartApi.setIndex(cf.series.points.indexOf(point));
   };
   draw(0);
@@ -804,3 +984,10 @@ export function renderRealReport(host, bill, ctx = null) {
 }
 
 export function clearRealReportCache() { cache.clear(); }
+
+// 云端报告快照直接作为本会话的已就绪报告；不重新取行情，也不改写快照内容。
+export function seedRealReport(bill, bundle) {
+  if (!bill?.contextId || !bundle || typeof bundle !== 'object' || Array.isArray(bundle)) return false;
+  cache.set(bill.contextId, { status: 'ready', bundle });
+  return true;
+}

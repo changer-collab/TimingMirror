@@ -251,6 +251,21 @@ export function createDeepSeekTransport({
         { role: 'user', content: JSON.stringify({ question, intent, facts, evidence, allowed }) },
       ], { temperature: 0.2, max_tokens: 600 });
     },
+    qaRewrite({ question, intent, scope, draft, claims, facts, evidence, allowed, glossary, limits }) {
+      return request({
+        model,
+        messages: [
+          { role: 'system', content: MODEL_PROMPTS.qaRewrite },
+          {
+            role: 'user',
+            content: JSON.stringify({ question, intent, scope, draft, claims, facts, evidence, allowed, glossary, limits }),
+          },
+        ],
+        temperature: 0.2,
+        max_tokens: 500,
+        response_format: { type: 'json_object' },
+      }, Math.min(timeoutMs, 4500));
+    },
     vision({ images }) {
       return callVision(images);
     },

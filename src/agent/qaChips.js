@@ -9,6 +9,11 @@ import { classifyOffline } from './offlineIntent.js';
 import { buildRuleCandidates } from '../engine/userProfile.js';
 import { fmtMoney, fmtPct } from '../engine/display.js';
 import { PROFILE_FACT_KIND_LABELS } from './cloudProfileModel.js';
+import {
+  SIMILAR_PATTERN_HINTS, findPatternById, selectSimilarPattern, similarEvidenceOf,
+} from './similarSelection.js';
+
+export { selectSimilarPattern };
 
 export const QA_CHIP_CODES = Object.freeze({
   UNKNOWN_CHIP: 'E_QA_UNKNOWN_CHIP',
@@ -160,16 +165,7 @@ function behaviorData(bundle) {
   return { ok: true, data: pack.data, patterns };
 }
 
-function findPattern(patterns, patternId) {
-  return patterns.find((p) => p?.pattern_id === patternId) ?? null;
-}
-
-const PATTERN_HINTS = Object.freeze([
-  { pattern_id: 'sell_rebuy_within_2d', test: /(买回|又买|接回|卖[了出].{0,12}买)/u },
-  { pattern_id: 'quick_flip', test: /(快进快出|拿不住|拿不久|拿不牢|短线|刚买.{0,8}卖|买[了入].{0,8}(就|很快|马上|立刻).{0,4}卖|一买就卖)/u },
-  { pattern_id: 'overtrading', test: /(频繁|交易.{0,4}多|买卖.{0,4}多|来回|进出|手痒|管不住手|操作.{0,4}多)/u },
-  { pattern_id: 'chase_high_buy', test: /(追高|追涨|买在.{0,4}高|高点买|高位买|追着买)/u },
-]);
+const PATTERN_HINTS = SIMILAR_PATTERN_HINTS;
 
 function behaviorSelection(bundle, question) {
   const base = behaviorData(bundle);
@@ -177,7 +173,7 @@ function behaviorSelection(bundle, question) {
   const hint = PATTERN_HINTS.find((item) => item.test.test(String(question ?? '')));
   const established = base.patterns.filter((p) => p?.status === '成立');
   if (hint) {
-    const focus = findPattern(base.patterns, hint.pattern_id);
+    const focus = findPatternById(base.patterns, hint.pattern_id);
     if (!focus) return { ok: false, message: `行为发现清单中没有“${hint.pattern_id}”模式：不虚构其他模式` };
     return { ok: true, data: base.data, patterns: base.patterns, focus, established };
   }
@@ -190,7 +186,7 @@ function behaviorSelection(bundle, question) {
   };
 }
 
-function patternEvidenceLines(pattern, limit = 3) {
+export function patternEvidenceLines(pattern, limit = 3) {
   const rows = Array.isArray(pattern?.evidence) ? pattern.evidence.slice(0, limit) : [];
   return rows.map((e) => {
     const source = e?.source?.line ? `（第 ${e.source.line} 行）` : '';
@@ -213,7 +209,7 @@ function patternSummaryValue(pattern) {
   return `${pattern.status} · 命中 ${pattern.sample_n} 笔 / 已评估 ${pattern.evaluated_n} 笔`;
 }
 
-function patternCriterion(pattern) {
+export function patternCriterion(pattern) {
   const rule = pattern?.rule ?? {};
   const comparator = rule.comparator ?? '≥';
   const threshold = rule.threshold_display ?? '—';
@@ -223,7 +219,7 @@ function patternCriterion(pattern) {
   return window || `交易日间隔 ${comparator} ${threshold}`;
 }
 
-function patternFacts(pattern) {
+export function patternFacts(pattern) {
   return [
     { label: '结论', value: `${pattern.name} · ${pattern.status}` },
     { label: '样本', value: `命中 ${pattern.sample_n} 笔 / 已评估 ${pattern.evaluated_n} 笔 / 最小样本 ${pattern.min_samples} 笔` },
@@ -249,25 +245,44 @@ function patternTexts(pattern, others = []) {
   return `行为发现“${pattern.name}”在当前账单证据不足：可评估 ${pattern.evaluated_n} 笔，低于最小样本 ${pattern.min_samples} 笔，不下确定结论。${evidenceText}${othersText}`;
 }
 
-function tradeSourceLabel(source) {
+export function tradeSourceLabel(source) {
   return source?.file && Number.isFinite(source.line) ? `${source.file} 第 ${source.line} 行` : '源行不可定位';
 }
 
-function shareText(item) {
+export function shareText(item) {
   if (typeof item?.display?.share === 'string' && item.display.share !== '') return item.display.share;
   return Number.isFinite(item?.share) ? fmtPct(item.share) : '—';
 }
 
-function moneyText(item) {
+export function moneyText(item) {
   if (typeof item?.display?.dragMoney === 'string' && item.display.dragMoney !== '') return item.display.dragMoney;
   return Number.isFinite(item?.dragMoney) ? fmtMoney(item.dragMoney) : '—';
 }
 
-function priceText(value) {
+export function priceText(value) {
   return Number.isFinite(value) ? Number(value).toFixed(2) : '—';
 }
 
-function worstTradeAnswer({ chip, bundle, bill, plan }) {
+// 逐笔差额排序（纯选择）：最错＝展示序首项；最赚＝差额最小（负得最多）；绝对值最大用于“没有正损耗”的说明。
+export function rankDragItems(items) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return { list, top: null, worst: null, best: null, allZero: false, positive: false };
+  const top = list[0];
+  const worst = list.reduce((a, b) => (
+    Math.abs(Number(b.dragMoney) || 0) > Math.abs(Number(a.dragMoney) || 0) ? b : a
+  ), list[0]);
+  const best = list.reduce((a, b) => (Number(b.dragMoney) < Number(a.dragMoney) ? b : a), list[0]);
+  return {
+    list,
+    top,
+    worst,
+    best,
+    allZero: list.every((it) => Number(it.dragMoney) === 0),
+    positive: Number(top.dragMoney) > 0,
+  };
+}
+
+export function worstTradeAnswer({ chip, bundle, bill, plan }) {
   const decomposition = bundle?.insights?.portfolio?.decomposition;
   if (!decomposition) {
     return fail(QA_CHIP_CODES.DECOMPOSITION_UNAVAILABLE, '当前账单报告的逐笔损耗分解没有生成：本次不回答“最错一笔”，也不用其他数字代替。');
@@ -285,13 +300,9 @@ function worstTradeAnswer({ chip, bundle, bill, plan }) {
       notice: '没有卖出笔时不生成逐笔归因，也不用示例交易补齐。',
     });
   }
-  const top = items[0];
-  const positive = Number(top.dragMoney) > 0;
+  const rank = rankDragItems(items);
+  const { top, positive, worst: largest, allZero } = rank;
   if (!positive) {
-    const largest = items.reduce((a, b) => (
-      Math.abs(Number(b.dragMoney) || 0) > Math.abs(Number(a.dragMoney) || 0) ? b : a
-    ), items[0]);
-    const allZero = items.every((it) => Number(it.dragMoney) === 0);
     const total = decomposition.total?.display ?? '—';
     const absDrag = Number.isFinite(largest.dragMoney) ? fmtMoney(Math.abs(largest.dragMoney)) : '—';
     if (allZero) {
@@ -362,7 +373,7 @@ export function buildBestTradeAnswer({ bundle, bill, question = '我获利最高
       notice: '没有卖出笔时不生成逐笔归因，也不用示例交易补齐。',
     });
   }
-  const best = items.reduce((a, b) => (Number(b.dragMoney) < Number(a.dragMoney) ? b : a), items[0]);
+  const best = rankDragItems(items).best;
   const drag = Number(best.dragMoney) || 0;
   const absDrag = fmtMoney(Math.abs(drag));
   if (drag === 0) {
@@ -455,6 +466,62 @@ function patternAnswer({ chip, bundle, bill, plan, question }) {
   });
 }
 
+const SIMILAR_QUESTION = '这份账单里有没有类似的情况？';
+
+// 相似情境只做同一账单内的重复操作对照；没有跨账单检索，也不做行情形态相似度。
+export function buildSimilarContextAnswer({ bundle, bill, question = SIMILAR_QUESTION } = {}) {
+  if (!bundle) return fail(QA_CHIP_CODES.REPORT_NOT_READY, '当前账单的已发布报告尚未载入：请先打开报告页；问答页不会为相似情境重复请求行情');
+  if (bundle.status === 'blocked' || bundle.review?.portfolio_published !== true) {
+    return fail(QA_CHIP_CODES.REPORT_WITHHELD, '当前账单组合结果未发布（可能缺价、复核未通过或行情阻断）：不生成相似情境回答');
+  }
+  const pack = behaviorData(bundle);
+  if (!pack.ok) return fail(QA_CHIP_CODES.BEHAVIOR_UNAVAILABLE, pack.message);
+
+  const textQuestion = String(question ?? '');
+  const chip = { id: 'similar_context', question: textQuestion || SIMILAR_QUESTION, intent: 'similar_context' };
+  const plan = buildChipPlan({ chip, bundle, bill });
+  const { symbol, focus } = selectSimilarPattern({ patterns: pack.patterns, question: textQuestion });
+  const evidence = similarEvidenceOf({ focus, symbol });
+
+  if (!focus || !evidence.length) {
+    const scopeText = symbol ? `标的 ${symbol} 在这份账单里` : '这份账单里';
+    return localAnswer({
+      chip,
+      plan,
+      text: `${scopeText}没有找到可对照的重复情境。你可以换一个已发生的操作再问，或先看行为发现里已有的证据。`,
+      facts: [
+        { label: '范围', value: '同一份账单' },
+        ...(symbol ? [{ label: '标的', value: symbol }] : []),
+      ],
+      evidence: [],
+      notice: '只在这份账单内比较；不做跨账单检索，也不比较行情形态；没有证据就不生成相似结论。',
+    });
+  }
+
+  const lines = patternEvidenceLines({ ...focus, evidence }, 4);
+  const scopeText = symbol ? `标的 ${symbol} ` : '全账单';
+  const statusText = focus.status === '成立'
+    ? '已达到当前候选阈值'
+    : focus.status === '不成立'
+      ? '未达到当前候选阈值'
+      : '样本不足，暂不判定';
+  const text = `只在这份账单内看，${focus.name}：${scopeText}命中 ${evidence.length} 次，${statusText}。${lines.length ? `具体是：${lines.join('；')}。` : ''}这是按交易间隔和价格窗口做的重复情境对照，不是跨账单检索，也不是行情形态相似度匹配。`;
+
+  return localAnswer({
+    chip,
+    plan,
+    text,
+    facts: [
+      { label: '情境', value: focus.name },
+      { label: '范围', value: symbol ? `同一账单 · ${symbol}` : '同一份账单' },
+      { label: '命中', value: `${evidence.length} 次（候选 ${focus.sample_n ?? 0} 次 / 已评估 ${focus.evaluated_n ?? 0} 次）` },
+      { label: '判定', value: `${focus.status} · ${patternCriterion(focus)}` },
+    ],
+    evidence: lines,
+    notice: '只在这份账单内比较；不做跨账单检索，也不比较行情形态；不是概率预测，不评价当时的动机。',
+  });
+}
+
 function profileAnswer({ chip, bundle, bill, plan, savedFacts = [] }) {
   const saved = savedFactsView(savedFacts);
   const savedNote = savedFactsNote(saved.total);
@@ -522,7 +589,7 @@ function howToChangeAnswer({ chip, bundle, bill, plan, ruleState, profile, saved
     ?? candidates.find((c) => c.status === 'dismissed')
     ?? null;
   const pattern = candidate
-    ? findPattern(base.patterns, candidate.source_pattern?.pattern_id) ?? candidate.source_pattern ?? null
+    ? findPatternById(base.patterns, candidate.source_pattern?.pattern_id) ?? candidate.source_pattern ?? null
     : null;
   if (!candidate || !pattern) {
     const summary = base.patterns.length

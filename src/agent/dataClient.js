@@ -4,6 +4,8 @@ export const DATA_CLIENT_PATHS = Object.freeze({
   profile: '/functions/v1/app/api/profile',
   facts: '/functions/v1/app/api/profile/facts',
   summary: '/functions/v1/app/api/profile/summary',
+  rules: '/functions/v1/app/api/rules',
+  history: '/functions/v1/app/api/history/index',
 });
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -109,6 +111,9 @@ export function createDataClient({
     deleteBill({ id, signal } = {}) {
       return request(idPath(id), { method: 'DELETE', signal });
     },
+    getBill({ id, signal } = {}) {
+      return request(idPath(id), { signal });
+    },
     saveSnapshot({ id, snapshot, signal } = {}) {
       if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
         throw dataError(DATA_CLIENT_CODES.REQUEST);
@@ -117,6 +122,26 @@ export function createDataClient({
     },
     getProfile({ signal } = {}) {
       return request(routes.profile, { signal });
+    },
+    getRules({ signal } = {}) {
+      return request(routes.rules, { signal });
+    },
+    historyIndex({ limit = 20, exclude = null, signal } = {}) {
+      if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw dataError(DATA_CLIENT_CODES.REQUEST);
+      if (exclude !== null && (typeof exclude !== 'string' || !UUID_RE.test(exclude))) {
+        throw dataError(DATA_CLIENT_CODES.REQUEST);
+      }
+      const query = `?limit=${limit}${exclude === null ? '' : `&exclude=${exclude}`}`;
+      return request(`${routes.history}${query}`, { signal }).then((payload) => {
+        if (payload.index === null || typeof payload.index !== 'object' || Array.isArray(payload.index)) {
+          throw dataError(DATA_CLIENT_CODES.RESPONSE);
+        }
+        return payload.index;
+      });
+    },
+    saveRules({ versions, signal } = {}) {
+      if (!Array.isArray(versions)) throw dataError(DATA_CLIENT_CODES.REQUEST);
+      return request(routes.rules, { method: 'PUT', body: { versions }, signal });
     },
     deleteFact({ id, signal } = {}) {
       if (typeof id !== 'string' || !UUID_RE.test(id)) throw dataError(DATA_CLIENT_CODES.REQUEST);

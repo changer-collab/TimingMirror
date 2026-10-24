@@ -1,65 +1,39 @@
-// 账单后台云同步：确认导入后异步保存统计（可选完整明细）与报告快照。
+// 账单后台云同步：确认导入后保存完整明细与报告快照。
 // 同步失败不回滚报告；状态只影响提示，不阻断任何本机能力。
 import { buildBillSyncBody } from '../../src/agent/billSync.js';
 
-const FULL_TRADES_KEY = 'tm.cloud.fullTrades';
 const entries = new Map();
 const snapshotJobs = new Map();
 const listeners = new Set();
 
-function storage() {
-  try {
-    return typeof localStorage !== 'undefined' ? localStorage : null;
-  } catch {
-    return null;
-  }
-}
-
-export function getFullTradesPreference() {
-  try {
-    return storage()?.getItem(FULL_TRADES_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-export function setFullTradesPreference(value) {
-  try {
-    storage()?.setItem(FULL_TRADES_KEY, value ? '1' : '0');
-  } catch { /* 偏好保存失败时按默认值处理 */ }
-}
-
 function cloudMessage(error) {
   const code = error?.upstreamCode ?? error?.code ?? '';
-  if (code === 'database_unavailable') return '云端数据库暂不可用，账单仍只在本机';
-  if (code === 'login_required' || code === 'invalid_user_context') return '未取得云端身份，账单仍只在本机';
+  if (code === 'database_unavailable') return '云端数据库暂不可用';
+  if (code === 'login_required' || code === 'invalid_user_context') return '未取得云端身份';
   if (code === 'request_too_large' || code === 'request_invalid' || code === 'content_hash_mismatch') {
-    return '云端拒绝了这份账单，账单仍只在本机';
+    return '云端拒绝了这份账单';
   }
-  return '云端同步失败，账单仍只在本机';
+  return '云端同步失败';
 }
 
 export function cloudStatusText(status) {
   if (!status || status.state === 'demo') return '';
   if (status.state === 'pending') return '云端同步中';
   if (status.state === 'synced') {
-    if (status.mode === 'full') return status.duplicate ? '云端已存（含明细）' : '云端已存统计 + 明细';
-    return status.duplicate ? '云端已有这份账单' : '云端已存统计';
+    return status.duplicate ? '云端已存这份账单（含明细）' : '云端已存账单 + 明细';
   }
-  if (status.state === 'failed') return '仅本机 · 云端未同步';
-  return '仅本机';
+  if (status.state === 'restored') return '已从云端恢复';
+  if (status.state === 'failed') return '云端未同步';
+  return '本页数据';
 }
 
 export function cloudStatusTitle(status) {
   if (!status || status.state === 'demo') return '';
-  if (status.state === 'pending') return '正在后台保存账单统计，不影响报告与问答';
-  if (status.state === 'synced') {
-    return status.mode === 'full'
-      ? '云端已保存统计与完整成交明细；可删除云端记录'
-      : '云端只保存统计与内容指纹；完整明细未上传';
-  }
+  if (status.state === 'pending') return '正在后台保存账单明细与报告快照，不影响报告与问答';
+  if (status.state === 'synced') return '云端已保存成交明细与报告快照；可删除云端记录';
+  if (status.state === 'restored') return '本次账单来自云端保存的成交明细与报告快照';
   if (status.state === 'failed') return `${status.message ?? '云端同步失败'}；可稍后重试`;
-  return '账单只保存在当前浏览器；不会上传 CSV 或文件名';
+  return '登录后账单会保存到云端；不会上传原始 CSV';
 }
 
 function paintNode(node) {
@@ -85,7 +59,12 @@ function emit(contextId) {
 export function billSyncStatus(bill) {
   if (bill?.demo === true) return { state: 'demo' };
   const contextId = bill?.contextId ?? null;
-  return entries.get(contextId) ?? { state: 'local', contextId, mode: null, billId: null };
+  const entry = entries.get(contextId);
+  if (entry) return entry;
+  if (bill?.cloudRestored === true) {
+    return { state: 'restored', contextId, mode: 'full', billId: bill.cloudBillId ?? null };
+  }
+  return { state: 'local', contextId, mode: null, billId: null };
 }
 
 export function subscribeBillSync(listener) {
@@ -94,7 +73,7 @@ export function subscribeBillSync(listener) {
   return () => listeners.delete(listener);
 }
 
-export function syncBill({ bill, saveBill, includeTrades = getFullTradesPreference() } = {}) {
+export function syncBill({ bill, saveBill } = {}) {
   const contextId = bill?.contextId ?? null;
   if (typeof saveBill !== 'function') return Promise.resolve({ state: 'local', reason: 'no-client' });
   if (!bill || bill.demo === true || bill.sourceType !== 'local') {
@@ -110,7 +89,7 @@ export function syncBill({ bill, saveBill, includeTrades = getFullTradesPreferen
   const entry = {
     state: 'pending',
     contextId,
-    mode: includeTrades ? 'full' : 'summary',
+    mode: 'full',
     billId: current?.billId ?? null,
     duplicate: false,
     code: null,
@@ -124,7 +103,7 @@ export function syncBill({ bill, saveBill, includeTrades = getFullTradesPreferen
   const promise = (async () => {
     let next;
     try {
-      const body = await buildBillSyncBody(bill, { includeTrades });
+      const body = await buildBillSyncBody(bill);
       const result = await saveBill({ body });
       next = {
         state: 'synced',
@@ -191,14 +170,14 @@ export function syncSnapshot({ bill, snapshot, saveSnapshot } = {}) {
 
 // 刷新页面后内存状态会丢失；报告发布时先幂等补齐账单同步，再上传快照。
 export async function syncSnapshotWithBill({
-  bill, snapshot, saveBill, saveSnapshot, includeTrades = getFullTradesPreference(),
+  bill, snapshot, saveBill, saveSnapshot,
 } = {}) {
   if (typeof saveBill !== 'function' || typeof saveSnapshot !== 'function') {
     return { ok: false, code: 'E_CLOUD_SNAPSHOT_SKIPPED' };
   }
   const current = billSyncStatus(bill);
   if (current.state !== 'synced' || !current.billId) {
-    const synced = await syncBill({ bill, saveBill, includeTrades });
+    const synced = await syncBill({ bill, saveBill });
     if (synced.state !== 'synced' || !synced.billId) {
       return { ok: false, code: 'E_CLOUD_BILL_NOT_SYNCED' };
     }

@@ -48,14 +48,22 @@ const REPORT = computeIndicators({ trades: TRADES, closes: CLOSES });
 /* ==== 2. 工具注册表 ==== */
 {
   const tools = listTools();
-  check('注册表：登记 12 项离线可用工具', tools.length === 12 && tools.every((t) => t.status === 'offline_available'), JSON.stringify(tools.map((t) => t.id)));
+  check('注册表：登记 22 项离线可用工具', tools.length === 22 && tools.every((t) => t.status === 'offline_available'), JSON.stringify(tools.map((t) => t.id)));
+  check('注册表：每项都有稳定 version', tools.every((t) => typeof t.version === 'string' && t.version.length > 0), JSON.stringify(tools.map((t) => [t.id, t.version])));
   check('注册表：含核心引擎工具（indicators/decompose/verify/provenance/replaceSell）',
     ['indicators.compute', 'decompose.drag', 'verify.report', 'provenance.report', 'counterfactual.replaceSell'].every((id) => getTool(id) !== null));
-  check('注册表：每项都有 required 参数清单', tools.every((t) => Array.isArray(t.params.required) && t.params.required.length > 0));
+  check('注册表：补首批迁移工具（相似情境/排序/归因/规则/画像/路径区间）',
+    ['behavior.similarSameBill', 'decompose.tradeRank', 'behavior.operationAttribution', 'rule.current', 'rule.ledger', 'rule.candidates', 'profile.signals', 'counterfactual.pathRange'].every((id) => getTool(id) !== null));
+  check('注册表：行为清单描述含 4 类模式', /追高买入/.test(getTool('behavior.patternList').description)
+    && /买回/.test(getTool('behavior.patternList').description)
+    && /三日内卖出/.test(getTool('behavior.patternList').description)
+    && /交易频率/.test(getTool('behavior.patternList').description));
+  check('注册表：required 为数组（无参工具可为空）', tools.every((t) => Array.isArray(t.params.required))
+    && tools.filter((t) => t.id !== 'profile.signals').every((t) => t.params.required.length > 0));
   check('注册表：未接入能力不注册（bailian.classify 不可调用）', getTool('bailian.classify') === null);
-  check('未接入能力：如实登记说明（≥3 项，含百炼与实时/分钟级行情）', UNAVAILABLE_CAPABILITIES.length >= 3
-    && UNAVAILABLE_CAPABILITIES.some((c) => c.id === 'bailian.online_intent')
-    && UNAVAILABLE_CAPABILITIES.some((c) => c.id === 'market.realtime'), JSON.stringify(UNAVAILABLE_CAPABILITIES));
+  check('未接入能力：清理过时条目，只保留实时行情', UNAVAILABLE_CAPABILITIES.length === 1
+    && UNAVAILABLE_CAPABILITIES[0].id === 'market.realtime'
+    && !UNAVAILABLE_CAPABILITIES.some((c) => c.id === 'bailian.online_intent' || c.id === 'page.chat_wiring'), JSON.stringify(UNAVAILABLE_CAPABILITIES));
   const vt = validateToolParams(getTool('indicators.compute'), { trades: TRADES });
   check('参数校验：缺 closes → ok=false 且 missing 列出', vt.ok === false && vt.missing.includes('closes'), JSON.stringify(vt));
   const vt2 = validateToolParams(getTool('indicators.compute'), { trades: TRADES, closes: CLOSES });
@@ -80,9 +88,32 @@ const REPORT = computeIndicators({ trades: TRADES, closes: CLOSES });
   const p4 = buildPlan({ question: '随便问问', intentJson: classifyOffline('随便问问'), context: {} });
   check('planner：out_of_scope → 兜底零工具调用', p4.status === 'fallback' && p4.fallback_used === true && p4.steps.length === 0, JSON.stringify(p4));
 
-  const p5 = buildPlan({ question: '上次类似的情况？', intentJson: { intent: 'similar_context', slots: {}, confidence: 0.9 }, context: {} });
-  check('planner：similar_context 已识别但无工具 → unsupported（非兜底）', p5.status === 'unsupported' && p5.steps.length === 0 && p5.fallback_used === false, JSON.stringify(p5.status));
-  check('planner：unsupported 含原因', p5.reasons.length > 0 && p5.reasons[0].includes('similar_context'), JSON.stringify(p5.reasons));
+  const MARKET = { resolveValuation() {}, getClose() {} };
+  const p5 = buildPlan({ question: '上次类似的情况？', intentJson: { intent: 'similar_context', slots: {}, confidence: 0.9 }, context: { trades: TRADES, market: MARKET, question: '上次类似的情况？' } });
+  check('planner：similar_context → 同账单相似匹配（非兜底）', p5.status === 'ready' && p5.steps.length === 1 && p5.steps[0].tool === 'behavior.similarSameBill' && p5.fallback_used === false, JSON.stringify(p5.status));
+  check('planner：similar_context 口径限定同一账单', p5.composition_reason.includes('同一账单') && p5.composition_reason.includes('不做跨账单'), p5.composition_reason);
+  const p5b = buildPlan({ question: '上次类似的情况？', intentJson: { intent: 'similar_context', slots: {}, confidence: 0.9 }, context: {} });
+  check('planner：similar_context 缺行情 → needs_context 列缺失参数', p5b.status === 'needs_context' && p5b.fallback_used === false
+    && p5b.pending_params.some((p) => p.tool === 'behavior.similarSameBill' && p.missing.includes('market')), JSON.stringify(p5b.pending_params));
+
+  const p5c = buildPlan({
+    question: '我在其他账单里有没有类似的操作？',
+    intentJson: { intent: 'cross_bill', slots: {}, confidence: 0.9 },
+    context: { historyIndex: { rows: [] }, patterns: [{ id: 'chase_high_buy', name: '追高买入', hits: 3 }] },
+  });
+  check('planner：cross_bill → 本人历史账单索引（非兜底）', p5c.status === 'ready'
+    && p5c.steps.length === 1 && p5c.steps[0].tool === 'history.crossBillIndex'
+    && p5c.steps[0].params.patterns.length === 1, JSON.stringify(p5c.steps));
+  check('planner：cross_bill 口径限定本人已保存账单', p5c.composition_reason.includes('本人已保存账单')
+    && p5c.composition_reason.includes('只报次数'), p5c.composition_reason);
+  const p5d = buildPlan({
+    question: '我在其他账单里有没有类似的操作？',
+    intentJson: { intent: 'cross_bill', slots: {}, confidence: 0.9 },
+    context: {},
+  });
+  check('planner：cross_bill 缺索引 → needs_context', p5d.status === 'needs_context'
+    && p5d.pending_params.some((p) => p.tool === 'history.crossBillIndex' && p.missing.includes('historyIndex')),
+    JSON.stringify(p5d.pending_params));
 
   const p6 = buildPlan({ question: '立个规则', intentJson: { intent: 'contract_setup', slots: {}, confidence: 0.9 }, context: { template_id: 'no_buy_on_surge', fields: {} } });
   check('planner：contract_setup → contract.parse', p6.status === 'ready' && p6.steps[0].tool === 'contract.parse');
@@ -175,7 +206,7 @@ const REPORT = computeIndicators({ trades: TRADES, closes: CLOSES });
   const c = buildPlan({ ...args, question: '换个问题' });
   check('确定性：问题不同 → plan_id 不同', a.plan_id !== c.plan_id);
   check('确定性：hashQuestion 稳定（同题同值）', hashQuestion('abc') === hashQuestion('abc') && hashQuestion('abc') !== hashQuestion('abd'));
-  check('意图全集：13 类且每类均有模板', INTENTS.length === 13 && INTENTS.every((i) => PLAN_TEMPLATES[i] !== undefined));
+  check('意图全集：14 类且每类均有模板', INTENTS.length === 14 && INTENTS.every((i) => PLAN_TEMPLATES[i] !== undefined));
 
   const line = toLogLine(a, { ts: 'T0' });
   check('日志：含附A.1 关键字段', line.ts === 'T0' && line.plan_id === a.plan_id && line.intent === 'worst_trade' && line.template === 'T-worst-trade'
@@ -187,6 +218,41 @@ const REPORT = computeIndicators({ trades: TRADES, closes: CLOSES });
   check('意图 JSON 校验：合法 → ok', v.ok === true && v.errors.length === 0);
   const v2 = validateIntentJson({ intent: 'worst_trade', confidence: 1 });
   check('意图 JSON 校验：缺 slots → 报错', v2.ok === false && v2.errors.some((e) => e.includes('slots')), JSON.stringify(v2.errors));
+}
+
+/* ==== 9. 跨步骤参数、依赖与可选步骤 ==== */
+{
+  const fakeRegistry = new Map([
+    ['fake.seed', { id: 'fake.seed', params: { required: ['x'], optional: [] }, invoke: ({ x }) => ({ doubled: x * 2, nested: { value: 7 } }) }],
+    ['fake.use', { id: 'fake.use', params: { required: ['y'], optional: [] }, invoke: ({ y }) => ({ got: y }) }],
+    ['fake.boom', { id: 'fake.boom', params: { required: [], optional: [] }, invoke: () => { throw new Error('合成失败'); } }],
+  ]);
+  const refPlan = { plan_id: 'p-ref', steps: [
+    { id: 'S1', tool: 'fake.seed', params: { x: 21 }, params_keys: ['x'], depends_on: [] },
+    { id: 'S2', tool: 'fake.use', params: { y: '$S1.nested.value' }, params_keys: ['y'], depends_on: ['S1'] },
+  ] };
+  const rr = runPlan({ plan: refPlan, registry: fakeRegistry });
+  check('跨步骤参数：$S1.field.path 取到上游输出', rr.executed === 2 && rr.results[1].output.got === 7, JSON.stringify(rr.results));
+  check('跨步骤参数：结果带步骤 id 与耗时', rr.results[1].step_id === 'S2' && Number.isInteger(rr.results[1].ms), JSON.stringify(rr.results[1]));
+
+  const optionalPlan = { plan_id: 'p-opt', steps: [
+    { id: 'S1', tool: 'fake.boom', params: {}, params_keys: [], optional: true },
+    { id: 'S2', tool: 'fake.seed', params: { x: 1 }, params_keys: ['x'], depends_on: [] },
+  ] };
+  const ro = runPlan({ plan: optionalPlan, registry: fakeRegistry });
+  check('可选步骤失败：记录降级但继续出结果', ro.executed === 1 && ro.aborted === false
+    && ro.degraded.length === 1 && ro.degraded[0].code === 'E_TOOL_FAILED'
+    && ro.results[0].step_id === 'S2', JSON.stringify(ro));
+  check('可选步骤失败：降级记录带耗时', Number.isInteger(ro.degraded[0].ms), JSON.stringify(ro.degraded[0]));
+
+  const depPlan = { plan_id: 'p-dep', steps: [
+    { id: 'S1', tool: 'fake.boom', params: {}, params_keys: [], optional: true },
+    { id: 'S2', tool: 'fake.use', params: { y: 1 }, params_keys: ['y'], depends_on: ['S1'] },
+  ] };
+  const rd = runPlan({ plan: depPlan, registry: fakeRegistry });
+  check('依赖失败：跳过该步并中止后续', rd.executed === 0 && rd.aborted === true
+    && rd.degraded.map((d) => d.code).join(',') === 'E_TOOL_FAILED,E_STEP_DEPENDENCY'
+    && rd.degraded[1].missing.includes('S1'), JSON.stringify(rd.degraded));
 }
 
 /* —— 输出 —— */

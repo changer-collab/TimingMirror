@@ -53,7 +53,7 @@ check('入口：规则工作区提供 #/scenario 链接',
 check('入口：规则页卡片不再重复测试按钮',
   !/href="#\/scenario"/.test(contract));
 check('页面：scenario 有独立标题/返回规则管理链接',
-  /title: '还没有可复盘的真实账单。'/.test(scenarioPage) && /href="#\/me"/.test(scenarioPage));
+  /title: isConfirmedLocal\(\) \? '每一笔操作，<br>放回当时的规则。' : '还没有可复盘的真实账单。'/.test(scenarioPage) && /href="#\/me"/.test(scenarioPage));
 check('规则页：scenario 委托到操作复盘视图，不再渲染假设测试区',
   /if \(section === 'scenario'\) \{\s*renderScenarioReview\(root, ctx\);\s*return;/.test(contract)
   && /export function renderScenarioReview/.test(reviewView));
@@ -92,6 +92,14 @@ check('问答页：重复账单状态栏代码与专用样式已移除',
 check('问答页：仍保留顶部共享横幅，面板内不再重复渲染',
   /confirmedBillBanner\(\)\}\$\{realChatPage\(\)\}/.test(chatPage)
   && !/confirmedBillBanner|tm-bill-banner/.test(realChat));
+check('个人中心：申报前自检区块挂载独立自检视图',
+  /id="tm-real-selfcheck"/.test(mePage) && /申报前自检/.test(mePage)
+  && /不是实时提醒/.test(mePage)
+  && /mountSelfCheckView\(document\.getElementById\('tm-real-selfcheck'\)\)/.test(app)
+  && /export function mountSelfCheckView/.test(bridge) && /section: 'selfcheck'/.test(bridge)
+  && /section === 'selfcheck'/.test(contract)
+  && /用当前生效规则重放历史行情/.test(contract)
+  && /不是实时提醒/.test(contract));
 check('样式：统一横幅及窄屏规则存在',
   /\.tm-bill-banner\s*\{/.test(css) && /\.tm-bill-banner-links\s*\{/.test(css)
   && /\.tm-bill-banner \{[\s\S]*?flex-direction: column/.test(css));

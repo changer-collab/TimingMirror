@@ -7,6 +7,7 @@ import {
   profileDigestHash,
   validateProfileSummaryValue,
 } from './profileSummary.mjs';
+import { buildHistoryIndex } from './historyIndex.mjs';
 
 export const DATA_CODES = Object.freeze({
   METHOD: 'method_not_allowed',
@@ -27,12 +28,16 @@ export const DATA_CODES = Object.freeze({
 export const DATA_LIMITS = Object.freeze({
   billListDefault: 20,
   billListMax: 50,
+  historyListDefault: 20,
+  historyListMax: 50,
   billBody: 1024 * 1024 + 64 * 1024,
   snapshotBody: 512 * 1024,
   factBody: 32 * 1024,
   summaryBody: 64 * 1024,
+  ruleBody: 256 * 1024,
   maxTrades: 2000,
   maxFacts: 10,
+  maxRules: 500,
   maxMetadataBytes: 16 * 1024,
   maxSnapshotBytes: 512 * 1024,
 });
@@ -44,6 +49,13 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/u;
 const SLUG_RE = /^[a-z0-9][a-z0-9_.-]{0,63}$/u;
 const ID_RE = /^[A-Za-z0-9._:-]{1,64}$/u;
 const TEXT_CONTROL_RE = /[\u0000-\u001f\u007f]/u;
+const RULE_HASH_RE = /^[0-9a-f]{16}$/u;
+const RULE_STATUSES = new Set(['已确认', '已改写', '已拒绝']);
+// 原始文件名属于本机信息，快照中任何层级都不接受文件名字段。
+const PRIVATE_KEY_RE = /^(file|file_name|filename|source_file|source_filename|sourcefile|sourcefilename|raw_file|rawfile)$/iu;
+const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const MAX_JSON_DEPTH = 16;
+const MAX_JSON_NODES = 20000;
 
 const BILL_KEYS = new Set([
   'content_hash', 'context_id', 'source_type', 'effective_date',
@@ -56,6 +68,7 @@ const TRADE_KEYS = new Set([
   'trade_id', 'trade_date', 'symbol', 'side', 'price', 'quantity', 'fee', 'tax',
 ]);
 const SNAPSHOT_KEYS = new Set(['snapshot']);
+const RULES_KEYS = new Set(['versions']);
 const FACT_KEYS = new Set(['kind', 'key', 'value', 'evidence', 'source', 'source_ref']);
 const FACT_KINDS = new Set(['goal', 'preference', 'constraint', 'habit', 'risk_tolerance']);
 const FACT_SOURCES = new Set(['chat', 'manual']);
@@ -128,6 +141,28 @@ function isoTimestamp(value) {
   return Number.isFinite(parsed) ? value : null;
 }
 
+// 拒绝危险键与文件名键：快照会原样回到浏览器，服务端也要守住隐私边界。
+function jsonShapeSafe(value) {
+  const stack = [[value, 0]];
+  let nodes = 0;
+  while (stack.length) {
+    const [node, depth] = stack.pop();
+    nodes += 1;
+    if (nodes > MAX_JSON_NODES || depth > MAX_JSON_DEPTH) return false;
+    if (node === null || typeof node === 'string' || typeof node === 'number' || typeof node === 'boolean') continue;
+    if (Array.isArray(node)) {
+      for (const item of node) stack.push([item, depth + 1]);
+      continue;
+    }
+    if (!isPlainObject(node)) return false;
+    for (const [key, item] of Object.entries(node)) {
+      if (FORBIDDEN_KEYS.has(key) || PRIVATE_KEY_RE.test(key)) return false;
+      stack.push([item, depth + 1]);
+    }
+  }
+  return true;
+}
+
 function positiveNumber(value, { allowZero = false } = {}) {
   return typeof value === 'number' && Number.isFinite(value)
     && (allowZero ? value >= 0 : value > 0) ? value : null;
@@ -162,7 +197,7 @@ export function resolveDataRoute(pathname, method) {
   const apiIndex = parts.lastIndexOf('api');
   if (apiIndex < 0) return null;
   const rest = parts.slice(apiIndex + 1);
-  if (rest[0] !== 'bills' && rest[0] !== 'profile') return null;
+  if (rest[0] !== 'bills' && rest[0] !== 'profile' && rest[0] !== 'rules' && rest[0] !== 'history') return null;
   const route = (kind, allow, id = null) => (allow.includes(method)
     ? { kind, allow, id }
     : { methodNotAllowed: true, allow });
@@ -172,6 +207,14 @@ export function resolveDataRoute(pathname, method) {
     if (rest.length === 2) return route(method === 'GET' ? 'bill.get' : 'bill.delete', ['GET', 'DELETE'], rest[1]);
     if (rest.length === 3 && rest[2] === 'snapshot') return route('bill.snapshot', ['POST'], rest[1]);
     return { kind: null };
+  }
+  if (rest[0] === 'rules') {
+    if (rest.length !== 1) return { kind: null };
+    return route(method === 'GET' ? 'rules.get' : 'rules.save', ['GET', 'PUT']);
+  }
+  if (rest[0] === 'history') {
+    if (rest.length !== 2 || rest[1] !== 'index') return { kind: null };
+    return route('history.index', ['GET']);
   }
   if (rest.length === 1) return route('profile.get', ['GET']);
   if (rest.length === 2 && rest[1] === 'facts') return route('profile.facts.create', ['POST']);
@@ -208,6 +251,9 @@ export async function handleDataRequest({
       return await saveSnapshot({ request, supabase, user, id: route.id, now });
     }
     if (route.kind === 'bill.delete') return await deleteBill({ supabase, user, id: route.id });
+    if (route.kind === 'history.index') return await getHistoryIndex({ request, supabase, user });
+    if (route.kind === 'rules.get') return await getRules({ supabase, user });
+    if (route.kind === 'rules.save') return await saveRules({ request, supabase, user, now });
     if (route.kind === 'profile.get') return await getProfile({ supabase, user });
     if (route.kind === 'profile.facts.create') {
       return await createFacts({ request, supabase, user, now, randomUUID });
@@ -378,14 +424,35 @@ async function normalizeBillCreate(input) {
 }
 
 function validSnapshot(snapshot) {
-  return isPlainObject(snapshot)
-    && snapshot.version === 1
-    && typeof snapshot.profile_key === 'string' && PROFILE_KEY_RE.test(snapshot.profile_key)
-    && isoTimestamp(snapshot.at) !== null
-    && isPlainObject(snapshot.bill)
-    && integerWithin(snapshot.bill.trade_count, 0, 100000) !== null
-    && snapshot.review?.portfolio_published === true
-    && jsonBytes(snapshot) <= DATA_LIMITS.maxSnapshotBytes;
+  if (!isPlainObject(snapshot) || (snapshot.version !== 1 && snapshot.version !== 2)) return false;
+  if (typeof snapshot.profile_key !== 'string' || !PROFILE_KEY_RE.test(snapshot.profile_key)) return false;
+  if (isoTimestamp(snapshot.at) === null) return false;
+  if (!isPlainObject(snapshot.bill)) return false;
+  if (integerWithin(snapshot.bill.trade_count, 0, 100000) === null) return false;
+  if (snapshot.review?.portfolio_published !== true) return false;
+  if (snapshot.version === 2) {
+    if (!isPlainObject(snapshot.profile) || !isPlainObject(snapshot.profile.latest)) return false;
+    if (snapshot.profile.latest.profile_key !== snapshot.profile_key) return false;
+    if (snapshot.profile.latest.review?.portfolio_published !== true) return false;
+    if (snapshot.report != null && !isPlainObject(snapshot.report)) return false;
+    if (snapshot.report_available !== undefined && typeof snapshot.report_available !== 'boolean') return false;
+  }
+  if (!jsonShapeSafe(snapshot)) return false;
+  return jsonBytes(snapshot) <= DATA_LIMITS.maxSnapshotBytes;
+}
+
+function validRuleRecord(record) {
+  if (!isPlainObject(record)) return false;
+  if (typeof record.hash !== 'string' || !RULE_HASH_RE.test(record.hash)) return false;
+  if (!Number.isInteger(record.v) || record.v < 1 || record.v > 1000000) return false;
+  if (!RULE_STATUSES.has(record.status)) return false;
+  return jsonBytes(record) <= 16 * 1024 && jsonShapeSafe(record);
+}
+
+function normalizeRuleSet(versions) {
+  if (!Array.isArray(versions) || versions.length > DATA_LIMITS.maxRules) return null;
+  if (!versions.every(validRuleRecord)) return null;
+  return versions;
 }
 
 function normalizeFact(input) {
@@ -605,6 +672,93 @@ async function deleteBill({ supabase, user, id }) {
   if (result.error) return dbFailure(result.error, true);
   if (!Array.isArray(result.data) || result.data.length === 0) return fail(404, DATA_CODES.NOT_FOUND);
   return json(200, { ok: true, deleted: true });
+}
+
+// 跨账单索引：只读本人账单，服务端聚合成紧凑行；当前账单按 exclude 排除。
+async function getHistoryIndex({ request, supabase, user }) {
+  const url = new URL(request.url);
+  const limit = queryInteger(url, 'limit', DATA_LIMITS.historyListDefault, 1, DATA_LIMITS.historyListMax);
+  if (limit === null) return fail(400, DATA_CODES.REQUEST_INVALID);
+  const exclude = url.searchParams.get('exclude');
+  if (exclude !== null && !UUID_RE.test(exclude)) return fail(400, DATA_CODES.REQUEST_INVALID);
+  const result = await supabase.from('bills')
+    .select(BILL_COLUMNS_WITH_PAYLOAD)
+    .eq('user_id', user.user_id)
+    .order('imported_at', { ascending: false })
+    .limit(limit);
+  if (result.error) return dbFailure(result.error, false);
+  const rows = Array.isArray(result.data) ? result.data : [];
+  const entries = [];
+  for (const row of rows) {
+    const ref = `h${(await sha256Hex(`${user.user_id}\n${row.id}`)).slice(0, 16)}`;
+    entries.push({
+      ref,
+      effective_date: row.effective_date ?? null,
+      snapshot: row.snapshot_json ?? null,
+      trades: row.payload_mode === 'full' ? (row.payload_json?.trades ?? null) : null,
+    });
+  }
+  const excludeRefs = exclude === null
+    ? []
+    : [`h${(await sha256Hex(`${user.user_id}\n${exclude}`)).slice(0, 16)}`];
+  return json(200, { ok: true, index: buildHistoryIndex({ entries, excludeRefs }) });
+}
+
+async function getRules({ supabase, user }) {
+  const result = await supabase.from('rule_sets')
+    .select('payload_json,revision,updated_at')
+    .eq('user_id', user.user_id)
+    .maybeSingle();
+  if (result.error) return dbFailure(result.error, false);
+  if (!result.data) return json(200, { ok: true, rules: [], revision: 0, updated_at: null });
+  return json(200, {
+    ok: true,
+    rules: Array.isArray(result.data.payload_json) ? result.data.payload_json : [],
+    revision: Number.isInteger(result.data.revision) ? result.data.revision : 0,
+    updated_at: result.data.updated_at ?? null,
+  });
+}
+
+async function saveRules({ request, supabase, user, now }) {
+  const parsed = await readJson(request, DATA_LIMITS.ruleBody);
+  if (!parsed.ok) return fail(parsed.status, parsed.code);
+  if (!hasOnlyKeys(parsed.value, RULES_KEYS)) return fail(400, DATA_CODES.REQUEST_INVALID);
+  const versions = normalizeRuleSet(parsed.value.versions);
+  if (!versions) return fail(400, DATA_CODES.REQUEST_INVALID);
+  const at = now();
+  const existing = await supabase.from('rule_sets')
+    .select('user_id,revision')
+    .eq('user_id', user.user_id)
+    .maybeSingle();
+  if (existing.error) return dbFailure(existing.error, false);
+  let saved;
+  if (existing.data) {
+    const revision = (Number.isInteger(existing.data.revision) ? existing.data.revision : 0) + 1;
+    saved = await supabase.from('rule_sets')
+      .update({ payload_json: versions, revision, updated_at: at })
+      .eq('user_id', user.user_id)
+      .select('revision,updated_at')
+      .maybeSingle();
+  } else {
+    saved = await supabase.from('rule_sets')
+      .insert({
+        user_id: user.user_id,
+        payload_json: versions,
+        revision: 1,
+        created_at: at,
+        updated_at: at,
+      })
+      .select('revision,updated_at')
+      .single();
+  }
+  if (saved.error) return dbFailure(saved.error, true);
+  if (!saved.data) return fail(404, DATA_CODES.NOT_FOUND);
+  return json(200, {
+    ok: true,
+    revision: saved.data.revision,
+    updated_at: saved.data.updated_at,
+    count: versions.length,
+  });
 }
 
 async function getProfile({ supabase, user }) {

@@ -23,6 +23,7 @@ export const SITE_FUNCTION_PATHS = Object.freeze({
   profileSummary: '/functions/v1/app/api/llm/profile-summary',
   profileFact: '/functions/v1/app/api/llm/profile-fact',
   qaNarrative: '/functions/v1/app/api/llm/qa-narrative',
+  qaRewrite: '/functions/v1/app/api/llm/qa-rewrite',
 });
 
 export const HTTP_TRANSPORT_CODES = Object.freeze({
@@ -70,10 +71,10 @@ function normalizePaths(paths) {
     throw new TypeError('paths 必须为对象');
   }
   const out = {};
-  for (const key of ['intent', 'restate', 'ruleIntent', 'resultExplanation', 'scenarioJudgment', 'customRuleJudgment', 'importRecover', 'importVision', 'profileSummary', 'profileFact', 'qaNarrative']) {
+  for (const key of ['intent', 'restate', 'ruleIntent', 'resultExplanation', 'scenarioJudgment', 'customRuleJudgment', 'importRecover', 'importVision', 'profileSummary', 'profileFact', 'qaNarrative', 'qaRewrite']) {
     const value = paths[key];
     if (value === undefined) {
-      if (key === 'ruleIntent' || key === 'resultExplanation' || key === 'scenarioJudgment' || key === 'customRuleJudgment' || key === 'importRecover' || key === 'importVision' || key === 'profileSummary' || key === 'profileFact' || key === 'qaNarrative') continue;
+      if (key === 'ruleIntent' || key === 'resultExplanation' || key === 'scenarioJudgment' || key === 'customRuleJudgment' || key === 'importRecover' || key === 'importVision' || key === 'profileSummary' || key === 'profileFact' || key === 'qaNarrative' || key === 'qaRewrite') continue;
       throw new TypeError(`paths.${key} 缺失`);
     }
     if (typeof value !== 'string' || !value.startsWith('/')
@@ -169,6 +170,14 @@ export function createHttpTransport({
     qaNarrative({ question, intent, facts, evidence, allowed, signal } = {}) {
       if (!routes.qaNarrative) throw transportError(HTTP_TRANSPORT_CODES.CONFIG);
       return call(routes.qaNarrative, { question, intent, facts, evidence, allowed }, signal);
+    },
+    async qaRewrite({
+      question, intent, scope, draft, claims, facts, evidence, allowed, glossary, limits,
+    } = {}, { signal } = {}) {
+      if (!routes.qaRewrite) throw transportError(HTTP_TRANSPORT_CODES.CONFIG);
+      return call(routes.qaRewrite, {
+        question, intent, scope, draft, claims, facts, evidence, allowed, glossary, limits,
+      }, signal);
     },
     ruleIntent({ question, stage, allowed_intents, allowed_templates, allowed_tools, context_summary, signal } = {}) {
       if (!routes.ruleIntent) throw transportError(HTTP_TRANSPORT_CODES.CONFIG);

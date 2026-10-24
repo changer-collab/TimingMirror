@@ -9,7 +9,7 @@ import { TOOL_REGISTRY } from './toolRegistry.js';
 
 export const INTENTS = Object.freeze([
   'worst_trade', 'best_trade', 'loss_overview', 'pattern_explain', 'profile', 'what_if', 'similar_context',
-  'how_to_change', 'contract_setup', 'contract_status', 'meta_calc', 'meta_trust', 'out_of_scope',
+  'cross_bill', 'how_to_change', 'contract_setup', 'contract_status', 'meta_calc', 'meta_trust', 'out_of_scope',
 ]);
 
 // 计划模板（候选：工具序列与理由；参数在 buildPlan 时按 context 解析）
@@ -20,7 +20,8 @@ export const PLAN_TEMPLATES = Object.freeze({
   pattern_explain: { template_id: 'T-pattern-explain', steps: ['behavior.patternList'], composition_reason: '行为模式清单（当前仅“追高买入”实现；三态照实）' },
   profile: { template_id: 'T-profile', steps: ['behavior.patternList'], composition_reason: '画像四标签为 T3 暂缓；当前以行为清单为可用证据' },
   what_if: { template_id: 'T-what-if', steps: ['counterfactual.replaceSell'], composition_reason: 'S1 单笔卖出替换（仅单标的；买入侧未实现）' },
-  similar_context: { template_id: 'T-similar-context', steps: [], composition_reason: '相似情境检索未接入（行情/历史检索缺失）', unavailable: true },
+  similar_context: { template_id: 'T-similar-context', steps: ['behavior.similarSameBill'], composition_reason: '同一账单内的行为重复（不做跨账单/行情相似度检索）' },
+  cross_bill: { template_id: 'T-cross-bill', steps: ['history.crossBillIndex'], composition_reason: '本人已保存账单的同类操作次数（只报次数与覆盖）' },
   how_to_change: { template_id: 'T-how-to-change', steps: ['behavior.patternList'], composition_reason: '改法与规则共建归契约/UI；当前仅提供行为清单证据' },
   contract_setup: { template_id: 'T-contract-setup', steps: ['contract.parse'], composition_reason: '模板＋字段解析（保存、状态机与持久化归 UI，R4）' },
   contract_status: { template_id: 'T-contract-status', steps: [], composition_reason: '契约状态与持久化在 UI 侧，planner 无引擎工具可调', unavailable: true },
@@ -165,8 +166,26 @@ export function buildPlan({ question, intentJson, retryIntentJson, context = {},
   return finalizePlan(plan);
 }
 
-/* 最小执行器：顺序调用注册表工具；任一步失败 → 中止后续并记录降级（不吞错继续） */
-export function runPlan({ plan, registry = TOOL_REGISTRY }) {
+/* 跨步骤参数：字符串 "$S1.field.path" 从已成功步骤的输出取值；未命中保持 undefined（由参数校验拦截）。 */
+function resolveParamValue(value, results) {
+  if (Array.isArray(value)) return value.map((item) => resolveParamValue(item, results));
+  if (!value || typeof value !== 'object') {
+    if (typeof value !== 'string' || !value.startsWith('$')) return value;
+    const match = value.match(/^\$([^.]+)\.(.+)$/u);
+    if (!match) return value;
+    const [, stepId, path] = match;
+    const source = results.find((r) => r.ok && (r.step_id === stepId || r.tool === stepId));
+    if (!source) return undefined;
+    return path.split('.').reduce((acc, key) => (acc == null ? undefined : acc[key]), source.output);
+  }
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, resolveParamValue(v, results)]));
+}
+
+/* 最小执行器：顺序调用注册表工具；必要步骤失败 → 中止后续并记录降级；可选步骤失败 → 记录降级后继续。 */
+export function runPlan({
+  plan, registry = TOOL_REGISTRY,
+  now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
+}) {
   const results = [];
   const degraded = [];
   if (!plan || !Array.isArray(plan.steps) || plan.steps.length === 0) {
@@ -174,28 +193,45 @@ export function runPlan({ plan, registry = TOOL_REGISTRY }) {
   }
   let aborted = false;
   for (const step of plan.steps) {
+    const stepId = step.id ?? null;
     if (aborted) {
-      degraded.push({ tool: step.tool, code: 'E_STEP_SKIPPED', message: '前序步骤失败：中止后续步骤（降级记录）' });
+      degraded.push({ tool: step.tool, step_id: stepId, code: 'E_STEP_SKIPPED', message: '前序步骤失败：中止后续步骤（降级记录）' });
       continue;
     }
     const tool = typeof registry.get === 'function' ? registry.get(step.tool) : null;
     if (!tool || typeof tool.invoke !== 'function') {
-      degraded.push({ tool: step.tool, code: 'E_TOOL_UNKNOWN', message: '工具未注册：中止该步' });
+      degraded.push({ tool: step.tool, step_id: stepId, code: 'E_TOOL_UNKNOWN', message: '工具未注册：中止该步' });
       aborted = true;
       continue;
     }
-    const check = validateToolParamsLite(tool, step.params);
+    const dependsOn = Array.isArray(step.depends_on) ? step.depends_on : [];
+    const missingDeps = dependsOn.filter((id) => !results.some((r) => r.ok && r.step_id === id));
+    if (missingDeps.length) {
+      degraded.push({ tool: step.tool, step_id: stepId, code: 'E_STEP_DEPENDENCY', missing: missingDeps, message: '依赖步骤未完成：跳过该步' });
+      if (!step.optional) aborted = true;
+      continue;
+    }
+    const params = resolveParamValue(step.params ?? {}, results);
+    const check = validateToolParamsLite(tool, params);
     if (!check.ok) {
-      degraded.push({ tool: step.tool, code: 'E_PARAM_INVALID', missing: check.missing, message: '参数不满足工具要求：中止该步' });
-      aborted = true;
+      degraded.push({ tool: step.tool, step_id: stepId, code: 'E_PARAM_INVALID', missing: check.missing, message: '参数不满足工具要求：中止该步' });
+      if (!step.optional) aborted = true;
       continue;
     }
+    const startedAt = now();
     try {
-      const output = tool.invoke(step.params);
-      results.push({ tool: step.tool, ok: true, output });
+      const output = tool.invoke(params);
+      const result = typeof tool.toResult === 'function' ? tool.toResult({ output, params }) : null;
+      results.push({
+        tool: step.tool, step_id: stepId, ok: true, output, result,
+        ms: Math.max(0, Math.round(now() - startedAt)),
+      });
     } catch (e) {
-      degraded.push({ tool: step.tool, code: 'E_TOOL_FAILED', message: String((e && e.message) || e) });
-      aborted = true;
+      degraded.push({
+        tool: step.tool, step_id: stepId, code: 'E_TOOL_FAILED', message: String((e && e.message) || e),
+        ms: Math.max(0, Math.round(now() - startedAt)),
+      });
+      if (!step.optional) aborted = true;
     }
   }
   return { results, aborted, degraded, executed: results.length };

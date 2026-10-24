@@ -21,6 +21,9 @@ import {
   isBillMessageVisible,
   ruleStateKeyOf,
   QA_CHIP_CODES,
+  buildSimilarContextAnswer,
+  rankDragItems,
+  selectSimilarPattern,
 } from '../../src/agent/qaChips.js';
 import { classifyOffline } from '../../src/agent/offlineIntent.js';
 import { openRuleCandidate } from '../../prototype/user-frontend/ruleCandidates.js';
@@ -489,6 +492,71 @@ const answerFor = (chipId, extra = {}) => buildLocalChipAnswer({
   const failed = await failing.answer({ chip: 'portfolio', bill: BILL });
   check('报告加载失败：返回本地错误，不调用复述', failed.ok === false && failed.code === QA_CHIP_CODES.REPORT_NOT_READY
     && asks === asksBefore, JSON.stringify(failed));
+}
+
+/* ==== ⑦ 相似情境：同一账单内的重复操作对照 ==== */
+{
+  const base = buildSimilarContextAnswer({ bundle: BUNDLE, bill: BILL, question: '这份账单里有没有类似的情况？' });
+  check('相似情境：默认选已成立且证据最多的模式，正文限定同一账单', base.ok === true && base.kind === 'local'
+    && base.facts.some((f) => f.label === '情境')
+    && base.evidence.length > 0
+    && base.text.includes('只在这份账单内')
+    && base.notice.includes('不做跨账单检索'), JSON.stringify({ facts: base.facts, text: base.text }));
+
+  const hinted = buildSimilarContextAnswer({ bundle: BUNDLE, bill: BILL, question: '我是不是快进快出？' });
+  check('相似情境：问题命中模式 → 用对应模式的卖出证据', hinted.ok === true
+    && hinted.facts.some((f) => f.label === '情境' && f.value.includes('卖出'))
+    && hinted.evidence.length === 2 && hinted.evidence.every((line) => line.includes('卖出')), JSON.stringify(hinted.facts));
+
+  const bySymbol = buildSimilarContextAnswer({ bundle: BUNDLE, bill: BILL, question: '这份账单里 000000 有没有类似的情况？' });
+  check('相似情境：六位代码 → 只保留该标的证据', bySymbol.ok === true
+    && bySymbol.facts.some((f) => f.label === '范围' && f.value.includes('000000'))
+    && bySymbol.evidence.length === 1 && bySymbol.evidence[0].includes('000000'), JSON.stringify(bySymbol.facts));
+
+  const missing = buildSimilarContextAnswer({ bundle: BUNDLE, bill: BILL, question: '这份账单里 300001 有没有类似的情况？' });
+  check('相似情境：标的没有证据 → 照实说没有，不虚构', missing.ok === true && missing.evidence.length === 0
+    && missing.text.includes('没有找到可对照的重复情境') && missing.text.includes('300001'), JSON.stringify(missing.text));
+
+  const emptyBundle = makeBundle({ insights: { ...BUNDLE.insights, behavior: { available: true, reason: '', data: { patterns: [] } } } });
+  const empty = buildSimilarContextAnswer({ bundle: emptyBundle, bill: BILL });
+  check('相似情境：没有行为证据 → 本地如实说明，不返回失败', empty.ok === true && empty.kind === 'local'
+    && empty.evidence.length === 0 && empty.text.includes('没有找到可对照的重复情境'), JSON.stringify(empty.text));
+
+  const withheld = buildSimilarContextAnswer({ bundle: makeBundle({ review: { ...REVIEW, portfolio_published: false } }), bill: BILL });
+  check('相似情境：报告未发布 → 拒绝生成', withheld.ok === false && withheld.code === QA_CHIP_CODES.REPORT_WITHHELD, JSON.stringify(withheld));
+}
+
+/* ==== 可复用的纯选择函数（计划执行与旧回答共用同一口径） ==== */
+{
+  const items = [
+    { trade_id: 'A', dragMoney: 100, trade_date: '2024-09-27', symbol: '000000' },
+    { trade_id: 'B', dragMoney: -30, trade_date: '2024-09-30', symbol: '888888' },
+    { trade_id: 'C', dragMoney: 50, trade_date: '2024-10-08', symbol: '000000' },
+  ];
+  const rank = rankDragItems(items);
+  check('逐笔排序：展示序首项为最错，最小差额为最赚', rank.top.trade_id === 'A'
+    && rank.best.trade_id === 'B' && rank.worst.trade_id === 'A' && rank.positive === true, JSON.stringify(rank));
+  const zero = rankDragItems([{ trade_id: 'Z', dragMoney: 0 }]);
+  check('逐笔排序：全零时标记 allZero 且不评最错', zero.allZero === true && zero.positive === false);
+  const empty = rankDragItems([]);
+  check('逐笔排序：空输入返回空结构', empty.top === null && empty.best === null && empty.list.length === 0);
+
+  const patterns = [
+    { pattern_id: 'chase_high_buy', name: '追高买入', status: '成立', sample_n: 2, evidence: [{ trade_date: '2024-09-24' }] },
+    { pattern_id: 'sell_and_buy_back', name: '卖出后两日内买回', status: '成立', sample_n: 3, evidence: [{ trade_date: '2024-09-25' }] },
+    { pattern_id: 'buy_and_sell_fast', name: '买入后三日内卖出', status: '证据不足', sample_n: 1, evidence: [{ trade_date: '2024-09-26' }] },
+  ];
+  const hinted = selectSimilarPattern({ patterns, question: '为什么说我追高？' });
+  check('相似选择：问题点名模式优先于样本数', hinted.hint?.pattern_id === 'chase_high_buy'
+    && hinted.focus.pattern_id === 'chase_high_buy', JSON.stringify({ hint: hinted.hint, focus: hinted.focus?.pattern_id }));
+  const fallback = selectSimilarPattern({ patterns, question: '历史上类似的情况？' });
+  check('相似选择：未点名时取样本最多的成立模式', fallback.hint === null
+    && fallback.focus.pattern_id === 'sell_and_buy_back', fallback.focus?.pattern_id);
+  const withSymbol = selectSimilarPattern({ patterns, question: '000000 有没有类似的情况？' });
+  check('相似选择：提取 6 位标的且不做跨账单', withSymbol.symbol === '000000'
+    && withSymbol.established.length === 2);
+  const none = selectSimilarPattern({ patterns: [], question: '' });
+  check('相似选择：无模式时 focus 为 null', none.focus === null && none.withEvidence.length === 0);
 }
 
 const failed = results.filter((r) => !r.ok);

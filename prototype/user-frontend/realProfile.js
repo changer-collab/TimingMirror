@@ -1,5 +1,5 @@
-// 个人中心顶部：本地用户画像 + 规则候选（非 Agent）。
-// 画像只从已复核报告、行为发现与规则使用记录派生；只存本地、不含成交明细或文件名。
+// 个人中心顶部：云端画像 + 规则候选（非 Agent）。
+// 画像从云端账单快照恢复，只含派生统计，不含成交明细或文件名。
 import { buildRuleCandidates } from '../../src/engine/userProfile.js';
 import { loadRealReport, getRealReportBundle } from './realReport.js';
 import {
@@ -25,12 +25,12 @@ function fmtDelta(v) {
   return `${v > 0 ? '+' : ''}${v}`;
 }
 
-function emptyState(reason = '先导入并确认一份本地账单，画像才会从已复核报告开始积累。') {
+function emptyState(reason = '导入并确认一份账单，画像才会从已复核报告开始积累。') {
   return `<section class="rp-profile rp-profile-empty">
-    <p class="mono-label">PROFILE / 本地画像</p>
+    <p class="mono-label">PROFILE / 云端画像</p>
     <h2>先有账单，再有画像。</h2>
     <p class="rp-note">${esc(reason)}</p>
-    <p class="rp-note">没有账单时不会用示例数据填充；本地画像只保存在当前浏览器，云端只保存账单统计、报告快照与你主动选择记入的画像事实。</p>
+    <p class="rp-note">没有账单时不会用示例数据填充；画像、账单与规则都保存在云端，本机不保存用户数据，也不会保存原始 CSV 与文件名。</p>
     <a class="btn btn-outline" href="#/import">去导入账单</a>
   </section>`;
 }
@@ -215,9 +215,9 @@ function renderProfile(host, ctx, bundle, bill) {
   host.innerHTML = `<section class="rp-profile">
     <div class="rp-profile-head">
       <div>
-        <p class="mono-label">PROFILE / 本地画像</p>
+        <p class="mono-label">PROFILE / 云端画像</p>
         <h2>你的交易习惯，正在被连续记录。</h2>
-        <p class="rp-note">只从已复核报告、行为发现与规则使用记录派生；本地画像不含成交明细、文件名或 CSV。云端只保存账单统计、报告快照与你主动记入的画像事实。</p>
+        <p class="rp-note">每次进入页面都会从云端报告快照恢复画像；只含派生统计，不含原始 CSV 或文件名。</p>
       </div>
       <div class="rp-profile-stat"><strong>${esc(profile.observations ?? 0)}</strong><span>次观察</span></div>
     </div>
@@ -265,7 +265,14 @@ export function renderRealProfile(host, ctx) {
       const target = document.getElementById('tm-real-profile');
       if (!target) return;
       const message = String(error && error.message ? error.message : error);
-      target.innerHTML = `<section class="rp-profile"><p class="mono-label">PROFILE / 本地画像</p><h2>画像暂不可用</h2><p class="rp-note">${esc(message)}</p><p class="rp-note">画像只从已复核报告派生，行情或复核失败时不会用示例数据补齐。</p></section>`;
+      const html = `<section class="rp-profile"><p class="mono-label">PROFILE / 云端画像</p><h2>画像暂不可用</h2><p class="rp-note">${esc(message)}</p><p class="rp-note">画像只从已复核报告派生，行情或复核失败时不会用示例数据补齐。</p></section>`;
+      // 只替换本机画像位，保留已挂载的云端区块（避免重挂丢失自动生成的解读）。
+      const section = target.querySelector('section.rp-profile:not(.rp-cloud-profile)');
+      if (section) {
+        section.outerHTML = html;
+        return;
+      }
+      target.innerHTML = html;
       mountCloud(target, ctx, loadProfile());
     });
 }

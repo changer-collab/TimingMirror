@@ -46,8 +46,10 @@ check('导入：原文折叠不显示 trace/flow/模型请求，空原文不生�
       && /String\(rec\.content \?\? ''\)\.trim\(\)/.test(realImport)
       && /hasDetails = hasSource && String/.test(realImport);
   })());
-check('问答：不显示 trace、路由层、耗时、置信度、模板/计划或错误码技术折叠',
-  !/traceHTML|diagnosticsHTML|如何得出|技术详情（错误码）|QA_LAYER_LABELS|tm-qa-layer|意图置信度|模板 ID|计划 ID/.test(realChat));
+check('问答：运行过程只显示用户可读步骤，不显示路由层、置信度、模板/计划或错误码',
+  /tm-qa-trace/.test(realChat)
+  && /默认收起 · 点击展开/.test(realChat)
+  && !/diagnosticsHTML|如何得出|技术详情（错误码）|QA_LAYER_LABELS|tm-qa-layer|意图置信度|模板 ID|计划 ID/.test(realChat));
 check('问答：状态改为用户语言，不再使用已校验/未接入/登记式应答/待澄清',
   /local: '本机回答'/.test(realChat) && /online: '在线复述'/.test(realChat)
   && /clarify: '需要补充信息'/.test(realChat) && /registration: '需要你确认'/.test(realChat)
@@ -72,8 +74,9 @@ check('情境：不显示原因码与服务端拉取时间，保留数据截止/
   !/原因码|fetchedAt|拉取/.test(scenarioView)
   && /数据与口径/.test(scenarioView) && /服务端获取，非实时/.test(scenarioView)
   && /行情范围：/.test(scenarioView));
-check('研发语言：相似情境/接入措辞改成本版本可用性说明',
-  /本版本暂不支持相似情境检索/.test(qaAnswer)
+check('研发语言：相似情境改为同账单本地回答，不再写“本版本暂不支持”',
+  !/本版本暂不支持相似情境检索/.test(qaAnswer)
+  && /buildSimilarContextAnswer/.test(qaAnswer)
   && /完整问答请在下方输入区继续/.test(qaAssistant)
   && /完整复盘请在导入并确认后去问答页/.test(qaAssistant)
   && !/还没有接入|右侧助手也接入/.test(qaAnswer + qaAssistant));
@@ -87,6 +90,24 @@ check('助手：报告异步加载完成/失败后刷新状态，避免停留在
 check('报告：AI 观察不再使用“规则引擎兜底/本地规则引擎”内部称呼',
   /本机规则补充/.test(realReport) && /本机规则识别/.test(realReport)
   && !/规则引擎兜底|本地规则引擎/.test(realReport));
+check('申报前自检：说明历史模拟，不显示内部错误码或模型计数',
+  (() => {
+    const selfcheck = block(contractView, 'if (standalone) {', '\n  }\n');
+    return selfcheck.length > 0
+      && /不是实时提醒/.test(selfcheck)
+      && /不会下单/.test(selfcheck)
+      && !/\b[EW]_[A-Z0-9_]+|modelCalls|model_calls|模型请求/.test(selfcheck);
+  })());
+check('报告：结论来源四层可展开、默认折叠且不显示内部编号',
+  (() => {
+    const method = block(realReport, 'function methodDisclosure', '\n}\n');
+    return method.includes('class="rp-method"')
+      && method.includes('data-role="method"')
+      && !/<details[^>]*\sopen(?:\s|=|>)/.test(method)
+      && ['读取账单', '确定性计算', '发布前核对', '语言层只做复述'].every((title) => method.includes(title))
+      && /interpretationSection\(bundle, vis, demo, bill\)/.test(realReport)
+      && !/formula_id|verify_id|\b[EW]_[A-Z0-9_]+/.test(method);
+  })());
 
 /* —— 报告“数字与来源”：保留证据，移除内部外壳 —— */
 {

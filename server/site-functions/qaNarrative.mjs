@@ -384,3 +384,63 @@ export function validateQaNarrativeResponse(rawText, request) {
   }
   return { ok: true, answer_text: text, checked: checked.checked };
 }
+
+// rewrite-v2 复用同一套允许值与数字校验。
+function pushUnique(list, value, max) {
+  if (!value || list.includes(value) || list.length >= max) return;
+  list.push(value);
+}
+
+function collectAllowed(parts) {
+  const source = parts.join('\n');
+  const sourceCanon = canon(source);
+  const allowed = { numbers: [], counts: [], dates: [], symbols: [], displays: [] };
+
+  for (const match of sourceCanon.matchAll(SOURCE_DATE_RE)) {
+    const date = normalizeDateMatch(match);
+    if (date) pushUnique(allowed.dates, date, MAX_DATES);
+  }
+  for (const match of sourceCanon.matchAll(MONEY_RE)) {
+    pushUnique(allowed.displays, displayKey(match[0]), MAX_DISPLAYS);
+    pushUnique(allowed.numbers, numericKey(match[0].replace(/^[+-]?¥/u, '')), MAX_NUMBERS);
+  }
+  for (const match of sourceCanon.matchAll(PCT_RE)) {
+    pushUnique(allowed.displays, displayKey(match[0]), MAX_DISPLAYS);
+    pushUnique(allowed.numbers, numericKey(match[0].replace(/%/u, '')), MAX_NUMBERS);
+  }
+  for (const match of sourceCanon.matchAll(PP_RE)) {
+    pushUnique(allowed.displays, displayKey(match[0]), MAX_DISPLAYS);
+    pushUnique(allowed.numbers, numericKey(match[0].replace(/pp/iu, '')), MAX_NUMBERS);
+  }
+  for (const match of sourceCanon.matchAll(UNIT_RE)) {
+    pushUnique(allowed.counts, `${numericKey(match[1])}${match[2]}`, MAX_COUNTS);
+    pushUnique(allowed.numbers, numericKey(match[1]), MAX_NUMBERS);
+  }
+  for (const match of sourceCanon.matchAll(COUNT_TOKEN_RE)) {
+    pushUnique(allowed.counts, `${numericKey(match[1])}${match[2]}`, MAX_COUNTS);
+    pushUnique(allowed.numbers, numericKey(match[1]), MAX_NUMBERS);
+  }
+
+  // 先剥离日期/金额/百分比/计数，再把剩余数字与 6 位代码纳入允许值。
+  let residue = sourceCanon;
+  const stripPatterns = [SOURCE_DATE_RE, MONEY_RE, PCT_RE, PP_RE, UNIT_RE, COUNT_TOKEN_RE];
+  for (const pattern of stripPatterns) {
+    residue = residue.replace(pattern, ' ');
+  }
+  for (const match of residue.matchAll(/(?<!\d)\d{6}(?!\d)/g)) {
+    pushUnique(allowed.symbols, match[0], MAX_SYMBOLS);
+  }
+  residue = residue.replace(/(?<!\d)\d{6}(?!\d)/g, ' ');
+  for (const match of residue.matchAll(/[+-]?\d[\d,]*(?:\.\d+)?/g)) {
+    pushUnique(allowed.numbers, numericKey(match[0]), MAX_NUMBERS);
+  }
+  return allowed;
+}
+
+export function collectAllowedValues(parts) {
+  return collectAllowed(Array.isArray(parts) ? parts : []);
+}
+
+export function validateTextNumbers(text, allowed) {
+  return validateNarrativeNumbers(text, allowed);
+}

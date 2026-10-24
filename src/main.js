@@ -7,6 +7,7 @@ import { renderReport } from './ui/views/reportView.js';
 import { renderChat } from './ui/views/chatView.js';
 import { renderContract } from './ui/views/contractView.js';
 import { getRuleAssistantClient, renderAssistantPanel, assistantDefaultOpen } from './ui/assistantPanel.js';
+import { QA_GLOSSARY } from './agent/glossary.js';
 
 const NAV = [
   { id: 'import', label: '导入 · 确认', hash: '#/import' },
@@ -22,13 +23,7 @@ const FLOW = [
   { n: 4, label: '查看证据 / 设置规则', hash: '#/contract' },
 ];
 
-const GLOSSARY = [
-  ['估值日', '计算期末持仓价值时使用的收盘价日期。所选日期不是交易日时按口径使用最近的交易日，并同时显示请求日期与实际使用日期；当天缺价时相应结果不发布，不会改用其他日期。'],
-  ['择时损耗', '对照收益（买入后持有不动）减去实际收益。正值表示买卖时机让结果比“持有不动”差，负值表示实际操作更好。'],
-  ['反事实', '假设某一笔卖出没有发生、其余交易不变时的结果，用来看这一笔卖出的影响；它不是对未来的预测。'],
-  ['阻断', '数据不完整或无法核对时（如账单校验未通过、估值日缺价、复核未通过），对应结论不发布，也不用替代数字或其他日期补上。'],
-  ['证据', '每个数字的公式编号、用到的成交（含账单文件行号）和计算步骤，可在报告页“查看证据与计算路径”中逐项核对。'],
-];
+const GLOSSARY = QA_GLOSSARY;
 
 const VIEWS = { import: renderImport, report: renderReport, chat: renderChat, contract: renderContract };
 

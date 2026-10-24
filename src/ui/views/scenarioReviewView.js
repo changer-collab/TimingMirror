@@ -202,7 +202,7 @@ function dataDisclosure(review, context, localBill) {
     el('summary', {}, ['数据与口径']),
     el('div', { class: 'tr-tech-body' }, [
       el('div', {}, [`交易来源：${context.tradesSource?.label ?? (localBill ? '本地已确认账单' : '示例账单')}`]),
-      el('div', {}, [`行情：${market?.label ?? '—'}${context.asOfDate ? ` · 截至 ${context.asOfDate}` : ''}（服务端获取，非实时）`]),
+      el('div', {}, [`行情：${market?.label ?? '—'}${context.asOfDate ? ` · 截至 ${context.asOfDate}` : ''}${market?.demo ? '（冻结快照）' : '（服务端获取，非实时）'}`]),
       el('div', {}, [`行情范围：${context.range?.start ?? '—'} 至 ${context.range?.end ?? '—'} · ${context.tradingDays?.length ?? 0} 个交易日`]),
       ...review.notes.map((n) => el('div', {}, [n])),
     ]),
@@ -231,43 +231,50 @@ function emptyNoRules() {
 export function renderScenarioReview(root, ctx) {
   const { state, set } = ctx;
   const c = state.contracts ?? {};
-  const localBill = !!(state.bill && state.bill.status === 'confirmed' && state.bill.sourceType === 'local');
+  const demoFrozen = adapter.isDemoFrozenBill(state.bill);
+  const localBill = !demoFrozen && !!(state.bill && state.bill.status === 'confirmed' && state.bill.sourceType === 'local');
   const demoAllowed = ctx.allowDemoSimulation !== false;
-  const marketSource = localBill ? adapter.DEFAULT_MARKET_SOURCE : (c.marketSource === 'synthetic-fixture' ? 'synthetic-fixture' : adapter.DEFAULT_MARKET_SOURCE);
+  const marketSource = demoFrozen
+    ? 'demo-frozen'
+    : localBill ? adapter.DEFAULT_MARKET_SOURCE : (c.marketSource === 'synthetic-fixture' ? 'synthetic-fixture' : adapter.DEFAULT_MARKET_SOURCE);
   const src = adapter.contractTradeSource(state.bill, marketSource);
   const page = el('div', { class: 'stack tr-page' });
   root.append(page);
 
-  if (!localBill && !demoAllowed) {
+  if (!localBill && !demoFrozen && !demoAllowed) {
     page.append(emptyGate());
     return;
   }
 
   page.append(el('div', { class: 'tr-toolbar' }, [
     el('div', { class: 'tr-toolbar-left' }, [
-      localBill
-        ? chip('本地已确认账单', 'ok')
-        : demoAllowed
-          ? chip('示例账单', 'mode')
-          : chip('未确认账单', ''),
+      demoFrozen
+        ? chip('示例场景账单', 'mode')
+        : localBill
+          ? chip('本地已确认账单', 'ok')
+          : demoAllowed
+            ? chip('示例账单', 'mode')
+            : chip('未确认账单', ''),
       chip('历史复盘 · 非实时', ''),
     ]),
-    localBill
-      ? el('span', { class: 'muted small' }, ['行情来源：Tushare 动态日线'])
-      : demoAllowed
-        ? el('div', { class: 'tr-source' }, [
-          el('span', { class: 'tr-source-label' }, ['行情来源']),
-          el('div', { class: 'rp-seg' }, adapter.CONTRACT_MARKET_OPTIONS.map((o) => el('button', {
-            type: 'button',
-            class: marketSource === o.id ? 'active' : '',
-            onclick: () => {
-              if (marketSource === o.id) return;
-              loadingKey = null;
-              set({ contracts: { marketSource: o.id, simContext: null } });
-            },
-          }, [o.label]))),
-        ])
-        : el('span', { class: 'muted small' }, ['确认账单后获取行情']),
+    demoFrozen
+      ? el('span', { class: 'muted small' }, ['行情来源：示例行情（Tushare 历史日线快照）· 非实时'])
+      : localBill
+        ? el('span', { class: 'muted small' }, ['行情来源：Tushare 动态日线'])
+        : demoAllowed
+          ? el('div', { class: 'tr-source' }, [
+            el('span', { class: 'tr-source-label' }, ['行情来源']),
+            el('div', { class: 'rp-seg' }, adapter.CONTRACT_MARKET_OPTIONS.map((o) => el('button', {
+              type: 'button',
+              class: marketSource === o.id ? 'active' : '',
+              onclick: () => {
+                if (marketSource === o.id) return;
+                loadingKey = null;
+                set({ contracts: { marketSource: o.id, simContext: null } });
+              },
+            }, [o.label]))),
+          ])
+          : el('span', { class: 'muted small' }, ['确认账单后获取行情']),
   ]));
 
   const ruleSet = adapter.contractRuleSet(c.versions ?? []);
@@ -292,7 +299,7 @@ export function renderScenarioReview(root, ctx) {
 
   if (!context || context.sourceKey !== src.key || context.reviewKey !== contextKey || (!context.error && !context.review)) {
     page.append(el('div', { class: 'tr-loading card' }, [
-      el('strong', {}, [localBill ? '正在获取账单与 Tushare 动态行情…' : '正在获取示例账单与行情…']),
+      el('strong', {}, [demoFrozen ? '正在读取示例账单与历史行情快照…' : localBill ? '正在获取账单与 Tushare 动态行情…' : '正在获取示例账单与行情…']),
       el('div', { class: 'muted small' }, [`交易来源：${src.label}。`]),
     ]));
     if (loadingKey !== contextKey) {

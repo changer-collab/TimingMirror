@@ -313,6 +313,110 @@ check('快照：账单列表回传已发布快照',
   listWithSnapshot.status === 200
   && listWithSnapshot.json.bills.find((bill) => bill.id === billOneId)?.snapshot?.profile_key === 'abcd1234');
 
+function snapshotV2For(tradeCount = 2, overrides = {}) {
+  const latest = { version: 1, at: '2026-10-23T04:00:00.000Z', profile_key: 'abcd1234', bill: { trade_count: tradeCount }, review: { portfolio_published: true } };
+  return {
+    version: 2,
+    at: '2026-10-23T04:00:00.000Z',
+    profile_key: 'abcd1234',
+    bill: { trade_count: tradeCount },
+    review: { portfolio_published: true },
+    profile: { version: 1, observations: 1, latest, history: [] },
+    report: { status: 'ok', review: { portfolio_published: true }, orders: [] },
+    report_available: true,
+    ...overrides,
+  };
+}
+
+const billTwoId = createdTwo.json?.bill?.id;
+const snapshotV2 = await invoke(handler, `/api/bills/${billTwoId}/snapshot`, {
+  method: 'POST', body: { snapshot: snapshotV2For(2) }, supabase: memory,
+});
+check('快照 v2：画像 + 报告快照写入 → 200',
+  snapshotV2.status === 200 && snapshotV2.json.duplicate === false, snapshotV2.text);
+
+const snapshotV2Name = await invoke(handler, `/api/bills/${billTwoId}/snapshot`, {
+  method: 'POST',
+  body: { snapshot: snapshotV2For(2, { report: { fileName: '我的账单.csv' } }) },
+  supabase: memory,
+});
+check('快照 v2：包含文件名字段 → 400',
+  snapshotV2Name.status === 400 && snapshotV2Name.json.error === DATA_CODES.REQUEST_INVALID, snapshotV2Name.text);
+
+const snapshotV2FileRef = await invoke(handler, `/api/bills/${billTwoId}/snapshot`, {
+  method: 'POST',
+  body: { snapshot: snapshotV2For(2, { report: { provenance: { items: [{ file: '我的账单.csv', line: 2 }] } } }) },
+  supabase: memory,
+});
+check('快照 v2：深层文件名引用 → 400',
+  snapshotV2FileRef.status === 400 && snapshotV2FileRef.json.error === DATA_CODES.REQUEST_INVALID, snapshotV2FileRef.text);
+
+const snapshotV2KeyMismatch = await invoke(handler, `/api/bills/${billTwoId}/snapshot`, {
+  method: 'POST',
+  body: { snapshot: snapshotV2For(2, { profile: { version: 1, latest: { ...snapshotV2For(2).profile.latest, profile_key: 'ffffffff' } } }) },
+  supabase: memory,
+});
+check('快照 v2：画像键与快照键不一致 → 400',
+  snapshotV2KeyMismatch.status === 400 && snapshotV2KeyMismatch.json.error === DATA_CODES.REQUEST_INVALID);
+
+/* ==== 规则云端读写 ==== */
+const ruleA = { hash: '0123456789abcdef', v: 1, status: '已确认', template_id: 'no_buy_on_surge', text: '放量上涨当天不追买', fields: { threshold: 0.05 }, at: '2026-10-23T04:00:00.000Z' };
+const ruleB = { hash: 'fedcba9876543210', v: 2, status: '已改写', template_id: 'no_buy_on_surge', text: '放量上涨当天不追买（已改写）' };
+
+const rulesEmpty = await invoke(handler, '/api/rules', { supabase: memory });
+check('规则：无记录时返回空列表且 revision=0',
+  rulesEmpty.status === 200 && rulesEmpty.json.rules.length === 0 && rulesEmpty.json.revision === 0, rulesEmpty.text);
+
+const rulesSaved = await invoke(handler, '/api/rules', {
+  method: 'PUT', body: { versions: [ruleA, ruleB] }, supabase: memory,
+});
+check('规则：首次保存 → revision=1',
+  rulesSaved.status === 200 && rulesSaved.json.revision === 1 && rulesSaved.json.count === 2, rulesSaved.text);
+
+const rulesRead = await invoke(handler, '/api/rules', { supabase: memory });
+check('规则：读取回传完整版本记录',
+  rulesRead.status === 200 && rulesRead.json.revision === 1
+  && rulesRead.json.rules.length === 2 && rulesRead.json.rules[1].hash === ruleB.hash, rulesRead.text);
+
+const rulesLater = await invoke(handler, '/api/rules', {
+  method: 'PUT', body: { versions: [ruleA, ruleB, { ...ruleA, v: 3, status: '已拒绝' }] }, supabase: memory,
+});
+check('规则：再次保存 revision 递增', rulesLater.status === 200 && rulesLater.json.revision === 2, rulesLater.text);
+
+const rulesOtherUser = await invoke(handler, '/api/rules', { supabase: memory, userId: USER_B });
+check('隔离：用户 B 读取规则为空', rulesOtherUser.status === 200 && rulesOtherUser.json.rules.length === 0, rulesOtherUser.text);
+
+const rulesOtherUserSave = await invoke(handler, '/api/rules', {
+  method: 'PUT', body: { versions: [ruleA] }, supabase: memory, userId: USER_B,
+});
+check('隔离：用户 B 独立保存 revision=1',
+  rulesOtherUserSave.status === 200 && rulesOtherUserSave.json.revision === 1, rulesOtherUserSave.text);
+
+const invalidRuleSets = [
+  [[{ hash: 'short', v: 1, status: '已确认' }], '哈希非 16 位'],
+  [[{ hash: ruleA.hash, v: 0, status: '已确认' }], '版本号非法'],
+  [[{ hash: ruleA.hash, v: 1, status: '草稿' }], '状态非法'],
+  [[{ ...ruleA, nested: JSON.parse('{"__proto__":{"polluted":true}}') }], '危险键'],
+  [[null], '非对象'],
+  ['not-array', '不是数组'],
+];
+for (const [versions, label] of invalidRuleSets) {
+  const response = await invoke(handler, '/api/rules', {
+    method: 'PUT', body: { versions }, supabase: memory, userId: USER_A,
+  });
+  check(`规则校验：${label} → 400`, response.status === 400 && response.json.error === DATA_CODES.REQUEST_INVALID, response.text);
+}
+
+const rulesUnknownField = await invoke(handler, '/api/rules', {
+  method: 'PUT', body: { versions: [ruleA], user_id: USER_B }, supabase: memory,
+});
+check('规则：不允许浏览器传入 user_id → 400', rulesUnknownField.status === 400, rulesUnknownField.text);
+
+const rulesWrongMethod = await invoke(handler, '/api/rules', { method: 'POST', body: { versions: [] }, supabase: memory });
+check('规则：POST → 405 且 Allow 正确',
+  rulesWrongMethod.status === 405 && rulesWrongMethod.headers.get('allow') === 'GET, PUT', rulesWrongMethod.text);
+
+
 /* ==== 画像事实 ==== */
 const factsBody = {
   facts: [
