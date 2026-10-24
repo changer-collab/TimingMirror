@@ -376,6 +376,66 @@ export function draftSummary(draft) {
   return summary;
 }
 
+const LEDGER_ERROR_CODES = new Set(['E_QTY_EXCEEDS']);
+
+/** 最终校验错误分类：账本级（持仓累计）与行级（字段）分开，避免把账本原因写成“行需要修正”。 */
+export function splitDraftValidationErrors(errors = []) {
+  const rowErrors = [];
+  const ledgerErrors = [];
+  for (const error of Array.isArray(errors) ? errors : []) {
+    if (!error) continue;
+    if (LEDGER_ERROR_CODES.has(error.code)) ledgerErrors.push(error);
+    else rowErrors.push(error);
+  }
+  return { rowErrors, ledgerErrors };
+}
+
+function uniqueErrorLines(errors) {
+  return [...new Set(errors.map((error) => error.line).filter((line) => Number.isInteger(line)))];
+}
+
+/** 校验反馈：空选择 / 行级错误 / 账本级错误 / 通过。只影响提示，不改变草稿或校验规则。 */
+export function draftValidationFeedback({ draft = null, normalized = null, included = [] } = {}) {
+  if (!Array.isArray(included) || included.length === 0) {
+    return {
+      kind: 'empty',
+      message: '请至少选择一条交易',
+      rowErrors: [],
+      ledgerErrors: [],
+      rowErrorCount: 0,
+      rowErrorLines: [],
+      firstRowId: null,
+      ledgerLine: null,
+      ledgerMessage: '',
+      ledgerAdvice: '',
+    };
+  }
+  const { rowErrors, ledgerErrors } = splitDraftValidationErrors(normalized?.errors);
+  const rowErrorLines = uniqueErrorLines(rowErrors);
+  const firstLine = rowErrorLines[0] ?? rowErrors[0]?.line ?? null;
+  const firstRow = Number.isInteger(firstLine)
+    ? (draft?.rows ?? []).find((row) => row.include !== false && row.line === firstLine)
+    : null;
+  const ledgerLine = ledgerErrors.find((error) => Number.isInteger(error.line))?.line ?? null;
+  const ledgerMessage = ledgerErrors.length
+    ? `账本校验未通过：第 ${ledgerLine ?? '—'} 行卖出数量超过当前持仓，可能缺少期初持仓。`
+    : '';
+  return {
+    kind: rowErrors.length ? 'row_error' : (ledgerErrors.length ? 'ledger_error' : 'ok'),
+    message: rowErrors.length
+      ? `有 ${Math.max(1, rowErrorLines.length)} 行需要修正`
+      : (ledgerMessage || '已通过校验，可用于导入'),
+    rowErrors,
+    ledgerErrors,
+    rowErrorCount: rowErrorLines.length,
+    rowErrorLines,
+    firstRowId: firstRow?.id ?? null,
+    ledgerLine,
+    ledgerMessage,
+    ledgerAdvice: ledgerErrors.length ? '请补录期初持仓、调整卖出数量，或取消勾选该行后再校验。' : '',
+  };
+}
+
 export function draftRowStatusText(row) {
   if (row.status === 'duplicate') return '疑似重复，默认不导入';
   if (row.status === 'needs_review') return row.source === 'manual' ? '手动新增 · 待确认' : '待确认';

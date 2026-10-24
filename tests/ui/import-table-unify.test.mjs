@@ -84,11 +84,14 @@ const visionRecovery = {
     ['date', 'symbol', 'side', 'price', 'quantity', 'fee', 'tax'].every((field) => html.includes(`data-field="${field}"`))
     && /<select class="tm-cell-input" data-row="draft-1" data-field="side">/.test(html)
     && /data-action="remove-row"/.test(html));
-  check('图片草稿：费用税费为空且未匹配时不显示需修正',
-    /data-field="fee" value=""[^>]*placeholder="未匹配"/.test(html)
-    && /data-field="tax" value=""[^>]*placeholder="未匹配"/.test(html)
+  check('图片草稿：费用税费为空时不叠加“未匹配”说明',
+    /data-field="fee" value=""/.test(html)
+    && /data-field="tax" value=""/.test(html)
+    && !/data-field="fee" value=""[^>]*未匹配/.test(html)
+    && !/data-field="tax" value=""[^>]*未匹配/.test(html)
     && html.includes('可导入') && !html.includes('需修正'));
-  check('图片草稿：交收日期来源提示保留', /title="原图使用交收日期，不代表成交日期；请逐行核对"/.test(html)
+  check('图片草稿：交收日期来源提示只保留一条紧凑 warning', html.split('日期来自交收日期，请确认').length === 2
+    && !html.includes('title="原图使用交收日期，不代表成交日期；请逐行核对"')
     && html.includes('原图列名映射') && html.includes('交收日期'));
   check('图片草稿：成交额/清算额只在补充信息展示',
     html.includes('原图金额补充') && html.includes('成交额 <b>10,000.00</b>')
@@ -96,8 +99,16 @@ const visionRecovery = {
     && !/data-field="fee" value="10,000.00"/.test(html)
     && !/data-field="tax" value="10,005.00"/.test(html)
     && /成交额、清算额只按原图展示，不写入费用或税费/.test(html));
-  check('图片草稿：费用税费可留空说明可见', html.includes('费用、税费可留空'));
-  check('图片草稿：仍提供手动新增成交行', /data-action="add-row"/.test(html) && html.includes('＋ 添加成交行'));
+  check('图片草稿：费用税费缺失提示只出现一次', html.split('未识别到费用/税费，可在确认前补填').length === 2
+    && !html.includes('费用、税费可留空'));
+  check('图片草稿：仍提供手动新增成交行和重新导入', /data-action="add-row"/.test(html)
+    && html.includes('＋ 添加成交行') && /data-action="reimport"/.test(html) && html.includes('重新导入'));
+  check('图片草稿：识别详情默认折叠并汇总列名映射/金额补充',
+    /<details class="tm-vision-details">/.test(html)
+    && !/<details class="tm-vision-details" open/.test(html)
+    && html.includes('列名映射 7 项 · 金额补充 1 行')
+    && html.indexOf('识别详情') < html.indexOf('原图列名映射')
+    && html.indexOf('原图金额补充') > html.indexOf('识别详情'));
 }
 
 const trade = {
