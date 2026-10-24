@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   billFromCloudBill, cloudReportKeys, normalizeCloudRules,
 } from '../../src/agent/cloudRestore.js';
+import { runReview } from '../../src/agent/reviewPipeline.js';
 
 const row = {
   id: 'bill-1',
@@ -33,8 +34,31 @@ assert.equal(bill.trades[0].fee, 5);
 assert.equal(bill.trades[1].trade_id, 'T002', '缺省成交编号按顺序补齐');
 assert.equal(bill.trades[1].fee, null);
 assert.equal(bill.trades[1].tax, null);
+assert.deepEqual(bill.trades[0].source, { file: '云端账单', line: 2 }, '云端成交带可回查来源，报告才能完成逐笔追溯');
+assert.deepEqual(bill.trades[1].source, { file: '云端账单', line: 3 });
 assert.ok(!JSON.stringify(bill).includes('我的对账单'), '文件名不进入账单');
 console.log('云端完整明细还原检查通过');
+
+/* 云端明细缺少原始文件时，仍须能完成逐笔追溯并发布报告。 */
+const review = runReview({
+  trades: billFromCloudBill({
+    id: 'bill-2',
+    payload_mode: 'full',
+    payload: {
+      trades: [
+        { trade_id: 'T001', trade_date: '2025-01-06', symbol: '600519', side: 'buy', price: 100, quantity: 100 },
+        { trade_id: 'T002', trade_date: '2025-01-08', symbol: '600519', side: 'sell', price: 110, quantity: 100 },
+      ],
+    },
+  }).trades,
+  closes: { 600519: 120 },
+  valuation: { requested_date: '2025-01-10', effective_date: '2025-01-10' },
+});
+assert.equal(review.status, 'published');
+assert.equal(review.portfolio_published, true, '云端账单可发布报告');
+assert.equal(review.verify.summary.fail, 0);
+assert.ok(review.verify.facts.every((fact) => fact.source_refs.length > 0 && fact.source_refs[0].file === '云端账单'));
+console.log('云端账单报告发布检查通过');
 
 assert.equal(billFromCloudBill(null), null);
 assert.equal(billFromCloudBill({ ...row, payload_mode: 'summary' }), null, '仅统计账单不还原');

@@ -79,7 +79,7 @@ check('横幅：示例/本地文案和链接区分',
   && /报告、问答和规则测试都使用这笔账单。/.test(banner)
   && /换个场景 →/.test(banner) && /更换账单 →/.test(banner)
   && /查看报告 →/.test(banner) && /去事实问答 →/.test(banner)
-  && /历史情境测试 →/.test(banner));
+  && /去操作复盘 →/.test(banner));
 check('横幅：报告/事实问答/历史测试页接入，规则页不接入',
   /confirmedBillBanner\(\)\}\$\{realReportPage\(\)\}/.test(reportPage)
   && /confirmedBillBanner\(\)\}\$\{realChatPage\(\)\}/.test(chatPage)

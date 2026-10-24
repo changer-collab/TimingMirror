@@ -1,5 +1,5 @@
 // 新前端的真实能力桥：共享业务状态、路由映射、助手挂载与既有视图适配。
-import { state as shared, notify, defaultBill } from '../../src/state.js';
+import { state as shared, notify, defaultBill, defaultChat, defaultImportRecovery } from '../../src/state.js';
 import { cloudProfileFromBills, normalizeCloudBills } from '../../src/agent/cloudProfileModel.js';
 import { billFromCloudBill, cloudReportKeys, normalizeCloudRules } from '../../src/agent/cloudRestore.js';
 import { getRuleAssistantClient, renderAssistantPanel, explainAssistantResult } from '../../src/ui/assistantPanel.js';
@@ -301,7 +301,7 @@ function getDataClient() {
   return dataClient;
 }
 
-// 云端恢复：启动时拉取规则、账单列表与最近一份账单明细；本机不保存用户数据。
+// 云端恢复：启动时拉取规则与账单列表用于画像和历史；当前账单要等用户导入或选择；本机不保存用户数据。
 let cloudRestore = { status: 'idle', error: null, at: null, skipped: null };
 let restorePromise = null;
 
@@ -356,34 +356,13 @@ export function restoreFromCloud({ force = false } = {}) {
       }
       const payload = billsResult.value;
       const rows = normalizeCloudBills(payload);
-      const target = rows.find((row) => row.has_payload) ?? null;
       // 恢复期间用户已开始导入：保留内存态，不用云端快照覆盖本次会话。
       if (importInProgress()) {
         cloudRestore = { status: 'ready', error: null, at: new Date().toISOString(), skipped: 'import-active' };
         return getCloudRestore();
       }
+      // 启动只恢复规则、画像与历史列表；当前账单必须由用户导入或在导入页选择，避免未导入就显示报告。
       setProfileBase(cloudProfileFromBills(rows), { reportKeys: cloudReportKeys(payload) });
-      if (!target) {
-        cloudRestore = { status: 'ready', error: null, at: new Date().toISOString(), skipped: null };
-        return getCloudRestore();
-      }
-      const detail = await client.getBill({ id: target.id });
-      const restored = billFromCloudBill(detail?.bill ?? null);
-      if (!restored) {
-        cloudRestore = {
-          status: 'error',
-          error: '云端账单明细无法还原，已停止恢复。',
-          at: new Date().toISOString(),
-          skipped: null,
-        };
-        return getCloudRestore();
-      }
-      const rawRow = (Array.isArray(payload?.bills) ? payload.bills : []).find((row) => row?.id === target.id);
-      const report = rawRow?.snapshot?.report;
-      if (rawRow?.snapshot?.report_available !== false && report?.review?.portfolio_published === true) {
-        seedRealReport(restored, report);
-      }
-      shared.bill = { ...defaultBill(), ...restored };
       cloudRestore = { status: 'ready', error: null, at: new Date().toISOString(), skipped: null };
       return getCloudRestore();
     } catch (error) {
@@ -400,6 +379,28 @@ export function restoreFromCloud({ force = false } = {}) {
     }
   })();
   return restorePromise;
+}
+
+// 历史账单：按 id 取完整明细并切换当前账单；有已发布快照时直接复用，没有则按明细重算。
+export async function loadCloudBill({ id } = {}) {
+  const detail = await getDataClient().getBill({ id });
+  const row = detail?.bill ?? null;
+  const restored = billFromCloudBill(row);
+  if (!restored) {
+    const error = new Error('E_CLOUD_BILL_RESTORE');
+    error.code = 'E_CLOUD_BILL_RESTORE';
+    throw error;
+  }
+  const report = row?.snapshot?.report;
+  const hasReport = row?.snapshot?.report_available !== false
+    && report?.review?.portfolio_published === true;
+  if (hasReport) seedRealReport(restored, report);
+  set({
+    bill: { ...defaultBill(), ...restored },
+    chat: defaultChat(restored.contextId),
+    importRecovery: defaultImportRecovery(),
+  });
+  return { ok: true, bill: restored, hasReport };
 }
 
 function getProfileFactTransport() {
@@ -562,6 +563,7 @@ const ctx = {
     }),
     listBills: (args) => getDataClient().listBills(args),
     getBill: (args) => getDataClient().getBill(args),
+    loadCloudBill,
     getRules: (args) => getDataClient().getRules(args),
     saveRules: (args) => getDataClient().saveRules(args),
     getProfile: (args) => getDataClient().getProfile(args),

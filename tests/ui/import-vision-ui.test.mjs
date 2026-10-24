@@ -15,6 +15,8 @@ const shared = readFileSync(join(ROOT, 'src/agent/importVision.js'), 'utf8');
 const styles = readFileSync(join(ROOT, 'prototype/user-frontend/styles.css'), 'utf8');
 const mappingModule = readFileSync(join(ROOT, 'src/engine/importColumnMapping.js'), 'utf8');
 const draftModule = readFileSync(join(ROOT, 'src/engine/importDraft.js'), 'utf8');
+const stateSource = readFileSync(join(ROOT, 'src/state.js'), 'utf8');
+const bridgeSource = readFileSync(join(ROOT, 'prototype/user-frontend/realBridge.js'), 'utf8');
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -145,6 +147,29 @@ check('样式：添加按钮虚线、手动行有独立样式', /\.tm-add-row-bt
   && /\.tm-import-table tr\.is-manual-row/.test(css));
 check('线上页：图片删除与重新识别会清空旧草稿/手动行', /localDraft: null/.test(live)
   && /draft: null/.test(live) && /localDraft: rec\.localDraft \?\? null/.test(live));
+check('线上页：云端恢复的账单不伪装成本次导入结果', /if \(bill\.cloudRestored === true\) return '';/.test(live)
+  && /cloudRestored: false/.test(stateSource) && /cloudBillId: null/.test(stateSource));
+check('历史账单：导入页底部渲染最近云端账单', /function historySectionHTML/.test(live)
+  && /\$\{historySectionHTML\(state\)\}/.test(live) && /id="tm-import-history"/.test(live)
+  && /listBills\(\{ limit: 20 \}\)/.test(live) && /normalizeCloudBills\(payload\)/.test(live));
+check('历史账单：当前账单禁用，其余行载入明细后跳转报告', /data-history-action="open"/.test(live)
+  && /\$\{current \? 'disabled' : ''\}/.test(live) && /'当前使用' : '查看报告'/.test(live)
+  && /await ctx\.cloudDeps\.loadCloudBill\(\{ id \}\)/.test(live) && /ctx\.go\('report'\)/.test(live));
+check('历史账单：空状态、失败重试与导入后刷新', /这个账号还没有云端账单/.test(live)
+  && /data-history-action="retry"/.test(live) && /\.finally\(\(\) => refreshImportHistory\(ctx\)\)/.test(live));
+check('历史账单：样式存在且窄屏单列', /\.tm-history\s*\{/.test(styles) && /\.tm-history-row\s*\{/.test(styles)
+  && /\.tm-history-row\.is-current/.test(styles));
+{
+  const start = bridgeSource.indexOf('export function restoreFromCloud');
+  const end = bridgeSource.indexOf('// 历史账单：按 id', start);
+  const restoreBody = bridgeSource.slice(start, end < 0 ? bridgeSource.length : end);
+  check('启动：只恢复规则/画像/历史，不自动选中云端账单', start >= 0
+    && /setProfileBase\(cloudProfileFromBills\(rows\)/.test(restoreBody)
+    && !/shared\.bill\s*=/.test(restoreBody) && !/seedRealReport\(/.test(restoreBody)
+    && !/getBill\(/.test(restoreBody));
+}
+check('历史账单：点选后仍复用已发布快照', /export async function loadCloudBill/.test(bridgeSource)
+  && /if \(hasReport\) seedRealReport\(restored, report\)/.test(bridgeSource));
 
 const failed = results.filter((r) => !r.ok);
 for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.ok ? '' : '   → ' + r.detail}`);

@@ -36,6 +36,8 @@ function cloudTrade(trade, index) {
     quantity,
     fee,
     tax,
+    // 云端载荷不含原始 CSV 与文件名；用云端明细的序号补足可回查来源，报告才能完成逐笔追溯。
+    source: { file: '云端账单', line: index + 2 },
   };
 }
 
