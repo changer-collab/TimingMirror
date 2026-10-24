@@ -28,9 +28,11 @@ import {
   createImportRecovery,
   validateRecoveryResponse,
   IMPORT_RECOVERY_CODES,
+  IMPORT_VISION_TIMEOUT_MS,
 } from '../src/agent/importRecovery.js';
 import { validateVisionInput } from '../src/agent/importVision.js';
 import { exportImportTraceJsonl } from '../src/agent/traceAudit.js';
+import { DEEPSEEK_VISION_DEFAULT_TIMEOUT_MS } from '../server/site-functions/deepseek.mjs';
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -336,6 +338,9 @@ function makePdf({ text = 'date,symbol,side,price,quantity\n2024-09-24,600519,bu
 /* —— 视觉失败分类：413 / 504 / 502 / 本机超时；技术失败不消耗预算 —— */
 {
   const images = [{ mime: 'image/jpeg', data_base64: 'AAAA', bytes: 3, width: 1, height: 1 }];
+  check('视觉超时：客户端 25000ms 大于服务端 20000ms',
+    IMPORT_VISION_TIMEOUT_MS === 25000 && IMPORT_VISION_TIMEOUT_MS > DEEPSEEK_VISION_DEFAULT_TIMEOUT_MS,
+    JSON.stringify({ client: IMPORT_VISION_TIMEOUT_MS, server: DEEPSEEK_VISION_DEFAULT_TIMEOUT_MS }));
   const makeClient = (error) => createImportRecovery({
     transport: {
       async importRecover() { return { rawText: AI_BODY }; },
@@ -386,6 +391,7 @@ function makePdf({ text = 'date,symbol,side,price,quantity\n2024-09-24,600519,bu
     && timeoutClient.getTrace().messages[1].calls[0].counted === false
     && timeoutClient.getTrace().messages[1].calls[0].timeout_ms === 30,
   JSON.stringify(clientTimeout));
+  check('视觉本机超时：同一次失败不自动重试', calls === 1, JSON.stringify({ calls }));
   const retried = await timeoutClient.requestVision({ images, sourceKind: 'image' });
   check('视觉超时后可重试：第二次成功只计 1 次', retried.ok === true
     && retried.model_calls === 1 && timeoutClient.getSession().model_calls === 1,

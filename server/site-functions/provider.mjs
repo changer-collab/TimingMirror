@@ -7,6 +7,7 @@ export function createModelTransport({
   deepseekApiKey = '',
   deepseekModel = '',
   timeoutMs,
+  visionTimeoutMs,
   fetchImpl,
 } = {}) {
   if (typeof deepseekApiKey !== 'string' || deepseekApiKey.trim() === '') return null;
@@ -17,6 +18,7 @@ export function createModelTransport({
     apiKey: deepseekApiKey,
     model,
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    ...(visionTimeoutMs === undefined ? {} : { visionTimeoutMs }),
     ...(fetchImpl === undefined ? {} : { fetchImpl }),
   });
 }

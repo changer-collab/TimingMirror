@@ -9,9 +9,15 @@ import { createHandler } from './handler.mjs';
 import { createModelTransport } from './provider.mjs';
 import { createTushareMarketTransport } from './market.mjs';
 
+const visionTimeoutRaw = Number(Deno.env.get('DEEPSEEK_VISION_TIMEOUT_MS') ?? '');
+const visionTimeoutMs = Number.isInteger(visionTimeoutRaw) && visionTimeoutRaw > 0
+  ? visionTimeoutRaw
+  : undefined;
+
 const transport = createModelTransport({
   deepseekApiKey: Deno.env.get('DEEPSEEK_API_KEY') ?? '',
   deepseekModel: Deno.env.get('DEEPSEEK_MODEL') ?? '',
+  visionTimeoutMs,
 });
 
 const tushareToken = Deno.env.get('TUSHARE_TOKEN') ?? '';
