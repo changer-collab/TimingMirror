@@ -2,7 +2,7 @@
 // 校验后只回传规范化 JSON，模型多写的字段不会进入客户端；不记录问题或模型正文。
 export const CHAT_INTENT_CATEGORIES = Object.freeze([
   'worst_trade', 'best_trade', 'loss_overview', 'pattern_explain', 'profile', 'what_if', 'similar_context',
-  'how_to_change', 'contract_setup', 'contract_status', 'meta_calc', 'meta_trust', 'out_of_scope',
+  'cross_bill', 'how_to_change', 'contract_setup', 'contract_status', 'meta_calc', 'meta_trust', 'out_of_scope',
 ]);
 
 export const CHAT_INTENT_CODES = Object.freeze({

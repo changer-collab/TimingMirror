@@ -322,6 +322,7 @@ const { renderReport } = await imp('src/ui/views/reportView.js');
 const { renderRealChat } = await imp('prototype/user-frontend/realChat.js');
 const { renderContract } = await imp('src/ui/views/contractView.js');
 const { createQaAnswerService } = await imp('prototype/user-frontend/qaAnswer.js');
+const { createQaRewrite } = await imp('src/agent/qaRewrite.js');
 const { createChatOnline } = await imp('src/agent/chatOnline.js');
 const { createOnlineBoundary } = await imp('src/agent/onlineBoundary.js');
 const { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } = await imp('src/agent/httpTransport.js');
@@ -376,10 +377,12 @@ function getSmokeAnswerClient() {
     const transport = createHttpTransport({ baseUrl: SAME_ORIGIN_BASE, paths: SITE_FUNCTION_PATHS });
     const online = createChatOnline({ transport });
     const boundary = createOnlineBoundary({ transport, timeoutMs: 5000 });
+    const rewrite = createQaRewrite({ transport });
     smokeAnswerClient = createQaAnswerService({
       getBundle: getSmokeBundle,
       loadBundle: loadSmokeBundle,
       askOnline: ({ question, review }) => online.ask({ question, review }),
+      askRewrite: (request, options) => rewrite.rewrite(request, options),
       loadProfile: () => null,
       classifyIntent: ({ question }) => boundary.classifyIntent({ question }),
     });
@@ -835,6 +838,7 @@ state.report = { scenario: 'A', symbol: 'pool' };
   const waitForSiteCalls = async (expected) => {
     for (let i = 0; i < 30 && siteCalls.length < expected; i++) await flush();
   };
+  const isRewriteCall = (call) => String(call?.url ?? '').endsWith('/api/llm/qa-rewrite');
 
   /* 1) 页首、空状态与示例芯片 */
   const context1 = await importChatBill('chat-bill.csv', chatCsv);
@@ -844,13 +848,13 @@ state.report = { scenario: 'A', symbol: 'pool' };
     const scroller = findByClass(page ?? {}, 'tm-qa-scroll')[0] ?? null;
     const dock = findByClass(page ?? {}, 'tm-qa-dock')[0] ?? null;
     const form = askForm();
-    check('问答账本·页首与空状态：账本独立滚动/输入底栏/8 个本地示例芯片/发送前数据路径提示/无重复账单状态栏',
+    check('问答账本·页首与空状态：账本独立滚动/输入底栏/10 个本地示例芯片/发送前数据路径提示/无重复账单状态栏',
       !!page && !!ledger && ledger.attrs['data-role'] === 'qa-ledger'
       && !!scroller && !!dock && !!form && form.parentNode === dock && ledger.parentNode === scroller
       && pageVisibleTxt().includes('STEP 03 / ASK') && pageVisibleTxt().includes('问它为什么，')
       && pageVisibleTxt().includes('别问它买什么。')
       && pageVisibleTxt().includes('还没有提问。示例问法只是入口，不是全部。')
-      && chips().length === 8 && chips().every((b) => b.attrs['data-online'] === undefined)
+      && chips().length === 10 && chips().every((b) => b.attrs['data-online'] === undefined)
       && chips().every((b) => !labelOf(b).includes('ONLINE'))
       && !pageVisibleTxt().includes('规则 v0 · 生效 0 条') && !findByClass(current, 'tm-qa-context').length
       && pageVisibleTxt().includes('本地回答不上传')
@@ -858,7 +862,8 @@ state.report = { scenario: 'A', symbol: 'pool' };
       && entries().length === 0, pageTxt().slice(0, 360));
   }
 
-  /* 2) 本地回答：最错一笔 → 4 条事实 + 折叠证据，不发起在线请求 */
+  /* 2) 本地回答：最错一笔 → 4 条事实 + 折叠证据，只请求意图模型 */
+  siteResponse = { status: 200, body: { rawText: JSON.stringify({ intent: 'worst_trade', slots: {}, confidence: 0.92 }) } };
   const siteBeforeWorst = siteCalls.length;
   await askText('我最错的一笔是哪个？');
   {
@@ -866,7 +871,7 @@ state.report = { scenario: 'A', symbol: 'pool' };
     const facts = entry ? findByClass(entry, 'tm-qa-facts')[0] : null;
     const evidence = entry ? findByClass(entry, 'tm-qa-evidence')[0] : null;
     const evidenceSummary = evidence ? findByTag(evidence, 'summary')[0] : null;
-    check('问答账本·最错一笔：local/本机回答/4 条事实/证据折叠',
+    check('问答账本·最错一笔：local/本机回答/4 条事实/证据折叠/只请求一次意图',
       state.chat.pending === false && !!entry && entry.attrs['data-state'] === 'local'
       && entry.attrs['data-role'] === 'qa-entry'
       && texts(entry).join('|').includes('本机回答')
@@ -874,9 +879,82 @@ state.report = { scenario: 'A', symbol: 'pool' };
       && evidenceSummary && texts(evidenceSummary).join('').includes('证据')
       && pageVisibleTxt().includes('本机回答')
       && !pageVisibleTxt().includes('如何得出') && !pageVisibleTxt().includes('技术详情（错误码）')
-      && siteCalls.length === siteBeforeWorst,
-      JSON.stringify({ attrs: entry?.attrs, facts: facts ? texts(facts) : null, site: siteCalls.length - siteBeforeWorst }));
+      && siteCalls.slice(siteBeforeWorst).filter((c) => c.url.endsWith('/api/llm/intent')).length === 1
+      && siteCalls.slice(siteBeforeWorst).filter(isRewriteCall).length === 1
+      && siteCalls[siteBeforeWorst].url === '/functions/v1/app/api/llm/intent',
+      JSON.stringify({ attrs: entry?.attrs, facts: facts ? texts(facts) : null, site: siteCalls.slice(siteBeforeWorst).map((c) => c.url) }));
   }
+  {
+    const entry = entryOf('worst_trade');
+    const trace = entry ? findByClass(entry, 'tm-qa-trace')[0] : null;
+    const host = entry ? findByClass(entry, 'tm-qa-trace-host')[0] : null;
+    const route = entry ? findByClass(entry, 'tm-qa-route')[0] : null;
+    const summary = trace ? findByTag(trace, 'summary')[0] : null;
+    const steps = trace ? findByClass(trace, 'tm-qa-trace-step') : [];
+    const traceTxt = trace ? texts(trace).join('|') : '';
+    const hostIndex = host && entry ? entry.children.indexOf(host) : -1;
+    const routeIndex = route && entry ? entry.children.indexOf(route) : -1;
+    check('问答账本·运行过程：位于回答上方、默认收起、显示模型意图与真实步骤',
+      !!trace && !!summary && !trace.attrs.open
+      && hostIndex >= 0 && routeIndex >= 0 && hostIndex < routeIndex
+      && texts(summary).join('').includes('AI 运行过程')
+      && texts(summary).join('').includes('默认收起')
+      && traceTxt.includes('模型分析意图') && traceTxt.includes('已识别')
+      && steps.length >= 4
+      && !/plan-|T-|E_QA_|template_id/.test(traceTxt),
+      JSON.stringify({ open: trace?.attrs.open, hostIndex, routeIndex, summary: summary ? texts(summary) : null, steps: steps.length, text: traceTxt.slice(0, 240) }));
+  }
+
+  /* 2b) 白话三层 + 状态徽标：改写成功时标题/结论/术语可读，Trace 仍在回答上方 */
+  siteResponseHook = (url, options) => {
+    const path = String(url);
+    if (path.endsWith('/api/llm/intent')) {
+      return siteHttpResponse({ body: { rawText: JSON.stringify({ intent: 'worst_trade', slots: {}, confidence: 0.92 }) } });
+    }
+    if (path.endsWith('/api/llm/qa-rewrite')) {
+      let request = {};
+      try { request = JSON.parse(String(options?.body ?? '{}')); } catch { request = {}; }
+      const claimId = request.claims?.[0]?.id;
+      const money = (request.facts ?? []).find((f) => /^[+-]?¥/u.test(String(f.value ?? '')))?.value ?? '';
+      const pct = (request.facts ?? []).find((f) => /%$/u.test(String(f.value ?? '')))?.value ?? '';
+      const date = request.allowed?.dates?.[0] ?? '';
+      const symbol = request.allowed?.symbols?.[0] ?? '';
+      const plain = [
+        { text: `这笔卖出发生在 ${date}，标的代码是 ${symbol}，差额为 ${money}。`, claim_ids: [claimId] },
+        { text: `这笔差额占总损耗 ${pct}，是这份账单里代价最高的操作。`, claim_ids: [claimId] },
+      ];
+      return siteHttpResponse({
+        body: {
+          rawText: JSON.stringify({
+            headline: `最错的那次卖出，差额是 ${money}`,
+            plain,
+            used_terms: (request.glossary ?? []).map((item) => item.term),
+          }),
+        },
+      });
+    }
+    return null;
+  };
+  await askText('我最错的一笔是哪个？');
+  {
+    const entry = entryOf('worst_trade');
+    const plain = entry ? findByClass(entry, 'tm-qa-plain')[0] : null;
+    const host = entry ? findByClass(entry, 'tm-qa-trace-host')[0] : null;
+    const headline = plain ? findByClass(plain, 'tm-qa-plain-headline')[0] : null;
+    const list = plain ? findByClass(plain, 'tm-qa-plain-list')[0] : null;
+    const items = list ? findByTag(list, 'li') : [];
+    const badge = entry ? findByClass(entry, 'tm-qa-badge')[0] : null;
+    const hostIndex = entry && host ? entry.children.indexOf(host) : -1;
+    const plainIndex = entry && plain ? entry.children.indexOf(plain) : -1;
+    check('问答账本·白话三层：标题＋结论列表＋状态徽标，Trace 仍在回答上方',
+      !!plain && !!headline && texts(headline).join('').length >= 8
+      && items.length >= 1 && items.every((li) => texts(li).join('').length >= 10)
+      && texts(plain).join('|').includes('白话改写')
+      && !!badge && texts(badge).join('').includes('本机回答')
+      && hostIndex >= 0 && plainIndex >= 0 && hostIndex < plainIndex,
+      JSON.stringify({ headline: headline ? texts(headline) : null, items: items.length, hostIndex, plainIndex }));
+  }
+  siteResponseHook = null;
 
   /* 3) 边界拒绝：不加载报告、不调用模型、0 条事实 */
   const callsBeforeRefusal = siteCalls.length;
@@ -969,18 +1047,26 @@ state.report = { scenario: 'A', symbol: 'pool' };
   {
     const entry = entryOf('loss_overview');
     const onlineAction = entry ? findButtons(entry).find((b) => labelOf(b).includes('在线复述')) : null;
+    const chipCalls = siteCalls.slice(siteBeforeOnline).filter((c) => !isRewriteCall(c));
     check('问答账本·组合芯片：先给本地四事实，不自动请求在线',
       !!entry && entry.attrs['data-state'] === 'local'
       && texts(entry).join('|').includes('本机回答')
-      && !!onlineAction && siteCalls.length === siteBeforeOnline,
-      JSON.stringify({ attrs: entry?.attrs, calls: siteCalls.length - siteBeforeOnline }));
+      && !!onlineAction && chipCalls.length === 0,
+      JSON.stringify({ attrs: entry?.attrs, calls: chipCalls.map((c) => c.url) }));
+
+    const chipTrace = entry ? findByClass(entry, 'tm-qa-trace')[0] : null;
+    const chipTraceTxt = chipTrace ? texts(chipTrace).join('|') : '';
+    check('问答账本·芯片运行过程：标注本地规则与未调用模型',
+      !!chipTrace && chipTraceTxt.includes('本地规则匹配') && chipTraceTxt.includes('未调用模型')
+      && chipCalls.length === 0,
+      JSON.stringify({ trace: chipTraceTxt.slice(0, 200), calls: chipCalls.map((c) => c.url) }));
 
     if (onlineAction) clickNode(onlineAction);
-    await waitForSiteCalls(siteBeforeOnline + 1);
     await settleChat();
     const after = entryOf('loss_overview');
     const onlineBox = after ? findByClass(after, 'tm-qa-online')[0] : null;
-    const call = siteCalls.at(-1);
+    const onlineCalls = siteCalls.slice(siteBeforeOnline).filter((c) => !isRewriteCall(c));
+    const call = onlineCalls.at(-1);
     const body = call ? JSON.parse(call.options.body) : null;
     const onlineTxt = onlineBox ? texts(onlineBox).join('|') : '';
     check('问答账本·在线成功：本地答案保留，单独展示通过数字校验的复述',
@@ -988,8 +1074,8 @@ state.report = { scenario: 'A', symbol: 'pool' };
       && !!onlineBox && onlineTxt.includes(answerCsv1) && onlineTxt.includes('已核对 4 个可识别数字')
       && onlineTxt.includes('在线复述')
       && state.bill.contextId === context1 && !pageVisibleTxt().includes('chat-bill.csv')
-      && siteCalls.length === siteBeforeOnline + 1,
-      JSON.stringify({ attrs: after?.attrs, online: onlineTxt.slice(0, 240), calls: siteCalls.length - siteBeforeOnline }));
+      && onlineCalls.length === 1,
+      JSON.stringify({ attrs: after?.attrs, online: onlineTxt.slice(0, 240), calls: onlineCalls.map((c) => c.url) }));
     check('问答账本·在线出站：POST restate，body 仅 question + F-6 四事实',
       !!call && call.url === '/functions/v1/app/api/llm/restate' && call.options.method === 'POST'
       && Object.keys(body).join(',') === 'question,facts' && body.facts.length === 4
@@ -1090,13 +1176,14 @@ state.report = { scenario: 'A', symbol: 'pool' };
   {
     const entry = entryOf('loss_overview');
     const entryTxt = entry ? texts(entry).join('|') : '';
-    const call = siteCalls[callsBeforeL2];
+    const askCalls = siteCalls.slice(callsBeforeL2).filter((c) => !isRewriteCall(c));
+    const call = askCalls[0];
     const body = call ? JSON.parse(call.options.body) : null;
     check('问答账本·L2 在线意图：只发送问题文本/本地事实回答，界面不显示内部路由层',
       !!entry && entry.attrs['data-state'] === 'local' && entryTxt.includes('本机回答')
       && !entryTxt.includes('在线意图') && entryTxt.includes('4 条事实')
       && state.chat.messages.at(-1)?.answer?.route?.layer === 'L2'
-      && siteCalls.length === callsBeforeL2 + 1
+      && askCalls.length === 1
       && !!body && Object.keys(body).join(',') === 'question' && body.question === '帮我看看这个账户',
       JSON.stringify({ attrs: entry?.attrs, url: call?.url, body, text: entryTxt.slice(0, 240), chat: state.chat }));
   }
@@ -2660,9 +2747,9 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
   const qaChatSrc = readFileSync(join(ROOT, 'prototype/user-frontend/realChat.js'), 'utf8');
   const qaBridgeSrc = readFileSync(join(ROOT, 'prototype/user-frontend/realBridge.js'), 'utf8');
   const cloudProfileSrc = readFileSync(join(ROOT, 'prototype/user-frontend/cloudProfile.js'), 'utf8');
-  const narrativeIntents = qaAnswerSrc.slice(
-    qaAnswerSrc.indexOf('const NARRATIVE_INTENTS'),
-    qaAnswerSrc.indexOf('const FACT_LABELS'),
+  const rewriteIntents = qaAnswerSrc.slice(
+    qaAnswerSrc.indexOf('const REWRITE_INTENTS'),
+    qaAnswerSrc.indexOf('const TOOL_LABELS'),
   );
 
   check('AI 解读：请求只由问题/意图/展示事实与允许值构造，不读取本地答案正文',
@@ -2674,15 +2761,16 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
     && httpTransportSrc.includes('qaNarrative({ question, intent, facts, evidence, allowed, signal } = {})')
     && httpTransportSrc.includes('call(routes.qaNarrative, { question, intent, facts, evidence, allowed }, signal)'),
     httpTransportSrc.slice(0, 200));
-  check('AI 解读：仅手动策略，覆盖 8 类意图并排除 loss_overview 与示例账单',
-    narrativeIntents.length > 0 && !narrativeIntents.includes('loss_overview')
-    && qaAnswerSrc.includes("narrative_policy: status === 'local' && NARRATIVE_INTENTS.has(intent) && bill?.demo !== true"),
-    narrativeIntents);
-  check('AI 解读：答疑服务提供 narrate，桥接注入 askNarrative 与 narrateAnswer',
-    qaAnswerSrc.includes('async function narrate(')
-    && qaAnswerSrc.includes('return Object.freeze({ ask, narrate })')
-    && qaBridgeSrc.includes('createQaNarrative')
-    && qaBridgeSrc.includes('narrateAnswer: (args) => getQaAnswerClient().narrate(args)'),
+  check('AI 改写：有事实的意图自动重写，示例账单同样走本地草稿兜底',
+    rewriteIntents.length > 0 && rewriteIntents.includes('loss_overview')
+    && qaAnswerSrc.includes("narrative_policy: status === 'local' && REWRITE_INTENTS.has(intent) && cleanFacts.length > 0"),
+    rewriteIntents);
+  check('AI 改写：答疑服务提供 rewrite，桥接注入 askRewrite 与 rewriteAnswer',
+    qaAnswerSrc.includes('async function rewrite(')
+    && qaAnswerSrc.includes('return Object.freeze({ ask, rewrite })')
+    && qaBridgeSrc.includes('createQaRewrite')
+    && qaBridgeSrc.includes('askRewrite: (request, options) => getQaRewriteClient().rewrite(request, options)')
+    && qaBridgeSrc.includes('rewriteAnswer: (args) => getQaAnswerClient().rewrite(args)'),
     qaBridgeSrc.slice(0, 200));
   check('画像事实：独立 saved_facts 通道 + 缓存/冷加载/追加接线',
     qaAnswerSrc.includes('saved_facts: cleanSavedFacts')

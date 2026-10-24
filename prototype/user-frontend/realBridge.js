@@ -7,6 +7,7 @@ import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../.
 import { createImportRecovery } from '../../src/agent/importRecovery.js';
 import { createChatOnline } from '../../src/agent/chatOnline.js';
 import { createQaNarrative } from '../../src/agent/qaNarrative.js';
+import { createQaRewrite } from '../../src/agent/qaRewrite.js';
 import { createOnlineBoundary } from '../../src/agent/onlineBoundary.js';
 import { createDataClient } from '../../src/agent/dataClient.js';
 import { createProfileFactRecorder } from '../../src/agent/profileSignals.js';
@@ -17,7 +18,8 @@ import { getRealReportBundle, getRealReportState, loadRealReport, seedRealReport
 import { ruleStateOf, loadProfile, setProfileBase } from './profileStore.js';
 import { openRuleCandidate } from './ruleCandidates.js';
 import { createQaAnswerService } from './qaAnswer.js';
-import { syncBill, syncSnapshotWithBill } from './cloudSync.js';
+import { billSyncStatus, syncBill, syncSnapshotWithBill } from './cloudSync.js';
+import { getDemoHistoryIndex } from '../../src/demo/demoHistory.js';
 import {
   appendCachedCloudFacts, getCachedCloudFacts, invalidateCloudProfile, loadCloudFacts,
 } from './cloudProfile.js';
@@ -166,6 +168,7 @@ let onChangeCallback = null;
 let recoveryClient = null;
 let qaOnlineClient = null;
 let qaNarrativeClient = null;
+let qaRewriteClient = null;
 let qaAnswerClient = null;
 let qaIntentBoundary = null;
 let dataClient = null;
@@ -249,7 +252,7 @@ function getQaIntentBoundary() {
   if (!qaIntentBoundary) {
     qaIntentBoundary = createOnlineBoundary({
       transport: createHttpTransport({ baseUrl: SAME_ORIGIN_BASE, paths: SITE_FUNCTION_PATHS }),
-      timeoutMs: 5000,
+      timeoutMs: 2500,
     });
   }
   return qaIntentBoundary;
@@ -264,16 +267,29 @@ function getQaNarrativeClient() {
   return qaNarrativeClient;
 }
 
+function getQaRewriteClient() {
+  if (!qaRewriteClient) {
+    qaRewriteClient = createQaRewrite({
+      transport: createHttpTransport({ baseUrl: SAME_ORIGIN_BASE, paths: SITE_FUNCTION_PATHS }),
+    });
+  }
+  return qaRewriteClient;
+}
+
 function getQaAnswerClient() {
   if (!qaAnswerClient) {
     qaAnswerClient = createQaAnswerService({
       getBundle: (bill) => getRealReportBundle(bill),
       loadBundle: (bill) => loadRealReport(bill),
       askOnline: ({ question, review }) => getQaOnlineClient().ask({ question, review }),
-      askNarrative: (args) => getQaNarrativeClient().ask(args),
+      askRewrite: (request, options) => getQaRewriteClient().rewrite(request, options),
       getSavedFacts: () => getCachedCloudFacts(),
       loadSavedFacts: () => loadCloudFacts(ctx),
       loadProfile,
+      loadHistoryIndex: ({ bill } = {}) => {
+        if (bill?.demo === true) return Promise.resolve(getDemoHistoryIndex());
+        return getDataClient().historyIndex({ limit: 20, exclude: billSyncStatus(bill)?.billId ?? null });
+      },
       classifyIntent: ({ question }) => getQaIntentBoundary().classifyIntent({ question }),
     });
   }
@@ -522,7 +538,7 @@ const ctx = {
     getReportState: (bill) => getRealReportState(bill),
     loadReportBundle: (bill) => loadRealReport(bill),
     askQuestion: (args) => getQaAnswerClient().ask(args),
-    narrateAnswer: (args) => getQaAnswerClient().narrate(args),
+    rewriteAnswer: (args) => getQaAnswerClient().rewrite(args),
     extractProfileFacts: (args) => getProfileFactRecorder()?.extract(args),
     saveProfileFacts: (args) => getProfileFactRecorder()?.save(args),
     explainReport: (args) => explainReportNumbers(args),
@@ -728,6 +744,11 @@ export function mountImportView(host) {
 export function mountContractView(host) {
   if (!host) return;
   renderInShadow(host, renderContract);
+}
+
+export function mountSelfCheckView(host) {
+  if (!host) return;
+  renderInShadow(host, (root, ctx) => renderContract(root, ctx, { section: 'selfcheck' }));
 }
 
 export function mountScenarioView(host) {

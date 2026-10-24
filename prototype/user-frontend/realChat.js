@@ -6,6 +6,7 @@ import {
   QA_INTENT_LABELS,
   routeQuestion,
   isPageHelpQuestion,
+  buildPageHelpAnswer,
 } from './qaIntent.js';
 import { ruleStateKeyOf } from '../../src/agent/qaChips.js';
 import { shouldExtractProfileFacts } from '../../src/agent/profileSignals.js';
@@ -20,6 +21,7 @@ const STATUS_LABELS = Object.freeze({
   registration: '需要你确认',
   unavailable: '本版本暂不支持',
   error: '本次暂时无法回答',
+  withheld: '本次未发布',
   pending: '正在核对',
 });
 
@@ -31,12 +33,13 @@ const STATUS_TITLES = Object.freeze({
   registration: '需要你确认后继续',
   unavailable: '本版本暂不支持',
   error: '本次暂时无法回答',
+  withheld: '发布前复核未通过，不展示具体数字',
   pending: '正在核对',
 });
 
 const FACT_KIND_LABELS = PROFILE_FACT_KIND_LABELS;
 
-const BOUNDARY_STATES = new Set(['refusal', 'registration', 'unavailable']);
+const BOUNDARY_STATES = new Set(['refusal', 'registration', 'unavailable', 'withheld']);
 
 let seq = 0;
 let draft = '';
@@ -44,6 +47,62 @@ let draftContextId = null;
 let lastScrollKey = null;
 let handoffNotice = null;
 let clearArmed = false;
+// 正在生成的运行过程按 requestId 暂存；渲染重建后可从内存恢复，不写入持久状态。
+const liveTraces = new Map();
+
+const TRACE_ICONS = Object.freeze({ running: '…', done: '✓', failed: '!', skipped: '–' });
+
+function mergeTraceEvent(events, event) {
+  if (!event || typeof event !== 'object') return events;
+  const list = Array.isArray(events) ? events.slice() : [];
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    if (list[i]?.stage !== event.stage) continue;
+    if (list[i].status === 'running' && event.status !== 'running') {
+      list[i] = event;
+      return list;
+    }
+    break;
+  }
+  list.push(event);
+  return list;
+}
+
+function traceItemsHTML(events) {
+  return (Array.isArray(events) ? events : []).map((event) => {
+    const status = TRACE_ICONS[event.status] ? event.status : 'done';
+    return `<li class="tm-qa-trace-step is-${esc(status)}">
+      <span class="tm-qa-trace-icon" aria-hidden="true">${esc(TRACE_ICONS[status])}</span>
+      <span class="tm-qa-trace-label">${esc(event.label)}</span>
+      ${event.detail ? `<span class="tm-qa-trace-detail">${esc(event.detail)}</span>` : ''}
+      ${Number.isFinite(event.ms) ? `<span class="tm-qa-trace-ms">${Math.round(event.ms)} ms</span>` : ''}
+    </li>`;
+  }).join('');
+}
+
+function traceHTML(events, { requestId = null, pending = false } = {}) {
+  const list = Array.isArray(events) ? events : [];
+  if (!list.length && !pending) return '';
+  const title = pending && !list.length ? 'AI 运行过程 · 准备中' : `AI 运行过程 · ${list.length} 步`;
+  return `<div class="tm-qa-trace-host" data-role="qa-trace-host"${requestId ? ` data-request-id="${esc(requestId)}"` : ''}>
+    <details class="tm-qa-trace" data-role="qa-trace">
+      <summary>
+        <span data-role="qa-trace-count">${esc(title)}</span>
+        <span class="tm-qa-trace-hint">默认收起 · 点击展开</span>
+      </summary>
+      <ol class="tm-qa-trace-steps" data-role="qa-trace-steps">${traceItemsHTML(list)}</ol>
+    </details>
+  </div>`;
+}
+
+function patchLiveTrace(host, requestId, events) {
+  if (!host || !requestId) return;
+  const node = host.querySelector(`[data-role="qa-trace-host"][data-request-id="${requestId}"]`);
+  if (!node) return;
+  const count = node.querySelector('[data-role="qa-trace-count"]');
+  const steps = node.querySelector('[data-role="qa-trace-steps"]');
+  if (count) count.textContent = `AI 运行过程 · ${Array.isArray(events) ? events.length : 0} 步`;
+  if (steps) steps.innerHTML = traceItemsHTML(events);
+}
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
@@ -232,32 +291,45 @@ function savedFactsHTML(answer) {
   </section>`;
 }
 
-function narrativeHTML(message, question) {
-  const narrative = message?.narrative;
-  if (!narrative) return '';
-  if (narrative.status === 'pending') {
-    return '<p class="tm-qa-narrative is-pending" data-role="qa-narrative">正在生成 AI 解读…</p>';
-  }
-  if (narrative.status === 'ok') {
-    const checked = narrative.number_check && Number.isFinite(narrative.number_check.checked)
-      ? `已核对 ${narrative.number_check.checked} 处数字`
-      : '数字已在本机复核';
-    return `<section class="tm-qa-narrative" data-role="qa-narrative">
-      <div class="tm-qa-narrative-head"><span class="tm-qa-badge is-online">AI 解读</span><span>${esc(checked)}</span></div>
-      <p class="tm-qa-text">${esc(narrative.text)}</p>
-      <p class="tm-qa-notice">只解释上方已核对事实；未通过数字校验时不会显示。</p>
+function rewriteOf(message, answer) {
+  return message?.rewrite ?? answer?.rewrite ?? null;
+}
+
+function rewriteHTML(message, answer) {
+  const rewrite = rewriteOf(message, answer);
+  if (!rewrite) return '';
+  if (rewrite.status === 'ok') {
+    const claimCount = Array.isArray(rewrite.claim_map) ? rewrite.claim_map.length : 0;
+    const terms = Array.isArray(rewrite.terms) && rewrite.terms.length
+      ? `<details class="tm-qa-terms" data-role="qa-terms">
+        <summary>术语 ${rewrite.terms.length} · 点击查看</summary>
+        <dl class="tm-qa-evidence-list">${rewrite.terms.map((item) => `
+          <div><dt>${esc(item.term)}</dt><dd>${esc(item.definition)}</dd></div>`).join('')}</dl>
+      </details>`
+      : '';
+    const draft = answer?.text
+      ? `<details class="tm-qa-draft"><summary>本地原始表述</summary><p>${esc(answer.text)}</p></details>`
+      : '';
+    return `<section class="tm-qa-plain" data-role="qa-plain">
+      <div class="tm-qa-plain-head"><span class="tm-qa-badge is-online">白话改写</span><span>${claimCount} 条结论已绑定证据</span></div>
+      <h3 class="tm-qa-plain-headline">${esc(rewrite.headline)}</h3>
+      <ul class="tm-qa-plain-list">${(rewrite.plain ?? []).map((item) => `<li>${esc(item.text)}</li>`).join('')}</ul>
+      ${terms}
+      ${draft}
+      <p class="tm-qa-notice">数字只来自上方已核对事实；改写不新增数字或结论。</p>
+      ${message?.rewrite_pending ? '<p class="tm-qa-rewrite-hint is-pending">正在换一种说法…</p>' : ''}
     </section>`;
   }
-  if (narrative.status === 'failed') {
-    const retry = narrative.retryable === false
-      ? ''
-      : `<div class="tm-qa-actions"><button type="button" class="btn small" data-role="qa-narrative-retry" data-message-id="${esc(message.id ?? '')}" data-question="${esc(question)}">重试 AI 解读</button></div>`;
-    return `<div class="tm-qa-narrative is-warn" data-role="qa-narrative">
-      <p>AI 解读未完成：${esc(narrative.text || '在线解读服务暂时不可用，请稍后重试。')}。上面的本地答案仍然有效。</p>
-      ${retry}
-    </div>`;
+  if (rewrite.status === 'local_fallback') {
+    return '<p class="tm-qa-rewrite-hint" data-role="qa-rewrite-hint">模型改写未采用，以下是本地表述。</p>';
   }
   return '';
+}
+
+function answerTextHTML(answer, message) {
+  const rewrite = rewriteOf(message, answer);
+  if (rewrite?.status === 'ok') return rewriteHTML(message, answer);
+  return `<p class="tm-qa-text">${esc(answer.text)}</p>${rewriteHTML(message, answer)}`;
 }
 
 function onlineHTML(message) {
@@ -292,8 +364,8 @@ function actionsHTML(answer, message, actionMap, currentRuleKey, question, allow
       kind: 'online',
     });
   }
-  if (allowOnline && answer.status === 'local' && answer.narrative_policy === 'manual' && !message?.narrative) {
-    actions.push({ id: 'ai-narrative', label: 'AI 解读', kind: 'narrative' });
+  if (answer.status === 'local' && rewriteOf(message, answer)?.status === 'ok') {
+    actions.push({ id: 'rewrite-again', label: '换一种说法', kind: 'rewrite' });
   }
   const names = new Set(actions.map((a) => a.id));
   let stale = false;
@@ -311,8 +383,8 @@ function actionsHTML(answer, message, actionMap, currentRuleKey, question, allow
   if (actions.some((action) => action.kind === 'online')) {
     notes.push('在线复述会发送问题与所需已核对数字；不会上传原始 CSV。');
   }
-  if (actions.some((action) => action.kind === 'narrative')) {
-    notes.push('AI 解读会发送问题与上方已展示事实；不会上传原始 CSV。');
+  if (actions.some((action) => action.kind === 'rewrite')) {
+    notes.push('换一种说法会再次把已展示事实发送给模型；不会上传原始 CSV。');
   }
   const note = notes.length ? `<p class="tm-qa-action-note">${notes.join(' ')}</p>` : '';
   const staleNote = stale && names.size
@@ -349,30 +421,33 @@ function answerHTML(entry, actionMap, currentRuleKey, allowOnline, allowProfile)
       <span class="tm-qa-question-label">你问</span>
       <p class="tm-qa-question">${esc(entry.question)}</p>
     </header>` : ''}
+    ${traceHTML(entry.message?.trace, {})}
     <div class="tm-qa-route">
       <span class="tm-qa-intent">${esc(intentLabelOf(intent))}</span>
       <span class="tm-qa-factcount">${facts.length} 条事实</span>
       <span class="tm-qa-badge is-${esc(status)}" title="${esc(STATUS_TITLES[status] ?? '')}">${esc(badgeOf(status))}</span>
     </div>
-    <p class="tm-qa-text">${esc(answer.text)}</p>
+    ${answerTextHTML(answer, entry.message)}
+    ${entry.message?.rewrite_hint ? `<p class="tm-qa-rewrite-hint">${esc(entry.message.rewrite_hint)}</p>` : ''}
     ${factsHTML(facts)}
     ${savedFactsHTML(answer)}
     ${evidenceHTML(answer.evidence)}
     ${actionsHTML(answer, entry.message, actionMap, currentRuleKey, entry.question, allowOnline)}
     ${onlineHTML(entry.message)}
-    ${narrativeHTML(entry.message, entry.question)}
     ${profileActionHTML(entry.message, entry.question, allowProfile)}
     ${profileFactHTML(entry.message)}
     ${answer.notice ? `<p class="tm-qa-notice">${esc(answer.notice)}</p>` : ''}
   </article>`;
 }
 
-function pendingHTML(question) {
+function pendingHTML(question, requestId = null) {
+  const events = requestId ? (liveTraces.get(requestId) ?? []) : [];
   return `<article class="tm-qa-entry is-pending" data-role="qa-entry" data-intent="pending" data-state="pending" aria-busy="true">
     <header class="tm-qa-entry-head">
       <span class="tm-qa-question-label">你问</span>
       <p class="tm-qa-question">${esc(question)}</p>
     </header>
+    ${traceHTML(events, { requestId, pending: true })}
     <div class="tm-qa-route">
       <span class="tm-qa-intent">正在核对</span>
       <span class="tm-qa-badge is-pending">${esc(badgeOf('pending'))}</span>
@@ -450,24 +525,6 @@ function failureAnswer({ question, contextId }) {
     notice: null,
     diagnostics: [{ code: 'E_QA_UI_UNEXPECTED', message: '问答页面出现未预期错误' }],
     bill_context_id: contextId,
-  };
-}
-
-function pageHelpAnswer() {
-  return {
-    status: 'local',
-    intent: null,
-    route: { layer: 'L3', confidence: null },
-    source: 'template',
-    text: '这是页面操作或隐私问题。请在「AI 助手」的帮助说明中查看；问答页不会把这类问题发送到在线服务。',
-    facts: [],
-    evidence: [],
-    actions: [{ id: 'assistant-help', label: '查看助手帮助', kind: 'assistant-help' }],
-    trace: { template_id: null, plan_id: null, fact_count: 0, number_check: null, elapsed_ms: 0, intent_code: 'page_help', layer_label: '页面帮助' },
-    candidate: null,
-    notice: null,
-    diagnostics: [],
-    bill_context_id: null,
   };
 }
 
@@ -574,7 +631,7 @@ export function renderRealChat(host, ctx) {
   const logHTML = entries.length || pending
     ? `${entries.map((entry) => (entry.answer
       ? answerHTML(entry, actionMap, currentRuleKey, allowOnline, allowProfileBase && shouldExtractProfileFacts(entry.question))
-      : pendingHTML(entry.question))).join('')}${pending && !entries.some((e) => !e.answer) ? pendingHTML(lastQuestion) : ''}`
+      : pendingHTML(entry.question, state.chat.requestId))).join('')}${pending && !entries.some((e) => !e.answer) ? pendingHTML(lastQuestion, state.chat.requestId) : ''}`
     : emptyHTML();
 
   host.innerHTML = `<div class="tm-qa-page">
@@ -616,7 +673,7 @@ export function renderRealChat(host, ctx) {
     if (preview) preview.textContent = privacyLine(value);
   }
 
-  async function send(raw) {
+  async function send(raw, source = 'typed') {
     const question = questionText(raw);
     if (!question || state.chat.pending) return;
     draft = '';
@@ -631,7 +688,7 @@ export function renderRealChat(host, ctx) {
     };
 
     if (isPageHelpQuestion(question)) {
-      const help = pageHelpAnswer();
+      const help = buildPageHelpAnswer();
       setMessages([
         ...state.chat.messages,
         userMessage,
@@ -644,6 +701,7 @@ export function renderRealChat(host, ctx) {
       return;
     }
 
+    liveTraces.set(requestId, []);
     set({
       chat: {
         ...state.chat,
@@ -654,24 +712,41 @@ export function renderRealChat(host, ctx) {
       },
     });
 
-    let answer;
+    let answer = null;
+    let trace = [];
     try {
       if (typeof ctx.qaDeps?.askQuestion !== 'function') {
         answer = failureAnswer({ question, contextId: messageContextId });
       } else {
         let ruleState = null;
         try { ruleState = ctx.qaDeps.ruleStateOf?.(versions) ?? null; } catch { ruleState = null; }
-        answer = await ctx.qaDeps.askQuestion({ question, bill: state.bill, ruleState, versions });
+        const payload = await ctx.qaDeps.askQuestion({
+          question,
+          bill: state.bill,
+          ruleState,
+          versions,
+          source,
+          onStage: (event) => {
+            if (!isCurrent()) return;
+            const events = mergeTraceEvent(liveTraces.get(requestId) ?? [], event);
+            liveTraces.set(requestId, events);
+            patchLiveTrace(host, requestId, events);
+          },
+        });
+        answer = payload?.envelope ?? payload ?? null;
+        trace = Array.isArray(payload?.trace) ? payload.trace : [];
       }
     } catch {
-      if (!isCurrent()) return;
+      if (!isCurrent()) { liveTraces.delete(requestId); return; }
       answer = failureAnswer({ question, contextId: messageContextId });
     }
-    if (!isCurrent()) return;
+    if (!isCurrent()) { liveTraces.delete(requestId); return; }
+    liveTraces.delete(requestId);
     const assistantMessage = {
       id: requestId, role: 'assistant', kind: 'qa',
       text: answer?.text ?? '',
       answer,
+      trace,
       bill_context_id: messageContextId,
       rule_state_key: currentRuleKey,
     };
@@ -819,6 +894,8 @@ export function renderRealChat(host, ctx) {
       result = typeof ctx.qaDeps?.askQuestion === 'function'
         ? await ctx.qaDeps.askQuestion({
           question, bill: state.bill, ruleState, versions, preferOnline: true,
+          reuseIntent: message.answer?.intent ?? null,
+          reuseRoute: message.answer?.route ?? null,
         })
         : null;
     } catch {
@@ -827,55 +904,53 @@ export function renderRealChat(host, ctx) {
     if ((state.bill?.contextId ?? null) !== (message.bill_context_id ?? null)) return;
     const latest = findMessage(ctx, messageId);
     if (!latest || latest.online?.requestId !== requestId) return;
-    if (result?.status === 'online') {
-      patchMessage(ctx, messageId, { online: { status: 'ok', answer: result } });
+    const envelope = result?.envelope ?? result;
+    if (envelope?.status === 'online') {
+      patchMessage(ctx, messageId, { online: { status: 'ok', answer: envelope } });
       return;
     }
-    const text = result?.notice ? String(result.notice) : '在线服务当前不可用，请稍后重试。';
+    const text = envelope?.notice ? String(envelope.notice) : '在线服务当前不可用，请稍后重试。';
     patchMessage(ctx, messageId, { online: { status: 'failed', text } });
   }
 
-  async function runNarrative(question, messageId) {
+  async function runRewrite(question, messageId) {
     const message = findMessage(ctx, messageId);
-    if (!message || !question || message.narrative?.status === 'pending') return;
+    if (!message || !question || message.rewrite_pending) return;
     if ((message.bill_context_id ?? null) !== (state.bill?.contextId ?? null)) return;
-    if (typeof ctx.qaDeps?.narrateAnswer !== 'function') {
-      patchMessage(ctx, messageId, {
-        narrative: { status: 'failed', text: '当前环境不支持 AI 解读。', retryable: false },
-      });
+    const current = rewriteOf(message, message.answer);
+    if (!current || current.status !== 'ok') return;
+    if (typeof ctx.qaDeps?.rewriteAnswer !== 'function') {
+      patchMessage(ctx, messageId, { rewrite_hint: '当前环境不支持白话改写。' });
       return;
     }
-    const requestId = `narrative-${++seq}`;
-    patchMessage(ctx, messageId, { narrative: { status: 'pending', requestId } });
+    patchMessage(ctx, messageId, { rewrite_pending: true, rewrite_hint: null });
     let result = null;
     try {
-      result = await ctx.qaDeps.narrateAnswer({
+      result = await ctx.qaDeps.rewriteAnswer({
         question,
         answer: message.answer,
         bill: state.bill,
+        force: true,
       });
     } catch {
       result = null;
     }
     if ((state.bill?.contextId ?? null) !== (message.bill_context_id ?? null)) return;
     const latest = findMessage(ctx, messageId);
-    if (!latest || latest.narrative?.requestId !== requestId) return;
-    if (result?.ok && result.text) {
+    if (!latest || !latest.rewrite_pending) return;
+    if (result?.rewrite) {
       patchMessage(ctx, messageId, {
-        narrative: { status: 'ok', text: result.text, number_check: result.number_check ?? null },
+        rewrite: result.rewrite,
+        rewrite_meta: result.rewrite_meta ?? null,
+        rewrite_pending: false,
+        rewrite_hint: null,
       });
       return;
     }
-    const code = result?.code ?? 'E_QA_NARRATIVE_UNAVAILABLE';
-    const retryable = code !== 'E_QA_NARRATIVE_NOT_ALLOWED'
-      && code !== 'E_QA_NARRATIVE_STALE'
-      && code !== 'E_QA_NARRATIVE_NO_FACTS';
     patchMessage(ctx, messageId, {
-      narrative: {
-        status: 'failed',
-        text: result?.message || '在线解读服务暂时不可用，请稍后重试。',
-        retryable,
-      },
+      rewrite: current,
+      rewrite_pending: false,
+      rewrite_hint: '模型改写未完成，已保留上一条表述。',
     });
   }
 
@@ -915,7 +990,7 @@ export function renderRealChat(host, ctx) {
   host.onclick = (e) => {
     const chip = e.target.closest('[data-role="qa-chip"]');
     if (chip && host.contains(chip)) {
-      send(chip.getAttribute('data-question') || '');
+      send(chip.getAttribute('data-question') || '', 'chip');
       return;
     }
     const clear = e.target.closest('[data-role="qa-clear"]');
@@ -946,14 +1021,6 @@ export function renderRealChat(host, ctx) {
       else if (action === 'cancel') cancelProfile(messageId);
       return;
     }
-    const narrativeRetry = e.target.closest('[data-role="qa-narrative-retry"]');
-    if (narrativeRetry && host.contains(narrativeRetry)) {
-      void runNarrative(
-        narrativeRetry.getAttribute('data-question') || '',
-        narrativeRetry.getAttribute('data-message-id'),
-      );
-      return;
-    }
     const button = e.target.closest('[data-action]');
     if (!button || !host.contains(button)) return;
     const action = actionMap.get(button.getAttribute('data-action-key'));
@@ -966,8 +1033,8 @@ export function renderRealChat(host, ctx) {
       void runOnline(action.question, action.messageId);
       return;
     }
-    if (action.kind === 'narrative') {
-      void runNarrative(action.question, action.messageId);
+    if (action.kind === 'rewrite') {
+      void runRewrite(action.question, action.messageId);
       return;
     }
     if (action.kind === 'assistant-help') {
@@ -988,3 +1055,5 @@ export function renderRealChat(host, ctx) {
     }
   };
 }
+
+export { mergeTraceEvent, traceHTML };

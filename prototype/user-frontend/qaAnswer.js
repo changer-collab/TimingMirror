@@ -5,15 +5,32 @@ import {
   buildBestTradeAnswer,
   buildLocalChipAnswer,
   buildLocalPortfolioAnswer,
+  buildSimilarContextAnswer,
   QA_CHIP_CODES,
 } from '../../src/agent/qaChips.js';
 import { chatFailureText, numberCheckDetail } from '../../src/agent/chatOnline.js';
 import { buildRuleLedger } from '../../src/engine/ruleLedger.js';
 import { contractRuleSet } from '../../src/demo/adapter.js';
 import { fmtMoney, fmtPP } from '../../src/engine/display.js';
+import { createOrchestrator, createTrace } from '../../src/agent/orchestrator.js';
+import { createIntentPolicy } from '../../src/agent/intentPolicy.js';
+import { routeScope } from '../../src/agent/scopeRouter.js';
+import { glossaryTermOf } from '../../src/agent/glossary.js';
+import { buildPageHelpAnswer } from '../../src/agent/pageHelp.js';
+import { runPlan } from '../../src/agent/planner.js';
+import { planForTurn } from '../../src/agent/planPolicy.js';
+import { assembleContext, contextStillCurrent } from '../../src/agent/contextAssembler.js';
+import { buildEvidenceBundle } from '../../src/agent/evidenceBundle.js';
+import { buildClaims, composeLocalAnswer, COMPOSED_INTENTS } from '../../src/agent/answerComposer.js';
+import { buildPlainDraft } from '../../src/agent/plainLanguage.js';
+import { createAnswerRewriter, REWRITE_TIMEOUT_MS } from '../../src/agent/answerRewriter.js';
+import { verifyAnswer } from '../../src/agent/answerVerifier.js';
+import { establishedPatternsOf } from '../../src/agent/historyIndex.js';
+import { localAnswerFromResults } from '../../src/agent/crossBillAnswer.js';
+import { getDemoHistoryIndex } from '../../src/demo/demoHistory.js';
 import {
   normalizeQuestion,
-  createIntentRouter,
+  classifyLocal,
   QA_INTENT_LABELS,
   QA_LAYER_LABELS,
   QA_SUGGESTIONS,
@@ -27,13 +44,34 @@ const UNAVAILABLE_CODES = new Set([
 
 const PUBLISHED_INTENTS = new Set([
   'loss_overview', 'worst_trade', 'best_trade', 'pattern_explain', 'profile',
-  'how_to_change', 'what_if', 'meta_calc', 'meta_trust',
+  'how_to_change', 'what_if', 'meta_calc', 'meta_trust', 'similar_context',
 ]);
 
-const NARRATIVE_INTENTS = new Set([
-  'worst_trade', 'best_trade', 'pattern_explain', 'profile',
-  'how_to_change', 'what_if', 'meta_calc', 'meta_trust',
+const REWRITE_INTENTS = new Set([
+  'loss_overview', 'worst_trade', 'best_trade', 'pattern_explain',
+  'similar_context', 'cross_bill', 'what_if', 'meta_calc', 'meta_trust',
+  'profile', 'how_to_change', 'contract_status',
 ]);
+
+const TOOL_LABELS = Object.freeze({
+  'indicators.compute': '计算组合收益',
+  'decompose.drag': '拆解逐笔差额',
+  'decompose.tradeRank': '排序逐笔差额',
+  'behavior.patternList': '检查行为模式',
+  'behavior.similarSameBill': '匹配相似情境',
+  'behavior.operationAttribution': '按操作类型归因',
+  'counterfactual.replaceSell': '替换一笔卖出重算',
+  'counterfactual.pathRange': '查看路径区间',
+  'provenance.report': '整理计算路径',
+  'verify.report': '独立复核数字',
+  'contract.parse': '解析规则模板',
+  'rule.current': '读取当前规则',
+  'rule.ledger': '回放规则命中',
+  'rule.candidates': '生成规则候选',
+  'profile.signals': '派生画像信号',
+  'history.crossBillIndex': '检索本人历史账单',
+  'history.similarAcrossBills': '列出历史账单中的同类操作',
+});
 
 const FACT_LABELS = Object.freeze({
   buyCost: '买入成本',
@@ -146,8 +184,8 @@ function makeEnvelope({
     facts: cleanFacts,
     evidence: evidence.filter(Boolean),
     actions: actions.filter(Boolean),
-    narrative_policy: status === 'local' && NARRATIVE_INTENTS.has(intent) && bill?.demo !== true
-      ? 'manual'
+    narrative_policy: status === 'local' && REWRITE_INTENTS.has(intent) && cleanFacts.length > 0
+      ? 'auto'
       : 'none',
     saved_facts: cleanSavedFacts,
     saved_fact_total: total,
@@ -201,7 +239,10 @@ function localFailureEnvelope({ failure, intent, route, bill, elapsedMs, questio
   });
 }
 
-function localEnvelope({ local, intent, route, bill, elapsedMs, actions = [], notice = null, evidence = null }) {
+function localEnvelope({
+  local, intent, route, bill, elapsedMs, actions = [], notice = null, evidence = null,
+  claims = null, evidenceBundle = null,
+}) {
   const facts = (Array.isArray(local.facts) ? local.facts : []).map((f) => ({
     label: f.label,
     value: f.value,
@@ -219,7 +260,7 @@ function localEnvelope({ local, intent, route, bill, elapsedMs, actions = [], no
       candidate: local.candidate,
     });
   }
-  return makeEnvelope({
+  const envelope = makeEnvelope({
     status: 'local',
     intent,
     route,
@@ -239,6 +280,9 @@ function localEnvelope({ local, intent, route, bill, elapsedMs, actions = [], no
     bill,
     elapsedMs,
   });
+  if (Array.isArray(claims)) envelope.claims = claims;
+  if (evidenceBundle) envelope.evidence_bundle = evidenceBundle;
+  return envelope;
 }
 
 function ruleStateFromVersions(versions, ruleState) {
@@ -556,21 +600,6 @@ function answerContractSetup({ route, bill, elapsedMs }) {
   });
 }
 
-function answerSimilarContext({ route, bill, elapsedMs }) {
-  return makeEnvelope({
-    status: 'unavailable',
-    intent: 'similar_context',
-    route,
-    source: 'template',
-    text: '本版本暂不支持相似情境检索：当前没有历史行情检索，也没有跨账单的情境匹配。我不会用示例或别的账单补一个“类似情况”。可以先看这份账单的行为发现与单笔反事实。',
-    actions: [askAction('qa-pattern', '为什么说我追高', SUGGESTION_ACTIONS.pattern.question), askAction('qa-what-if', '如果那笔卖出没发生', SUGGESTION_ACTIONS.whatIf.question), reportAction()],
-    trace: { template_id: 'T-similar-context' },
-    notice: '本版本暂不支持的能力会如实说明，不生成替代结论。',
-    bill,
-    elapsedMs,
-  });
-}
-
 function answerOutOfScope({ route, bill, elapsedMs }) {
   return makeEnvelope({
     status: 'refusal',
@@ -578,9 +607,73 @@ function answerOutOfScope({ route, bill, elapsedMs }) {
     route,
     source: 'template',
     text: '这个问题越过边界了：我只回答这份账单里已经发生的事实，不荐股、不预测涨跌、不替你决定买卖。可以改问已经发生的事，例如最错的一笔、为什么追高、规则守不守得住。',
-    actions: sampleActions(['worst', 'pattern', 'contract']),
+    actions: sampleActions(['worst', 'pattern']),
     trace: { template_id: 'T-out-of-scope' },
     notice: '未加载账单、未调用模型、0 条事实。',
+    bill,
+    elapsedMs,
+  });
+}
+
+function answerScope({ scope, question, bill, elapsedMs }) {
+  const route = { layer: 'L3', confidence: null };
+  if (scope.kind === 'refusal') {
+    return answerOutOfScope({ route: { layer: 'L1', confidence: 1 }, bill, elapsedMs });
+  }
+  if (scope.kind === 'product_help') {
+    const help = buildPageHelpAnswer();
+    return makeEnvelope({
+      status: help.status,
+      intent: 'product_help',
+      route: help.route,
+      source: 'template',
+      text: help.text,
+      actions: help.actions,
+      trace: {},
+      bill,
+      elapsedMs,
+    });
+  }
+  if (scope.kind === 'general_finance') {
+    const entry = glossaryTermOf(question);
+    if (entry) {
+      return makeEnvelope({
+        status: 'local',
+        intent: 'general_finance',
+        route,
+        source: 'template',
+        text: `${entry.term}：${entry.definition}`,
+        actions: [askAction('qa-meta-calc', '这些数字怎么算', SUGGESTION_ACTIONS.metaCalc.question), reportAction()],
+        trace: { template_id: 'T-glossary' },
+        notice: '只解释术语，没有读取这份账单的数字；未调用模型。',
+        bill,
+        elapsedMs,
+      });
+    }
+  }
+  if (scope.kind === 'small_talk') {
+    return makeEnvelope({
+      status: 'local',
+      intent: 'small_talk',
+      route,
+      source: 'template',
+      text: '我在。你可以问这份账单里已经发生的事，例如最错的一笔、为什么追高、规则守不守得住；我不荐股、不预测涨跌。',
+      actions: sampleActions(['worst', 'pattern']),
+      trace: { template_id: 'T-small-talk' },
+      notice: '未读取账单、未调用模型。',
+      bill,
+      elapsedMs,
+    });
+  }
+  return makeEnvelope({
+    status: 'local',
+    intent: 'unrelated',
+    route,
+    source: 'template',
+    text: '这件事超出我的范围：我只用这份账单里已经核对过的事实回答，不做其他任务。可以改问这份账单的表现、最错的一笔或规则守不守得住。',
+    actions: sampleActions(['worst', 'pattern']),
+    trace: { template_id: 'T-unrelated' },
+    notice: '未读取账单、未调用模型。',
     bill,
     elapsedMs,
   });
@@ -663,15 +756,22 @@ export function createQaAnswerService({
   getBundle = () => null,
   loadBundle = null,
   askOnline = null,
-  askNarrative = null,
+  askRewrite = null,
+  rewriteTimeoutMs = REWRITE_TIMEOUT_MS,
   getSavedFacts = null,
   loadSavedFacts = null,
   loadProfile = () => null,
+  loadHistoryIndex = null,
   classifyIntent = null,
   now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
 } = {}) {
   if (typeof now !== 'function') throw new TypeError('now 必须为函数');
-  const router = createIntentRouter({ classifyIntent });
+  const intentPolicy = createIntentPolicy({ classifyLocal, classifyIntent, now });
+  const rewriter = createAnswerRewriter({
+    transport: typeof askRewrite === 'function' ? { rewrite: askRewrite } : null,
+    timeoutMs: rewriteTimeoutMs,
+    now,
+  });
 
   async function bundleOf(bill) {
     const cached = typeof getBundle === 'function' ? getBundle(bill) : null;
@@ -680,41 +780,193 @@ export function createQaAnswerService({
     return loadBundle(bill);
   }
 
-  async function ask({ question = '', bill = null, ruleState = null, versions = [], preferOnline = false } = {}) {
-    const started = now();
-    const elapsed = () => now() - started;
-    const normalized = normalizeQuestion(question);
-    if (!normalized) {
-      return makeEnvelope({
-        status: 'error',
-        text: '问题为空：没有发送任何内容。',
-        actions: sampleActions(),
-        diagnostics: [{ code: 'E_QA_EMPTY', message: '问题为空' }],
-        bill,
-        elapsedMs: elapsed(),
-      });
+  function composedLocalAnswer({ intent, bundle, bill, question, ruleState, versions }) {
+    if (intent === 'similar_context') return buildSimilarContextAnswer({ bundle, bill, question });
+    if (intent === 'best_trade') return buildBestTradeAnswer({ bundle, bill, question });
+    if (intent === 'loss_overview') return buildLocalPortfolioAnswer({ bundle, bill });
+    return buildLocalChipAnswer({
+      chip: intent,
+      bundle,
+      bill,
+      ruleState: ruleStateFromVersions(versions, ruleState),
+      question,
+    });
+  }
+
+  function composedActions(intent) {
+    if (intent === 'similar_context') {
+      return [
+        reportAction(),
+        askAction('qa-pattern', '为什么说我追高', SUGGESTION_ACTIONS.pattern.question),
+        askAction('qa-what-if', '如果那笔卖出没发生', SUGGESTION_ACTIONS.whatIf.question),
+      ];
     }
-    const route = await router.route(normalized);
-    if (!route.intent) {
+    return [reportAction(), askAction('qa-meta-calc', '这些数字怎么算', SUGGESTION_ACTIONS.metaCalc.question)];
+  }
+
+  // 计划 → 工具 → 证据 → 本地草稿 + claims。任一步不可用就回退原有本地分支。
+  async function answerComposed({
+    intent, local = null, question, bill, bundle, route, ruleState, versions,
+    actions, preferOnline, askOnline, trace, elapsed, now,
+    extras = {}, localFromResults = null,
+  }) {
+    const assembled = assembleContext({
+      bill, bundle, versions, ruleState, question, extras,
+    });
+    const plan = planForTurn({
+    question,
+    intent,
+    slots: route?.slots ?? {},
+    scope: { kind: 'bill' },
+    context: assembled.toolContext,
+    availability: intent === 'cross_bill' ? null : { published: assembled.gate.published },
+  });
+  if (plan.status !== 'ready') {
+    trace.push('degraded', 'done', '计算步骤不可用，沿用报告已发布事实');
+    return null;
+  }
+
+  const run = runPlan({ plan, now });
+  const byStep = new Map(run.results.map((result) => [result.step_id, result]));
+  for (const step of plan.steps) {
+    const result = byStep.get(step.id);
+    const label = TOOL_LABELS[step.tool] ?? '执行计算';
+    if (result) {
+      trace.push('tool', 'done', label, { tool: step.tool, detail: step.reason, ms: result.ms });
+    } else {
+      trace.push('tool', 'failed', label, { tool: step.tool, detail: '本次跳过' });
+    }
+  }
+  if (run.degraded.length > 0) {
+    trace.push('degraded', 'done', '部分计算步骤降级，沿用已发布事实');
+  }
+
+  const evidence = buildEvidenceBundle({ results: run.results, assembled });
+  trace.push('evidence', 'done', '整理证据', {
+    detail: `${evidence.facts.length} 条事实 · ${evidence.formulas.length} 条公式`,
+  });
+
+  if (!contextStillCurrent(bill, assembled)) {
+    trace.push('degraded', 'done', '账单已变化，本次结果作废');
+    return null;
+  }
+
+  const answerLocal = localFromResults
+    ? localFromResults({ results: run.results, evidence, assembled })
+    : local;
+  if (!answerLocal || answerLocal.ok === false) {
+    trace.push('degraded', 'done', '本次计算结果不可用，不生成结论');
+    return null;
+  }
+  answerLocal.plan_id = plan.plan_id;
+  answerLocal.template_id = plan.template_id;
+
+  if (intent === 'loss_overview' && preferOnline) {
+    const online = await answerOnline({ local: answerLocal, question, bundle, bill, route, elapsedMs: elapsed(), askOnline });
+    online.claims = buildClaims({ text: online.text, facts: online.facts, evidence });
+    online.evidence_bundle = evidence;
+    return online;
+  }
+
+  const composed = composeLocalAnswer({ intent, local: answerLocal, evidence, gate: assembled.gate });
+  return localEnvelope({
+    local: answerLocal,
+    intent,
+    route,
+    bill,
+    elapsedMs: elapsed(),
+    actions,
+    claims: composed.claims,
+    evidenceBundle: evidence,
+  });
+}
+
+// 反事实槽位 → 工具参数；指代不唯一时不猜，交给澄清分支。
+function whatIfExtras({ bill, bundle, route }) {
+  const list = bundle?.insights?.portfolio?.counterfactuals;
+  if (!Array.isArray(list) || !list.length) return {};
+  const slots = route?.slots ?? {};
+  let pick = null;
+  if (slots.trade_date) {
+    pick = list.find((item) => item.trade_date === slots.trade_date) ?? null;
+  } else if (slots.symbol) {
+    const matches = list.filter((item) => item.symbol === slots.symbol);
+    if (matches.length === 1) pick = matches[0];
+  } else if (list.length === 1) {
+    pick = list[0];
+  }
+  if (!pick) return {};
+  const market = bundle?.market;
+  return {
+    symbol: pick.symbol,
+    trades: (Array.isArray(bill?.trades) ? bill.trades : []).filter((item) => item.symbol === pick.symbol),
+    tradeId: pick.trade_id,
+    effectiveDate: bundle?.valuation?.effective_date ?? null,
+    closeOf: typeof market?.getClose === 'function' ? (date) => market.getClose(pick.symbol, date) : null,
+    tradingDays: Array.isArray(market?.tradingDays) ? market.tradingDays : null,
+  };
+}
+
+// 已生成好的本地信封（clarify/unavailable 之外）再走计划与证据，补上工具轨迹与 claim。
+async function composeBuiltEnvelope({
+  built, intent, question, bill, bundle, route, ruleState, versions,
+  preferOnline, askOnline, trace, elapsed, now, extras = {},
+}) {
+  if (!built || built.status !== 'local') return built;
+  const local = {
+    ok: true,
+    text: built.text,
+    facts: built.facts,
+    evidence: built.evidence,
+    notice: built.notice,
+    template_id: built.trace?.template_id ?? null,
+  };
+  const composed = await answerComposed({
+    intent,
+    local,
+    question,
+    bill,
+    bundle,
+    route,
+    ruleState,
+    versions,
+    actions: built.actions,
+    preferOnline,
+    askOnline,
+    trace,
+    elapsed,
+    now,
+    extras,
+  });
+  if (!composed) return built;
+  // 这些意图的证据已是用户可读文案，不再走成交级映射。
+  composed.evidence = Array.isArray(built.evidence) ? built.evidence : [];
+  return composed;
+}
+
+async function answerLegacy({ question, bill, ruleState, versions, preferOnline, route, trace, elapsed, now, askOnline }) {
+    const intent = route?.intent ?? null;
+    if (!intent) {
+      trace.push('degraded', 'done', '没有匹配到已实现的事实问题');
       return clarifyEnvelope({ route, bill, elapsedMs: elapsed() });
     }
-    const intent = route.intent;
     if (intent === 'out_of_scope') return answerOutOfScope({ route, bill, elapsedMs: elapsed() });
     if (intent === 'contract_setup') return answerContractSetup({ route, bill, elapsedMs: elapsed() });
-    if (intent === 'similar_context') return answerSimilarContext({ route, bill, elapsedMs: elapsed() });
 
     let bundle = null;
     if (intent !== 'contract_status') {
+      trace.push('context', 'running', '读取已发布报告');
       try {
         bundle = await bundleOf(bill);
       } catch (e) {
+        trace.push('context', 'failed', '报告读取失败');
         return makeEnvelope({
           status: 'error',
           intent,
           route,
           source: 'local',
           text: `报告读取失败，本次不回答：${String(e && e.message ? e.message : e).slice(0, 180)}`,
-          actions: [reportAction('先去报告页'), askAction('qa-retry', '重试', normalized)],
+          actions: [reportAction('先去报告页'), askAction('qa-retry', '重试', question)],
           diagnostics: [{ code: 'E_QA_BUNDLE_LOAD_FAILED', message: String(e && e.message ? e.message : e) }],
           trace: { template_id: null },
           bill,
@@ -722,28 +974,31 @@ export function createQaAnswerService({
         });
       }
       if (!bundle) {
+        trace.push('context', 'failed', '报告尚未载入');
         return makeEnvelope({
           status: 'error',
           intent,
           route,
           source: 'local',
           text: '当前账单的已发布报告还没有载入，问答页不会为此重复请求行情。请先打开报告页，或重试。',
-          actions: [reportAction('先去报告页'), askAction('qa-retry', '重试', normalized)],
+          actions: [reportAction('先去报告页'), askAction('qa-retry', '重试', question)],
           diagnostics: [{ code: 'E_QA_BUNDLE_UNAVAILABLE', message: '报告 bundle 未载入' }],
           trace: { template_id: null },
           bill,
           elapsedMs: elapsed(),
         });
       }
+      trace.push('context', 'done', '已读取已发布报告');
       if (PUBLISHED_INTENTS.has(intent)
         && (bundle.status === 'blocked' || bundle.review?.portfolio_published !== true)) {
+        trace.push('degraded', 'done', '组合结果未发布，本次不回答');
         return makeEnvelope({
           status: 'error',
           intent,
           route,
           source: 'local',
           text: '当前账单的组合结果未发布（可能缺价、复核未通过或行情阻断）。这次不回答，也不用其他数字代替。',
-          actions: [reportAction('打开报告 · 查看原因'), askAction('qa-retry', '重试', normalized)],
+          actions: [reportAction('打开报告 · 查看原因'), askAction('qa-retry', '重试', question)],
           diagnostics: [{
             code: 'E_QA_REPORT_WITHHELD',
             message: bundle.review?.blocked_symbols?.map((b) => b.symbol).join('、') || '组合结果未发布',
@@ -755,55 +1010,121 @@ export function createQaAnswerService({
       }
     }
 
+    const failLocal = (local) => {
+      trace.push('degraded', 'done', '数据不足，本次不发布数字');
+      return localFailureEnvelope({ failure: local, intent, route, bill, elapsedMs: elapsed(), question });
+    };
+
+    if (intent === 'cross_bill') {
+      const unavailable = () => makeEnvelope({
+        status: 'unavailable',
+        intent: 'cross_bill',
+        route,
+        source: 'local',
+        text: '这次读不到你自己保存的账单索引（可能未登录或云端暂不可用），所以不做跨账单比较，也不把单账单结果说成跨账单结论。',
+        actions: [
+          askAction('qa-similar', '先看这份账单里的类似情况', '这份账单里有没有类似的情况？'),
+          reportAction(),
+        ],
+        notice: '没有读取其他账单、没有调用模型、0 条跨账单事实。',
+        trace: { template_id: 'T-cross-bill' },
+        bill,
+        elapsedMs: elapsed(),
+      });
+
+      trace.push('context', 'running', '读取本人已保存账单');
+      let historyIndex = null;
+      try {
+        historyIndex = typeof loadHistoryIndex === 'function' ? await loadHistoryIndex({ bill }) : null;
+      } catch {
+        historyIndex = null;
+      }
+      if (!historyIndex && bill?.demo === true) historyIndex = getDemoHistoryIndex();
+      if (!historyIndex) {
+        trace.push('context', 'failed', '历史账单索引不可用');
+        return unavailable();
+      }
+      trace.push('context', 'done', '已读取历史账单索引', {
+        detail: `${historyIndex.coverage?.bills_included ?? 0} 份可比对`,
+      });
+
+      const crossBill = await answerComposed({
+        intent,
+        local: null,
+        question,
+        bill,
+        bundle,
+        route,
+        ruleState,
+        versions,
+        actions: [
+          askAction('qa-similar', '先看这份账单里的类似情况', '这份账单里有没有类似的情况？'),
+          reportAction(),
+        ],
+        preferOnline: false,
+        askOnline,
+        trace,
+        elapsed,
+        now,
+        extras: {
+          historyIndex,
+          patterns: establishedPatternsOf(bundle?.insights?.behavior?.data?.patterns ?? []),
+          symbol: route?.slots?.symbol ?? null,
+        },
+        localFromResults: ({ results }) => localAnswerFromResults({ results, question }),
+      });
+      if (crossBill) return crossBill;
+      return unavailable();
+    }
+
+    if (COMPOSED_INTENTS.includes(intent)) {
+      const local = composedLocalAnswer({ intent, bundle, bill, question, ruleState, versions });
+      if (!local.ok) return failLocal(local);
+      const composed = await answerComposed({
+        intent,
+        local,
+        question,
+        bill,
+        bundle,
+        route,
+        ruleState,
+        versions,
+        actions: composedActions(intent),
+        preferOnline,
+        askOnline,
+        trace,
+        elapsed,
+        now,
+      });
+      if (composed) return composed;
+    }
+
     if (intent === 'contract_status') {
       return answerContractStatus({ route, versions, bill, bundle: typeof getBundle === 'function' ? getBundle(bill) : null, elapsedMs: elapsed() });
     }
 
     if (intent === 'what_if') {
-      return answerWhatIf({ route, bundle, bill, elapsedMs: elapsed() });
+      return composeBuiltEnvelope({
+        built: answerWhatIf({ route, bundle, bill, elapsedMs: elapsed() }),
+        intent, question, bill, bundle, route, ruleState, versions, preferOnline, askOnline, trace, elapsed, now,
+        extras: whatIfExtras({ bill, bundle, route }),
+      });
     }
     if (intent === 'meta_calc') {
-      return answerMetaCalc({ route, bundle, bill, elapsedMs: elapsed() });
+      return composeBuiltEnvelope({
+        built: answerMetaCalc({ route, bundle, bill, elapsedMs: elapsed() }),
+        intent, question, bill, bundle, route, ruleState, versions, preferOnline, askOnline, trace, elapsed, now,
+      });
     }
     if (intent === 'meta_trust') {
-      return answerMetaTrust({ route, bundle, bill, elapsedMs: elapsed() });
-    }
-    if (intent === 'loss_overview') {
-      const local = buildLocalPortfolioAnswer({ bundle, bill });
-      if (!local.ok) {
-        return localFailureEnvelope({ failure: local, intent, route, bill, elapsedMs: elapsed(), question: normalized });
-      }
-      if (preferOnline) {
-        return answerOnline({ local, question: normalized, bundle, bill, route, elapsedMs: elapsed(), askOnline });
-      }
-      const env = localEnvelope({
-        local,
-        intent,
-        route,
-        bill,
-        elapsedMs: elapsed(),
-        actions: [reportAction(), askAction('qa-meta-calc', '这些数字怎么算', SUGGESTION_ACTIONS.metaCalc.question)],
-      });
-      return env;
-    }
-
-    if (intent === 'best_trade') {
-      const local = buildBestTradeAnswer({ bundle, bill, question: normalized });
-      if (!local.ok) {
-        return localFailureEnvelope({ failure: local, intent, route, bill, elapsedMs: elapsed(), question: normalized });
-      }
-      return localEnvelope({
-        local,
-        intent,
-        route,
-        bill,
-        elapsedMs: elapsed(),
-        actions: [reportAction(), askAction('qa-meta-calc', '这些数字怎么算', SUGGESTION_ACTIONS.metaCalc.question)],
+      return composeBuiltEnvelope({
+        built: answerMetaTrust({ route, bundle, bill, elapsedMs: elapsed() }),
+        intent, question, bill, bundle, route, ruleState, versions, preferOnline, askOnline, trace, elapsed, now,
       });
     }
-
     const chip = intent;
     if (!['worst_trade', 'pattern_explain', 'profile', 'how_to_change'].includes(chip)) {
+      trace.push('degraded', 'done', '没有匹配到已实现的事实问题');
       return clarifyEnvelope({ route, bill, elapsedMs: elapsed() });
     }
     let profile = null;
@@ -831,48 +1152,229 @@ export function createQaAnswerService({
       bill,
       ruleState: ruleStateFromVersions(versions, ruleState),
       profile,
-      question: normalized,
+      question,
       savedFacts,
     });
-    if (!local.ok) {
-      return localFailureEnvelope({ failure: local, intent, route, bill, elapsedMs: elapsed(), question: normalized });
-    }
+    if (!local.ok) return failLocal(local);
     const actions = chip === 'how_to_change'
       ? [rulesAction(), reportAction('打开报告 · 证据')]
       : [reportAction(), askAction('qa-meta-calc', '这些数字怎么算', SUGGESTION_ACTIONS.metaCalc.question)];
     const notice = savedFactsUnavailable
       ? `${local.notice ? `${local.notice} ` : ''}云端画像暂不可用，本次只列本账单行为。`
       : null;
+    const composed = await answerComposed({
+      intent: chip,
+      local,
+      question,
+      bill,
+      bundle,
+      route,
+      ruleState,
+      versions,
+      actions,
+      preferOnline,
+      askOnline,
+      trace,
+      elapsed,
+      now,
+    });
+    if (composed) {
+      if (notice) composed.notice = notice;
+      return composed;
+    }
     return localEnvelope({ local, intent, route, bill, elapsedMs: elapsed(), actions, notice });
   }
 
-  async function narrate({ question = '', answer = null, bill = null } = {}) {
-    if (!answer || answer.status !== 'local' || answer.narrative_policy !== 'manual') {
-      return { ok: false, code: 'E_QA_NARRATIVE_NOT_ALLOWED', message: '这条回答不提供 AI 解读。' };
+  function rewriteEligible(answer) {
+    return Boolean(answer)
+      && answer.status === 'local'
+      && answer.source !== 'online'
+      && REWRITE_INTENTS.has(answer.intent)
+      && Array.isArray(answer.facts)
+      && answer.facts.length > 0;
+  }
+
+  function rewriteDraftOf(answer, bill) {
+    return buildPlainDraft({
+      intent: answer.intent,
+      text: answer.text,
+      facts: answer.facts,
+      boundaries: answer.evidence_bundle?.boundaries ?? [],
+      demo: bill?.demo === true,
+    });
+  }
+
+  function rewriteClaimsOf(answer) {
+    if (Array.isArray(answer.claims) && answer.claims.length > 0) return answer.claims.slice(0, 12);
+    return buildClaims({
+      text: answer.text,
+      facts: answer.facts,
+      evidence: answer.evidence_bundle ?? null,
+    }).slice(0, 12);
+  }
+
+  async function autoRewrite({ answer, question, bill, trace }) {
+    if (!rewriteEligible(answer)) {
+      if (answer) answer.narrative_policy = 'none';
+      return answer;
     }
-    if (!bill || bill.status !== 'confirmed' || bill.sourceType !== 'local' || bill.demo === true) {
-      return { ok: false, code: 'E_QA_NARRATIVE_NOT_ALLOWED', message: 'AI 解读只用于已确认的本地账单。' };
+    const draft = rewriteDraftOf(answer, bill);
+    const claims = rewriteClaimsOf(answer);
+    if (!Array.isArray(answer.claims) || answer.claims.length === 0) answer.claims = claims;
+    trace.push('rewrite', 'running', '模型讲人话');
+    const result = await rewriter.rewrite({
+      question,
+      intent: answer.intent,
+      scope: { kind: 'bill', synthetic: bill?.demo === true },
+      draft,
+      claims,
+      facts: answer.facts,
+      evidence: answer.evidence,
+      userKey: bill?.contextId ?? '',
+    });
+    answer.rewrite = result.rewrite;
+    answer.rewrite_meta = result.meta;
+    answer.narrative_policy = 'auto';
+    trace.push('rewrite', result.ok ? 'done' : 'failed', '模型讲人话', {
+      detail: result.ok
+        ? (result.meta.cached ? '使用缓存表述' : '已绑定 claim')
+        : '已改用本地表述',
+    });
+    return answer;
+  }
+
+  async function ask({
+    question = '', bill = null, ruleState = null, versions = [],
+    preferOnline = false, source = 'typed', onStage = null,
+    reuseIntent = null, reuseRoute = null,
+  } = {}) {
+    const started = now();
+    const elapsed = () => now() - started;
+    const normalized = normalizeQuestion(question);
+    if (!normalized) {
+      const trace = createTrace({ now, onStage });
+      trace.push('degraded', 'done', '问题为空，未发送');
+      const envelope = makeEnvelope({
+        status: 'error',
+        text: '问题为空：没有发送任何内容。',
+        actions: sampleActions(),
+        diagnostics: [{ code: 'E_QA_EMPTY', message: '问题为空' }],
+        bill,
+        elapsedMs: elapsed(),
+      });
+      return { trace: trace.events(), envelope };
     }
-    if (answer.bill_context_id && bill.contextId && answer.bill_context_id !== bill.contextId) {
-      return { ok: false, code: 'E_QA_NARRATIVE_STALE', message: '账单已变化，请重新提问后再解读。' };
+
+    // 在线复述等后续动作沿用当前回答的意图，避免为同一个问题再次请求意图模型。
+    const reusePolicy = reuseIntent
+      ? Object.freeze({
+        decide: async () => ({
+          ok: true,
+          intent: reuseIntent,
+          slots: {},
+          confidence: Number.isFinite(reuseRoute?.confidence) ? reuseRoute.confidence : null,
+          source: 'typed',
+          decided_by: 'reuse',
+          model_called: false,
+          local_check: 'reuse',
+          model_intent: null,
+          latency_ms: 0,
+          ambiguous: false,
+          route: {
+            intent: reuseIntent,
+            slots: {},
+            layer: reuseRoute?.layer ?? 'L1',
+            source: reuseRoute?.layer ?? 'L1',
+            confidence: Number.isFinite(reuseRoute?.confidence) ? reuseRoute.confidence : null,
+            matchedBy: 'reuse',
+          },
+        }),
+      })
+      : null;
+
+    const orchestrator = createOrchestrator({
+      routeScope,
+      intentPolicy: reusePolicy ?? intentPolicy,
+      answer: async ({ question: current, bill: currentBill, scope, decision, trace }) => {
+        try {
+          const envelope = scope.kind !== 'bill'
+            ? answerScope({ scope, question: current, bill: currentBill, elapsedMs: elapsed() })
+            : await answerLegacy({
+              question: current,
+              bill: currentBill,
+              ruleState,
+              versions,
+              preferOnline,
+              route: decision?.route ?? null,
+              trace,
+              elapsed,
+              now,
+              askOnline,
+            });
+          return await autoRewrite({ answer: envelope, question: current, bill: currentBill, trace });
+        } catch (e) {
+          return makeEnvelope({
+            status: 'error',
+            intent: decision?.intent ?? null,
+            route: decision?.route ?? null,
+            source: 'local',
+            text: '问答链路出现未预期错误，本次没有回答。可以重试；数字与结论都不改变。',
+            actions: [reportAction('先去报告页'), askAction('qa-retry', '重试', current)],
+            diagnostics: [{ code: 'E_QA_UNEXPECTED', message: String(e && e.message ? e.message : e).slice(0, 180) }],
+            bill: currentBill,
+            elapsedMs: elapsed(),
+          });
+        }
+      },
+      verify: ({ envelope, scope: currentScope, bill: currentBill }) => verifyAnswer({
+        envelope, scope: currentScope, bill: currentBill,
+      }),
+      now,
+    });
+
+    return orchestrator.runTurn({ question: normalized, bill, source, onStage });
+  }
+
+  async function rewrite({ question = '', answer = null, bill = null, force = false } = {}) {
+    if (!rewriteEligible(answer)) {
+      return { ok: false, code: 'E_QA_REWRITE_NOT_ALLOWED', message: '这条回答不提供白话改写。' };
     }
-    if (!Array.isArray(answer.facts) || answer.facts.length === 0) {
-      return { ok: false, code: 'E_QA_NARRATIVE_NO_FACTS', message: '这条回答没有可解释的事实。' };
+    if (answer.bill_context_id && bill?.contextId && answer.bill_context_id !== bill.contextId) {
+      return { ok: false, code: 'E_QA_REWRITE_STALE', message: '账单已变化，请重新提问后再改写。' };
     }
-    if (typeof askNarrative !== 'function') {
-      return { ok: false, code: 'E_QA_NARRATIVE_UNAVAILABLE', message: 'AI 解读接口不可用。' };
+    if (typeof askRewrite !== 'function') {
+      return { ok: false, code: 'E_QA_REWRITE_UNAVAILABLE', message: '白话改写接口不可用。' };
     }
     try {
-      return await askNarrative({
+      const claims = Array.isArray(answer.claims) && answer.claims.length > 0
+        ? answer.claims
+        : rewriteClaimsOf(answer);
+      const result = await rewriter.rewrite({
         question,
         intent: answer.intent,
+        scope: { kind: 'bill', synthetic: bill?.demo === true },
+        draft: rewriteDraftOf(answer, bill),
+        claims,
         facts: answer.facts,
         evidence: answer.evidence,
+        userKey: bill?.contextId ?? '',
+        force: force === true,
       });
+      const verified = verifyAnswer({
+        envelope: {
+          ...answer, claims, rewrite: result.rewrite, rewrite_meta: result.meta,
+        },
+        scope: { kind: 'bill', synthetic: bill?.demo === true },
+        bill,
+      });
+      if (!verified.ok) {
+        return { ok: false, code: 'E_QA_REWRITE_WITHHELD', message: '这次改写没有通过数字复核，已保留原表述。' };
+      }
+      return { ...result, rewrite_meta: result.meta };
     } catch {
-      return { ok: false, code: 'E_QA_NARRATIVE_UNAVAILABLE', message: '在线解读服务暂时不可用。' };
+      return { ok: false, code: 'E_QA_REWRITE_UNAVAILABLE', message: '在线改写服务暂时不可用。' };
     }
   }
 
-  return Object.freeze({ ask, narrate });
+  return Object.freeze({ ask, rewrite });
 }

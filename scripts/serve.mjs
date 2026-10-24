@@ -27,7 +27,7 @@ const usingFakeModel = deepseekKey === '';
 const devUserId = (process.env.TM_DEV_USER_ID ?? '').trim() || 'dev-local-user';
 const devSupabase = createMemorySupabase();
 const devUserContext = createDevUserContext({ userId: devUserId });
-const isDataPath = (pathname) => /\/api\/(?:bills|profile|rules)(?:\/|$)/u.test(pathname);
+const isDataPath = (pathname) => /\/api\/(?:bills|profile|rules|history)(?:\/|$)/u.test(pathname);
 const appHandler = createHandler({
   transport: usingFakeModel
     ? createLocalFakeImportModel()

@@ -114,3 +114,23 @@ export function replaceSell({ symbol, trades, tradeId, effectiveDate, closeOf, t
     },
   };
 }
+
+// 路径区间：同一笔卖出持有到不同交易日，差额（cf − actual）的最小/最大落点；不是概率预测。
+export function pathRangeOf(counterfactual) {
+  const sellDate = counterfactual?.replace?.replaced?.trade_date ?? counterfactual?.trade_date;
+  const points = Array.isArray(counterfactual?.series?.points) ? counterfactual.series.points : [];
+  const usable = points.filter((p) => (!sellDate || p.date >= sellDate) && Number.isFinite(p.gap));
+  if (usable.length < 2) return null;
+  let low = usable[0];
+  let high = usable[0];
+  for (const p of usable) {
+    if (p.gap < low.gap) low = p;
+    if (p.gap > high.gap) high = p;
+  }
+  return {
+    low: { date: low.date, gap: low.gap },
+    high: { date: high.date, gap: high.gap },
+    flat: Math.abs(high.gap - low.gap) < 0.005,
+    points: usable.length,
+  };
+}

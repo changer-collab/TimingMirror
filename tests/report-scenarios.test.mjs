@@ -4,11 +4,12 @@
  * 覆盖：八套场景均为冻结行情且复核发布；行为/候选/PGR 只在成立或样本足够时进入用户视图；
  *       无卖出账单不生成单笔反事实与瀑布；无模式/低样本/卖后追回/频繁交易按预期暴露 AI 盲区。
  */
-import { loadReportScenarioBill, loadUserBillFromTable, loadUserBillReport } from '../src/demo/adapter.js';
+import { loadReportScenarioBill, loadUserBillFromTable, loadUserBillReport, contractTradeSource, contractSimContext } from '../src/demo/adapter.js';
 import { REPORT_SCENARIOS, getReportScenarioByFileName, matchReportScenario } from '../src/demo/reportScenarios.js';
 import { buildLocalDraft, isLocalDraftComplete, localDraftTable } from '../src/engine/importDraft.js';
 import { parseDelimitedText } from '../src/engine/importSource.js';
 import { buildRuleCandidates } from '../src/engine/userProfile.js';
+import { buildOperationAttribution } from '../src/engine/operationAttribution.js';
 import { reportVisibility } from '../prototype/user-frontend/realReport.js';
 
 const results = [];
@@ -45,6 +46,14 @@ for (const { bill, bundle } of allScenarios) {
   const id = bill.demoScenarioId;
   check(`${id}：示例账单标记且走冻结行情`, bill.demo === true && bundle.demo === true && bundle.marketSource?.id === 'demo-frozen', JSON.stringify({ demo: bundle.demo, market: bundle.marketSource?.id }));
   check(`${id}：复核发布且行情不联网`, bundle.review?.portfolio_published === true && bundle.marketSource?.dynamic === false, JSON.stringify({ published: bundle.review?.portfolio_published, dynamic: bundle.marketSource?.dynamic }));
+
+  const decomposition = bundle.insights.portfolio.decomposition;
+  const items = Array.isArray(decomposition?.items) ? decomposition.items : [];
+  const attr = buildOperationAttribution({ decomposition, behavior: bundle.insights.behavior });
+  const behaviorAvailable = bundle.insights.behavior?.available === true;
+  check(`${id}：操作类型归因可展示且加总等于逐笔差额`, attr.ok === behaviorAvailable
+    && (!attr.ok || (Math.abs(attr.buckets.reduce((s, b) => s + b.money, 0) - attr.total.value) < 1e-6
+      && attr.buckets.reduce((s, b) => s + b.count, 0) === items.length)), JSON.stringify(attr.buckets ?? attr));
 }
 
 for (const { bill, vis } of allScenarios) {
@@ -135,8 +144,7 @@ for (const { bill, vis } of allScenarios) {
 }
 
 {
-  const expected = new Map(allScenarios.map((item) => [item.bill.demoScenarioId, item]));
-  for (const scenario of REPORT_SCENARIOS) {
+  const expected = new Map(allScenarios.map((item) => [item.bill.demoScenarioId, item]));  for (const scenario of REPORT_SCENARIOS) {
     const parsed = parseDelimitedText(scenario.csv);
     const draft = buildLocalDraft(parsed, scenario.fileName);
     const table = localDraftTable(draft);
@@ -151,6 +159,27 @@ for (const { bill, vis } of allScenarios) {
     check(`${scenario.id}：上传后按文件名或内容识别并走冻结行情`, byName?.id === scenario.id && byContent?.id === scenario.id && bill.demo === true && bundle.marketSource?.id === 'demo-frozen' && bundle.review?.portfolio_published === true, JSON.stringify({ name: byName?.id, content: byContent?.id, demo: bill.demo, market: bundle.marketSource?.id }));
     check(`${scenario.id}：上传路径与直接示例的展示结果一致`, vis.ghost === direct.ghost && vis.waterfall === direct.waterfall && vis.attribution === direct.attribution && vis.behavior === direct.behavior && vis.pgr === direct.pgr && vis.candidate === direct.candidate, JSON.stringify({ uploaded: { ghost: vis.ghost, behavior: vis.behavior, pgr: vis.pgr, candidate: vis.candidate }, direct: { ghost: direct.ghost, behavior: direct.behavior, pgr: direct.pgr, candidate: direct.candidate } }));
   }
+}
+
+{
+  const { bill } = sellRebuy;
+  const source = contractTradeSource(bill, 'demo-frozen');
+  check('示例场景账单：交易来源走冻结行情且 key 含场景标识',
+    source.marketSource === 'demo-frozen' && source.label.includes('示例场景账单')
+    && source.key.includes(bill.demoScenarioId), JSON.stringify(source));
+
+  const ctx1 = await contractSimContext({ bill, marketSource: 'demo-frozen', versions: [] });
+  const ctx2 = await contractSimContext({ bill, marketSource: 'demo-frozen', versions: [] });
+  check('示例场景账单：自检上下文离线可用、行情非实时', !ctx1.error
+    && ctx1.marketSource?.id === 'demo-frozen' && ctx1.marketSource?.dynamic === false
+    && ctx1.marketSource?.demo === true && /非实时/.test(ctx1.label), JSON.stringify({ error: ctx1.error, market: ctx1.marketSource?.id }));
+  check('示例场景账单：相同输入 sourceKey 稳定', ctx1.tradesSource?.key === ctx2.tradesSource?.key
+    && ctx1.tradesSource?.key === source.key, JSON.stringify({ a: ctx1.tradesSource?.key, b: ctx2.tradesSource?.key }));
+
+  const missingScenario = { ...bill, demoScenarioId: null, demoScenario: null };
+  const missing = await contractSimContext({ bill: missingScenario, marketSource: 'demo-frozen', versions: [] });
+  check('示例场景账单：缺少场景标识时明确报错，不回落其他行情',
+    /场景标识/.test(missing.error ?? '') && !missing.review, JSON.stringify(missing.error));
 }
 
 let pass = 0;

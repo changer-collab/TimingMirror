@@ -3,9 +3,10 @@
 import { QA_CHIPS } from '../../src/agent/qaChips.js';
 import { classifyOffline } from '../../src/agent/offlineIntent.js';
 import { isSupportedChatQuestion } from '../../src/agent/chatScope.js';
-import { isPageHelpQuestion } from '../../src/agent/pageHelp.js';
+import { isPageHelpQuestion, buildPageHelpAnswer } from '../../src/agent/pageHelp.js';
+import { REFUSAL_PATTERN } from '../../src/agent/scopeRouter.js';
 
-export { isPageHelpQuestion };
+export { isPageHelpQuestion, buildPageHelpAnswer };
 
 export const MIN_L2_CONFIDENCE = 0.5;
 export const QA_QUESTION_MAX = 200;
@@ -13,13 +14,16 @@ export const QA_QUESTION_MAX = 200;
 export const QA_SUGGESTIONS = Object.freeze([
   ...QA_CHIPS.map((chip) => Object.freeze({
     id: chip.id,
+    intent: chip.intent,
     label: chip.label,
     question: chip.question,
     online: false,
   })),
-  Object.freeze({ id: 'what_if', label: '如果没卖', question: '如果那笔卖出没发生，会怎样？', online: false }),
-  Object.freeze({ id: 'meta_calc', label: '怎么算的', question: '这些数字是怎么算出来的？', online: false }),
-  Object.freeze({ id: 'contract_status', label: '规则状态', question: '我的规则守得住吗？', online: false }),
+  Object.freeze({ id: 'what_if', intent: 'what_if', label: '如果没卖', question: '如果那笔卖出没发生，会怎样？', online: false }),
+  Object.freeze({ id: 'meta_calc', intent: 'meta_calc', label: '怎么算的', question: '这些数字是怎么算出来的？', online: false }),
+  Object.freeze({ id: 'contract_status', intent: 'contract_status', label: '规则状态', question: '我的规则守得住吗？', online: false }),
+  Object.freeze({ id: 'similar_context', intent: 'similar_context', label: '相似情境', question: '这份账单里有没有类似的情况？', online: false }),
+  Object.freeze({ id: 'cross_bill', intent: 'cross_bill', label: '跨账单看看', question: '我在其他账单里有没有类似的操作？', online: false }),
 ]);
 
 export const QA_INTENT_LABELS = Object.freeze({
@@ -30,12 +34,17 @@ export const QA_INTENT_LABELS = Object.freeze({
   profile: '行为画像',
   what_if: '如果没卖',
   similar_context: '相似情境',
+  cross_bill: '跨账单',
   how_to_change: '怎么改',
   contract_setup: '设置规则',
   contract_status: '规则状态',
   meta_calc: '怎么算的',
   meta_trust: '可信度',
   out_of_scope: '超出回答范围',
+  product_help: '页面帮助',
+  general_finance: '概念说明',
+  small_talk: '寒暄',
+  unrelated: '范围外问题',
 });
 
 export const QA_LAYER_LABELS = Object.freeze({
@@ -65,17 +74,19 @@ function normalizedKey(value) {
 function chipIntentOf(question) {
   const key = normalizedKey(question);
   if (!key) return null;
-  const chip = QA_CHIPS.find((item) => normalizedKey(item.question) === key);
+  const chip = QA_SUGGESTIONS.find((item) => normalizedKey(item.question) === key);
   if (chip) return { intent: chip.intent, chipId: chip.id };
   const offline = classifyOffline(`${question}？`);
   if (offline.intent !== 'out_of_scope') return { intent: offline.intent, chipId: null };
   return null;
 }
 
+export { chipIntentOf };
+
 const L1_RULES = Object.freeze([
   {
     intent: 'out_of_scope',
-    test: /(荐股|推荐.*(股票|标的|基金)|买什么|卖不卖|该买|该卖|能不能买|可以买吗|能买吗|抄底|逃顶|会涨|会跌|会不会涨|会不会跌|涨不涨|跌不跌|预测|目标价|明天买|明天卖|后市|涨停|翻倍)/u,
+    test: REFUSAL_PATTERN,
   },
   {
     intent: 'contract_setup',
@@ -90,6 +101,10 @@ const L1_RULES = Object.freeze([
   {
     intent: 'contract_status',
     test: /(规则.*(守|触发|违反|状态|生效|命中|提醒)|守约|规则表现)/u,
+  },
+  {
+    intent: 'cross_bill',
+    test: /(跨账单|跨.*账单|所有账单|多份账单|历史账单|以前的账单|之前的账单|其他账单|每份账单|各个账单|我上传过.*账单|换.*账单.*看)/u,
   },
   {
     intent: 'meta_calc',
@@ -148,15 +163,20 @@ export function routeQuestion(raw) {
   if (!question) return { intent: null, slots: {}, ambiguous: true, layer: 'L1', source: 'L1', confidence: null };
   const chip = chipIntentOf(question);
   if (chip) {
-    return {
+    const slots = extractSlots(question);
+    const result = {
       intent: chip.intent,
-      slots: extractSlots(question),
+      slots,
       layer: 'L1',
       source: 'L1',
       confidence: 1,
       matchedBy: 'chip',
       chip_id: chip.chipId,
     };
+    if (result.intent === 'what_if' && !slots.symbol && !slots.trade_date && /(那笔|这笔|那次|这次)/u.test(question)) {
+      result.ambiguousTrade = true;
+    }
+    return result;
   }
   const slots = extractSlots(question);
   for (const rule of L1_RULES) {
@@ -182,8 +202,12 @@ export function routeQuestion(raw) {
   return { intent: null, slots, ambiguous: true, layer: 'L3', source: 'L3', confidence: null };
 }
 
-function normalizeL2Slots(raw) {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+/* 自由输入在模型不可用/不采用时的本地兜底；芯片文本同样可在这里命中。 */
+export function classifyLocal(raw) {
+  return routeQuestion(raw);
+}
+
+function normalizeL2Slots(raw) {  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
   const out = {};
   if (typeof raw.symbol === 'string' && /^\d{6}$/u.test(raw.symbol)) out.symbol = raw.symbol;
   if (typeof raw.trade_date === 'string') {

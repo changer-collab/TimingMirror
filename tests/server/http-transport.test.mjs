@@ -354,6 +354,53 @@ try {
   check('qaNarrative：未配置路径时 E_HTTP_CONFIG', configError && configError.code === HTTP_TRANSPORT_CODES.CONFIG, configError && configError.message);
 }
 
+/* ==== 站点 qaRewrite：固定路径与十字段白名单 ==== */
+{
+  const calls = [];
+  const siteTransport = createHttpTransport({
+    baseUrl: SAME_ORIGIN_BASE,
+    paths: SITE_FUNCTION_PATHS,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(JSON.stringify({ rawText: '{"headline":"最错的交易差额 -¥1,200.00","plain":[],"used_terms":[]}' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+  });
+  const body = {
+    question: QUESTION,
+    intent: 'worst_trade',
+    scope: { kind: 'bill', synthetic: false },
+    draft: { headline: '最错的交易差额 -¥1,200.00', plain: [{ id: 'P1', text: '差额是 -¥1,200.00。' }] },
+    claims: [{ id: 'Q1', text: '差额是 -¥1,200.00。', evidence_ids: [] }],
+    facts: [{ label: '差额', value: '-¥1,200.00' }],
+    evidence: [],
+    allowed: { numbers: ['1200.00'], counts: [], dates: [], symbols: [], displays: ['-¥1,200.00'] },
+    glossary: [],
+    limits: { headline_max_chars: 45 },
+  };
+  const result = await siteTransport.qaRewrite(body);
+  const sent = JSON.parse(calls[0].options.body);
+  check('站点 qaRewrite：固定同源路径', calls[0].url === SITE_FUNCTION_PATHS.qaRewrite
+    && calls[0].url === '/functions/v1/app/api/llm/qa-rewrite', calls[0].url);
+  check('站点 qaRewrite：只发送十个字段且无答案原文', Object.keys(sent).join(',')
+    === 'question,intent,scope,draft,claims,facts,evidence,allowed,glossary,limits'
+    && !('text' in sent) && !('answer' in sent), JSON.stringify(sent));
+  check('站点 qaRewrite：同源会话 + 无 Key 头', calls[0].options.credentials === 'same-origin'
+    && !Object.keys(calls[0].options.headers).some((h) => /authorization|api[-_]?key/i.test(h)));
+  check('站点 qaRewrite：返回 rawText', result.rawText.startsWith('{"headline"'), JSON.stringify(result));
+
+  const noPath = createHttpTransport({
+    baseUrl: SAME_ORIGIN_BASE,
+    paths: { intent: '/i', restate: '/r' },
+    fetchImpl: async () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+  });
+  let configError = null;
+  try { await noPath.qaRewrite(body); } catch (error) { configError = error; }
+  check('qaRewrite：未配置路径时 E_HTTP_CONFIG', configError && configError.code === HTTP_TRANSPORT_CODES.CONFIG, configError && configError.message);
+}
+
 /* ==== intent/restate 成功 + 实际 HTTP 请求白名单 ==== */
 {
   const proxyTransport = createFakeTransport();

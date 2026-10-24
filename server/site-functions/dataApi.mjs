@@ -7,6 +7,7 @@ import {
   profileDigestHash,
   validateProfileSummaryValue,
 } from './profileSummary.mjs';
+import { buildHistoryIndex } from './historyIndex.mjs';
 
 export const DATA_CODES = Object.freeze({
   METHOD: 'method_not_allowed',
@@ -27,6 +28,8 @@ export const DATA_CODES = Object.freeze({
 export const DATA_LIMITS = Object.freeze({
   billListDefault: 20,
   billListMax: 50,
+  historyListDefault: 20,
+  historyListMax: 50,
   billBody: 1024 * 1024 + 64 * 1024,
   snapshotBody: 512 * 1024,
   factBody: 32 * 1024,
@@ -194,7 +197,7 @@ export function resolveDataRoute(pathname, method) {
   const apiIndex = parts.lastIndexOf('api');
   if (apiIndex < 0) return null;
   const rest = parts.slice(apiIndex + 1);
-  if (rest[0] !== 'bills' && rest[0] !== 'profile' && rest[0] !== 'rules') return null;
+  if (rest[0] !== 'bills' && rest[0] !== 'profile' && rest[0] !== 'rules' && rest[0] !== 'history') return null;
   const route = (kind, allow, id = null) => (allow.includes(method)
     ? { kind, allow, id }
     : { methodNotAllowed: true, allow });
@@ -208,6 +211,10 @@ export function resolveDataRoute(pathname, method) {
   if (rest[0] === 'rules') {
     if (rest.length !== 1) return { kind: null };
     return route(method === 'GET' ? 'rules.get' : 'rules.save', ['GET', 'PUT']);
+  }
+  if (rest[0] === 'history') {
+    if (rest.length !== 2 || rest[1] !== 'index') return { kind: null };
+    return route('history.index', ['GET']);
   }
   if (rest.length === 1) return route('profile.get', ['GET']);
   if (rest.length === 2 && rest[1] === 'facts') return route('profile.facts.create', ['POST']);
@@ -244,6 +251,7 @@ export async function handleDataRequest({
       return await saveSnapshot({ request, supabase, user, id: route.id, now });
     }
     if (route.kind === 'bill.delete') return await deleteBill({ supabase, user, id: route.id });
+    if (route.kind === 'history.index') return await getHistoryIndex({ request, supabase, user });
     if (route.kind === 'rules.get') return await getRules({ supabase, user });
     if (route.kind === 'rules.save') return await saveRules({ request, supabase, user, now });
     if (route.kind === 'profile.get') return await getProfile({ supabase, user });
@@ -664,6 +672,36 @@ async function deleteBill({ supabase, user, id }) {
   if (result.error) return dbFailure(result.error, true);
   if (!Array.isArray(result.data) || result.data.length === 0) return fail(404, DATA_CODES.NOT_FOUND);
   return json(200, { ok: true, deleted: true });
+}
+
+// 跨账单索引：只读本人账单，服务端聚合成紧凑行；当前账单按 exclude 排除。
+async function getHistoryIndex({ request, supabase, user }) {
+  const url = new URL(request.url);
+  const limit = queryInteger(url, 'limit', DATA_LIMITS.historyListDefault, 1, DATA_LIMITS.historyListMax);
+  if (limit === null) return fail(400, DATA_CODES.REQUEST_INVALID);
+  const exclude = url.searchParams.get('exclude');
+  if (exclude !== null && !UUID_RE.test(exclude)) return fail(400, DATA_CODES.REQUEST_INVALID);
+  const result = await supabase.from('bills')
+    .select(BILL_COLUMNS_WITH_PAYLOAD)
+    .eq('user_id', user.user_id)
+    .order('imported_at', { ascending: false })
+    .limit(limit);
+  if (result.error) return dbFailure(result.error, false);
+  const rows = Array.isArray(result.data) ? result.data : [];
+  const entries = [];
+  for (const row of rows) {
+    const ref = `h${(await sha256Hex(`${user.user_id}\n${row.id}`)).slice(0, 16)}`;
+    entries.push({
+      ref,
+      effective_date: row.effective_date ?? null,
+      snapshot: row.snapshot_json ?? null,
+      trades: row.payload_mode === 'full' ? (row.payload_json?.trades ?? null) : null,
+    });
+  }
+  const excludeRefs = exclude === null
+    ? []
+    : [`h${(await sha256Hex(`${user.user_id}\n${exclude}`)).slice(0, 16)}`];
+  return json(200, { ok: true, index: buildHistoryIndex({ entries, excludeRefs }) });
 }
 
 async function getRules({ supabase, user }) {

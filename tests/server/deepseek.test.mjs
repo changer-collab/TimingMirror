@@ -449,6 +449,88 @@ const NARRATIVE_ANSWER = '这笔交易需要按顺序核对：先看 600519 与 
     && !rejected.text.includes('另有'), rejected.text);
 }
 
+/* ==== qaRewrite：固定提示词、JSON 输出与 handler 校验 ==== */
+const REWRITE_REQUEST = {
+  question: '我最错的一笔是哪个？',
+  intent: 'worst_trade',
+  scope: { kind: 'bill', synthetic: false },
+  draft: {
+    headline: '最错的交易差额 -¥1,200.00',
+    plain: [
+      { id: 'P1', text: '这笔交易的差额是 -¥1,200.00，只说明本次操作的结果。' },
+      { id: 'P2', text: '差额来自卖出前后的价差对照，不涉及对其他交易的判断。' },
+    ],
+  },
+  claims: [{ id: 'Q1', text: '这笔交易的差额是 -¥1,200.00。', evidence_ids: ['F1'] }],
+  facts: [{ label: '差额', value: '-¥1,200.00' }],
+  evidence: [{ label: '公式', detail: '¥1,300.00 − ¥2,500.00 = -¥1,200.00' }],
+  allowed: {
+    numbers: ['1200.00', '1300.00', '2500.00'],
+    counts: [],
+    dates: [],
+    symbols: [],
+    displays: ['-¥1,200.00', '¥1,300.00', '¥2,500.00'],
+  },
+  glossary: [],
+  limits: { headline_max_chars: 45 },
+};
+const REWRITE_RAW = JSON.stringify({
+  headline: '最错的交易差额 -¥1,200.00',
+  plain: [
+    { text: '这笔交易的差额是 -¥1,200.00，只说明本次操作的结果。', claim_ids: ['Q1'] },
+    { text: '差额来自卖出前后的价差对照，不涉及对其他交易的判断。', claim_ids: ['Q1'] },
+  ],
+  used_terms: [],
+});
+
+{
+  const fake = fakeFetch(() => reply(200, { choices: [{ message: { content: REWRITE_RAW } }] }));
+  const transport = createDeepSeekTransport({ apiKey: 'test-key', model: 'deepseek-flash', fetchImpl: fake.fetchImpl });
+  const out = await transport.qaRewrite(REWRITE_REQUEST);
+  const call = fake.calls[0];
+  const user = JSON.parse(call.body.messages[1].content);
+  check('改写：使用 qaRewrite 固定提示词', call.body.messages[0].role === 'system'
+    && call.body.messages[0].content === MODEL_PROMPTS.qaRewrite, call.body.messages[0].content.slice(0, 120));
+  check('改写：user 只含十个协议字段', Object.keys(user).sort().join(',')
+    === 'allowed,claims,draft,evidence,facts,glossary,intent,limits,question,scope'
+  && user.draft.plain.length === 2 && user.claims[0].id === 'Q1', JSON.stringify(user).slice(0, 400));
+  check('改写：temperature 0.2、max_tokens 500、JSON 输出',
+    call.body.temperature === 0.2 && call.body.max_tokens === 500
+    && call.body.response_format?.type === 'json_object', JSON.stringify(call.body).slice(0, 300));
+  check('改写：读取 content 为 rawText', out.rawText === REWRITE_RAW, out.rawText);
+}
+
+{
+  const fake = fakeFetch(() => reply(200, { choices: [{ message: { content: REWRITE_RAW } }] }));
+  const handler = createHandler({ transport: createDeepSeekTransport({ apiKey: 'test-key', fetchImpl: fake.fetchImpl }) });
+  const out = await invoke(handler, '/api/llm/qa-rewrite', REWRITE_REQUEST);
+  const wrapped = JSON.parse(out.json?.rawText ?? '{}');
+  check('改写 handler：合法请求 200 且回传已校验三层', out.status === 200
+    && wrapped.headline === '最错的交易差额 -¥1,200.00'
+    && wrapped.plain.length === 2, out.text);
+
+  const widened = { ...REWRITE_REQUEST, allowed: { ...REWRITE_REQUEST.allowed, numbers: [...REWRITE_REQUEST.allowed.numbers, '9999.00'] } };
+  const bad = await invoke(handler, '/api/llm/qa-rewrite', widened);
+  check('改写 handler：允许值越权 400', bad.status === 400
+    && bad.json?.code === SITE_FUNCTION_CODES.QA_REWRITE_REQUEST_INVALID, bad.text);
+
+  const leaky = createHandler({
+    transport: createDeepSeekTransport({
+      apiKey: 'test-key',
+      fetchImpl: async () => reply(200, {
+        choices: [{ message: { content: JSON.stringify({
+          ...JSON.parse(REWRITE_RAW),
+          plain: [{ text: '这笔交易的差额是 -¥9,999.00，只说明本次操作的结果。', claim_ids: ['Q1'] }, JSON.parse(REWRITE_RAW).plain[1]],
+        }) } }],
+      }),
+    }),
+  });
+  const rejected = await invoke(leaky, '/api/llm/qa-rewrite', REWRITE_REQUEST);
+  check('改写 handler：模型新增金额 → 502 且不回传候选文本', rejected.status === 502
+    && rejected.json?.code === SITE_FUNCTION_CODES.QA_REWRITE_RESPONSE
+    && !rejected.text.includes('9,999.00'), rejected.text);
+}
+
 const failed = results.filter((r) => !r.ok);
 for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.ok ? '' : '   → ' + r.detail}`);
 console.log(`\n== 合计 ${results.length} 项检查：通过 ${results.length - failed.length}，失败 ${failed.length} ==`);

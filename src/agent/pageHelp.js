@@ -5,3 +5,22 @@ export function isPageHelpQuestion(text) {
   const value = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
   return !!value && PAGE_HELP_RE.test(value);
 }
+
+/* 页面帮助问题的固定信封：只引导到助手帮助，不读取账单、不发送模型。 */
+export function buildPageHelpAnswer() {
+  return {
+    status: 'local',
+    intent: null,
+    route: { layer: 'L3', confidence: null },
+    source: 'template',
+    text: '这是页面操作或隐私问题。请在「AI 助手」的帮助说明中查看；问答页不会把这类问题发送到在线服务。',
+    facts: [],
+    evidence: [],
+    actions: [{ id: 'assistant-help', label: '查看助手帮助', kind: 'assistant-help' }],
+    trace: { template_id: null, plan_id: null, fact_count: 0, number_check: null, elapsed_ms: 0, intent_code: 'page_help', layer_label: '页面帮助' },
+    candidate: null,
+    notice: null,
+    diagnostics: [],
+    bill_context_id: null,
+  };
+}

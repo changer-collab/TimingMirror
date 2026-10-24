@@ -610,10 +610,20 @@ import { renderRealProfile } from './realProfile.js';
     return `<div class="container page-body tm-me-page">
       <section class="tm-workspace-head">
         <p class="mono-label">MY MIRROR / 个人中心</p>
-        <h1>画像与规则</h1>
+        <h1>画像、规则与自检</h1>
         <p class="muted">画像来自已复核账单，以及你在问答页主动选择记入的事实；规则保存在云端，每次进入都会自动恢复。</p>
       </section>
       <div id="tm-real-profile"></div>
+      <section class="tm-me-rules tm-me-selfcheck" aria-label="申报前自检">
+        <div class="tm-me-rules-head">
+          <div>
+            <p class="mono-label">SELF CHECK / 申报前自检</p>
+            <p class="muted">用当前生效规则重放历史行情；这是历史模拟，不是实时提醒，也不会下单。</p>
+          </div>
+          <a class="text-link" href="#/scenario">打开操作复盘 →</a>
+        </div>
+        <div id="tm-real-selfcheck"></div>
+      </section>
       <section class="tm-me-rules" aria-label="规则工作区">
         <div class="tm-me-rules-head">
           <div>
@@ -631,7 +641,7 @@ import { renderRealProfile } from './realProfile.js';
     return `${confirmedBillBanner()}
     ${pageHead({
       code: 'RULES / REVIEW',
-      title: '还没有可复盘的真实账单。',
+      title: isConfirmedLocal() ? '每一笔操作，<br>放回当时的规则。' : '还没有可复盘的真实账单。',
       intro: `<p>按账单里的每一笔真实操作，逐笔对照当前规则。画像只描述交易习惯，不参与判定。</p>`,
       right: '<span class="sample-tag">按真实操作复盘</span><a class="text-link" href="#/me">返回规则管理</a>',
     })}
@@ -648,7 +658,7 @@ import { renderRealProfile } from './realProfile.js';
         <div class="container hero-grid">
           <div class="hero-copy reveal">
             <div class="kicker"><span class="kicker-dot"></span>Personal trading review / 不荐股</div>
-            <h1 class="hero-title"><span class="nowrap">你和“买入不动”</span>，<br><span class="hero-mark">差在哪里</span>？</h1>
+            <h1 class="hero-title"><span class="nowrap">你亏的不是选股</span>，<br><span class="hero-mark">是择时</span>。</h1>
             <p class="lede">看清实际收益、买入不动与择时损耗的差距。每个数字，都能回到原始成交行。</p>
             <div class="hero-actions">
               <a class="btn btn-primary btn-lg" href="#/import">导入我的账单 <span class="arrow">→</span></a>
@@ -2078,6 +2088,7 @@ import { renderRealProfile } from './realProfile.js';
     }
     if (state.route === 'me' && !gated) {
       renderRealProfile(document.getElementById('tm-real-profile'), bridge.getCtx());
+      bridge.mountSelfCheckView(document.getElementById('tm-real-selfcheck'));
       bridge.mountContractView(document.getElementById('tm-real-rules'));
     }
     if (state.route === 'scenario' && !gated) {

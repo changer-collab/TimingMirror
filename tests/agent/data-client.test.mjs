@@ -48,7 +48,7 @@ const FACTS = [{
   const client = createDataClient({
     fetchImpl: async (url, options) => {
       calls.push({ url, options });
-      return new Response(JSON.stringify({ ok: true, bill: { id: 'b1' }, bills: [], facts: [], deleted: true }), {
+      return new Response(JSON.stringify({ ok: true, bill: { id: 'b1' }, bills: [], facts: [], deleted: true, index: { version: 'history-index-1', rows: [], excluded: [] } }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -65,6 +65,7 @@ const FACTS = [{
   await client.getBill({ id });
   await client.getRules();
   await client.saveRules({ versions: [] });
+  const history = await client.historyIndex({ limit: 5, exclude: id });
 
   check('账单：保存到 /api/bills（POST）', calls[0].url === '/functions/v1/app/api/bills'
     && calls[0].options.method === 'POST'
@@ -87,6 +88,9 @@ const FACTS = [{
     && calls[9].options.method === 'PUT'
     && Object.keys(JSON.parse(calls[9].options.body)).join(',') === 'versions'
     && JSON.parse(calls[9].options.body).versions.length === 0, calls[9].url);
+  check('历史索引：GET + limit/exclude', calls[10].url === `/functions/v1/app/api/history/index?limit=5&exclude=${id}`
+    && calls[10].options.method === 'GET' && calls[10].options.body === undefined, calls[10].url);
+  check('历史索引：返回 index 对象', history.version === 'history-index-1' && Array.isArray(history.rows), JSON.stringify(history));
 }
 
 /* ==== 请求校验 ==== */
@@ -107,6 +111,9 @@ const FACTS = [{
     ['删除事实：非法 id', () => client.deleteFact({ id: invalidId })],
     ['摘要：空 digest', () => client.saveProfileSummary({ summary: {} })],
     ['摘要：空 summary', () => client.saveProfileSummary({ digest: {} })],
+    ['历史索引：非法 limit', () => client.historyIndex({ limit: 0 })],
+    ['历史索引：超上限 limit', () => client.historyIndex({ limit: 51 })],
+    ['历史索引：非法 exclude', () => client.historyIndex({ exclude: invalidId })],
   ];
   for (const [name, run] of cases) {
     let error = null;

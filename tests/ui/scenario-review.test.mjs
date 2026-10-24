@@ -103,10 +103,11 @@ check('状态：加载/错误/未确认账单/无生效规则/无交易均有明
   && /这份账单里还没有可复盘的操作/.test(view)
   && /不回落示例数据/.test(view));
 
-check('行情：本地账单固定 Tushare 动态，示例账单可切换来源',
-  /const marketSource = localBill \? adapter\.DEFAULT_MARKET_SOURCE/.test(view)
+check('行情：示例场景账单固定冻结行情，本地账单固定 Tushare 动态，示例账单可切换来源',
+  /const demoFrozen = adapter\.isDemoFrozenBill\(state\.bill\)/.test(view)
+  && /const marketSource = demoFrozen\s*\?\s*'demo-frozen'/.test(view)
   && /adapter\.CONTRACT_MARKET_OPTIONS\.map/.test(view)
-  && /if \(!localBill && !demoAllowed\)/.test(view));
+  && /if \(!localBill && !demoFrozen && !demoAllowed\)/.test(view));
 
 check('边界：页面不再包含假设买入/卖出表单或直连行情',
   !/假如买入|假如卖出|sim-symbol|sim-date/.test(view)
