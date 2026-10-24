@@ -1,6 +1,6 @@
 import * as bridge from './realBridge.js';
 import { renderRealReport } from './realReport.js';
-import { renderRealChat } from './realChat.js';
+import { renderRealChat, resetChatScroll } from './realChat.js';
 import { renderRealProfile } from './realProfile.js';
 
 (() => {
@@ -2008,6 +2008,7 @@ import { renderRealProfile } from './realProfile.js';
     document.title = TITLES[state.route];
     renderChrome();
 
+    if (state.route !== 'chat') resetChatScroll();
     let html = '';
     if (state.route === 'home') html = homePage();
     else if (state.route === 'import') html = importPage();

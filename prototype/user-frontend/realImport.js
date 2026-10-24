@@ -825,8 +825,11 @@ export function renderRealImport(host, ctx) {
         const includeTrades = host.querySelector('[data-role="full-trades"]')?.checked === true;
         setFullTradesPreference(includeTrades);
         const result = finalizeConfirmedBill({ state, set: ctx.set, go: ctx.go, client: ctx.importRecovery });
-        if (result?.ok && typeof ctx.cloudDeps?.syncBill === 'function') {
-          Promise.resolve(ctx.cloudDeps.syncBill({ bill: state.bill, includeTrades })).catch(() => {});
+        if (result?.ok) {
+          void ctx.prewarmScenario?.(state.bill);
+          if (typeof ctx.cloudDeps?.syncBill === 'function') {
+            Promise.resolve(ctx.cloudDeps.syncBill({ bill: state.bill, includeTrades })).catch(() => {});
+          }
         }
       } else if (action === 'return-draft') {
         clearImportFeedback();
