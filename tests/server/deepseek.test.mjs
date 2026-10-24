@@ -71,9 +71,13 @@ function delayedReply(delayMs, payload) {
 async function expectTransportError(promise, code) {
   try {
     await promise;
-    return { ok: false, actual: null };
+    return { ok: false, actual: null, error: null };
   } catch (error) {
-    return { ok: error instanceof ModelTransportError && error.code === code, actual: error?.code ?? String(error) };
+    return {
+      ok: error instanceof ModelTransportError && error.code === code,
+      actual: error?.code ?? String(error),
+      error,
+    };
   }
 }
 
@@ -110,6 +114,8 @@ async function invoke(handler, path, body) {
     && call.body.messages[1].content === QUESTION, JSON.stringify(call.body).slice(0, 400));
   check('文本：response_format=json_object 且读取 content', call.body.response_format?.type === 'json_object'
     && out.rawText === VALID_INTENT, JSON.stringify({ body: call.body, out }).slice(0, 400));
+  check('文本：未携带 thinking 或 extra_body', !Object.hasOwn(call.body, 'thinking')
+    && !Object.hasOwn(call.body, 'extra_body'), JSON.stringify(call.body).slice(0, 300));
 }
 
 /* ==== 代码块/内容提取 ==== */
@@ -152,6 +158,8 @@ async function invoke(handler, path, body) {
   check('图片：response_format=json_object', call.body.response_format?.type === 'json_object');
   check('图片：请求体不包含 timeout 配置', !/timeout/i.test(JSON.stringify(call.body)),
     JSON.stringify(call.body).slice(0, 300));
+  check('图片：顶层显式关闭 thinking，不使用 extra_body', call.body.thinking?.type === 'disabled'
+    && !Object.hasOwn(call.body, 'extra_body'), JSON.stringify(call.body).slice(0, 300));
 }
 
 /* ==== 文本与视觉超时相互独立 ==== */
@@ -172,6 +180,10 @@ async function invoke(handler, path, body) {
     DEEPSEEK_ERROR_CODES.TIMEOUT,
   );
   check('超时：视觉使用独立 visionTimeoutMs（30ms），不等待文本 1000ms', visionResult.ok, visionResult.actual);
+  check('超时诊断：记录最终 timeout、耗时与响应头阶段', visionResult.error?.details?.timeout_ms === 30
+    && Number.isInteger(visionResult.error?.details?.elapsed_ms)
+    && visionResult.error.details.elapsed_ms >= 20 && visionResult.error.details.elapsed_ms < 1000
+    && visionResult.error?.details?.phase === 'response_headers', JSON.stringify(visionResult.error?.details));
 
   const textFake = fakeFetch(delayedReply(300, { choices: [{ message: { content: VALID_INTENT } }] }));
   const textTransport = createDeepSeekTransport({
@@ -185,6 +197,36 @@ async function invoke(handler, path, body) {
     DEEPSEEK_ERROR_CODES.TIMEOUT,
   );
   check('超时：文本仍使用 timeoutMs（30ms），不受视觉 1000ms 影响', textResult.ok, textResult.actual);
+
+  const bodyFake = fakeFetch((call) => Promise.resolve({
+    ok: true,
+    status: 200,
+    json: () => new Promise((_, reject) => {
+      const signal = call.init.signal;
+      const onAbort = () => {
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        reject(error);
+      };
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener('abort', onAbort, { once: true });
+    }),
+  }));
+  const bodyTransport = createDeepSeekTransport({
+    apiKey: 'test-key',
+    timeoutMs: 1000,
+    visionTimeoutMs: 35,
+    fetchImpl: bodyFake.fetchImpl,
+  });
+  const bodyResult = await expectTransportError(
+    bodyTransport.vision({ images: [{ mime: 'image/jpeg', data_base64: 'AAAA' }] }),
+    DEEPSEEK_ERROR_CODES.TIMEOUT,
+  );
+  check('超时诊断：读取响应体阶段可区分', bodyResult.ok
+    && bodyResult.error?.details?.timeout_ms === 35
+    && bodyResult.error?.details?.phase === 'response_body'
+    && Number.isInteger(bodyResult.error?.details?.elapsed_ms),
+  JSON.stringify(bodyResult.error?.details));
 }
 
 /* ==== GIF / WebP 由浏览器先转 JPEG；transport 本身仍接受 image/* ==== */
@@ -329,6 +371,35 @@ async function invoke(handler, path, body) {
     && binding?.rule_hash === 'deadbeef' && binding?.scenario_symbol === '600519', good.text);
 }
 
+/* ==== Handler：视觉超时只回传脱敏诊断 ==== */
+{
+  const timedOutTransport = {
+    async vision() {
+      throw new ModelTransportError(DEEPSEEK_ERROR_CODES.TIMEOUT, {
+        timeout_ms: 20000,
+        elapsed_ms: 20004,
+        phase: 'response_headers',
+        rawText: 'MUST_NOT_LEAK',
+        image: 'AAAA',
+      });
+    },
+  };
+  const out = await invoke(createHandler({ transport: timedOutTransport }), '/api/llm/import-vision', {
+    images: [{ mime: 'image/jpeg', data_base64: 'AAAA' }],
+    stage: IMPORT_VISION_STAGE,
+    source_kind: 'image',
+  });
+  check('Handler：视觉超时保持 504 E_MODEL_TIMEOUT，仅回传脱敏诊断', out.status === 504
+    && out.json?.code === SITE_FUNCTION_CODES.MODEL_TIMEOUT
+    && out.json?.timeout_ms === 20000
+    && out.json?.elapsed_ms === 20004
+    && out.json?.phase === 'response_headers'
+    && Object.keys(out.json ?? {}).sort().join(',') === 'code,elapsed_ms,message,ok,phase,timeout_ms'
+    && !out.text.includes('AAAA')
+    && !out.text.includes('MUST_NOT_LEAK')
+    && !out.text.includes(MODEL_PROMPTS.importVisionUser), out.text);
+}
+
 /* ==== Provider 选择：无 Key 不发请求、默认模型 ==== */
 {
   let networkCalls = 0;
@@ -373,7 +444,8 @@ async function invoke(handler, path, body) {
     visionProvider.vision({ images: [{ mime: 'image/jpeg', data_base64: 'AAAA' }] }),
     DEEPSEEK_ERROR_CODES.TIMEOUT,
   );
-  check('Provider：visionTimeoutMs 透传到视觉调用', visionResult.ok, visionResult.actual);
+  check('Provider：visionTimeoutMs 透传到视觉调用', visionResult.ok
+    && visionResult.error?.details?.timeout_ms === 30, visionResult.actual);
 }
 
 /* ==== qaNarrative：请求形状与 handler 校验 ==== */

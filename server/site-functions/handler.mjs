@@ -191,12 +191,29 @@ function jsonResponse(status, payload, extraHeaders = {}) {
   });
 }
 
-function errorResponse(status, code, extraHeaders = {}) {
-  return jsonResponse(status, { ok: false, code, message: MESSAGES[code] ?? MESSAGES[SITE_FUNCTION_CODES.REQUEST_INVALID] }, extraHeaders);
+function errorResponse(status, code, extraHeaders = {}, diagnostics = null) {
+  const payload = { ok: false, code, message: MESSAGES[code] ?? MESSAGES[SITE_FUNCTION_CODES.REQUEST_INVALID] };
+  if (diagnostics) Object.assign(payload, diagnostics);
+  return jsonResponse(status, payload, extraHeaders);
 }
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function timeoutDiagnostics(error) {
+  if (!error || error.code !== SITE_FUNCTION_CODES.MODEL_TIMEOUT || !isPlainObject(error.details)) return null;
+  const out = {};
+  if (Number.isInteger(error.details.timeout_ms) && error.details.timeout_ms > 0) {
+    out.timeout_ms = error.details.timeout_ms;
+  }
+  if (Number.isInteger(error.details.elapsed_ms) && error.details.elapsed_ms >= 0) {
+    out.elapsed_ms = error.details.elapsed_ms;
+  }
+  if (error.details.phase === 'response_headers' || error.details.phase === 'response_body') {
+    out.phase = error.details.phase;
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 function hasOnlyKeys(value, allowed) {
@@ -264,7 +281,7 @@ async function callTransport(transport, stage, request) {
   } catch (error) {
     const code = error && typeof error.code === 'string' ? error.code : '';
     const status = MODEL_STATUS[code];
-    if (status) return { ok: false, status, code };
+    if (status) return { ok: false, status, code, diagnostics: timeoutDiagnostics(error) };
     return { ok: false, status: 502, code: SITE_FUNCTION_CODES.MODEL_UNAVAILABLE };
   }
 }
@@ -609,7 +626,7 @@ export function createHandler({
         return errorResponse(400, SITE_FUNCTION_CODES.IMPORT_VISION_REQUEST_INVALID);
       }
       const result = await callTransport(transport, 'vision', validated.request);
-      if (!result.ok) return errorResponse(result.status, result.code);
+      if (!result.ok) return errorResponse(result.status, result.code, {}, result.diagnostics);
       const checked = validateImportVisionResponse(result.rawText);
       if (!checked.ok) {
         return errorResponse(502, SITE_FUNCTION_CODES.IMPORT_VISION_RESPONSE);
