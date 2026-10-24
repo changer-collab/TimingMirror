@@ -313,7 +313,7 @@ import { renderRealProfile } from './realProfile.js';
     }).join('');
 
     const footerNote = statusInfo.tone === 'real'
-      ? '已确认本地账单 · 本机处理 · 不构成投资建议'
+      ? '已确认账单 · 云端保存 · 不构成投资建议'
       : statusInfo.tone === 'demo'
         ? '示例数据 · 不构成投资建议'
         : statusInfo.tone === 'pending'
@@ -340,7 +340,8 @@ import { renderRealProfile } from './realProfile.js';
             <h4>我们的边界</h4>
             <p class="boundary-line">不荐股、不预测涨跌。</p>
             <p class="boundary-line">不承诺收益、不替你做决定。</p>
-            <p class="boundary-line">原始 CSV 只在本机读取，不上传。</p>
+            <p class="boundary-line">原始 CSV 与文件名不上传。</p>
+            <p class="boundary-line">确认后仅同步成交明细与报告快照。</p>
           </div>
         </div>
       </div>
@@ -373,6 +374,42 @@ import { renderRealProfile } from './realProfile.js';
     return bridge.getMode(route);
   }
 
+  function cloudState() {
+    return bridge.getCloudRestore();
+  }
+
+  // 报告、问答、复盘与个人中心都依赖云端账单；恢复完成前不展示任何本机旧数据。
+  function cloudGateActive(route) {
+    if (route === 'home' || route === 'import') return false;
+    if (isConfirmedLocal() || bridge.hasRealState()) return false;
+    return cloudState().status !== 'ready';
+  }
+
+  function cloudGatePage(route) {
+    const restore = cloudState();
+    const failed = restore.status === 'error';
+    const codes = { report: 'STEP 02 / REPORT', chat: 'STEP 03 / ASK', scenario: 'STEP 04 / REVIEW', me: 'MY MIRROR' };
+    return `${pageHead({
+      code: codes[route] ?? 'CLOUD / 云端恢复',
+      title: failed ? '云端记录暂时连不上。' : '正在恢复云端账单。',
+      intro: `<p>${failed
+        ? '账单、报告与规则都保存在云端；连接失败时不会用本机旧数据代替。'
+        : '每次进入页面都会从云端恢复账单、报告与规则；本机不保存用户数据。'}</p>`,
+      right: `<span class="sample-tag">${failed ? '云端未连接' : '云端恢复中'}</span>`,
+    })}
+    <div class="container page-body">
+      <section class="panel tm-empty-state">
+        <p class="mono-label">CLOUD / ${failed ? 'UNAVAILABLE' : 'LOADING'}</p>
+        <h2>${failed ? '请稍后重试，或先导入一份账单。' : '正在读取云端数据。'}</h2>
+        ${failed ? `<p class="muted">${esc(restore.error || '云端记录读取失败。')}</p>` : '<p class="muted">恢复完成后会自动显示最近的账单与报告。</p>'}
+        <div class="actions">
+          ${failed ? '<button class="btn btn-primary" type="button" data-cloud-retry>重试 <span class="arrow">→</span></button>' : ''}
+          <a class="btn btn-outline" href="#/import">导入账单</a>
+        </div>
+      </section>
+    </div>`;
+  }
+
   function sharedState() {
     return bridge.getShared();
   }
@@ -388,7 +425,7 @@ import { renderRealProfile } from './realProfile.js';
     const rec = shared.importRecovery ?? {};
     if (bill.status === 'confirmed') return bill.demo
       ? { text: '示例场景', tone: 'demo' }
-      : { text: '已确认账单', tone: 'real' };
+      : { text: bill.cloudRestored ? '云端账单' : '已确认账单', tone: 'real' };
     if (bill.status === 'loading' || rec.pending || ['reading', 'preparing', 'rendering'].includes(rec.status)) {
       return { text: '导入中', tone: 'pending' };
     }
@@ -402,9 +439,14 @@ import { renderRealProfile } from './realProfile.js';
   function sessionStatusInfo() {
     const shared = sharedState();
     if (shared.bill?.status === 'confirmed' && shared.bill?.sourceType === 'local') {
-      return shared.bill.demo ? { text: '示例场景', tone: 'demo' } : { text: '已确认账单', tone: 'real' };
+      return shared.bill.demo
+        ? { text: '示例场景', tone: 'demo' }
+        : { text: shared.bill.cloudRestored ? '云端账单' : '已确认账单', tone: 'real' };
     }
     if (bridge.hasRealState()) return importStatusText();
+    const restore = cloudState();
+    if (restore.status === 'loading' || restore.status === 'idle') return { text: '云端恢复中', tone: 'pending' };
+    if (restore.status === 'error') return { text: '云端未连接', tone: 'pending' };
     if (bridge.isDemoSelected()) return { text: '示例模式', tone: 'demo' };
     return { text: '空状态', tone: 'empty' };
   }
@@ -413,7 +455,7 @@ import { renderRealProfile } from './realProfile.js';
     const bill = sharedState().bill ?? {};
     if (state.route === 'me' || bill.status !== 'confirmed' || bill.sourceType !== 'local') return '';
     const demo = !!bill.demo;
-    const name = demo ? (bill.demoScenario?.title || '示例场景') : (bill.fileName || '本地账单');
+    const name = demo ? (bill.demoScenario?.title || '示例场景') : (bill.cloudRestored ? '云端保存的账单' : (bill.fileName || '本地账单'));
     const fileLabel = bill.fileName && bill.fileName !== name ? ` · ${esc(bill.fileName)}` : '';
     const links = demo
       ? [
@@ -429,11 +471,13 @@ import { renderRealProfile } from './realProfile.js';
       ];
     const summary = demo
       ? `${esc(name)}${fileLabel} · 合成账单与示例行情，仅用于演示。`
-      : `${esc(name)} · 报告、问答和规则测试都使用这笔账单。`;
+      : bill.cloudRestored
+        ? `${esc(name)} · 成交明细已从云端恢复，原始 CSV 与文件名未上传。`
+        : `${esc(name)} · 报告、问答和规则测试都使用这笔账单。`;
     return `<div class="container tm-bill-banner-shell">
       <div class="tm-bill-banner" role="status">
         <div class="tm-bill-banner-main">
-          <strong>${demo ? '当前是示例场景' : '当前有已确认的本地账单'}</strong>
+          <strong>${demo ? '当前是示例场景' : bill.cloudRestored ? '当前使用云端账单' : '当前有已确认的本地账单'}</strong>
           <span>${summary}</span>
         </div>
         <div class="tm-bill-banner-links">${links.join('')}</div>
@@ -540,18 +584,19 @@ import { renderRealProfile } from './realProfile.js';
       })}
       <div id="tm-real-report"></div>`;
     }
+    const cloud = bill.cloudRestored === true;
     return `${pageHead({
       code: 'STEP 02 / REPORT',
       title: '同一把尺，<br>量出差距。',
       intro: `<div class="report-meta">
-        <div class="report-account"><span>REAL BILL / 已确认本地账单</span><span>${esc(bill.fileName || '未知文件')}</span></div>
+        <div class="report-account"><span>${cloud ? 'REAL BILL / 云端账单' : 'REAL BILL / 已确认本地账单'}</span><span>${esc(cloud ? `云端明细 · ${bill.trades?.length ?? 0} 笔` : (bill.fileName || '未知文件'))}</span></div>
         <dl>
-          <div><dt>数据来源</dt><dd>本机账单 · CSV 未上传</dd></div>
+          <div><dt>数据来源</dt><dd>${cloud ? '云端账单 · 原始 CSV 未上传' : '本机账单 · CSV 未上传'}</dd></div>
           <div><dt>结果</dt><dd>仅展示已复核事实</dd></div>
           <div><dt>状态</dt><dd><span class="status-dot">真实账单</span></dd></div>
         </dl>
       </div>`,
-      right: '<span class="sample-tag">真实账单</span><a class="text-link" href="#/import">换一份账单</a>',
+      right: `<span class="sample-tag">${cloud ? '云端账单' : '真实账单'}</span><a class="text-link" href="#/import">换一份账单</a>`,
     })}
     <div id="tm-real-report"></div>`;
   }
@@ -566,7 +611,7 @@ import { renderRealProfile } from './realProfile.js';
       <section class="tm-workspace-head">
         <p class="mono-label">MY MIRROR / 个人中心</p>
         <h1>画像与规则</h1>
-        <p class="muted">画像来自已复核账单，以及你在问答页主动选择记入的事实；规则保存在当前浏览器，操作复盘已独立为单独页面。</p>
+        <p class="muted">画像来自已复核账单，以及你在问答页主动选择记入的事实；规则保存在云端，每次进入都会自动恢复。</p>
       </section>
       <div id="tm-real-profile"></div>
       <section class="tm-me-rules" aria-label="规则工作区">
@@ -609,7 +654,7 @@ import { renderRealProfile } from './realProfile.js';
               <a class="btn btn-primary btn-lg" href="#/import">导入我的账单 <span class="arrow">→</span></a>
               <a class="link-arrow" href="#/report" data-demo-link data-demo-route="report">先看示例报告 <span aria-hidden="true">↗</span></a>
             </div>
-            <p class="hero-privacy"><span class="lock-dot" aria-hidden="true"></span>原始 CSV 只在本机处理，不上传。</p>
+            <p class="hero-privacy"><span class="lock-dot" aria-hidden="true"></span>原始 CSV 与文件名不上传；确认后只同步成交明细与报告快照。</p>
           </div>
 
           <aside class="hero-ledger reveal" style="--delay:120ms" aria-label="示例账本：实际收益 12,480 元，买入不动 18,920 元，差额 6,440 元">
@@ -650,7 +695,7 @@ import { renderRealProfile } from './realProfile.js';
 
       <div class="trust-strip">
         <div class="container trust-strip-inner">
-          <div class="trust-cell"><span class="t-idx">LOCAL</span><div><strong>本地读取</strong><p>原始账单不离开浏览器</p></div></div>
+          <div class="trust-cell"><span class="t-idx">LOCAL</span><div><strong>本地读取</strong><p>原始 CSV 与文件名不上传</p></div></div>
           <div class="trust-cell"><span class="t-idx">TRACE</span><div><strong>可回查</strong><p>公式与成交行都能展开</p></div></div>
           <div class="trust-cell"><span class="t-idx">NO ADVICE</span><div><strong>不给建议</strong><p>不荐股、不预测涨跌</p></div></div>
           <div class="trust-cell"><span class="t-idx">YOUR CALL</span><div><strong>你来决定</strong><p>规则由你确认，系统不代劳</p></div></div>
@@ -745,13 +790,13 @@ import { renderRealProfile } from './realProfile.js';
           <span class="privacy-grain" aria-hidden="true"></span>
           <div class="privacy-copy">
             <p class="eyebrow light">PRIVACY BY DEFAULT</p>
-            <h2>你的账单，<br>不用离开<em>你的浏览器</em>。</h2>
-            <p class="privacy-foot">LOCAL-FIRST · 原型演示</p>
+            <h2>原始文件，<br><em>不上传</em>。</h2>
+            <p class="privacy-foot">CLOUD-FIRST · 云端恢复</p>
           </div>
           <div class="privacy-points">
-            <div><span>01</span><p>CSV 由浏览器本地读取和校验，账单内容不会上传。</p></div>
-            <div><span>02</span><p>只有标的代码与日期范围会用于获取最新已收盘行情；取数失败就明确阻断，不用假数据补齐。</p></div>
-            <div><span>03</span><p>规则与版本记录默认只保存在本机浏览器，你可以随时清空。</p></div>
+            <div><span>01</span><p>CSV 由浏览器本地读取和校验；原始文件与文件名不会上传。</p></div>
+            <div><span>02</span><p>确认后，成交明细与报告快照同步到云端，用于跨设备恢复；本机不保存用户数据。</p></div>
+            <div><span>03</span><p>规则与画像同样保存在云端，每次进入页面自动恢复。</p></div>
           </div>
         </div>
       </section>
@@ -2009,7 +2054,9 @@ import { renderRealProfile } from './realProfile.js';
     renderChrome();
 
     let html = '';
-    if (state.route === 'home') html = homePage();
+    const gated = cloudGateActive(state.route);
+    if (gated) html = cloudGatePage(state.route);
+    else if (state.route === 'home') html = homePage();
     else if (state.route === 'import') html = importPage();
     else if (state.route === 'report') html = reportPage();
     else if (state.route === 'chat') html = chatPage();
@@ -2029,11 +2076,11 @@ import { renderRealProfile } from './realProfile.js';
     if (state.route === 'chat' && mode === 'real' && isConfirmedLocal()) {
       renderRealChat(document.getElementById('tm-real-chat'), bridge.getCtx());
     }
-    if (state.route === 'me') {
+    if (state.route === 'me' && !gated) {
       renderRealProfile(document.getElementById('tm-real-profile'), bridge.getCtx());
       bridge.mountContractView(document.getElementById('tm-real-rules'));
     }
-    if (state.route === 'scenario') {
+    if (state.route === 'scenario' && !gated) {
       bridge.mountScenarioView(document.getElementById('tm-real-scenario'));
     }
 
@@ -2046,6 +2093,12 @@ import { renderRealProfile } from './realProfile.js';
   /* ---------- global events ---------- */
 
   document.addEventListener('click', (e) => {
+    const retry = e.target.closest('[data-cloud-retry]');
+    if (retry) {
+      e.preventDefault();
+      bridge.restoreFromCloud({ force: true });
+      return;
+    }
     const demo = e.target.closest('[data-demo-link], [data-demo-route]');
     if (demo) {
       e.preventDefault();

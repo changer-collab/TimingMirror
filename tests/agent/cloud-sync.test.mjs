@@ -2,15 +2,13 @@
 /**
  * 前端云同步状态测试（fake save；不联网）
  *
- * 覆盖：偏好持久化、统计/明细模式、并发去重、失败文案、快照等待与删除标记。
+ * 覆盖：明细始终上传、并发去重、失败文案、快照等待与删除标记。
  */
 import {
   billSyncStatus,
   cloudStatusText,
-  getFullTradesPreference,
   markCloudBillRemoved,
   resetBillSync,
-  setFullTradesPreference,
   syncBill,
   syncSnapshot,
   syncSnapshotWithBill,
@@ -18,12 +16,6 @@ import {
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
-
-const store = new Map();
-globalThis.localStorage = {
-  getItem: (key) => store.get(key) ?? null,
-  setItem: (key, value) => store.set(key, String(value)),
-};
 
 const BILL_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -55,14 +47,7 @@ function snapshot(key = 'abcdef01') {
 
 resetBillSync();
 
-/* ==== 偏好 ==== */
-check('偏好：默认只存统计', getFullTradesPreference() === false);
-setFullTradesPreference(true);
-check('偏好：勾选后保存为 1', getFullTradesPreference() === true && store.get('tm.cloud.fullTrades') === '1');
-setFullTradesPreference(false);
-check('偏好：取消后保存为 0', getFullTradesPreference() === false && store.get('tm.cloud.fullTrades') === '0');
-
-/* ==== 统计模式 ==== */
+/* ==== 明细始终上传 ==== */
 {
   const calls = [];
   const target = bill('ctx-summary');
@@ -73,21 +58,21 @@ check('偏好：取消后保存为 0', getFullTradesPreference() === false && st
       return { ok: true, bill: { id: BILL_ID }, duplicate: false };
     },
   });
-  check('统计：只调用一次保存', calls.length === 1, calls.length);
-  check('统计：请求体为 summary 且不带成交行',
-    calls[0].payload_mode === 'summary' && !('payload' in calls[0]), JSON.stringify(Object.keys(calls[0])));
-  check('统计：状态已同步并记录云端 id',
-    result.state === 'synced' && result.mode === 'summary' && result.billId === BILL_ID
+  check('明细：只调用一次保存', calls.length === 1, calls.length);
+  check('明细：请求体为 full 且带成交行',
+    calls[0].payload_mode === 'full' && calls[0].payload.trades.length === 2,
+    JSON.stringify(Object.keys(calls[0])));
+  check('明细：状态已同步并记录云端 id',
+    result.state === 'synced' && result.mode === 'full' && result.billId === BILL_ID
     && billSyncStatus(target).state === 'synced');
-  check('统计：状态文案', cloudStatusText(result) === '云端已存统计', cloudStatusText(result));
+  check('明细：状态文案', cloudStatusText(result) === '云端已存账单 + 明细', cloudStatusText(result));
 }
 
-/* ==== 完整明细 opt-in ==== */
+/* ==== 重复导入 ==== */
 {
   let body = null;
   const result = await syncBill({
     bill: bill('ctx-full'),
-    includeTrades: true,
     saveBill: async ({ body: sent }) => {
       body = sent;
       return { ok: true, bill: { id: BILL_ID }, duplicate: true };
@@ -96,7 +81,7 @@ check('偏好：取消后保存为 0', getFullTradesPreference() === false && st
   check('明细：payload_mode=full 并带两笔成交',
     body.payload_mode === 'full' && body.payload.trades.length === 2, JSON.stringify(body.payload_mode));
   check('明细：重复导入只标记 duplicate',
-    result.duplicate === true && cloudStatusText(result) === '云端已存（含明细）', cloudStatusText(result));
+    result.duplicate === true && cloudStatusText(result) === '云端已存这份账单（含明细）', cloudStatusText(result));
 }
 
 /* ==== 不该同步的账单 ==== */
@@ -143,9 +128,9 @@ check('偏好：取消后保存为 0', getFullTradesPreference() === false && st
   });
   check('失败：状态 failed 且不透传内部消息',
     result.state === 'failed' && result.code === 'database_unavailable'
-    && result.message === '云端数据库暂不可用，账单仍只在本机'
+    && result.message === '云端数据库暂不可用'
     && !result.message.includes('hidden'), JSON.stringify(result));
-  check('失败：状态文案', cloudStatusText(result) === '仅本机 · 云端未同步' && result.billId === null);
+  check('失败：状态文案', cloudStatusText(result) === '云端未同步' && result.billId === null);
 }
 
 /* ==== 快照同步 ==== */

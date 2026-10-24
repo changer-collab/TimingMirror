@@ -4,6 +4,7 @@ import { loadUserBillReport } from '../../src/demo/adapter.js';
 import { fmtMoney } from '../../src/engine/display.js';
 import { renderGhostChart } from '../../src/ui/components/ghostChart.js';
 import { buildRuleCandidates } from '../../src/engine/userProfile.js';
+import { buildReportSnapshot } from '../../src/agent/reportSnapshot.js';
 import { recordReportObservation, ruleStateOf, syncBehaviorAnalysis } from './profileStore.js';
 import { maybeAutoUpdateProfileSummary } from './profileAutoUpdate.js';
 import { openRuleCandidateInAssistant } from './ruleCandidates.js';
@@ -113,7 +114,7 @@ function sourceChips(bundle, demo, bill = null) {
     if (bundle.asOfDate) chips.push(`估值日 ${bundle.asOfDate}`);
     chips.push('演示结果');
   } else {
-    chips.push('CSV 未上传');
+    chips.push('原始 CSV 未上传');
     if (bill) {
       const sync = billSyncStatus(bill);
       cloudChip = `<span class="rp-chip tm-cloud-chip" data-role="cloud-sync" data-context="${esc(bill.contextId ?? '')}" data-state="${esc(sync.state)}" title="${esc(cloudStatusTitle(sync))}">${esc(cloudStatusText(sync))}</span>`;
@@ -212,7 +213,7 @@ function deltaCard(bundle, bill, vis, demo) {
     : '';
   return `<section class="delta-card reveal ${direction}" aria-labelledby="real-delta-title">
     <div class="delta-main">
-      <p class="delta-eyebrow">${demo ? '示例场景 · 同尺对比' : '本机账单 · 同尺对比'}</p>
+      <p class="delta-eyebrow">${demo ? '示例场景 · 同尺对比' : bill?.cloudRestored ? '云端账单 · 同尺对比' : '本机账单 · 同尺对比'}</p>
       <p class="delta-label" id="real-delta-title">${headline}</p>
       <p class="delta-number">${dragMoney === 0 ? '¥0' : moneyOf(Math.abs(dragMoney))}</p>
       <p class="delta-note">${esc(note)}</p>
@@ -596,8 +597,8 @@ function renderBundle(host, bundle, ctx, bill) {
       const observation = recordReportObservation({ bundle, bill, ruleState: ruleStateOf(ctx?.state?.contracts?.versions) });
       profile = observation.profile;
       profileKey = observation.snapshot?.profile_key ?? null;
-      const snapshot = observation.profile?.latest;
-      if (snapshot && snapshot.profile_key === profileKey && snapshot.review?.portfolio_published === true
+      const snapshot = buildReportSnapshot({ profile, bundle, reportKey: observation.key });
+      if (snapshot && snapshot.profile_key === profileKey
         && typeof ctx?.cloudDeps?.syncSnapshot === 'function') {
         Promise.resolve(ctx.cloudDeps.syncSnapshot({ bill, snapshot }))
           .then((result) => { if (result?.ok) ctx.cloudDeps.invalidateCloudProfile?.(); })
@@ -804,3 +805,10 @@ export function renderRealReport(host, bill, ctx = null) {
 }
 
 export function clearRealReportCache() { cache.clear(); }
+
+// 云端报告快照直接作为本会话的已就绪报告；不重新取行情，也不改写快照内容。
+export function seedRealReport(bill, bundle) {
+  if (!bill?.contextId || !bundle || typeof bundle !== 'object' || Array.isArray(bundle)) return false;
+  cache.set(bill.contextId, { status: 'ready', bundle });
+  return true;
+}

@@ -27,7 +27,7 @@ const usingFakeModel = deepseekKey === '';
 const devUserId = (process.env.TM_DEV_USER_ID ?? '').trim() || 'dev-local-user';
 const devSupabase = createMemorySupabase();
 const devUserContext = createDevUserContext({ userId: devUserId });
-const isDataPath = (pathname) => /\/api\/(?:bills|profile)(?:\/|$)/u.test(pathname);
+const isDataPath = (pathname) => /\/api\/(?:bills|profile|rules)(?:\/|$)/u.test(pathname);
 const appHandler = createHandler({
   transport: usingFakeModel
     ? createLocalFakeImportModel()
@@ -129,5 +129,5 @@ server.listen(PORT, () => {
     ? '本地 fake 模型已启用：intent、restate、import-recover、import-vision、rule-intent、behavior-analysis、result-explanation、profile-summary、profile-fact（不调用真实模型；行情仍需 TUSHARE_TOKEN）'
     : '已读取开发机 DEEPSEEK_API_KEY，模型请求将调用 DeepSeek');
   if (tushareToken === '') console.log('行情未启用：未配置 TUSHARE_TOKEN');
-  console.log(`账单/画像：本地内存库（dev 用户 ${devUserId}，重启清空；线上以 Gateway 身份为准）`);
+  console.log(`账单/画像/规则：本地内存库（dev 用户 ${devUserId}，重启清空；线上以 Gateway 身份为准）`);
 });

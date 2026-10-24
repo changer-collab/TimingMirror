@@ -2,7 +2,7 @@
 /**
  * 账单云端同步载荷测试（纯函数；不联网）
  *
- * 覆盖：哈希与服务端一致、默认仅统计、完整明细显式开启、字段白名单、无效明细拒绝。
+ * 覆盖：哈希与服务端一致、始终携带完整明细、字段白名单、无效明细拒绝。
  */
 import { BILL_SYNC_CODES, buildBillSyncBody, contentHashOfTrades } from '../../src/agent/billSync.js';
 import { contentHashOfTrades as serverContentHash } from '../../server/site-functions/dataApi.mjs';
@@ -52,14 +52,18 @@ function billOf(overrides = {}) {
   check('哈希：价格变化会产生不同指纹', changed !== client);
 }
 
-/* ==== 默认仅统计 ==== */
+/* ==== 始终携带完整明细 ==== */
 {
   const body = await buildBillSyncBody(billOf());
-  check('仅统计：payload_mode=summary 且无 payload', body.payload_mode === 'summary' && body.payload === undefined, JSON.stringify(body));
-  check('仅统计：不含文件名 / 成交行 / 账户字段',
+  check('明细：payload_mode=full 且带三笔白名单字段',
+    body.payload_mode === 'full'
+    && body.payload.trades.length === 3
+    && Object.keys(body.payload.trades[0]).join(',') === 'trade_id,trade_date,symbol,side,price,quantity,fee,tax',
+    JSON.stringify(body.payload?.trades?.[0]));
+  check('隐私：不含文件名 / 来源对象 / 行号',
     !JSON.stringify(body).includes('my-broker.csv')
-    && !JSON.stringify(body).includes('trade_id')
-    && !Object.keys(body).some((k) => /file|account|broker/i.test(k)), JSON.stringify(body));
+    && !JSON.stringify(body).includes('"source"')
+    && !JSON.stringify(body).includes('"line"'), JSON.stringify(body));
   check('统计字段：笔数 / 区间 / 标的数 / 警告数',
     body.metadata.trades_count === 3
     && body.metadata.date_from === '2024-03-01'
@@ -72,25 +76,14 @@ function billOf(overrides = {}) {
     && body.source_type === 'local'
     && body.effective_date === '2024-10-09'
     && body.import_method === 'manual', JSON.stringify(body));
-}
-
-/* ==== 完整明细：显式开启 ==== */
-{
-  const body = await buildBillSyncBody(billOf(), { includeTrades: true });
-  check('完整明细：payload_mode=full 且带白名单字段',
-    body.payload_mode === 'full'
-    && body.payload.trades.length === 3
-    && Object.keys(body.payload.trades[0]).join(',') === 'trade_id,trade_date,symbol,side,price,quantity,fee,tax', JSON.stringify(body.payload?.trades?.[0]));
-  check('完整明细：源文件行与来源对象不会上传', !JSON.stringify(body).includes('my-broker.csv')
-    && !JSON.stringify(body).includes('"source"') && !JSON.stringify(body).includes('"line"'));
-  check('完整明细：哈希与载荷一致',
+  check('明细：哈希与载荷一致',
     (await serverContentHash(body.payload.trades)) === body.content_hash, body.content_hash);
 }
 
 /* ==== 无效明细与降级字段 ==== */
 {
   let error = null;
-  try { await buildBillSyncBody(billOf({ trades: [{ ...TRADES[0], price: 0 }] }), { includeTrades: true }); } catch (e) { error = e; }
+  try { await buildBillSyncBody(billOf({ trades: [{ ...TRADES[0], price: 0 }] })); } catch (e) { error = e; }
   check('完整明细：价格非法 → E_BILL_SYNC_TRADE_INVALID',
     error && error.code === BILL_SYNC_CODES.TRADE_INVALID, error && error.code);
 
@@ -98,17 +91,16 @@ function billOf(overrides = {}) {
     contextId: '账单 1',
     importMethod: 'demo',
     dataMode: 'Data Mode / 中文',
-    trades: [{ ...TRADES[0], trade_id: '带中文的成交编号超过允许长度', trade_date: '2024/03/01', symbol: 'abc' }],
   }));
   check('降级：非法上下文 / 导入方式 / 数据模式写成空值',
     fallback.context_id === null && fallback.import_method === 'unknown' && fallback.metadata.data_mode === null,
     JSON.stringify(fallback));
-  check('降级：无效日期不进入区间', fallback.metadata.date_from === null && fallback.metadata.date_to === null,
-    JSON.stringify(fallback.metadata));
+  check('降级：明细仍按有效成交生成', fallback.payload.trades.length === 3
+    && fallback.metadata.trades_count === 3, JSON.stringify(fallback.metadata));
 
   const usableIds = await buildBillSyncBody(billOf({
     trades: [{ ...TRADES[0], trade_id: '带中文的成交编号超过允许长度' }],
-  }), { includeTrades: true });
+  }));
   check('降级：非法成交编号回退为 T001', usableIds.payload.trades[0].trade_id === 'T001',
     usableIds.payload.trades[0].trade_id);
 
@@ -124,7 +116,7 @@ function billOf(overrides = {}) {
       { trade_id: 'T1', trade_date: '2024-01-02', symbol: '000001', side: 'buy', price: 10, quantity: 100, fee: 0, tax: 0 },
       { trade_id: 'T2', trade_date: '2024-01-03', symbol: '000001', side: 'sell', price: 11, quantity: 100 },
     ],
-  }), { includeTrades: true });
+  }));
   check('费用：0 保留为 0，缺失保留为 null',
     zero.payload.trades[0].fee === 0 && zero.payload.trades[0].tax === 0
     && zero.payload.trades[1].fee === null && zero.payload.trades[1].tax === null,

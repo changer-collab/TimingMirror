@@ -5,6 +5,7 @@ const TABLES = Object.freeze({
   bills: [['bill_key'], ['id']],
   profile_facts: [['fact_hash'], ['id']],
   profiles: [['user_id']],
+  rule_sets: [['user_id']],
 });
 
 const clone = (value) => structuredClone(value);
@@ -123,7 +124,7 @@ function createQuery(state, table) {
 }
 
 export function createMemorySupabase() {
-  const state = { tables: { bills: [], profile_facts: [], profiles: [] } };
+  const state = { tables: { bills: [], profile_facts: [], profiles: [], rule_sets: [] } };
   return {
     from: (table) => createQuery(state, table),
     seed(table, rows) {

@@ -1,6 +1,5 @@
-// 账单云端同步载荷（纯函数）：默认只生成统计字段；完整成交明细需要调用方显式开启。
-// content_hash 与 server/site-functions/dataApi.mjs 的 contentHashOfTrades 必须逐字节一致，
-// 否则同一份账单在“仅统计 → 完整明细”升级时会被服务端判为不同账单。
+// 账单云端同步载荷（纯函数）：确认导入后始终带归一化成交明细，不再提供“仅统计”模式。
+// content_hash 与 server/site-functions/dataApi.mjs 的 contentHashOfTrades 必须逐字节一致。
 export const BILL_SYNC_CODES = Object.freeze({
   NO_BILL: 'E_BILL_SYNC_NO_BILL',
   TRADE_INVALID: 'E_BILL_SYNC_TRADE_INVALID',
@@ -85,7 +84,7 @@ function normalizeTrade(trade, index) {
   };
 }
 
-export async function buildBillSyncBody(bill, { includeTrades = false } = {}) {
+export async function buildBillSyncBody(bill) {
   if (!bill || typeof bill !== 'object') throw syncError(BILL_SYNC_CODES.NO_BILL);
   const trades = Array.isArray(bill.trades) ? bill.trades : [];
   const dates = trades.map((trade) => dateText(trade?.trade_date)).filter(Boolean).sort();
@@ -94,7 +93,11 @@ export async function buildBillSyncBody(bill, { includeTrades = false } = {}) {
   if (!HASH_RE.test(contentHash)) throw syncError(BILL_SYNC_CODES.HASH_UNSUPPORTED);
   const contextId = text(bill.contextId);
   const dataMode = text(bill.dataMode);
-  const body = {
+  const payloadTrades = trades.map((trade, index) => normalizeTrade(trade, index));
+  if (payloadTrades.some((trade) => trade === null)) {
+    throw syncError(BILL_SYNC_CODES.TRADE_INVALID);
+  }
+  return {
     content_hash: contentHash,
     context_id: CONTEXT_RE.test(contextId) ? contextId : null,
     source_type: 'local',
@@ -108,14 +111,7 @@ export async function buildBillSyncBody(bill, { includeTrades = false } = {}) {
       date_to: dates[dates.length - 1] ?? null,
       symbol_count: symbols.size,
     },
-    payload_mode: includeTrades ? 'full' : 'summary',
+    payload_mode: 'full',
+    payload: { trades: payloadTrades },
   };
-  if (includeTrades) {
-    const payloadTrades = trades.map((trade, index) => normalizeTrade(trade, index));
-    if (payloadTrades.some((trade) => trade === null)) {
-      throw syncError(BILL_SYNC_CODES.TRADE_INVALID);
-    }
-    body.payload = { trades: payloadTrades };
-  }
-  return body;
 }

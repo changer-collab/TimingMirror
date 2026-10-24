@@ -105,6 +105,29 @@ function snapshot(overrides = {}) {
     && profile.latest.bill.trade_count === 24 && profile.history.length === 1);
   check('云端画像：没有快照返回 null',
     cloudProfileFromBills([{ id: BILL_ID, snapshot: snapshot({ review: { portfolio_published: false } }) }]) === null);
+
+  const v2 = {
+    version: 2,
+    at: '2026-10-23T08:00:00.000Z',
+    profile_key: 'abcdef01',
+    bill: { trade_count: 10 },
+    review: { portfolio_published: true },
+    profile: { latest: snapshot({ bill: { trade_count: 10 } }) },
+    report: { status: 'ok', fileName: 'x.csv' },
+    report_available: true,
+  };
+  const v2bills = normalizeCloudBills({
+    ok: true,
+    bills: [{ id: BILL_ID, imported_at: '2026-10-23T08:00:00.000Z', payload_mode: 'full', metadata: { trades_count: 10 }, snapshot: v2 }],
+  });
+  check('云端画像：v2 快照解包到画像 latest',
+    v2bills[0].snapshot?.bill?.trade_count === 10
+    && v2bills[0].snapshot?.outcome?.display?.drag_money === '-¥3,190'
+    && v2bills[0].snapshot?.tags?.[0]?.label === '追高买入', JSON.stringify(v2bills[0].snapshot));
+  const mismatch = JSON.parse(JSON.stringify(v2));
+  mismatch.profile.latest.profile_key = 'ffffffff';
+  check('云端画像：v2 画像键不一致时丢弃',
+    normalizeCloudBills({ ok: true, bills: [{ id: BILL_ID, snapshot: mismatch }] })[0].snapshot === null);
 }
 
 /* ==== 摘要校验 ==== */

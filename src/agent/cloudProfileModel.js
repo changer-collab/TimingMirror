@@ -1,4 +1,6 @@
 // 云端账单/事实/摘要的前端归一化（纯函数）：只保留页面会用到的字段，拒绝非法结构。
+import { historyEntryOf } from '../engine/userProfile.js';
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const PROFILE_KEY_RE = /^[0-9a-f]{8}$/u;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/u;
@@ -55,39 +57,42 @@ function metadataView(value) {
 
 function snapshotView(value) {
   if (!isObject(value)) return null;
+  const source = value.version === 2 && isObject(value.profile?.latest) ? value.profile.latest : value;
   if (typeof value.profile_key !== 'string' || !PROFILE_KEY_RE.test(value.profile_key)) return null;
   if (!isObject(value.bill) || !Number.isInteger(value.bill.trade_count)) return null;
   if (value.review?.portfolio_published !== true) return null;
+  if (value.version === 2 && source.profile_key !== value.profile_key) return null;
   return {
-    version: Number.isInteger(value.version) ? value.version : 1,
-    at: text(value.at, 64) || null,
+    version: Number.isInteger(source.version) ? source.version : 1,
+    at: text(source.at, 64) || null,
     profile_key: value.profile_key,
+    report_key: text(value.report_key, 160) || null,
     bill: {
       trade_count: value.bill.trade_count,
-      first_date: dateText(value.bill.first_date),
-      last_date: dateText(value.bill.last_date),
+      first_date: dateText(source.bill?.first_date),
+      last_date: dateText(source.bill?.last_date),
     },
-    outcome: isObject(value.outcome) ? {
-      actual_ret: finite(value.outcome.actual_ret),
-      ghost_ret: finite(value.outcome.ghost_ret),
-      drag: finite(value.outcome.drag),
-      drag_money: finite(value.outcome.drag_money),
-      display: isObject(value.outcome.display) ? {
-        actual_ret: text(value.outcome.display.actual_ret, 32) || '—',
-        ghost_ret: text(value.outcome.display.ghost_ret, 32) || '—',
-        drag: text(value.outcome.display.drag, 32) || '—',
-        drag_money: text(value.outcome.display.drag_money, 32) || '—',
+    outcome: isObject(source.outcome) ? {
+      actual_ret: finite(source.outcome.actual_ret),
+      ghost_ret: finite(source.outcome.ghost_ret),
+      drag: finite(source.outcome.drag),
+      drag_money: finite(source.outcome.drag_money),
+      display: isObject(source.outcome.display) ? {
+        actual_ret: text(source.outcome.display.actual_ret, 32) || '—',
+        ghost_ret: text(source.outcome.display.ghost_ret, 32) || '—',
+        drag: text(source.outcome.display.drag, 32) || '—',
+        drag_money: text(source.outcome.display.drag_money, 32) || '—',
       } : null,
     } : null,
     review: { portfolio_published: true },
-    pgr: isObject(value.pgr) ? { pgr: finite(value.pgr.pgr), plr: finite(value.pgr.plr) } : null,
-    rules: isObject(value.rules) ? {
-      version_count: finite(value.rules.version_count) ?? 0,
-      active_count: finite(value.rules.active_count) ?? 0,
+    pgr: isObject(source.pgr) ? { pgr: finite(source.pgr.pgr), plr: finite(source.pgr.plr) } : null,
+    rules: isObject(source.rules) ? {
+      version_count: finite(source.rules.version_count) ?? 0,
+      active_count: finite(source.rules.active_count) ?? 0,
     } : null,
-    behavior: isObject(value.behavior) ? {
-      patterns: Array.isArray(value.behavior.patterns)
-        ? value.behavior.patterns.filter(isObject).map((pattern) => ({
+    behavior: isObject(source.behavior) ? {
+      patterns: Array.isArray(source.behavior.patterns)
+        ? source.behavior.patterns.filter(isObject).map((pattern) => ({
           pattern_id: text(pattern.pattern_id, 64),
           name: text(pattern.name, 60),
           status: text(pattern.status, 16),
@@ -95,16 +100,16 @@ function snapshotView(value) {
         })).filter((pattern) => pattern.name)
         : [],
     } : null,
-    dimensions: Array.isArray(value.dimensions)
-      ? value.dimensions.filter(isObject).map((row) => ({
+    dimensions: Array.isArray(source.dimensions)
+      ? source.dimensions.filter(isObject).map((row) => ({
         key: text(row.key, 32),
         label: text(row.label, 32),
         value: text(row.value, 120),
         note: text(row.note, 200),
       })).filter((row) => row.key && row.label)
       : [],
-    tags: Array.isArray(value.tags)
-      ? value.tags.filter(isObject).map((tag) => ({
+    tags: Array.isArray(source.tags)
+      ? source.tags.filter(isObject).map((tag) => ({
         tag_id: text(tag.tag_id, 64),
         label: text(tag.label, 40),
         evidence: text(tag.evidence, 120),
@@ -146,23 +151,27 @@ export function normalizeCloudFacts(payload) {
     }));
 }
 
-// 本机没有画像时，用云端最近一次已发布报告快照提供只读画像；不合并多份快照。
+// 本机没有画像时，用云端已发布报告快照重建只读画像；历史按快照时间从旧到新。
 export function cloudProfileFromBills(bills) {
   const rows = (Array.isArray(bills) ? bills : [])
     .filter((bill) => bill?.snapshot && bill.snapshot.review?.portfolio_published === true)
-    .sort((a, b) => String(b.imported_at ?? '').localeCompare(String(a.imported_at ?? '')));
+    .sort((a, b) => String(b.snapshot.at ?? b.imported_at ?? '').localeCompare(String(a.snapshot.at ?? a.imported_at ?? '')));
   if (!rows.length) return null;
   const latest = rows[0].snapshot;
+  const history = [...rows].reverse().map((row) => historyEntryOf(row.snapshot, {
+    at: row.snapshot.at ?? row.imported_at,
+    reportKey: row.snapshot.report_key ?? null,
+  }));
   return {
-    version: latest.version ?? 1,
+    version: 1,
+    created_at: history[0]?.at ?? null,
+    updated_at: latest.at ?? null,
     observations: rows.length,
+    report_views: rows.length,
     latest,
-    history: rows.map((row) => ({
-      at: row.snapshot.at ?? row.imported_at,
-      profile_key: row.snapshot.profile_key,
-      trade_count: row.snapshot.bill.trade_count,
-    })),
+    history,
     trend: null,
+    rule_events: {},
   };
 }
 

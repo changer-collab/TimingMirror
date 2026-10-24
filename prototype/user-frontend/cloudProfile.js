@@ -1,5 +1,5 @@
 // 个人中心云端区块：账单历史、对话事实、AI 画像解读。
-// 云端失败不回退演示数据；本机画像、报告与规则继续可用。
+// 云端失败不回退本地旧数据；摘要缺失或过期时自动重算一次。
 import {
   buildProfileDigest, profileDigestHash, profileSummaryIsFresh,
 } from '../../src/agent/profileDigest.js';
@@ -10,10 +10,13 @@ import {
 import { markCloudBillRemoved } from './cloudSync.js';
 
 const CACHE_TTL_MS = 15000;
+const AUTO_SUMMARY_RETRY_MS = 5 * 60 * 1000;
 const CONFIDENCE_LABELS = Object.freeze({ high: '较高', medium: '中等', low: '偏低' });
 
 let cache = { status: 'idle', at: 0, data: null, error: null, promise: null };
 let confirmTimer = null;
+// 同一 digest 只自动尝试一次；失败后隔一段时间才允许重试，避免每次进入页面都打模型。
+const autoSummaryTried = new Map();
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
@@ -180,7 +183,7 @@ function cloudSnapshotHTML(state, profile) {
   const tags = Array.isArray(snapshot.tags) ? snapshot.tags : [];
   return `<div class="rp-cloud-snapshot">
     <p class="mono-label">CLOUD SNAPSHOT / 最近一次已发布报告</p>
-    <p class="rp-note">本机没有画像记录；以下来自云端最近一次报告快照，只用于跨设备查看。</p>
+    <p class="rp-note">本会话还没有新的画像观察；以下来自云端最近一次已发布报告快照。</p>
     ${dimensions.length ? `<div class="rp-dim-grid">${dimensions.map((row) => `<article class="rp-dim" data-dim="${esc(row.key)}">
       <p class="rp-dim-label">${esc(row.label)}</p><p class="rp-dim-value">${esc(row.value)}</p><p class="rp-dim-note">${esc(row.note)}</p>
     </article>`).join('')}</div>` : ''}
@@ -232,7 +235,7 @@ function billsHTML(data) {
     <thead><tr><th>导入时间</th><th>成交区间</th><th class="num">成交</th><th>云端内容</th><th>报告快照</th><th></th></tr></thead>
     <tbody>${rows}</tbody>
   </table></div>
-  <p class="rp-note">删除只影响云端记录；本机报告、画像与规则不变。</p>`;
+  <p class="rp-note">删除只影响这份云端账单记录。</p>`;
 }
 
 function cloudHTML(state, profile) {
@@ -248,7 +251,7 @@ function cloudHTML(state, profile) {
   const errorBanner = state.error
     ? `<div class="rp-cloud-error" role="alert">
       <strong>云端记录暂不可用</strong>
-      <p>${esc(cloudErrorMessage(state.error))} 本机画像、报告与问答不受影响。</p>
+      <p>${esc(cloudErrorMessage(state.error))} 账单与画像都以云端为准，不会用本机旧数据代替。</p>
       <button class="btn btn-outline btn-sm" type="button" data-cloud-action="retry">重试</button>
     </div>`
     : '';
@@ -274,7 +277,7 @@ function cloudHTML(state, profile) {
       <div><p class="mono-label">CLOUD / 云端画像</p><h3>跨账单记录</h3></div>
       <span class="rp-cloud-status" data-state="${statusState}">${esc(statusText)}</span>
     </div>
-    <p class="rp-note">云端保存账单统计、报告快照与你主动记入的画像事实；原始 CSV、文件名与成交明细默认不上传。</p>
+    <p class="rp-note">云端保存成交明细、账单统计、报告快照与你主动记入的画像事实；原始 CSV 与文件名不上传。</p>
     ${state.notice ? `<p class="rp-cloud-notice" role="status">${esc(state.notice)}</p>` : ''}
     ${errorBanner}
     ${body}`;
@@ -348,6 +351,7 @@ export function mountCloudProfile(root, ctx, { profile = null } = {}) {
       state.loading = false;
       await prepareSummaryState();
       paint();
+      maybeAutoSummary();
     } catch (error) {
       if (!root.isConnected) return;
       state.loading = false;
@@ -356,7 +360,17 @@ export function mountCloudProfile(root, ctx, { profile = null } = {}) {
     }
   }
 
-  async function generateSummary() {
+  function maybeAutoSummary() {
+    if (state.summaryBusy || !state.digest || !state.digestHash) return;
+    if (state.summary && state.generatedHash === state.digestHash) return;
+    const last = autoSummaryTried.get(state.digestHash);
+    if (last && Date.now() - last < AUTO_SUMMARY_RETRY_MS) return;
+    if (typeof deps.requestProfileSummary !== 'function') return;
+    autoSummaryTried.set(state.digestHash, Date.now());
+    void generateSummary({ auto: true });
+  }
+
+  async function generateSummary({ auto = false } = {}) {
     if (state.summaryBusy || !state.digest) return;
     state.summaryBusy = true;
     state.summaryError = null;
@@ -372,6 +386,8 @@ export function mountCloudProfile(root, ctx, { profile = null } = {}) {
       state.summaryHash = view.source_hash ?? state.digestHash;
       state.generatedHash = state.digestHash;
       state.summarySaved = false;
+      // 模板兜底不写入云端，避免把兜底文案冒充为已保存的 AI 解读。
+      if (view.source !== 'ai' || typeof deps.saveProfileSummary !== 'function') return;
       try {
         const saved = await deps.saveProfileSummary({ digest: state.digest, summary: view.summary });
         state.summarySaved = true;
@@ -385,7 +401,7 @@ export function mountCloudProfile(root, ctx, { profile = null } = {}) {
         state.summarySaveError = '解读已生成，但未保存到云端。';
       }
     } catch {
-      state.summaryError = '解读生成失败，请稍后重试。';
+      state.summaryError = auto ? '自动解读暂不可用，可稍后重试。' : '解读生成失败，请稍后重试。';
     } finally {
       state.summaryBusy = false;
       paint();
@@ -444,7 +460,7 @@ export function mountCloudProfile(root, ctx, { profile = null } = {}) {
 
   if (cache.status === 'ready' && cache.data) {
     state.loading = false;
-    prepareSummaryState().then(() => paint());
+    prepareSummaryState().then(() => { paint(); maybeAutoSummary(); });
   } else {
     void refresh();
   }

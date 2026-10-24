@@ -62,6 +62,9 @@ const FACTS = [{
   await client.getProfile();
   await client.deleteFact({ id });
   await client.saveProfileSummary({ digest: { profile_key: 'abcdef01' }, summary: { headline: 'x' } });
+  await client.getBill({ id });
+  await client.getRules();
+  await client.saveRules({ versions: [] });
 
   check('账单：保存到 /api/bills（POST）', calls[0].url === '/functions/v1/app/api/bills'
     && calls[0].options.method === 'POST'
@@ -76,6 +79,14 @@ const FACTS = [{
   check('画像：删除事实按 id', calls[5].url === `/functions/v1/app/api/profile/facts/${id}` && calls[5].options.method === 'DELETE');
   check('画像：保存摘要只发送 digest / summary', calls[6].url === '/functions/v1/app/api/profile/summary'
     && Object.keys(JSON.parse(calls[6].options.body)).join(',') === 'digest,summary', calls[6].url);
+  check('账单：按 id 读取（GET，无 body）', calls[7].url === `/functions/v1/app/api/bills/${id}`
+    && calls[7].options.method === 'GET' && calls[7].options.body === undefined, calls[7].url);
+  check('规则：读取 /api/rules（GET）', calls[8].url === '/functions/v1/app/api/rules'
+    && calls[8].options.method === 'GET' && calls[8].options.body === undefined, calls[8].url);
+  check('规则：保存只发送 versions（PUT）', calls[9].url === '/functions/v1/app/api/rules'
+    && calls[9].options.method === 'PUT'
+    && Object.keys(JSON.parse(calls[9].options.body)).join(',') === 'versions'
+    && JSON.parse(calls[9].options.body).versions.length === 0, calls[9].url);
 }
 
 /* ==== 请求校验 ==== */
@@ -88,6 +99,9 @@ const FACTS = [{
     ['列表：非法 limit', () => client.listBills({ limit: 0 })],
     ['列表：非法 offset', () => client.listBills({ offset: -1 })],
     ['删除账单：非法 id', () => client.deleteBill({ id: invalidId })],
+    ['读取账单：非法 id', () => client.getBill({ id: invalidId })],
+    ['保存规则：非数组', () => client.saveRules({ versions: 'x' })],
+    ['保存规则：缺失 versions', () => client.saveRules()],
     ['快照：非法 id', () => client.saveSnapshot({ id: invalidId, snapshot: {} })],
     ['快照：空 snapshot', () => client.saveSnapshot({ id })],
     ['删除事实：非法 id', () => client.deleteFact({ id: invalidId })],

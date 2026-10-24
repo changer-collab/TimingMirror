@@ -1,5 +1,7 @@
 // 新前端的真实能力桥：共享业务状态、路由映射、助手挂载与既有视图适配。
-import { state as shared, notify, loadContractsDemo } from '../../src/state.js';
+import { state as shared, notify, defaultBill } from '../../src/state.js';
+import { cloudProfileFromBills, normalizeCloudBills } from '../../src/agent/cloudProfileModel.js';
+import { billFromCloudBill, cloudReportKeys, normalizeCloudRules } from '../../src/agent/cloudRestore.js';
 import { getRuleAssistantClient, renderAssistantPanel, explainAssistantResult } from '../../src/ui/assistantPanel.js';
 import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../../src/agent/httpTransport.js';
 import { createImportRecovery } from '../../src/agent/importRecovery.js';
@@ -11,8 +13,8 @@ import { createProfileFactRecorder } from '../../src/agent/profileSignals.js';
 import * as adapter from '../../src/demo/adapter.js';
 import { renderContract } from '../../src/ui/views/contractView.js';
 import { renderRealImport, runImportAi } from './realImport.js';
-import { getRealReportBundle, getRealReportState, loadRealReport } from './realReport.js';
-import { ruleStateOf, loadProfile } from './profileStore.js';
+import { getRealReportBundle, getRealReportState, loadRealReport, seedRealReport } from './realReport.js';
+import { ruleStateOf, loadProfile, setProfileBase } from './profileStore.js';
 import { openRuleCandidate } from './ruleCandidates.js';
 import { createQaAnswerService } from './qaAnswer.js';
 import { syncBill, syncSnapshotWithBill } from './cloudSync.js';
@@ -283,6 +285,107 @@ function getDataClient() {
   return dataClient;
 }
 
+// 云端恢复：启动时拉取规则、账单列表与最近一份账单明细；本机不保存用户数据。
+let cloudRestore = { status: 'idle', error: null, at: null, skipped: null };
+let restorePromise = null;
+
+function importInProgress() {
+  const bill = shared.bill ?? {};
+  const rec = shared.importRecovery ?? {};
+  return (bill.contextId && bill.status !== 'none') || (rec.status && rec.status !== 'idle');
+}
+
+function restoreErrorMessage(error) {
+  const code = error?.upstreamCode ?? error?.code ?? '';
+  if (code === 'login_required' || code === 'invalid_user_context') return '当前没有云端身份，请从站点入口重新打开。';
+  if (code === 'database_unavailable' || code === 'read_failed') return '云端数据库暂不可用。';
+  if (code === 'E_DATA_NETWORK') return '云端记录暂时连不上。';
+  return '云端记录读取失败。';
+}
+
+export function getCloudRestore() {
+  return { ...cloudRestore };
+}
+
+export function restoreFromCloud({ force = false } = {}) {
+  if (restorePromise) return restorePromise;
+  if (cloudRestore.status === 'ready' && !force) return Promise.resolve(getCloudRestore());
+  if (!force && importInProgress()) {
+    cloudRestore = { status: 'ready', error: null, at: new Date().toISOString(), skipped: 'import-active' };
+    return Promise.resolve(getCloudRestore());
+  }
+  cloudRestore = { status: 'loading', error: null, at: null, skipped: null };
+  scheduleChange(['cloud']);
+  restorePromise = (async () => {
+    try {
+      const client = getDataClient();
+      const [rulesResult, billsResult] = await Promise.allSettled([
+        client.getRules(),
+        client.listBills({ limit: 20 }),
+      ]);
+      if (!importInProgress()) {
+        const rules = rulesResult.status === 'fulfilled' ? normalizeCloudRules(rulesResult.value) : null;
+        if (rules && shared.contracts.versions.length === 0) {
+          shared.contracts = { ...shared.contracts, versions: rules };
+        }
+      }
+      if (billsResult.status === 'rejected') {
+        cloudRestore = {
+          status: 'error',
+          error: restoreErrorMessage(billsResult.reason),
+          at: new Date().toISOString(),
+          skipped: null,
+        };
+        return getCloudRestore();
+      }
+      const payload = billsResult.value;
+      const rows = normalizeCloudBills(payload);
+      const target = rows.find((row) => row.has_payload) ?? null;
+      // 恢复期间用户已开始导入：保留内存态，不用云端快照覆盖本次会话。
+      if (importInProgress()) {
+        cloudRestore = { status: 'ready', error: null, at: new Date().toISOString(), skipped: 'import-active' };
+        return getCloudRestore();
+      }
+      setProfileBase(cloudProfileFromBills(rows), { reportKeys: cloudReportKeys(payload) });
+      if (!target) {
+        cloudRestore = { status: 'ready', error: null, at: new Date().toISOString(), skipped: null };
+        return getCloudRestore();
+      }
+      const detail = await client.getBill({ id: target.id });
+      const restored = billFromCloudBill(detail?.bill ?? null);
+      if (!restored) {
+        cloudRestore = {
+          status: 'error',
+          error: '云端账单明细无法还原，已停止恢复。',
+          at: new Date().toISOString(),
+          skipped: null,
+        };
+        return getCloudRestore();
+      }
+      const rawRow = (Array.isArray(payload?.bills) ? payload.bills : []).find((row) => row?.id === target.id);
+      const report = rawRow?.snapshot?.report;
+      if (rawRow?.snapshot?.report_available !== false && report?.review?.portfolio_published === true) {
+        seedRealReport(restored, report);
+      }
+      shared.bill = { ...defaultBill(), ...restored };
+      cloudRestore = { status: 'ready', error: null, at: new Date().toISOString(), skipped: null };
+      return getCloudRestore();
+    } catch (error) {
+      cloudRestore = {
+        status: 'error',
+        error: restoreErrorMessage(error),
+        at: new Date().toISOString(),
+        skipped: null,
+      };
+      return getCloudRestore();
+    } finally {
+      restorePromise = null;
+      scheduleChange(['cloud', 'bill', 'contracts']);
+    }
+  })();
+  return restorePromise;
+}
+
 function getProfileFactTransport() {
   if (!profileFactTransport) {
     profileFactTransport = createHttpTransport({ baseUrl: SAME_ORIGIN_BASE, paths: SITE_FUNCTION_PATHS });
@@ -431,9 +534,8 @@ const ctx = {
     openRuleCandidate,
   },
   cloudDeps: {
-    syncBill: ({ bill, includeTrades }) => syncBill({
+    syncBill: ({ bill }) => syncBill({
       bill,
-      includeTrades,
       saveBill: (args) => getDataClient().saveBill(args),
     }),
     syncSnapshot: ({ bill, snapshot }) => syncSnapshotWithBill({
@@ -443,6 +545,9 @@ const ctx = {
       saveSnapshot: (args) => getDataClient().saveSnapshot(args),
     }),
     listBills: (args) => getDataClient().listBills(args),
+    getBill: (args) => getDataClient().getBill(args),
+    getRules: (args) => getDataClient().getRules(args),
+    saveRules: (args) => getDataClient().saveRules(args),
     getProfile: (args) => getDataClient().getProfile(args),
     deleteBill: (args) => getDataClient().deleteBill(args),
     deleteFact: (args) => getDataClient().deleteFact(args),
@@ -467,7 +572,7 @@ const ctx = {
 export function initBridge({ onChange } = {}) {
   onChangeCallback = typeof onChange === 'function' ? onChange : null;
   if (!rulesRestored) {
-    shared.contracts.versions = loadContractsDemo();
+    shared.contracts = { ...shared.contracts, versions: [] };
     rulesRestored = true;
   }
   loadOldCss();
@@ -475,6 +580,7 @@ export function initBridge({ onChange } = {}) {
   shared.assistant.open = !lastMobileLayout;
   shared.assistant.mobileView = false;
   bindAssistantShell();
+  restoreFromCloud().catch(() => {});
   return { state: shared, ctx };
 }
 

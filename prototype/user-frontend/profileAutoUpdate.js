@@ -1,5 +1,6 @@
 // 报告发布后的画像自动解读：首次 + 每新增 2 份报告调用一次模型。
 // 只发送 digest；模板兜底不写云端，避免把兜底文案冒充 AI 解读。
+// 频率状态只留内存：本机不持久化用户数据，刷新后由页面进入时的摘要检查补齐。
 import {
   buildProfileDigest, profileDigestHash, profileSummaryIsFresh,
 } from '../../src/agent/profileDigest.js';
@@ -7,7 +8,6 @@ import {
   summaryResponseView, validSummaryValue,
 } from '../../src/agent/cloudProfileModel.js';
 
-const AUTO_STATE_KEY = 'tm.profile.autoSummary.v1';
 const AUTO_STATE_VERSION = 2;
 const AUTO_REPORT_STEP = 2;
 const MAX_SEEN_REPORTS = 24;
@@ -15,32 +15,12 @@ const MAX_SEEN_REPORTS = 24;
 let memoryState = null;
 let inFlight = null;
 
-function storage() {
-  try {
-    return typeof localStorage !== 'undefined' ? localStorage : null;
-  } catch {
-    return null;
-  }
-}
-
 function readState() {
-  const store = storage();
-  if (store) {
-    try {
-      const parsed = JSON.parse(store.getItem(AUTO_STATE_KEY) || 'null');
-      if (parsed && parsed.version === AUTO_STATE_VERSION) return parsed;
-    } catch { /* 本地状态损坏时从空状态开始 */ }
-  }
   return memoryState;
 }
 
 function writeState(state) {
   memoryState = state;
-  const store = storage();
-  if (!store) return;
-  try {
-    store.setItem(AUTO_STATE_KEY, JSON.stringify(state));
-  } catch { /* 本地状态保存失败不阻断自动更新 */ }
 }
 
 function emptyState(profileId) {
@@ -195,7 +175,4 @@ export function autoProfileSummaryState(profileId) {
 
 export function resetAutoProfileSummaryState() {
   memoryState = null;
-  const store = storage();
-  if (!store) return;
-  try { store.removeItem(AUTO_STATE_KEY); } catch { /* 清理失败不影响页面 */ }
 }

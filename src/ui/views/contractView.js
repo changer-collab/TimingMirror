@@ -234,7 +234,13 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     if (!recs || !recs.length) return;
     simToken = null;
     simContextLoadingKey = null;
-    set({ contracts: { versions: [...c.versions, ...recs], simContext: null, sim: { ...c.sim, result: null, running: false, runId: null, fallback: null }, ...extra } });
+    const versions = [...c.versions, ...recs];
+    set({ contracts: { versions, simContext: null, sim: { ...c.sim, result: null, running: false, runId: null, fallback: null }, ...extra } });
+    const saveRules = ctx?.cloudDeps?.saveRules;
+    if (typeof saveRules === 'function') {
+      Promise.resolve(saveRules({ versions })).catch(() => {});
+      return;
+    }
     saveContractsDemo();
   }
   function openEditor(mode, { rule = null, template_id = null, action = null } = {}) {
