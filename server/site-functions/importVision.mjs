@@ -78,7 +78,10 @@ export function normalizeImportVisionRequest(body) {
   };
 }
 
-/** 视觉响应在统一草稿 schema 上额外允许可选的 column_mapping；文字通道保持不含该字段。 */
+/** 视觉响应允许可选 column_mapping，并在严格校验前窄范围归一化 unresolved[].row；文字通道保持原契约。 */
 export function validateImportVisionResponse(rawText) {
-  return validateImportRecoverResponse(rawText, { allowColumnMapping: true });
+  return validateImportRecoverResponse(rawText, {
+    allowColumnMapping: true,
+    normalizeUnresolvedRow: true,
+  });
 }

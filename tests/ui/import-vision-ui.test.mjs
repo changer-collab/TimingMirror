@@ -14,6 +14,7 @@ const css = readFileSync(join(ROOT, 'prototype/user-frontend/real-views.css'), '
 const shared = readFileSync(join(ROOT, 'src/agent/importVision.js'), 'utf8');
 const styles = readFileSync(join(ROOT, 'prototype/user-frontend/styles.css'), 'utf8');
 const mappingModule = readFileSync(join(ROOT, 'src/engine/importColumnMapping.js'), 'utf8');
+const draftModule = readFileSync(join(ROOT, 'src/engine/importDraft.js'), 'utf8');
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -29,6 +30,8 @@ check('线上页：标题只在 preparing 时显示正在准备', /status === 'p
 check('线上页：提供结束本次识别/重新开始入口', /data-action="restart-import"/.test(live) && /completeFlow\(\{ reason: 'user_restart' \}\)/.test(live));
 check('线上页：显示已用/剩余预算', /budgetText/.test(live) && /剩余/.test(live));
 check('线上页：渲染 unresolved 及原因', /unresolvedPanelHTML/.test(live) && /rec\?\.draft\?\.unresolved/.test(live));
+check('线上页：unresolved row 为 null 时显示未标明原图行号', /unresolvedRowLabel/.test(live)
+  && /未标明原图行号/.test(draftModule) && !/记录 \$\{esc\(item\.row\)\}/.test(live));
 check('线上页：视觉重复只警示，不自动取消勾选', /duplicatePolicy: 'warn'/.test(live));
 check('线上页：视觉草稿显示交收日期来源提示', /AI 使用了交收日期/.test(live) && /日期来源需要核对/.test(live));
 check('线上页：最终账本校验显示明确阻断原因且保留草稿', /validationErrorsHTML/.test(live)

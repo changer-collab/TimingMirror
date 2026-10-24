@@ -158,7 +158,40 @@ function normalizeSide(value) {
   return undefined;
 }
 
-export function validateImportRecoverResponse(rawText, { allowColumnMapping = false } = {}) {
+const ROW_DIGITS_RE = /^\d+$/;
+const ROW_CN_LABEL_RE = /^第(\d+)行$/;
+const ROW_RECORD_LABEL_RE = /^记录 ?(\d+)$/;
+
+function digitsToRow(value) {
+  if (!ROW_DIGITS_RE.test(value)) return null;
+  const number = Number(value);
+  return Number.isSafeInteger(number) ? number : null;
+}
+
+/**
+ * 视觉来源行号只做窄范围归一化：数字与固定中文行号格式转为数字，其余安全降级为 null。
+ * 不从任意文本中提取数字，也不改变行号基准。
+ */
+export function coerceUnresolvedRow(value) {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (text === '') return null;
+  const direct = digitsToRow(text);
+  if (direct !== null) return direct;
+  const cnLabel = text.match(ROW_CN_LABEL_RE);
+  if (cnLabel) return digitsToRow(cnLabel[1]);
+  const recordLabel = text.match(ROW_RECORD_LABEL_RE);
+  if (recordLabel) return digitsToRow(recordLabel[1]);
+  return null;
+}
+
+export function validateImportRecoverResponse(rawText, {
+  allowColumnMapping = false,
+  normalizeUnresolvedRow: normalizeRow = false,
+} = {}) {
   const responseKeys = allowColumnMapping ? VISION_RESPONSE_KEYS : RESPONSE_KEYS;
   if (typeof rawText !== 'string') {
     return failResponse(rawText, null, '响应正文必须为字符串', 'response_not_string', 'response');
@@ -246,10 +279,11 @@ export function validateImportRecoverResponse(rawText, { allowColumnMapping = fa
     if (!isText(raw.reason, 300) || raw.reason.trim() === '') {
       return failResponse(rawText, parsed, `unresolved[${i}].reason 必须为非空短文本`, 'unresolved_reason_invalid', 'unresolved[].reason');
     }
-    if (raw.row !== undefined && raw.row !== null && (!Number.isInteger(raw.row) || raw.row < 0)) {
+    const row = normalizeRow ? coerceUnresolvedRow(raw.row) : (raw.row ?? null);
+    if (!normalizeRow && row !== null && (!Number.isInteger(row) || row < 0)) {
       return failResponse(rawText, parsed, `unresolved[${i}].row 必须为非负整数或 null`, 'unresolved_row_invalid', 'unresolved[].row');
     }
-    unresolved.push({ row: raw.row ?? null, reason: raw.reason.trim() });
+    unresolved.push({ row, reason: raw.reason.trim() });
   }
   let columnMapping;
   if (allowColumnMapping && parsed.column_mapping !== undefined) {
