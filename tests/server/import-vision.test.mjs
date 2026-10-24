@@ -18,7 +18,10 @@ import {
   ModelTransportError,
   createDashScopeTransport,
 } from '../../server/site-functions/dashscope.mjs';
-import { IMPORT_RECOVER_STAGE } from '../../server/site-functions/importRecover.mjs';
+import {
+  IMPORT_RECOVER_STAGE,
+  validateImportRecoverResponse,
+} from '../../server/site-functions/importRecover.mjs';
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -93,6 +96,90 @@ async function invokeRecover(handler, body) {
   check('响应：统一 {trades,unresolved} schema', ok.ok === true && ok.value.trades.length === 1);
   const bad = validateImportVisionResponse(JSON.stringify({ trades: 'x', unresolved: [] }));
   check('响应：结构错误拒绝', bad.ok === false && bad.code === 'E_IMPORT_RECOVER_RESPONSE_INVALID');
+}
+
+/* —— 可选 column_mapping：旧响应兼容、固定字段/枚举、泄漏边界 —— */
+{
+  const base = JSON.parse(VALID);
+  const mapping = [
+    { source_label: '名称/代码', source_subfield: '代码', target_field: 'symbol', confidence: 'high' },
+    { source_label: '标志/交收日期', source_subfield: '标志', target_field: 'direction', confidence: 'high' },
+    { source_label: '标志/交收日期', source_subfield: '交收日期', target_field: 'settlement_date', confidence: 'high' },
+    { source_label: '成交价/量', source_subfield: '成交价', target_field: 'price', confidence: 'high' },
+    { source_label: '成交价/量', source_subfield: '量', target_field: 'quantity', confidence: 'high' },
+    { source_label: '成交/清算额', source_subfield: null, target_field: 'settlement_amount', confidence: 'medium' },
+  ];
+  const withMapping = JSON.stringify({ ...base, column_mapping: mapping });
+  const ok = validateImportVisionResponse(withMapping);
+  check('映射：合法 column_mapping 通过且固定字段归一化', ok.ok === true
+    && ok.value.column_mapping.length === mapping.length
+    && Object.keys(ok.value.column_mapping[0]).sort().join(',') === 'confidence,source_label,source_subfield,target_field'
+    && ok.value.column_mapping[5].source_subfield === null, JSON.stringify(ok.value?.column_mapping));
+
+  const missing = validateImportVisionResponse(VALID);
+  check('映射：缺少 column_mapping 的旧响应仍然通过', missing.ok === true
+    && !('column_mapping' in missing.value), JSON.stringify(missing.value));
+
+  const textWithMapping = validateImportRecoverResponse(withMapping);
+  check('映射：文字通道仍拒绝 column_mapping（不放宽旧契约）', textWithMapping.ok === false
+    && textWithMapping.diagnostics?.validation_reason === 'response_unexpected_key', JSON.stringify(textWithMapping));
+
+  const invalid = (value) => validateImportVisionResponse(JSON.stringify({ ...base, column_mapping: value }));
+  const extra = invalid([{ ...mapping[0], note: '原图截图' }]);
+  check('映射：映射项额外字段拒绝', extra.ok === false
+    && extra.diagnostics?.validation_reason === 'column_mapping_unexpected_key'
+    && extra.diagnostics?.field === 'column_mapping[0]', JSON.stringify(extra.diagnostics));
+  const unknownTarget = invalid([{ ...mapping[0], target_field: 'note' }]);
+  check('映射：未知 target_field 拒绝', unknownTarget.ok === false
+    && unknownTarget.diagnostics?.validation_reason === 'column_mapping_target_invalid', JSON.stringify(unknownTarget.diagnostics));
+  const badConfidence = invalid([{ ...mapping[0], confidence: 'certain' }]);
+  check('映射：非法 confidence 拒绝', badConfidence.ok === false
+    && badConfidence.diagnostics?.validation_reason === 'column_mapping_confidence_invalid', JSON.stringify(badConfidence.diagnostics));
+  const notArray = invalid('成交价');
+  check('映射：非数组拒绝', notArray.ok === false
+    && notArray.diagnostics?.validation_reason === 'column_mapping_not_array', JSON.stringify(notArray.diagnostics));
+
+  const leakCases = [
+    ['图片 Base64', { ...mapping[0], source_label: 'data:image/jpeg;base64,AAAA' }],
+    ['CSV 行', { ...mapping[0], source_label: '日期,标的,方向' }],
+    ['账户信息', { ...mapping[0], source_label: '资金账号 88888888' }],
+    ['模型原文', { ...mapping[0], source_label: '{"trades":[]}' }],
+    ['子字段泄漏', { ...mapping[0], source_subfield: '账户 123456' }],
+  ];
+  for (const [name, entry] of leakCases) {
+    const out = invalid([entry]);
+    check(`映射：${name} 不通过`, out.ok === false
+      && /^column_mapping_(source_label|source_subfield)_invalid$/.test(out.diagnostics?.validation_reason ?? ''), JSON.stringify(out.diagnostics));
+  }
+
+  const rowString = validateImportVisionResponse(JSON.stringify({
+    trades: [], unresolved: [{ row: '2', reason: '日期无法确定' }],
+  }));
+  check('映射：unresolved[].row 仍只允许非负整数或 null', rowString.ok === false
+    && rowString.diagnostics?.validation_reason === 'unresolved_row_invalid'
+    && rowString.diagnostics?.field === 'unresolved[].row', JSON.stringify(rowString.diagnostics));
+  const rowNull = validateImportVisionResponse(JSON.stringify({
+    trades: [], unresolved: [{ row: null, reason: '日期无法确定' }],
+  }));
+  check('映射：unresolved[].row=null 仍合法', rowNull.ok === true);
+
+  const handler = createHandler({ transport: fakeTransport(withMapping) });
+  const passed = await invoke(handler, { images: [IMAGE], stage: IMPORT_VISION_STAGE, source_kind: 'image' });
+  const passedBody = passed.json ? JSON.parse(passed.json.rawText) : null;
+  check('映射：Handler 200 且原样保留 column_mapping', passed.status === 200
+    && passedBody?.column_mapping?.length === mapping.length
+    && passedBody.column_mapping[1].target_field === 'direction', passed.text);
+
+  const leakingHandler = createHandler({
+    transport: fakeTransport(JSON.stringify({
+      ...base,
+      column_mapping: [{ ...mapping[0], source_label: '资金账号 123456' }],
+    })),
+  });
+  const leaking = await invoke(leakingHandler, { images: [IMAGE], stage: IMPORT_VISION_STAGE, source_kind: 'image' });
+  check('映射：502 诊断不回传非法列名原文', leaking.status === 502
+    && leaking.json?.validation_reason === 'column_mapping_source_label_invalid'
+    && !leaking.text.includes('123456'), leaking.text);
 }
 
 /* —— 502 脱敏诊断：失败子类与边界 —— */
@@ -245,6 +332,9 @@ async function invokeRecover(handler, body) {
   const prompt = body.input.messages[0].content;
   check('DashScope vision：交割单提示覆盖日期/代码拆分/价格量拆分/金额/非交易记录',
     ['成交日期', '交收日期', '名称/代码', '成交价/量', '成交额', '清算额', '负金额', '证券转银行', '银证转账', 'unresolved']
+      .every((keyword) => prompt.includes(keyword)), prompt);
+  check('DashScope vision：提示词要求可选 column_mapping、交收日期标记且费用不伪装',
+    ['column_mapping', 'settlement_date', 'settlement_amount', '绝不把成交额或清算额映射成 fee']
       .every((keyword) => prompt.includes(keyword)), prompt);
 }
 

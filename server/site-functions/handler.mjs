@@ -233,7 +233,7 @@ function importVisionResponseDiagnostics(checked) {
     out.raw_length = source.raw_length;
   }
   if (Array.isArray(source.parsed_keys)) {
-    out.parsed_keys = source.parsed_keys.filter((key) => key === 'trades' || key === 'unresolved');
+    out.parsed_keys = source.parsed_keys.filter((key) => key === 'trades' || key === 'unresolved' || key === 'column_mapping');
   }
   if (Number.isInteger(source.trades_count) && source.trades_count >= 0) {
     out.trades_count = source.trades_count;

@@ -18,7 +18,9 @@ import {
   draftToNormalized,
   draftSummary,
   draftRowStatusText,
+  draftRowSeverity,
 } from '../../src/engine/importDraft.js';
+import { columnMappingRows } from '../../src/engine/importColumnMapping.js';
 import {
   IMPORT_VISION_MAX_IMAGES,
   validateVisionInput,
@@ -401,9 +403,10 @@ function draftTable(rec) {
   if (!draft) return '';
   const rows = draft.rows.map((row, index) => {
     const status = draftRowStatusText(row);
+    const severity = draftRowSeverity(row);
     const issues = Array.isArray(row.issues) && row.issues.length ? row.issues.join('；') : '';
     const input = (key, extra = '') => `<input class="tm-cell-input" data-row="${esc(row.id)}" data-field="${key}" value="${esc(row.fields[key] ?? '')}" ${extra}>`;
-    return `<tr class="tm-draft-row ${row.status}">
+    return `<tr class="tm-draft-row ${row.status} tm-severity-${severity}">
       <td class="line-no"><label class="tm-line-pick"><input type="checkbox" data-row="${esc(row.id)}" data-include ${row.include === false ? '' : 'checked'} aria-label="导入第 ${row.line ?? index + 2} 行"><span>${String(row.line ?? index + 2).padStart(2, '0')}</span></label></td>
       <td>${input('date', 'inputmode="numeric"')}</td>
       <td>${input('symbol', 'inputmode="numeric"')}</td>
@@ -412,8 +415,8 @@ function draftTable(rec) {
       <td>${input('quantity', 'inputmode="numeric"')}</td>
       <td>${input('fee', 'inputmode="decimal"')}</td>
       <td>${input('tax', 'inputmode="decimal"')}</td>
-      <td class="tm-row-status">${esc(status)}${issues ? `<span>${esc(issues)}</span>` : ''}</td>
-      <td><button class="tm-link" type="button" data-action="remove-row" data-row="${esc(row.id)}">删除</button></td>
+      <td class="tm-row-status is-${severity}">${esc(status)}${issues ? `<span>${esc(issues)}</span>` : ''}</td>
+      <td><button class="tm-link tm-row-remove" type="button" data-action="remove-row" data-row="${esc(row.id)}">删除</button></td>
     </tr>`;
   }).join('');
   return `<div class="table-wrap"><table class="ledger tm-draft-table">
@@ -453,7 +456,7 @@ function billWarningsHTML(bill) {
   const missing = (bill.trades ?? []).filter((trade) => trade.fee_missing === true || trade.tax_missing === true);
   if (!missing.length) return '';
   const lines = missing.map((trade) => trade.source?.line).filter(Boolean).join('、');
-  return `<div class="bill-warning" role="status">
+  return `<div class="tm-alert tm-alert--warning" role="status">
     <strong>${missing.length} 行费用或税费缺失</strong>
     <span>${lines ? `第 ${lines} 行` : '缺失行'}按 0 展示并标注。</span>
   </div>`;
@@ -495,7 +498,7 @@ function pendingPanelHTML(rec) {
         <p class="mono-label">READING / 识别中</p>
         <h2 id="pending-title">正在整理可核对交易。</h2>
       </div>
-      <div class="bill-tags"><span class="status-tag">进行中</span></div>
+      <div class="bill-tags"><span class="status-tag status-tag--info">进行中</span></div>
     </div>
     <p class="tm-note">${rec.vision?.images?.length ? `正在识别所选 ${imageCountText(rec.vision)}。` : '正在识别提取出的文字。'}完成后会直接显示可编辑交易表。</p>
     <p class="tm-note">本次识别${budgetText(rec)}。</p>
@@ -536,7 +539,7 @@ function unresolvedPanelHTML(rec) {
   const items = rec?.draft?.unresolved ?? rec?.unresolved ?? [];
   if (!items.length) return '';
   const rows = items.map((item) => `<li>${item.row ? `记录 ${esc(item.row)} · ` : ''}${esc(item.reason)}</li>`).join('');
-  return `<div class="bill-warning" role="status">
+  return `<div class="tm-alert tm-alert--warning" role="status">
     <strong>${items.length} 条记录未进入交易草稿</strong>
     <ul class="tm-unresolved">${rows}</ul>
     <span>它们可能是证券转银行、利息、汇总等非买卖记录；请核对原图后手动处理。</span>
@@ -548,11 +551,38 @@ function validationErrorsHTML(rec) {
   if (!errors.length) return '';
   const shown = errors.slice(0, 10);
   const items = shown.map((error) => `<li>${error.line ? `第 ${error.line} 行 · ` : ''}${esc(error.message)}</li>`).join('');
-  return `<div class="bill-warning" role="alert">
+  return `<div class="tm-alert tm-alert--error" role="alert">
     <strong>最终账本校验未通过</strong>
     <ul class="tm-unresolved">${items}</ul>
     <span>草稿仍保留；系统不会补猜期初持仓或自动改动交易。</span>
   </div>`;
+}
+
+function columnMappingHTML(view) {
+  if (!view.hasMapping) {
+    return `<div class="tm-alert tm-alert--info" role="status">
+      <strong>原图列名映射</strong>
+      <span>本次识别没有返回原图列名映射；不影响已有交易草稿，请继续逐行核对。</span>
+    </div>`;
+  }
+  const groups = view.groups.map((group) => `<li>
+      <span class="tm-column-map-source">${esc(group.source_display)}</span>
+      <span class="tm-column-map-arrow" aria-hidden="true">→</span>
+      <span class="tm-column-map-target">${esc(group.target_display)}</span>
+    </li>`).join('');
+  const fields = view.fields.map((field) => `<div class="tm-column-map-field">
+      <dt>${esc(field.label)}</dt>
+      <dd class="${field.matched ? 'is-matched' : 'is-unmatched'}">${esc(field.source_display)}</dd>
+    </div>`).join('');
+  return `<section class="tm-column-map" aria-labelledby="column-map-title">
+    <div class="tm-column-map-head">
+      <strong id="column-map-title">原图列名映射</strong>
+      <span>展示识别到的原图列名，不改变可编辑表格列</span>
+    </div>
+    <ul class="tm-column-map-groups">${groups}</ul>
+    <dl class="tm-column-map-fields">${fields}</dl>
+    ${view.hasSettlementDate ? '<p class="tm-column-map-foot">交收日期只作为日期来源展示；系统不会倒推成交日期。</p>' : ''}
+  </section>`;
 }
 
 function draftPanelHTML(state, rec) {
@@ -561,15 +591,16 @@ function draftPanelHTML(state, rec) {
   const dates = draft.rows.map((row) => row.fields.date).filter(Boolean).sort();
   const range = dates.length ? `${dates[0]} → ${dates[dates.length - 1]}` : '—';
   const symbols = new Set(draft.rows.map((row) => row.fields.symbol).filter(Boolean)).size;
-  const sourceLabel = rec.sourceKind === 'image' || rec.vision?.kind
-    ? 'AI 视觉识别'
-    : rec.modelCalls > 0 ? 'AI 识别' : '本地解析';
-  const usesSettlementDate = (draft.rows ?? []).some((row) => (row.issues ?? []).some((issue) => String(issue).includes('交收日期')));
-  const dateSourceNotice = rec.vision?.kind
-    ? `<div class="bill-warning" role="status">
-      <strong>${usesSettlementDate ? 'AI 使用了交收日期' : '日期来源需要核对'}</strong>
+  const isVisionDraft = rec.sourceKind === 'image' || rec.vision?.kind === 'image' || rec.vision?.kind === 'pdf_scan';
+  const sourceLabel = isVisionDraft ? 'AI 视觉识别' : rec.modelCalls > 0 ? 'AI 识别' : '本地解析';
+  const mappingView = columnMappingRows(draft.columnMapping);
+  const usesSettlementDate = (draft.rows ?? []).some((row) => (row.issues ?? []).some((issue) => String(issue).includes('交收日期')))
+    || mappingView.hasSettlementDate;
+  const dateSourceNotice = isVisionDraft
+    ? `<div class="tm-alert tm-alert--warning" role="status">
+      <strong>${usesSettlementDate ? '使用交收日期' : '日期来源需要核对'}</strong>
       <span>${usesSettlementDate
-        ? '草稿日期来自截图中的交收日期，不代表成交日期；请逐行核对并按原始成交日期修正。'
+        ? 'AI 使用了交收日期作为草稿日期，不代表成交日期；系统不会倒推成交日期，请逐行核对并按原始成交日期修正。'
         : '视觉识别只使用截图中可见的日期列；若列名是“交收日期”，它不是成交日期。系统不会自动倒推，请逐行核对。'}</span>
     </div>`
     : '';
@@ -579,7 +610,7 @@ function draftPanelHTML(state, rec) {
         <p class="mono-label">BILL / 交易核对</p>
         <h2 id="draft-title">已整理 ${draft.rows.length} 行草稿。</h2>
       </div>
-      <div class="bill-tags"><span class="status-tag ok">待核对</span><span class="status-tag">仅本机</span></div>
+      <div class="bill-tags"><span class="status-tag status-tag--warning">待核对</span><span class="status-tag status-tag--info">仅本机</span></div>
     </div>
     <div class="bill-meta">
       <span>来源 <b>${sourceLabel}</b></span>
@@ -588,10 +619,11 @@ function draftPanelHTML(state, rec) {
       <span>标的 <b>${symbols} 个</b></span>
     </div>
     <p class="tm-note">已选 ${summary.included} 行 · 可导入 ${summary.valid} 行${summary.duplicate ? ` · 疑似重复 ${summary.duplicate}` : ''} · 本次识别${budgetText(rec)}</p>
-    ${rec.notice ? `<div class="bill-warning" role="status"><strong>${esc(rec.notice)}</strong><span>导入前仍需要你逐行核对并校验。</span></div>` : ''}
+    ${rec.notice ? `<div class="tm-alert tm-alert--info" role="status"><strong>${esc(rec.notice)}</strong><span>导入前仍需要你逐行核对并校验。</span></div>` : ''}
     ${dateSourceNotice}
     ${errorLine(rec)}
     ${validationErrorsHTML(rec)}
+    ${isVisionDraft ? columnMappingHTML(mappingView) : ''}
     ${draftTable(rec)}
     ${unresolvedPanelHTML(rec)}
     <div class="bill-actions">
@@ -617,12 +649,12 @@ function billPanelHTML(state, rec) {
   const sourceLabel = rec?.sourceKind === 'text' ? '粘贴文字' : '本地文件';
   const fileSize = rec?.sourceKind === 'text' ? '—' : (bill.fileSize ? fmtSize(bill.fileSize) : '—');
   const statusTag = confirmed
-    ? '<span class="status-tag ok">已确认</span>'
-    : '<span class="status-tag ok">本地校验通过</span>';
+    ? '<span class="status-tag status-tag--success">已确认</span>'
+    : '<span class="status-tag status-tag--success">本地校验通过</span>';
   const sync = billSyncStatus(bill);
   const cloudTag = confirmed
     ? `<span class="status-tag tm-cloud-chip" data-role="cloud-sync" data-context="${esc(bill.contextId ?? '')}" data-state="${esc(sync.state)}" title="${esc(cloudStatusTitle(sync))}">${esc(cloudStatusText(sync))}</span>`
-    : '<span class="status-tag">仅本机</span>';
+    : '<span class="status-tag status-tag--info">仅本机</span>';
   return `<section class="panel bill" id="bill" aria-labelledby="bill-title">
     <div class="bill-head">
       <div>
@@ -675,7 +707,7 @@ function visionPanelHTML(state, rec) {
         <p class="mono-label">VISION / 图片与 PDF</p>
         <h2 id="vision-title">${esc(title)}</h2>
       </div>
-      <div class="bill-tags"><span class="status-tag ok">仅本机处理</span><span class="status-tag">识别前不发送</span></div>
+      <div class="bill-tags"><span class="status-tag status-tag--info">仅本机处理</span><span class="status-tag status-tag--info">识别前不发送</span></div>
     </div>
     <div class="bill-meta">
       <span>来源 <b>${vision.kind === 'pdf_scan' ? '扫描 PDF' : '截图'}</b></span>
@@ -1201,7 +1233,7 @@ async function aiVision(ctx) {
       set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), error: { code: result.code, message: result.message, upstream: result.upstream ?? null, retryable: result.retryable === true } } });
       return { ok: false, kind: 'vision', code: result.code };
     }
-    const draft = buildAiDraft({ aiTrades: result.draft.trades, unresolved: result.draft.unresolved, localDraft: rec.localDraft ?? null, sourceFile: rec.fileName || '视觉识别', requestId: session.request_ids?.at(-1) ?? null, duplicatePolicy: 'warn', nonTradePolicy: 'unresolved' });
+    const draft = buildAiDraft({ aiTrades: result.draft.trades, unresolved: result.draft.unresolved, localDraft: rec.localDraft ?? null, sourceFile: rec.fileName || '视觉识别', requestId: session.request_ids?.at(-1) ?? null, duplicatePolicy: 'warn', nonTradePolicy: 'unresolved', columnMapping: result.draft.columnMapping ?? [] });
     set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), status: 'draft', draft, unresolved: result.draft.unresolved, notice: aiDraftNotice(result.draft.trades, result.draft.unresolved), error: null } });
     return { ok: true, kind: 'vision', draftCount: draft.rows.filter((row) => row.include !== false).length };
   } catch {

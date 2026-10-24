@@ -14,10 +14,31 @@ export const IMPORT_RECOVER_CODES = Object.freeze({
 
 const REQUEST_KEYS = new Set(['content', 'stage', 'source_kind', 'flow_id', 'request_id']);
 const RESPONSE_KEYS = new Set(['trades', 'unresolved']);
+const VISION_RESPONSE_KEYS = new Set(['trades', 'unresolved', 'column_mapping']);
+const DIAGNOSTIC_RESPONSE_KEYS = new Set(['trades', 'unresolved', 'column_mapping']);
 const TRACE_ID_RE = /^[A-Za-z0-9._:-]{1,120}$/;
 const TRADE_KEYS = new Set(['date', 'symbol', 'side', 'price', 'quantity', 'fee', 'tax', 'confidence', 'issues']);
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isText = (v, max = 200) => typeof v === 'string' && v.length <= max;
+
+export const COLUMN_MAPPING_MAX_ENTRIES = 50;
+export const COLUMN_MAPPING_MAX_LABEL_CHARS = 40;
+export const COLUMN_MAPPING_TARGET_FIELDS = Object.freeze([
+  'name', 'symbol', 'direction', 'date', 'settlement_date',
+  'price', 'quantity', 'amount', 'settlement_amount', 'fee', 'tax',
+]);
+export const COLUMN_MAPPING_CONFIDENCES = Object.freeze(['high', 'medium', 'low']);
+const COLUMN_MAPPING_KEYS = new Set(['source_label', 'source_subfield', 'target_field', 'confidence']);
+const UNSAFE_COLUMN_LABEL_RES = Object.freeze([
+  /[\u0000-\u001f\u007f]/,
+  /[,\t\r\n]/,
+  /[<>{}[\]"]/,
+  /data:image|base64/i,
+  /^[A-Za-z0-9+/=]{32,}$/,
+  /(?:https?:\/\/|www\.|file:\/\/|[A-Za-z]:\\|\/\/)/i,
+  /(账户|账号|资金号|股东号|证券号|银行卡|身份证|手机号|邮箱|密码|token|api[\s_-]?key|authorization|bearer|credential)/i,
+  /\b(?:trades?|unresolved|column_mapping|source_label|source_subfield|target_field|confidence)\b/i,
+]);
 
 function fail(code, message) {
   return { ok: false, code, errors: [message] };
@@ -27,11 +48,54 @@ function responseMeta(rawText, parsed) {
   const meta = { response_type: typeof rawText };
   if (typeof rawText === 'string') meta.raw_length = [...rawText].length;
   if (isObject(parsed)) {
-    meta.parsed_keys = Object.keys(parsed).filter((key) => RESPONSE_KEYS.has(key));
+    meta.parsed_keys = Object.keys(parsed).filter((key) => DIAGNOSTIC_RESPONSE_KEYS.has(key));
     if (Array.isArray(parsed.trades)) meta.trades_count = parsed.trades.length;
     if (Array.isArray(parsed.unresolved)) meta.unresolved_count = parsed.unresolved.length;
   }
   return meta;
+}
+
+function readColumnLabel(value, { optional = false } = {}) {
+  if (value === undefined || value === null) {
+    return optional ? { ok: true, value: null } : { ok: false, reason: 'required' };
+  }
+  if (typeof value !== 'string') return { ok: false, reason: 'type' };
+  const trimmed = value.trim();
+  if (trimmed === '') return optional ? { ok: true, value: null } : { ok: false, reason: 'empty' };
+  if ([...trimmed].length > COLUMN_MAPPING_MAX_LABEL_CHARS) return { ok: false, reason: 'length' };
+  if (UNSAFE_COLUMN_LABEL_RES.some((re) => re.test(trimmed))) return { ok: false, reason: 'unsafe' };
+  return { ok: true, value: trimmed };
+}
+
+/** 可选映射：只允许固定字段和枚举；任何一项非法都拒绝，避免把自由文本透传到页面。 */
+export function validateColumnMapping(raw) {
+  if (!Array.isArray(raw)) return { ok: false, reason: 'not_array' };
+  if (raw.length > COLUMN_MAPPING_MAX_ENTRIES) return { ok: false, reason: 'too_many' };
+  const value = [];
+  for (let i = 0; i < raw.length; i++) {
+    const item = raw[i];
+    if (!isObject(item)) return { ok: false, reason: 'item_invalid', index: i };
+    if (Object.keys(item).some((key) => !COLUMN_MAPPING_KEYS.has(key))) {
+      return { ok: false, reason: 'unexpected_key', index: i };
+    }
+    const label = readColumnLabel(item.source_label);
+    if (!label.ok) return { ok: false, reason: 'source_label_invalid', index: i };
+    const subfield = readColumnLabel(item.source_subfield, { optional: true });
+    if (!subfield.ok) return { ok: false, reason: 'source_subfield_invalid', index: i };
+    if (typeof item.target_field !== 'string' || !COLUMN_MAPPING_TARGET_FIELDS.includes(item.target_field)) {
+      return { ok: false, reason: 'target_invalid', index: i };
+    }
+    if (typeof item.confidence !== 'string' || !COLUMN_MAPPING_CONFIDENCES.includes(item.confidence)) {
+      return { ok: false, reason: 'confidence_invalid', index: i };
+    }
+    value.push({
+      source_label: label.value,
+      source_subfield: subfield.value,
+      target_field: item.target_field,
+      confidence: item.confidence,
+    });
+  }
+  return { ok: true, value };
 }
 
 function failResponse(rawText, parsed, message, validationReason, field) {
@@ -94,7 +158,8 @@ function normalizeSide(value) {
   return undefined;
 }
 
-export function validateImportRecoverResponse(rawText) {
+export function validateImportRecoverResponse(rawText, { allowColumnMapping = false } = {}) {
+  const responseKeys = allowColumnMapping ? VISION_RESPONSE_KEYS : RESPONSE_KEYS;
   if (typeof rawText !== 'string') {
     return failResponse(rawText, null, '响应正文必须为字符串', 'response_not_string', 'response');
   }
@@ -108,7 +173,7 @@ export function validateImportRecoverResponse(rawText) {
     return failResponse(rawText, parsed, '响应必须为对象', 'response_not_object', 'response');
   }
   for (const key of Object.keys(parsed)) {
-    if (!RESPONSE_KEYS.has(key)) {
+    if (!responseKeys.has(key)) {
       return failResponse(rawText, parsed, `响应不允许字段：${key}`, 'response_unexpected_key', 'response.keys');
     }
   }
@@ -186,8 +251,24 @@ export function validateImportRecoverResponse(rawText) {
     }
     unresolved.push({ row: raw.row ?? null, reason: raw.reason.trim() });
   }
+  let columnMapping;
+  if (allowColumnMapping && parsed.column_mapping !== undefined) {
+    const checked = validateColumnMapping(parsed.column_mapping);
+    if (!checked.ok) {
+      return failResponse(
+        rawText,
+        parsed,
+        `column_mapping 未通过校验：${checked.reason}`,
+        `column_mapping_${checked.reason}`,
+        checked.index === undefined ? 'column_mapping' : `column_mapping[${checked.index}]`,
+      );
+    }
+    columnMapping = checked.value;
+  }
   if (trades.length === 0 && unresolved.length === 0) {
     return failResponse(rawText, parsed, '响应没有可用的交易或待确认说明', 'empty_result', 'result');
   }
-  return { ok: true, value: { trades, unresolved } };
+  const value = { trades, unresolved };
+  if (columnMapping !== undefined) value.column_mapping = columnMapping;
+  return { ok: true, value };
 }
