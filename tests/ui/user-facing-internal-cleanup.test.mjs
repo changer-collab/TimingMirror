@@ -69,7 +69,9 @@ check('规则页：NL 错误只保留可读原因，不渲染错误码/技术折
   && !/参数无效 · \$\{parsed\.code\}/.test(contractView));
 check('画像：内部快照/候选生成失败表述改为用户语言',
   !/画像快照|规则候选生成失败/.test(realProfile) && /画像更新于：/.test(realProfile)
-  && /这次暂时没有可生成的规则候选/.test(realProfile));
+  && !/规则候选/.test(realProfile)
+  && /规则候选（来自本账单证据）/.test(contractView)
+  && /当前没有可建立的规则候选。/.test(contractView));
 check('情境：不显示原因码与服务端拉取时间，保留数据截止/范围说明',
   !/原因码|fetchedAt|拉取/.test(scenarioView)
   && /数据与口径/.test(scenarioView) && /服务端获取，非实时/.test(scenarioView)

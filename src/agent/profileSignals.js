@@ -74,7 +74,7 @@ export async function extractProfileFacts({ transport, message, signal } = {}) {
   }
 }
 
-// 抽取与保存分开：先由用户授权发送并查看候选，再单独确认保存。
+// 抽取与保存分开：问答回答后自动抽取明确陈述，再直接保存；个人中心负责只读查看与撤销。
 export function createProfileFactRecorder({ transport = null, saveFacts = null } = {}) {
   if (typeof saveFacts !== 'function') return null;
   return Object.freeze({

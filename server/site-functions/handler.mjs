@@ -225,6 +225,39 @@ function timeoutDiagnostics(error) {
   return Object.keys(out).length ? out : null;
 }
 
+// 画像解读的失败详情只用于前端区分原因；不包含上游正文、请求内容或 key。
+function profileSummaryFailure(error) {
+  const code = error?.code;
+  if (code === SITE_FUNCTION_CODES.MODEL_TIMEOUT) {
+    return { fallbackReason: 'model_timeout', fallbackDetail: 'upstream_timeout' };
+  }
+  if (code === SITE_FUNCTION_CODES.MODEL_AUTH_FAILED) {
+    return { fallbackReason: 'model_unavailable', fallbackDetail: 'upstream_auth' };
+  }
+  if (code === SITE_FUNCTION_CODES.MODEL_FORBIDDEN) {
+    return { fallbackReason: 'model_unavailable', fallbackDetail: 'upstream_forbidden' };
+  }
+  if (code === SITE_FUNCTION_CODES.MODEL_RATE_LIMITED) {
+    return { fallbackReason: 'model_unavailable', fallbackDetail: 'upstream_rate_limited' };
+  }
+  if (code === SITE_FUNCTION_CODES.MODEL_RESPONSE) {
+    return { fallbackReason: 'model_response_invalid', fallbackDetail: 'upstream_response' };
+  }
+  if (code === SITE_FUNCTION_CODES.MODEL_UNAVAILABLE) {
+    const status = Number.isInteger(error?.details?.upstream_status) ? error.details.upstream_status : null;
+    if (status === 400 || status === 404 || status === 413 || status === 422) {
+      return { fallbackReason: 'model_unavailable', fallbackDetail: 'upstream_request' };
+    }
+    if (status === 429) {
+      return { fallbackReason: 'model_unavailable', fallbackDetail: 'upstream_rate_limited' };
+    }
+    if (status !== null && status >= 500 && status <= 599) {
+      return { fallbackReason: 'model_unavailable', fallbackDetail: 'upstream_unavailable' };
+    }
+  }
+  return { fallbackReason: 'model_unavailable', fallbackDetail: 'upstream_unknown' };
+}
+
 function importVisionResponseDiagnostics(checked) {
   if (!isPlainObject(checked) || !isPlainObject(checked.diagnostics)) return null;
   const source = checked.diagnostics;
@@ -516,7 +549,9 @@ export function createHandler({
             }
           }
         } catch (error) {
-          fallbackReason = error && error.code === SITE_FUNCTION_CODES.MODEL_TIMEOUT ? 'model_timeout' : 'model_unavailable';
+          const failure = profileSummaryFailure(error);
+          fallbackReason = failure.fallbackReason;
+          fallbackDetail = failure.fallbackDetail;
         }
       }
       return jsonResponse(200, {

@@ -73,7 +73,7 @@ function fail(code, message) {
 
 const SAVED_FACT_LIMIT = 5;
 
-// 用户主动记入的画像事实：单独通道展示，不并入确定性 facts，也不参与候选规则选择。
+// 系统自动记录的画像依据：单独通道展示，不并入确定性 facts，也不参与候选规则选择。
 export function savedFactsView(savedFacts) {
   const rows = (Array.isArray(savedFacts) ? savedFacts : [])
     .filter((fact) => fact && typeof fact === 'object' && typeof fact.value === 'string' && fact.value.trim());
@@ -102,7 +102,7 @@ export function savedFactsView(savedFacts) {
 
 function savedFactsNote(total) {
   return total > 0
-    ? `你主动记入的 ${total} 条画像事实单独列在下方，可到个人中心删除；`
+    ? `系统自动记录的 ${total} 条画像依据单独列在下方，可到个人中心撤销；`
     : '';
 }
 

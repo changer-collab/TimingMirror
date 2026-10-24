@@ -611,14 +611,14 @@ import { renderRealProfile } from './realProfile.js';
       <section class="tm-workspace-head">
         <p class="mono-label">PROFILE &amp; RULES / 画像与规则</p>
         <h1>画像与规则</h1>
-        <p class="muted">画像来自已复核账单，以及你在问答页主动选择记入的事实；规则保存在云端，每次进入都会自动恢复。历史操作复盘请在「复盘」页完成。</p>
+        <p class="muted">画像来自已复核账单；你在问答中明确说出的长期目标、偏好和约束会自动记录为画像依据。规则保存在云端，每次进入都会自动恢复。历史操作复盘请在「复盘」页完成。</p>
       </section>
       <div id="tm-real-profile"></div>
       <section class="tm-me-rules" aria-label="规则工作区">
         <div class="tm-me-rules-head">
           <div>
             <p class="mono-label">RULES WORKSPACE / 规则工作区</p>
-            <p class="muted">保存、停用与版本记录都由你确认；不会自动交易。</p>
+            <p class="muted">候选来自本账单证据，保存前由你确认；保存、停用与版本记录都不会自动交易。</p>
           </div>
           <a class="text-link" href="#/scenario">打开操作复盘 →</a>
         </div>

@@ -274,9 +274,62 @@ async function invokeData(handler, path, { method = 'GET', body, userId = USER_A
   }, cappedDigest);
   check('解读：置信度按样本封顶（1 份账单 → medium）', capped.ok && capped.value.confidence === 'medium', JSON.stringify(capped));
 
+  /* 关键词：3–6 个、每个 2–12 字；旧缓存可缺省 */
+  const keywordsOk = validateProfileSummaryValue({
+    ...VALID_SUMMARY,
+    keywords: ['追涨买入', '止损偏慢', '交易频率高'],
+  }, DIGEST);
+  check('关键词：3–6 个合法关键词通过并保留', keywordsOk.ok
+    && keywordsOk.value.keywords.length === 3, JSON.stringify(keywordsOk));
+
+  const keywordsMissing = validateProfileSummaryValue({ ...VALID_SUMMARY, keywords: undefined }, DIGEST);
+  check('关键词：缺失时为空数组（兼容旧缓存）', keywordsMissing.ok
+    && keywordsMissing.value.keywords.length === 0, JSON.stringify(keywordsMissing));
+
+  const keywordsEmpty = validateProfileSummaryValue({ ...VALID_SUMMARY, keywords: [] }, DIGEST);
+  check('关键词：空数组为空数组', keywordsEmpty.ok
+    && keywordsEmpty.value.keywords.length === 0, JSON.stringify(keywordsEmpty));
+
+  const keywordsFew = validateProfileSummaryValue({ ...VALID_SUMMARY, keywords: ['追涨买入', '止损偏慢'] }, DIGEST);
+  check('关键词：少于 3 个拒绝', !keywordsFew.ok
+    && keywordsFew.detail === PROFILE_SUMMARY_DETAILS.INVALID_KEYWORDS, JSON.stringify(keywordsFew));
+
+  const keywordsMany = validateProfileSummaryValue({
+    ...VALID_SUMMARY,
+    keywords: ['追涨买入', '止损偏慢', '交易频率高', '持仓过短', '止盈过早', '频繁换股', '满仓操作'],
+  }, DIGEST);
+  check('关键词：多于 6 个拒绝', !keywordsMany.ok
+    && keywordsMany.detail === PROFILE_SUMMARY_DETAILS.INVALID_KEYWORDS, JSON.stringify(keywordsMany));
+
+  const keywordsLong = validateProfileSummaryValue({ ...VALID_SUMMARY, keywords: ['追涨买入', '止损偏慢', '超'.repeat(13)] }, DIGEST);
+  check('关键词：超过 12 字拒绝', !keywordsLong.ok
+    && keywordsLong.detail === PROFILE_SUMMARY_DETAILS.INVALID_KEYWORDS, JSON.stringify(keywordsLong));
+
+  const keywordsShort = validateProfileSummaryValue({ ...VALID_SUMMARY, keywords: ['追涨买入', '止损偏慢', '买'] }, DIGEST);
+  check('关键词：少于 2 字拒绝', !keywordsShort.ok
+    && keywordsShort.detail === PROFILE_SUMMARY_DETAILS.INVALID_KEYWORDS, JSON.stringify(keywordsShort));
+
+  const keywordsNumber = validateProfileSummaryValue({
+    ...VALID_SUMMARY,
+    keywords: ['追涨买入', '止损偏慢', '交易999笔'],
+  }, DIGEST);
+  check('关键词：夹带 digest 之外的数字拒绝', !keywordsNumber.ok
+    && keywordsNumber.detail === PROFILE_SUMMARY_DETAILS.UNLISTED_NUMBER, JSON.stringify(keywordsNumber));
+
+  const keywordsAdvice = validateProfileSummaryValue({
+    ...VALID_SUMMARY,
+    keywords: ['追涨买入', '止损偏慢', '建议买入宽基'],
+  }, DIGEST);
+  check('关键词：投资建议拒绝', !keywordsAdvice.ok
+    && keywordsAdvice.detail === PROFILE_SUMMARY_DETAILS.INVESTMENT_ADVICE, JSON.stringify(keywordsAdvice));
+
   const fallback = buildProfileSummaryFallback(DIGEST);
   const fallbackChecked = validateProfileSummaryValue(fallback, DIGEST);
   check('兜底：确定性文案通过同一套校验', fallbackChecked.ok, JSON.stringify(fallbackChecked));
+  check('兜底：关键词为 3–6 个且每个 2–12 字',
+    fallback.keywords.length >= 3 && fallback.keywords.length <= 6
+    && fallback.keywords.every((word) => [...word].length >= 2 && [...word].length <= 12),
+    JSON.stringify(fallback.keywords));
 
   const lowDigest = {
     profile_key: 'abcd1234',
@@ -351,7 +404,40 @@ async function invokeData(handler, path, { method = 'GET', body, userId = USER_A
   });
   const timeoutResponse = await invokeModel(timeout, '/api/llm/profile-summary', { digest: DIGEST });
   check('Handler 解读：超时 → 200 template + model_timeout', timeoutResponse.status === 200
-    && timeoutResponse.json?.fallback_reason === 'model_timeout', JSON.stringify(timeoutResponse.json));
+    && timeoutResponse.json?.fallback_reason === 'model_timeout'
+    && timeoutResponse.json?.fallback_detail === 'upstream_timeout', JSON.stringify(timeoutResponse.json));
+
+  const failureDetail = async (code, details = null) => {
+    const handler = createHandler({
+      transport: {
+        async profileSummary() {
+          const error = new Error(code);
+          error.code = code;
+          if (details) error.details = details;
+          throw error;
+        },
+      },
+    });
+    const response = await invokeModel(handler, '/api/llm/profile-summary', { digest: DIGEST });
+    return response.json;
+  };
+  const detailCases = [
+    ['鉴权失败', SITE_FUNCTION_CODES.MODEL_AUTH_FAILED, null, 'model_unavailable', 'upstream_auth'],
+    ['无权限', SITE_FUNCTION_CODES.MODEL_FORBIDDEN, null, 'model_unavailable', 'upstream_forbidden'],
+    ['限流', SITE_FUNCTION_CODES.MODEL_RATE_LIMITED, null, 'model_unavailable', 'upstream_rate_limited'],
+    ['响应格式非法', SITE_FUNCTION_CODES.MODEL_RESPONSE, null, 'model_response_invalid', 'upstream_response'],
+    ['请求参数被拒', SITE_FUNCTION_CODES.MODEL_UNAVAILABLE, { upstream_status: 400 }, 'model_unavailable', 'upstream_request'],
+    ['模型不存在', SITE_FUNCTION_CODES.MODEL_UNAVAILABLE, { upstream_status: 404 }, 'model_unavailable', 'upstream_request'],
+    ['上游限流状态', SITE_FUNCTION_CODES.MODEL_UNAVAILABLE, { upstream_status: 429 }, 'model_unavailable', 'upstream_rate_limited'],
+    ['上游 5xx', SITE_FUNCTION_CODES.MODEL_UNAVAILABLE, { upstream_status: 503 }, 'model_unavailable', 'upstream_unavailable'],
+    ['未知失败', SITE_FUNCTION_CODES.MODEL_UNAVAILABLE, null, 'model_unavailable', 'upstream_unknown'],
+  ];
+  for (const [name, code, details, reason, detail] of detailCases) {
+    const payload = await failureDetail(code, details);
+    check(`Handler 解读：${name} → 精确 fallback_detail`, payload?.source === 'template'
+      && payload?.fallback_reason === reason
+      && payload?.fallback_detail === detail, JSON.stringify(payload));
+  }
 
   const badRequest = await invokeModel(noTransport, '/api/llm/profile-summary', { digest: { ...DIGEST, extra: 1 } });
   check('Handler 解读：非法请求 → 400', badRequest.status === 400

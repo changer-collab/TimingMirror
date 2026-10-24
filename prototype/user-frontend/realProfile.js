@@ -1,11 +1,9 @@
-// 个人中心顶部：云端画像 + 规则候选（非 Agent）。
+// 个人中心顶部：云端画像与画像解读；云端账单单独成段（非 Agent）。
 // 画像从云端账单快照恢复，只含派生统计，不含成交明细或文件名。
-import { buildRuleCandidates } from '../../src/engine/userProfile.js';
 import { loadRealReport, getRealReportBundle } from './realReport.js';
 import {
-  loadProfile, recordReportObservation, recordCandidateEvent, ruleStateOf, syncRuleUsage,
+  loadProfile, recordReportObservation, ruleStateOf, syncRuleUsage,
 } from './profileStore.js';
-import { openRuleCandidate } from './ruleCandidates.js';
 import { mountCloudProfile } from './cloudProfile.js';
 
 function esc(value) {
@@ -25,26 +23,37 @@ function fmtDelta(v) {
   return `${v > 0 ? '+' : ''}${v}`;
 }
 
+function cloudBillsSection() {
+  return `<section class="rp-profile rp-cloud-bills" aria-label="跨账单记录">
+    <div class="rp-profile-head">
+      <div>
+        <p class="mono-label">CLOUD / 云端账单</p>
+        <h2>跨账单记录</h2>
+        <p class="rp-note">只显示云端账单；原始 CSV 与文件名不上传。</p>
+      </div>
+    </div>
+    <div data-role="cloud-bills"></div>
+  </section>`;
+}
+
 function emptyState(reason = '导入并确认一份账单，画像才会从已复核报告开始积累。') {
-  return `<section class="rp-profile rp-profile-empty">
+  return `<section class="rp-profile rp-profile-empty rp-main">
     <p class="mono-label">PROFILE / 云端画像</p>
     <h2>先有账单，再有画像。</h2>
     <p class="rp-note">${esc(reason)}</p>
     <p class="rp-note">没有账单时不会用示例数据填充；画像、账单与规则都保存在云端，本机不保存用户数据，也不会保存原始 CSV 与文件名。</p>
     <a class="btn btn-outline" href="#/import">去导入账单</a>
-  </section>`;
+    <div data-role="cloud-summary"></div>
+  </section>
+  ${cloudBillsSection()}`;
 }
 
 function mountCloud(host, ctx, profile = null) {
   if (typeof ctx?.cloudDeps?.listBills !== 'function') return;
-  const section = document.createElement('section');
-  section.className = 'rp-profile rp-cloud-profile';
-  section.setAttribute('aria-label', '云端画像');
-  const inner = document.createElement('div');
-  inner.setAttribute('data-role', 'cloud-profile');
-  section.append(inner);
-  host.append(section);
-  mountCloudProfile(inner, ctx, { profile });
+  mountCloudProfile({
+    summary: host.querySelector('[data-role="cloud-summary"]'),
+    bills: host.querySelector('[data-role="cloud-bills"]'),
+  }, ctx, { profile });
 }
 
 function dimensionCards(snapshot) {
@@ -96,77 +105,12 @@ function trendBlock(profile) {
   return `<div class="rp-trend"><span class="rp-trend-title">与上一次观察相比</span>${items.map(([k, v]) => `<span class="rp-trend-item"><small>${esc(k)}</small><strong>${esc(v)}</strong></span>`).join('')}</div>`;
 }
 
-function candidateCard(c) {
-  const tone = c.status === 'available' ? 'loss' : c.status === 'active' ? 'ok' : 'mode';
-  const actions = [];
-  if (c.status === 'available') {
-    actions.push(`<button class="btn btn-primary" type="button" data-candidate-action="open" data-candidate-id="${esc(c.candidate_id)}">打开模板确认</button>`);
-    actions.push(`<button class="btn btn-ghost" type="button" data-candidate-action="dismiss" data-candidate-id="${esc(c.candidate_id)}">忽略这条候选</button>`);
-  } else if (c.status === 'dismissed') {
-    actions.push(`<button class="btn btn-outline" type="button" data-candidate-action="restore" data-candidate-id="${esc(c.candidate_id)}">恢复候选</button>`);
-  } else if (c.status === 'active') {
-    actions.push('<button class="btn btn-outline" type="button" data-scroll-rules>查看当前规则</button>');
-  }
-  const evidence = (c.evidence || []).length
-    ? `<ul class="rp-evidence">${c.evidence.map((e) => `<li><span class="mono">${esc(e.trade_id)}</span> · ${esc(e.line)}</li>`).join('')}</ul>`
-    : '';
-  return `<article class="rp-candidate" data-candidate-id="${esc(c.candidate_id)}">
-    <div class="rp-candidate-top"><span class="rp-badge ${tone}">${esc(c.status_text)}</span><strong>${esc(c.template_name)}</strong></div>
-    <p class="rp-candidate-text">${esc(c.text)}</p>
-    <p class="rp-note">${esc(c.reason)}</p>
-    <p class="rp-note">${esc(c.basis)}</p>
-    ${evidence}
-    <p class="rp-caveat">${esc(c.caveat)}</p>
-    ${actions.length ? `<div class="rp-actions">${actions.join('')}</div>` : ''}
-  </article>`;
-}
-
-function candidatesBlock(pack) {
-  const candidates = Array.isArray(pack?.candidates) ? pack.candidates : [];
-  const notes = Array.isArray(pack?.notes) ? pack.notes : [];
-  const visible = candidates.filter((c) => c.status !== 'not_recommended');
-  const notRecommended = candidates.filter((c) => c.status === 'not_recommended');
-  return `<div class="rp-profile-candidates">
-    <h3 class="rp-subtitle">规则候选（来自本账单证据）</h3>
-    <p class="rp-note">候选只做模板预填；保存前由你确认或改写，系统不替你定规矩。${notes[0] ? ` ${notes[0]}` : ''}</p>
-    ${visible.length ? visible.map(candidateCard).join('') : '<p class="rp-note">当前没有可建立的规则候选。</p>'}
-    ${notRecommended.length ? `<details class="rp-details" data-role="not-recommended">
-      <summary>${notRecommended.length} 条行为模式尚未达到可建规则的条件</summary>
-      ${notRecommended.map(candidateCard).join('')}
-    </details>` : ''}
-  </div>`;
-}
-
 function observationLine(observation, profile, published) {
   if (!published) return `<p class="rp-note rp-warn-line">${esc(observation?.reason || '当前账单组合结果未发布：本次不更新画像。')}</p>`;
   if (observation?.recorded) {
     return `<p class="rp-note rp-observed">本次观察已记入画像（累计 ${esc(profile?.observations ?? 0)} 次）。</p>`;
   }
   return `<p class="rp-note">${esc(observation?.reason || '本次报告已包含在画像中。')}</p>`;
-}
-
-function bindActions(host, ctx, candidates, refresh) {
-  host.querySelectorAll('[data-candidate-action]').forEach((button) => {
-    button.addEventListener('click', () => {
-      const id = button.getAttribute('data-candidate-id');
-      const action = button.getAttribute('data-candidate-action');
-      const candidate = candidates.find((c) => c.candidate_id === id);
-      if (!candidate) return;
-      if (action === 'open') {
-        openRuleCandidate(ctx, candidate);
-        return;
-      }
-      if (action === 'dismiss') recordCandidateEvent(id, 'dismissed');
-      if (action === 'restore') recordCandidateEvent(id, 'restored');
-      refresh();
-    });
-  });
-  host.querySelectorAll('[data-scroll-rules]').forEach((button) => {
-    button.addEventListener('click', () => {
-      const target = document.getElementById('tm-real-rules');
-      if (target && typeof target.scrollIntoView === 'function') target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-  });
 }
 
 function renderProfile(host, ctx, bundle, bill) {
@@ -197,22 +141,11 @@ function renderProfile(host, ctx, bundle, bill) {
     return;
   }
 
-  let pack = null;
-  try {
-    pack = buildRuleCandidates({
-      behavior: published && bundle.insights?.behavior?.available ? bundle.insights.behavior.data : null,
-      ruleState,
-      profile,
-    });
-  } catch {
-    pack = { candidates: [], notes: ['这次暂时没有可生成的规则候选。'] };
-  }
-  const candidates = pack.candidates ?? [];
   const banner = published
     ? ''
     : '<p class="rp-note rp-warn-line">当前账单组合结果未发布：本次不记入画像；以下为最近一次已发布观察形成的画像，不是当前账单的结论。</p>';
 
-  host.innerHTML = `<section class="rp-profile">
+  host.innerHTML = `<section class="rp-profile rp-main">
     <div class="rp-profile-head">
       <div>
         <p class="mono-label">PROFILE / 云端画像</p>
@@ -228,10 +161,10 @@ function renderProfile(host, ctx, bundle, bill) {
     ${tagsBlock(shown)}
     ${trendBlock(profile)}
     ${historyBlock(profile)}
-    ${candidatesBlock(pack)}
-  </section>`;
+    <div data-role="cloud-summary"></div>
+  </section>
+  ${cloudBillsSection()}`;
 
-  bindActions(host, ctx, candidates, () => renderProfile(host, ctx, bundle, bill));
   mountCloud(host, ctx, profile);
 }
 
@@ -253,7 +186,11 @@ export function renderRealProfile(host, ctx) {
     renderProfile(host, ctx, cached, bill);
     return;
   }
-  host.innerHTML = '<section class="rp-profile"><p class="rp-loading">正在根据已确认账单生成画像…</p></section>';
+  host.innerHTML = `<section class="rp-profile rp-main">
+    <p class="rp-loading">正在根据已确认账单生成画像…</p>
+    <div data-role="cloud-summary"></div>
+  </section>
+  ${cloudBillsSection()}`;
   mountCloud(host, ctx, loadProfile());
   loadRealReport(bill)
     .then((bundle) => {
@@ -265,14 +202,16 @@ export function renderRealProfile(host, ctx) {
       const target = document.getElementById('tm-real-profile');
       if (!target) return;
       const message = String(error && error.message ? error.message : error);
-      const html = `<section class="rp-profile"><p class="mono-label">PROFILE / 云端画像</p><h2>画像暂不可用</h2><p class="rp-note">${esc(message)}</p><p class="rp-note">画像只从已复核报告派生，行情或复核失败时不会用示例数据补齐。</p></section>`;
-      // 只替换本机画像位，保留已挂载的云端区块（避免重挂丢失自动生成的解读）。
-      const section = target.querySelector('section.rp-profile:not(.rp-cloud-profile)');
-      if (section) {
-        section.outerHTML = html;
+      const inner = `<p class="mono-label">PROFILE / 云端画像</p><h2>画像暂不可用</h2><p class="rp-note">${esc(message)}</p><p class="rp-note">画像只从已复核报告派生，行情或复核失败时不会用示例数据补齐。</p>`;
+      // 只替换本机画像位，保留已挂载的画像解读节点（避免重挂丢失自动生成的解读）。
+      const section = target.querySelector('section.rp-profile.rp-main');
+      const summaryHost = section?.querySelector('[data-role="cloud-summary"]');
+      if (section && summaryHost) {
+        section.innerHTML = inner;
+        section.append(summaryHost);
         return;
       }
-      target.innerHTML = html;
+      target.innerHTML = `<section class="rp-profile rp-main">${inner}</section>${cloudBillsSection()}`;
       mountCloud(target, ctx, loadProfile());
     });
 }

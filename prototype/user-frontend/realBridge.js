@@ -11,11 +11,14 @@ import { createQaRewrite } from '../../src/agent/qaRewrite.js';
 import { createOnlineBoundary } from '../../src/agent/onlineBoundary.js';
 import { createDataClient } from '../../src/agent/dataClient.js';
 import { createProfileFactRecorder } from '../../src/agent/profileSignals.js';
+import { requestProfileSummaryWithRetry as requestSummaryWithRetry } from '../../src/agent/profileSummaryRetry.js';
 import * as adapter from '../../src/demo/adapter.js';
 import { renderContract } from '../../src/ui/views/contractView.js';
 import { renderRealImport, runImportAi } from './realImport.js';
 import { getRealReportBundle, getRealReportState, loadRealReport, seedRealReport } from './realReport.js';
-import { ruleStateOf, loadProfile, setProfileBase } from './profileStore.js';
+import {
+  ruleStateOf, loadProfile, recordCandidateEvent, setProfileBase,
+} from './profileStore.js';
 import { openRuleCandidate } from './ruleCandidates.js';
 import { createQaAnswerService } from './qaAnswer.js';
 import { billSyncStatus, syncBill, syncSnapshotWithBill } from './cloudSync.js';
@@ -162,6 +165,27 @@ const SHADOW_STYLE = `
   font-size: 14px;
   line-height: 1;
 }
+.cv-candidates { border-left: 4px solid var(--amber); }
+.cv-candidates[hidden] { display: none; }
+.cv-candidate {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: var(--panel2);
+}
+.cv-candidate[data-status="available"] { border-left: 4px solid var(--amber); }
+.cv-candidate[data-status="active"] { border-left: 4px solid var(--green-ink); }
+.cv-candidate[data-status="dismissed"] { border-style: dashed; opacity: .85; }
+.cv-candidate-head { align-items: center; }
+.cv-candidate-name { font-weight: 700; font-size: 14px; color: var(--cream); }
+.cv-candidate-evidence { margin: 0; padding-left: 18px; font-size: 14px; color: var(--dim); }
+.cv-candidate-caveat { color: var(--amber-ink); }
+.cv-candidate-actions { gap: 8px; flex-wrap: wrap; }
+.cv-candidate-more { display: flex; flex-direction: column; gap: 8px; }
+.cv-candidate-more > summary { cursor: pointer; font-size: 14px; color: var(--dim); }
 `;
 
 let onChangeCallback = null;
@@ -410,6 +434,15 @@ function getProfileFactTransport() {
   return profileFactTransport;
 }
 
+// 画像解读最多重试一次：只针对限流/临时不可用/未知瞬时错误，配置或校验问题直接返回原因。
+function requestProfileSummaryWithRetry({ digest, signal } = {}) {
+  return requestSummaryWithRetry({
+    request: (args) => getProfileFactTransport().profileSummary(args),
+    digest,
+    signal,
+  });
+}
+
 function getProfileFactRecorder() {
   if (!profileFactRecorder) {
     profileFactRecorder = createProfileFactRecorder({
@@ -549,6 +582,7 @@ const ctx = {
     ruleStateOf,
     loadProfile,
     openRuleCandidate,
+    recordCandidateEvent: (id, status) => recordCandidateEvent(id, status),
   },
   cloudDeps: {
     syncBill: ({ bill }) => syncBill({
@@ -570,7 +604,7 @@ const ctx = {
     deleteBill: (args) => getDataClient().deleteBill(args),
     deleteFact: (args) => getDataClient().deleteFact(args),
     saveProfileSummary: (args) => getDataClient().saveProfileSummary(args),
-    requestProfileSummary: ({ digest, signal } = {}) => getProfileFactTransport().profileSummary({ digest, signal }),
+    requestProfileSummary: (args) => requestProfileSummaryWithRetry(args),
     invalidateCloudProfile,
     getCachedCloudFacts,
     loadCloudFacts,
