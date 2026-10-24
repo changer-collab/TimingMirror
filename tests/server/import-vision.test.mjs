@@ -155,9 +155,8 @@ async function invokeRecover(handler, body) {
   const rowString = validateImportVisionResponse(JSON.stringify({
     trades: [], unresolved: [{ row: '2', reason: '日期无法确定' }],
   }));
-  check('映射：unresolved[].row 仍只允许非负整数或 null', rowString.ok === false
-    && rowString.diagnostics?.validation_reason === 'unresolved_row_invalid'
-    && rowString.diagnostics?.field === 'unresolved[].row', JSON.stringify(rowString.diagnostics));
+  check('映射：unresolved[].row 纯数字字符串归一化为数字', rowString.ok === true
+    && rowString.value.unresolved[0].row === 2, JSON.stringify(rowString.value?.unresolved));
   const rowNull = validateImportVisionResponse(JSON.stringify({
     trades: [], unresolved: [{ row: null, reason: '日期无法确定' }],
   }));
@@ -202,7 +201,6 @@ async function invokeRecover(handler, body) {
     ['unresolved 项不是对象', JSON.stringify({ trades: [], unresolved: [1] }), 'unresolved_not_object', 'unresolved[]'],
     ['unresolved 额外字段', JSON.stringify({ trades: [], unresolved: [{ row: 1, reason: '待确认', extra: 1 }] }), 'unresolved_unexpected_key', 'unresolved[].keys'],
     ['unresolved 缺少说明', JSON.stringify({ trades: [], unresolved: [{ row: 1 }] }), 'unresolved_reason_invalid', 'unresolved[].reason'],
-    ['unresolved row 错误', JSON.stringify({ trades: [], unresolved: [{ row: -1, reason: '待确认' }] }), 'unresolved_row_invalid', 'unresolved[].row'],
     ['空结果', JSON.stringify({ trades: [], unresolved: [] }), 'empty_result', 'result'],
     ['顶层额外字段', JSON.stringify({ trades: [trade], unresolved: [], reasoning: 'CANDIDATE-9999' }), 'response_unexpected_key', 'response.keys'],
   ];

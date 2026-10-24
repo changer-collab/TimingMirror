@@ -19,6 +19,7 @@ import {
   draftSummary,
   draftRowStatusText,
   draftRowSeverity,
+  unresolvedRowLabel,
 } from '../../src/engine/importDraft.js';
 import { columnMappingRows } from '../../src/engine/importColumnMapping.js';
 import {
@@ -538,7 +539,7 @@ function errorPanelHTML(state, rec) {
 function unresolvedPanelHTML(rec) {
   const items = rec?.draft?.unresolved ?? rec?.unresolved ?? [];
   if (!items.length) return '';
-  const rows = items.map((item) => `<li>${item.row ? `记录 ${esc(item.row)} · ` : ''}${esc(item.reason)}</li>`).join('');
+  const rows = items.map((item) => `<li>${esc(unresolvedRowLabel(item.row))} · ${esc(item.reason)}</li>`).join('');
   return `<div class="tm-alert tm-alert--warning" role="status">
     <strong>${items.length} 条记录未进入交易草稿</strong>
     <ul class="tm-unresolved">${rows}</ul>

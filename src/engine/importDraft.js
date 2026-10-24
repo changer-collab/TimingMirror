@@ -375,3 +375,8 @@ export function draftRowSeverity(row) {
   if (row?.status === 'valid') return 'success';
   return 'info';
 }
+
+/** 未确定记录的来源行号；null/异常值不渲染成“记录 undefined”。 */
+export function unresolvedRowLabel(row) {
+  return Number.isInteger(row) ? `记录 ${row}` : '未标明原图行号';
+}
