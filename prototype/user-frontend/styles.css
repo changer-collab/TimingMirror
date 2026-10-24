@@ -19,6 +19,12 @@
   --loss: #c4402c;
   --loss-bright: #e0705b;
   --loss-soft: rgba(196, 64, 44, 0.09);
+  --ok: #2f6b4f;
+  --ok-soft: rgba(47, 107, 79, 0.08);
+  --warn: #9a5a13;
+  --warn-soft: rgba(154, 90, 19, 0.09);
+  --info: #3c5566;
+  --info-soft: rgba(60, 85, 102, 0.08);
 
   --dark: #14181b;
   --dark-2: #1b2125;
@@ -2379,6 +2385,34 @@ table {
   background: var(--ink);
 }
 
+.status-tag--info {
+  border-color: rgba(60, 85, 102, 0.3);
+  color: var(--info);
+}
+
+.status-tag--success {
+  border-color: rgba(47, 107, 79, 0.34);
+  color: var(--ok);
+}
+
+.status-tag--success::before {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status-tag--warning {
+  border-color: rgba(154, 90, 19, 0.36);
+  color: var(--warn);
+}
+
+.status-tag--error {
+  border-color: rgba(196, 64, 44, 0.36);
+  color: var(--loss);
+}
+
 .bill-meta {
   display: flex;
   flex-wrap: wrap;
@@ -2424,6 +2458,66 @@ table {
 .bill-warning strong {
   color: var(--loss);
   font-weight: 500;
+}
+
+/* 语义状态：红色只留给阻断错误；可处理警告用琥珀色，信息用中性蓝灰，成功用绿色。 */
+.tm-alert {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 14px;
+  padding: 11px 14px;
+  border-left: 2px solid var(--line-strong);
+  background: rgba(234, 239, 237, 0.45);
+  font-size: 11px;
+  color: var(--gray);
+}
+
+.tm-alert strong {
+  color: var(--ink-soft);
+  font-weight: 500;
+}
+
+.tm-alert ul {
+  flex: 1 1 100%;
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.tm-alert--warning {
+  border-left-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.tm-alert--warning strong {
+  color: var(--warn);
+}
+
+.tm-alert--error {
+  border-left-color: var(--loss);
+  background: var(--loss-soft);
+}
+
+.tm-alert--error strong {
+  color: var(--loss);
+}
+
+.tm-alert--info {
+  border-left-color: var(--info);
+  background: var(--info-soft);
+}
+
+.tm-alert--info strong {
+  color: var(--info);
+}
+
+.tm-alert--success {
+  border-left-color: var(--ok);
+  background: var(--ok-soft);
+}
+
+.tm-alert--success strong {
+  color: var(--ok);
 }
 
 .table-wrap {
@@ -2493,7 +2587,7 @@ table.ledger .line-no {
 }
 
 table.ledger tr.is-missing {
-  background: rgba(196, 64, 44, 0.045);
+  background: var(--warn-soft);
 }
 
 .sym {
@@ -2528,7 +2622,7 @@ table.ledger tr.is-missing {
 
 .missing {
   font-size: 9px;
-  color: var(--loss);
+  color: var(--warn);
 }
 
 .bill-actions {

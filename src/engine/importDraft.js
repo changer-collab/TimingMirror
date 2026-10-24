@@ -6,6 +6,7 @@ import { CANONICAL_HEADER, mapTableHeader, normalizeSide } from './importSource.
 const FIELD_KEYS = Object.freeze(['date', 'symbol', 'side', 'price', 'quantity', 'fee', 'tax']);
 const REQUIRED_KEYS = Object.freeze(['date', 'symbol', 'side', 'price', 'quantity']);
 const REQUIRED_HEADER = Object.freeze(['日期', '标的', '方向', '价格', '数量']);
+let manualRowSequence = 0;
 
 const ISSUE_TEXT = Object.freeze({
   E_DATE_FORMAT: '日期需写成 2024-09-25 这样的年-月-日',
@@ -177,9 +178,12 @@ function aiTradeToFields(trade) {
   return {
     date: trade.date ?? '',
     symbol: trade.symbol ?? '',
+    name: trade.name ?? '',
     side: normalizeSide(trade.side ?? ''),
     price: trade.price ?? '',
     quantity: trade.quantity ?? '',
+    amount: trade.amount ?? '',
+    settlementAmount: trade.settlement_amount ?? '',
     fee: trade.fee ?? '',
     tax: trade.tax ?? '',
   };
@@ -194,6 +198,7 @@ export function buildAiDraft({
   requestId = null,
   duplicatePolicy = 'exclude',
   nonTradePolicy = 'draft',
+  columnMapping = [],
 } = {}) {
   const warnOnly = duplicatePolicy === 'warn';
   const unresolvedNonTrades = nonTradePolicy === 'unresolved';
@@ -266,6 +271,7 @@ export function buildAiDraft({
     rows,
     rawRows: [],
     unresolved: [...(Array.isArray(unresolved) ? unresolved : []), ...extraUnresolved],
+    columnMapping: Array.isArray(columnMapping) ? columnMapping.map((entry) => ({ ...entry })) : [],
     requestId,
     note: '',
   };
@@ -274,15 +280,18 @@ export function buildAiDraft({
 export function addBlankRow(draft) {
   const rows = Array.isArray(draft?.rows) ? [...draft.rows] : [];
   const row = makeRow({
-    fields: { date: '', symbol: '', side: '', price: '', quantity: '', fee: '', tax: '' },
+    fields: {
+      date: '', symbol: '', name: '', side: '', price: '', quantity: '',
+      amount: '', settlementAmount: '', fee: '', tax: '',
+    },
     source: 'manual',
     line: rows.length + 2,
     trade: null,
     status: 'needs_review',
-    issues: ['请补充日期、标的、方向、价格和数量'],
+    issues: ['手动新增：请补齐日期、标的、方向、价格和数量；成交额/清算额可留空'],
     meta: { confidence: null },
   });
-  row.id = `draft-${rows.length + 1}-manual-${Date.now()}`;
+  row.id = `draft-${rows.length + 1}-manual-${++manualRowSequence}`;
   rows.push(row);
   return { ...draft, rows };
 }
@@ -360,8 +369,21 @@ export function draftSummary(draft) {
 
 export function draftRowStatusText(row) {
   if (row.status === 'duplicate') return '疑似重复，默认不导入';
-  if (row.status === 'needs_review') return '待确认';
+  if (row.status === 'needs_review') return row.source === 'manual' ? '手动新增 · 待确认' : '待确认';
   if (row.status === 'invalid') return '需修正';
   if (row.status === 'valid') return '可导入';
   return '待确认';
+}
+
+/** 行状态语义：红色只留给阻断修正；待确认/重复是可处理警告。 */
+export function draftRowSeverity(row) {
+  if (row?.status === 'invalid') return 'error';
+  if (row?.status === 'duplicate' || row?.status === 'needs_review') return 'warning';
+  if (row?.status === 'valid') return 'success';
+  return 'info';
+}
+
+/** 未确定记录的来源行号；null/异常值不渲染成“记录 undefined”。 */
+export function unresolvedRowLabel(row) {
+  return Number.isInteger(row) ? `记录 ${row}` : '未标明原图行号';
 }

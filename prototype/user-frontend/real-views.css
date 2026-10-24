@@ -882,6 +882,15 @@ body {
   color: var(--ink);
 }
 
+.tm-row-remove {
+  color: var(--gray);
+}
+
+.tm-row-remove:hover,
+.tm-row-remove:focus-visible {
+  color: var(--loss);
+}
+
 .tm-paste {
   width: 100%;
   display: flex;
@@ -1111,9 +1120,10 @@ body {
   cursor: pointer;
 }
 
-.tm-thumb-remove:hover {
-  border-color: var(--ink-soft);
-  color: var(--ink);
+.tm-thumb-remove:hover,
+.tm-thumb-remove:focus-visible {
+  border-color: var(--loss);
+  color: var(--loss);
 }
 
 .tm-thumb-remove:disabled {
@@ -1204,6 +1214,40 @@ body {
   font-size: 13px;
 }
 
+.tm-draft-table .tm-cell-static {
+  display: inline-block;
+  min-width: 82px;
+  padding: 5px 7px;
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  text-align: right;
+}
+
+.tm-draft-table .tm-cell-static.is-missing {
+  color: var(--warn);
+}
+
+.tm-draft-table .tm-cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tm-draft-table .tm-cell-stack .tm-cell-input {
+  width: 100%;
+}
+
+.tm-draft-table .tm-cell-stack .sym-name {
+  margin-left: 0;
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+.tm-draft-table.is-source-columns td {
+  vertical-align: top;
+}
+
 .tm-draft-table td[aria-label] {
   width: 90px;
 }
@@ -1219,16 +1263,169 @@ body {
 
 .tm-draft-table .tm-row-status span {
   display: block;
-  color: var(--loss);
+  color: inherit;
   margin-top: 2px;
 }
 
-.tm-draft-table tr.invalid {
+.tm-draft-table .tm-row-status.is-error {
+  color: var(--loss);
+}
+
+.tm-draft-table .tm-row-status.is-warning {
+  color: var(--warn);
+}
+
+.tm-draft-table tr.is-manual-row .tm-cell-input {
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.tm-draft-table tr.is-manual-row .tm-row-status.is-warning {
+  font-weight: 500;
+}
+
+.tm-add-row-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--line-soft);
+}
+
+.tm-add-row-bar .tm-note {
+  margin-top: 0;
+}
+
+.tm-add-row-btn {
+  border-style: dashed;
+}
+
+@media (max-width: 820px) {
+  .tm-add-row-bar {
+    align-items: flex-start;
+  }
+
+  .tm-add-row-btn {
+    width: 100%;
+  }
+}
+
+.tm-draft-table .tm-row-status.is-success {
+  color: var(--ok);
+}
+
+.tm-draft-table .tm-row-status.is-info {
+  color: var(--info);
+}
+
+.tm-draft-table tr.invalid,
+.tm-draft-table tr.tm-severity-error {
   background: var(--loss-soft);
 }
 
-.tm-draft-table tr.duplicate {
-  background: #fffaf0;
+.tm-draft-table tr.duplicate,
+.tm-draft-table tr.tm-severity-warning {
+  background: var(--warn-soft);
+}
+
+.tm-column-map {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-soft);
+  border-left: 2px solid var(--info);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--info-soft);
+}
+
+.tm-column-map-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 14px;
+  flex-wrap: wrap;
+}
+
+.tm-column-map-head strong {
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.tm-column-map-head span {
+  color: var(--gray);
+  font-size: 10.5px;
+}
+
+.tm-column-map-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tm-column-map-groups li {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11.5px;
+}
+
+.tm-column-map-source {
+  color: var(--ink-soft);
+}
+
+.tm-column-map-arrow {
+  color: var(--info);
+  font-family: var(--font-mono);
+}
+
+.tm-column-map-target {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.tm-column-map-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 10px 0 0;
+  padding: 10px 0 0;
+  border-top: 1px dashed var(--line-soft);
+}
+
+.tm-column-map-field {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tm-column-map-field dt {
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.tm-column-map-field dd {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.tm-column-map-field dd.is-unmatched {
+  color: var(--warn);
+}
+
+.tm-column-map-foot {
+  margin: 8px 0 0;
+  color: var(--gray);
+  font-size: 10.5px;
+  line-height: 1.6;
 }
 
 .tm-draft-actions,

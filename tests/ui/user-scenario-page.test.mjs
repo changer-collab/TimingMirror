@@ -18,6 +18,8 @@ const assistant = readFileSync(join(ROOT, 'src/ui/assistantPanel.js'), 'utf8');
 const css = readFileSync(join(ROOT, 'prototype/user-frontend/real-views.css'), 'utf8');
 const styles = readFileSync(join(ROOT, 'prototype/user-frontend/styles.css'), 'utf8');
 const realChat = readFileSync(join(ROOT, 'prototype/user-frontend/realChat.js'), 'utf8');
+const realProfile = readFileSync(join(ROOT, 'prototype/user-frontend/realProfile.js'), 'utf8');
+const realImport = readFileSync(join(ROOT, 'prototype/user-frontend/realImport.js'), 'utf8');
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -101,6 +103,17 @@ check('个人中心：申报前自检区块挂载独立自检视图',
 check('样式：统一横幅及窄屏规则存在',
   /\.tm-bill-banner\s*\{/.test(css) && /\.tm-bill-banner-links\s*\{/.test(css)
   && /\.tm-bill-banner \{[\s\S]*?flex-direction: column/.test(css));
+check('问答页：入页只平滑滚动一次，之后发送消息直接贴底',
+  /export function resetChatScroll\(\)/.test(realChat)
+  && /const firstRender = lastScrollKey === null;/.test(realChat)
+  && /firstRender && typeof scroller\.scrollTo === 'function'/.test(realChat)
+  && /else \{\s*scroller\.scrollTop = top;\s*\}/.test(realChat)
+  && /import \{ renderRealChat, resetChatScroll \}/.test(app)
+  && /if \(state\.route !== 'chat'\) resetChatScroll\(\);/.test(app));
+check('复盘页：账单确认后立即预取复盘上下文',
+  /const result = finalizeConfirmedBill\([\s\S]{0,240}if \(result\?\.ok\) \{[\s\S]{0,120}ctx\.prewarmScenario\?\.\(state\.bill\)/.test(realImport));
+check('画像页：示例账单仍挂载云端画像',
+  /if \(bill\.demo === true\) \{[\s\S]{0,320}mountCloud\(host, ctx\);[\s\S]{0,40}return;/.test(realProfile));
 check('问答页：横幅与对话区共享高度，输入底栏留在视口内',
   /body\.tm-qa-standalone #app \{[\s\S]*?display: flex;[\s\S]*?flex-direction: column;/.test(css)
   && /body\.tm-qa-standalone #tm-real-chat \{ flex: 1 1 auto; height: auto; min-height: 0; \}/.test(css));

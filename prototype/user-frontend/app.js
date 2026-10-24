@@ -1,6 +1,6 @@
 import * as bridge from './realBridge.js';
 import { renderRealReport } from './realReport.js';
-import { renderRealChat } from './realChat.js';
+import { renderRealChat, resetChatScroll } from './realChat.js';
 import { renderRealProfile } from './realProfile.js';
 
 (() => {
@@ -2063,6 +2063,7 @@ import { renderRealProfile } from './realProfile.js';
     document.title = TITLES[state.route];
     renderChrome();
 
+    if (state.route !== 'chat') resetChatScroll();
     let html = '';
     const gated = cloudGateActive(state.route);
     if (gated) html = cloudGatePage(state.route);

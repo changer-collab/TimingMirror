@@ -131,15 +131,22 @@ const IMPORT_RECOVER_SYSTEM = [
 const IMPORT_VISION_SYSTEM = [
   '你是 TimingMirror 的账单识别器。输入是用户截图或本地渲染的扫描版 PDF 页面图片，可能是券商交割单/成交查询。',
   '只把图片中的真实买入/卖出交易整理成明细；余额、可用资金、总资产、合计、持仓汇总、行情数字都不是交易，不得写入 trades。',
-  '只输出 JSON 对象：{"trades":[{"date":null,"symbol":null,"side":null,"price":null,"quantity":null,"fee":null,"tax":null,"confidence":0.0,"issues":[]}],"unresolved":[{"row":null,"reason":""}]}。',
-  'date 必须为 YYYY-MM-DD；优先使用“成交日期”；如果只有“交收日期”，使用它并在 issues 中说明“使用交收日期”。',
-  'symbol 为 6 位数字代码并保留前导零；“名称/代码”在同一单元格时只提取代码，不要把名称写进 symbol。',
+  '只输出 JSON 对象：{"trades":[{"date":null,"symbol":null,"name":null,"side":null,"price":null,"quantity":null,"amount":null,"settlement_amount":null,"fee":null,"tax":null,"confidence":0.0,"issues":[]}],"unresolved":[{"row":6,"reason":"无法确定方向"}],"column_mapping":[{"source_label":"成交价/量","source_subfield":"成交价","target_field":"price","confidence":"high"}]}。',
+  'column_mapping 可选，只记录原图中真实可见的列名到规范字段的映射；没有可见映射时省略该字段或输出 []，看不清的列不要猜。',
+  'column_mapping 每项只允许 source_label、source_subfield、target_field、confidence 四个字段；source_label 为原图列名，source_subfield 为同一复合列中的子列（可为空），target_field 只能取 name、symbol、direction、date、settlement_date、price、quantity、amount、settlement_amount、fee、tax，confidence 只能取 high、medium、low。',
+  '复合列必须拆成子字段：例如“名称/代码”中的“代码”映射为 symbol；“标志/交收日期”中的“标志”映射为 direction，“交收日期”映射为 settlement_date；“成交价/量”中的“成交价”映射为 price、“量”映射为 quantity；“成交/清算额”映射为 amount 或 settlement_amount。',
+  'fee、tax 只有原图存在独立的手续费、印花税、过户费等费用列时才映射；没有独立费用列就省略，绝不把成交额或清算额映射成 fee 或 tax。',
+  'column_mapping 不得包含图片、Base64、CSV、账户信息、模型原文或额外字段；缺少 column_mapping 不影响 trades 和 unresolved 返回。',
+  'date 必须为 YYYY-MM-DD；优先使用“成交日期”；如果只有“交收日期”，使用它并在 issues 中说明“使用交收日期”，不要根据交收日期推算成交日期。',
+  'symbol 为 6 位数字代码并保留前导零；“名称/代码”在同一单元格时只提取代码，不要把名称写进 symbol；如能可靠识别证券名称，可单独写入 name，否则填 null。',
   '“成交价/量”在同一单元格时拆成 price 和 quantity；“成交额”“清算额”是金额，不是价格，不得写入 price。',
+  '“成交额/成交金额”写入 amount，“清算额/结算金额”写入 settlement_amount；逐字符保留原图正负号、千分位和小数位，没有该列或无法确定时填 null，不要用 price×quantity 推导，也不要把 amount 或 settlement_amount 写入 fee、tax。',
   'side 只能是“买入”或“卖出”；一行证券买入或证券卖出只生成一条 trade；不要拆分一行，也不要把多行合并。',
   '负金额必须保留原符号；但金额不是价格，也不要把负金额强行写入 fee 或 tax。fee、tax 只取手续费、印花税、过户费等明确费用列，取不到就填 null；无法放入这些字段的金额写入 unresolved，并在 reason 中保留原符号。',
   '证券转银行、银证转账、利息、红利、申购赎回等不是买入/卖出交易，不得伪装成 trades；无法确定时放入 unresolved，并在 reason 说明原记录类型。',
   '无法确定的字段填 null，并在 issues 中说明；不猜测、不补默认值、不四舍五入。',
   'unresolved 只记录无法可靠整理的片段，原因用一句中文；没有内容就填 []。',
+  'unresolved[].row 必须是 JSON number 或 null，例如 "row": 6；禁止输出 "row": "6"、"row": "第6行"、"row": "记录6"。',
   '重叠的分片可能包含同一笔交易；请只输出一次，保持原始上下顺序，不要因重叠重复生成交易。',
   'confidence 为 0 到 1；不确定时降低 confidence。不要输出解释、Markdown、代码块或额外字段。',
 ].join('\n');
@@ -269,10 +276,11 @@ export const MODEL_PROMPTS = Object.freeze({
 });
 
 export class ModelTransportError extends Error {
-  constructor(code) {
+  constructor(code, details = null) {
     super(code);
     this.name = 'ModelTransportError';
     this.code = code;
+    if (details !== null) this.details = details;
   }
 }
 

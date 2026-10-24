@@ -200,12 +200,57 @@ function jsonResponse(status, payload, extraHeaders = {}) {
   });
 }
 
-function errorResponse(status, code, extraHeaders = {}) {
-  return jsonResponse(status, { ok: false, code, message: MESSAGES[code] ?? MESSAGES[SITE_FUNCTION_CODES.REQUEST_INVALID] }, extraHeaders);
+function errorResponse(status, code, extraHeaders = {}, diagnostics = null) {
+  const payload = { ok: false, code, message: MESSAGES[code] ?? MESSAGES[SITE_FUNCTION_CODES.REQUEST_INVALID] };
+  if (diagnostics) Object.assign(payload, diagnostics);
+  return jsonResponse(status, payload, extraHeaders);
 }
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function timeoutDiagnostics(error) {
+  if (!error || error.code !== SITE_FUNCTION_CODES.MODEL_TIMEOUT || !isPlainObject(error.details)) return null;
+  const out = {};
+  if (Number.isInteger(error.details.timeout_ms) && error.details.timeout_ms > 0) {
+    out.timeout_ms = error.details.timeout_ms;
+  }
+  if (Number.isInteger(error.details.elapsed_ms) && error.details.elapsed_ms >= 0) {
+    out.elapsed_ms = error.details.elapsed_ms;
+  }
+  if (error.details.phase === 'response_headers' || error.details.phase === 'response_body') {
+    out.phase = error.details.phase;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function importVisionResponseDiagnostics(checked) {
+  if (!isPlainObject(checked) || !isPlainObject(checked.diagnostics)) return null;
+  const source = checked.diagnostics;
+  const out = {};
+  if (typeof source.validation_reason === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(source.validation_reason)) {
+    out.validation_reason = source.validation_reason;
+  }
+  if (typeof source.field === 'string' && /^[a-z][a-z0-9_.\[\]]{0,63}$/.test(source.field)) {
+    out.field = source.field;
+  }
+  if (['string', 'number', 'boolean', 'object', 'undefined'].includes(source.response_type)) {
+    out.response_type = source.response_type;
+  }
+  if (Number.isInteger(source.raw_length) && source.raw_length >= 0) {
+    out.raw_length = source.raw_length;
+  }
+  if (Array.isArray(source.parsed_keys)) {
+    out.parsed_keys = source.parsed_keys.filter((key) => key === 'trades' || key === 'unresolved' || key === 'column_mapping');
+  }
+  if (Number.isInteger(source.trades_count) && source.trades_count >= 0) {
+    out.trades_count = source.trades_count;
+  }
+  if (Number.isInteger(source.unresolved_count) && source.unresolved_count >= 0) {
+    out.unresolved_count = source.unresolved_count;
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 function hasOnlyKeys(value, allowed) {
@@ -273,7 +318,7 @@ async function callTransport(transport, stage, request) {
   } catch (error) {
     const code = error && typeof error.code === 'string' ? error.code : '';
     const status = MODEL_STATUS[code];
-    if (status) return { ok: false, status, code };
+    if (status) return { ok: false, status, code, diagnostics: timeoutDiagnostics(error) };
     return { ok: false, status: 502, code: SITE_FUNCTION_CODES.MODEL_UNAVAILABLE };
   }
 }
@@ -639,10 +684,10 @@ export function createHandler({
         return errorResponse(400, SITE_FUNCTION_CODES.IMPORT_VISION_REQUEST_INVALID);
       }
       const result = await callTransport(transport, 'vision', validated.request);
-      if (!result.ok) return errorResponse(result.status, result.code);
+      if (!result.ok) return errorResponse(result.status, result.code, {}, result.diagnostics);
       const checked = validateImportVisionResponse(result.rawText);
       if (!checked.ok) {
-        return errorResponse(502, SITE_FUNCTION_CODES.IMPORT_VISION_RESPONSE);
+        return errorResponse(502, SITE_FUNCTION_CODES.IMPORT_VISION_RESPONSE, {}, importVisionResponseDiagnostics(checked));
       }
       return jsonResponse(200, { rawText: JSON.stringify(checked.value) });
     }

@@ -78,4 +78,10 @@ export function normalizeImportVisionRequest(body) {
   };
 }
 
-export { validateImportRecoverResponse as validateImportVisionResponse };
+/** 视觉响应允许可选 column_mapping，并在严格校验前窄范围归一化 unresolved[].row；文字通道保持原契约。 */
+export function validateImportVisionResponse(rawText) {
+  return validateImportRecoverResponse(rawText, {
+    allowColumnMapping: true,
+    normalizeUnresolvedRow: true,
+  });
+}
