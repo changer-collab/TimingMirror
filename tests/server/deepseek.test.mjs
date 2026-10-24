@@ -566,10 +566,21 @@ const REWRITE_RAW = JSON.stringify({
   check('改写：user 只含十个协议字段', Object.keys(user).sort().join(',')
     === 'allowed,claims,draft,evidence,facts,glossary,intent,limits,question,scope'
   && user.draft.plain.length === 2 && user.claims[0].id === 'Q1', JSON.stringify(user).slice(0, 400));
-  check('改写：temperature 0.2、max_tokens 500、JSON 输出',
-    call.body.temperature === 0.2 && call.body.max_tokens === 500
+  check('改写：temperature 0、max_tokens 500、JSON 输出',
+    call.body.temperature === 0 && call.body.max_tokens === 500
     && call.body.response_format?.type === 'json_object', JSON.stringify(call.body).slice(0, 300));
   check('改写：读取 content 为 rawText', out.rawText === REWRITE_RAW, out.rawText);
+}
+
+{
+  const fake = fakeFetch(() => reply(200, { choices: [{ message: { content: REWRITE_RAW } }] }));
+  const transport = createDeepSeekTransport({ apiKey: 'test-key', model: 'deepseek-flash', fetchImpl: fake.fetchImpl });
+  await transport.qaRewrite(REWRITE_REQUEST, { repairReason: 'plain 总长度不符合约定' });
+  const messages = fake.calls[0].body.messages;
+  check('改写重试：只追加固定原因的 system 提示，不携带上次输出', messages.length === 3
+    && messages[2].role === 'system'
+    && messages[2].content === '上一次输出未通过校验：plain 总长度不符合约定。请严格按要求重写，只输出 JSON，不要解释。',
+  JSON.stringify(messages[2]));
 }
 
 {

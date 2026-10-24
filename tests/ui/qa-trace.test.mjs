@@ -159,6 +159,11 @@ async function runOrchestrator({ question, source, classifyIntent, local = () =>
   check('渲染：空事件且非等待 → 不渲染', traceHTML([], {}) === '', traceHTML([], {}));
   check('渲染：等待中显示准备中', traceHTML([], { pending: true, requestId: 'r1' }).includes('准备中')
     && traceHTML([], { pending: true, requestId: 'r1' }).includes('data-request-id="r1"'));
+  const pendingHTML = traceHTML(events, { pending: true, requestId: 'r2' });
+  check('渲染：等待中默认展开并实时更新', /<details class="tm-qa-trace"[^>]*\bopen\b/.test(pendingHTML)
+    && pendingHTML.includes('进行中 · 2 步') && pendingHTML.includes('实时更新'), pendingHTML);
+  check('渲染：回答落列后自动收起', !/<details class="tm-qa-trace"[^>]*\bopen\b/.test(html)
+    && html.includes('默认收起 · 点击展开'), html);
   const escaped = traceHTML([{ stage: 'scope', status: 'done', label: '<b>注入</b>', ms: 0 }], {});
   check('渲染：标签转义，不注入 HTML', escaped.includes('&lt;b&gt;注入&lt;/b&gt;') && !escaped.includes('<b>注入</b>'), escaped);
   const hidden = traceHTML([{ stage: 'scope', status: 'done', label: '判断问题范围', plan_id: 'plan-x', template_id: 'T-x', intent_code: 'worst_trade' }], {});

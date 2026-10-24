@@ -1235,10 +1235,10 @@ async function answerLegacy({ question, bill, ruleState, versions, preferOnline,
     answer.rewrite = result.rewrite;
     answer.rewrite_meta = result.meta;
     answer.narrative_policy = 'auto';
-    trace.push('rewrite', result.ok ? 'done' : 'failed', '模型讲人话', {
+    trace.push('rewrite', result.ok ? 'done' : 'skipped', '模型讲人话', {
       detail: result.ok
         ? (result.meta.cached ? '使用缓存表述' : '已绑定 claim')
-        : '已改用本地表述',
+        : '本次改用本地表述',
     });
     return answer;
   }

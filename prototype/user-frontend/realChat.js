@@ -82,12 +82,16 @@ function traceItemsHTML(events) {
 function traceHTML(events, { requestId = null, pending = false } = {}) {
   const list = Array.isArray(events) ? events : [];
   if (!list.length && !pending) return '';
-  const title = pending && !list.length ? 'AI 运行过程 · 准备中' : `AI 运行过程 · ${list.length} 步`;
+  const open = pending ? ' open' : '';
+  const title = pending
+    ? (list.length ? `AI 运行过程 · 进行中 · ${list.length} 步` : 'AI 运行过程 · 准备中')
+    : `AI 运行过程 · ${list.length} 步`;
+  const hint = pending ? '实时更新 · 回答生成后自动收起' : '默认收起 · 点击展开';
   return `<div class="tm-qa-trace-host" data-role="qa-trace-host"${requestId ? ` data-request-id="${esc(requestId)}"` : ''}>
-    <details class="tm-qa-trace" data-role="qa-trace">
+    <details class="tm-qa-trace" data-role="qa-trace"${open}>
       <summary>
         <span data-role="qa-trace-count">${esc(title)}</span>
-        <span class="tm-qa-trace-hint">默认收起 · 点击展开</span>
+        <span class="tm-qa-trace-hint" data-role="qa-trace-hint">${esc(hint)}</span>
       </summary>
       <ol class="tm-qa-trace-steps" data-role="qa-trace-steps">${traceItemsHTML(list)}</ol>
     </details>
@@ -100,8 +104,14 @@ function patchLiveTrace(host, requestId, events) {
   if (!node) return;
   const count = node.querySelector('[data-role="qa-trace-count"]');
   const steps = node.querySelector('[data-role="qa-trace-steps"]');
-  if (count) count.textContent = `AI 运行过程 · ${Array.isArray(events) ? events.length : 0} 步`;
-  if (steps) steps.innerHTML = traceItemsHTML(events);
+  if (count) count.textContent = `AI 运行过程 · 进行中 · ${Array.isArray(events) ? events.length : 0} 步`;
+  if (steps) {
+    steps.innerHTML = traceItemsHTML(events);
+    const panel = node.querySelector('[data-role="qa-trace"]');
+    if (panel) panel.open = true;
+  }
+  const scroller = host.querySelector('[data-role="qa-scroll"]');
+  if (scroller) scroller.scrollTop = scroller.scrollHeight;
 }
 
 // 离开问答页时重置，下一次进入重新播放一次入页滚动。

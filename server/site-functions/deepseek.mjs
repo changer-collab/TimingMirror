@@ -251,20 +251,24 @@ export function createDeepSeekTransport({
         { role: 'user', content: JSON.stringify({ question, intent, facts, evidence, allowed }) },
       ], { temperature: 0.2, max_tokens: 600 });
     },
-    qaRewrite({ question, intent, scope, draft, claims, facts, evidence, allowed, glossary, limits }) {
+    qaRewrite({ question, intent, scope, draft, claims, facts, evidence, allowed, glossary, limits }, { repairReason = '' } = {}) {
+      const messages = [
+        { role: 'system', content: MODEL_PROMPTS.qaRewrite },
+        {
+          role: 'user',
+          content: JSON.stringify({ question, intent, scope, draft, claims, facts, evidence, allowed, glossary, limits }),
+        },
+      ];
+      if (typeof repairReason === 'string' && repairReason !== '') {
+        messages.push({ role: 'system', content: `上一次输出未通过校验：${repairReason}。请严格按要求重写，只输出 JSON，不要解释。` });
+      }
       return request({
         model,
-        messages: [
-          { role: 'system', content: MODEL_PROMPTS.qaRewrite },
-          {
-            role: 'user',
-            content: JSON.stringify({ question, intent, scope, draft, claims, facts, evidence, allowed, glossary, limits }),
-          },
-        ],
-        temperature: 0.2,
+        messages,
+        temperature: 0,
         max_tokens: 500,
         response_format: { type: 'json_object' },
-      }, Math.min(timeoutMs, 4500));
+      }, Math.min(timeoutMs, 4000));
     },
     vision({ images }) {
       return callVision(images);
