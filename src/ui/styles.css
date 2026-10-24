@@ -138,7 +138,7 @@ body {
 .cv-action-title { font-weight: 700; font-size: 16px; color: var(--cream); }
 .cv-action-empty { font-size: 14px; color: var(--dim); padding: 8px 0; }
 .cv-action-note { font-size: 14px; color: var(--dim); }
-.cv-slot-custom { border-left: 3px solid var(--accent, #4a9eff); padding-left: 12px; }
+.cv-slot-custom { padding-left: 0; }
 .cv-rule-custom { border-left: 3px solid var(--accent, #4a9eff); }
 .cv-rule-action { font-size: 14px; color: var(--cream); margin-top: 4px; }
 .cv-rule-understanding { margin-top: 4px; font-style: italic; }

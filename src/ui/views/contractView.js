@@ -191,6 +191,19 @@ function conditionText(rule) {
   return null;
 }
 
+// 自定义规则的"规则理解"转为"触发条件"时，去掉末尾的动作性表述（提醒不要买入/卖出等）
+function customTriggerText(understanding) {
+  if (!understanding) return null;
+  const cleaned = understanding
+    .replace(/，?提醒不要买(入|股)[。.]?$/u, '')
+    .replace(/，?提醒不要卖(出|股)[。.]?$/u, '')
+    .replace(/，?则不买[。.]?$/u, '')
+    .replace(/，?则不卖[。.]?$/u, '')
+    .replace(/，?提醒我[。.]?$/u, '')
+    .trim();
+  return cleaned ? `触发条件：${cleaned}` : null;
+}
+
 function historyReason(rule) {
   if (rule.state === 'superseded') return '已被较新的同类型规则替代，不参与后续测试。';
   if (rule.state === 'replaced') {
@@ -288,10 +301,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     const stopKey = `${rule.rule_id ?? ''}:${rule.hash}`;
     const confirming = pendingStop === stopKey;
     const isCustom = rule.is_custom === true;
-    const cond = isCustom ? null : conditionText(rule);
-    const actionLabel = isCustom
-      ? (rule.action === 'both' ? '买入提醒 + 卖出提醒' : ACTION_LABEL[rule.action] ?? rule.action ?? '待确认')
-      : null;
+    const cond = isCustom ? customTriggerText(rule.understanding) : conditionText(rule);
     return el('div', { class: `cv-rule on${isCustom ? ' cv-rule-custom' : ''}`, 'data-hash': rule.hash }, [
       el('div', { class: 'row cv-rule-head' }, [
         chip('已启用', 'ok'),
@@ -303,11 +313,9 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
         ]),
       ]),
       el('div', { class: 'cv-rule-text' }, [safe(rule.text)]),
-      isCustom ? el('div', { class: 'cv-rule-action' }, [`提醒动作：${actionLabel}`]) : null,
       rule.decision_statement ? el('div', { class: 'cv-decision cv-decision-current' }, [`决定自述：${safe(rule.decision_statement.text)}`]) : null,
       el('div', { class: 'cv-rule-scope', 'data-scope': rule.scope && rule.scope.kind === 'symbol' ? rule.scope.symbol : 'all' }, [`适用范围：${safe(rule.scope_text)}`]),
       cond ? el('div', { class: 'cv-rule-cond' }, [cond]) : null,
-      isCustom && rule.understanding ? el('div', { class: 'muted small cv-rule-understanding' }, [`规则理解：${safe(rule.understanding)}`]) : null,
       confirming ? el('div', { class: 'cv-confirm' }, [
         el('div', { class: 'calc-line' }, [`确认停用\u201c${safe(rule.text)}\u201d？`]),
         el('div', { class: 'muted small' }, [STOP_NOTE]),
