@@ -53,6 +53,14 @@ check('线上页：交收日期提示保持确定性且不推导成交日期', /
   && /系统不会倒推成交日期/.test(live) && /hasSettlementDate/.test(live));
 check('映射：复合列标签覆盖名称/代码、标志/交收日期、成交价/量、成交/清算额',
   ['名称', '标的', '方向', '交收日期', '价格', '数量', '成交额', '清算额'].every((label) => mappingModule.includes(label)));
+check('线上页：视觉草稿按原图映射动态出列', /visionDraftColumns/.test(live)
+  && /draftTable\(rec, \{ useSourceColumns: isVisionDraft \}\)/.test(live)
+  && /sourceColumns\.map/.test(live) && /is-source-columns/.test(live));
+check('线上页：金额列只读展示，标的可带名称辅助值', /tm-cell-static/.test(live)
+  && /settlementAmount/.test(mappingModule) && /column\.nameAux/.test(live)
+  && /tm-cell-stack/.test(live));
+check('线上页：CSV/文字仍使用固定规范表头', /<th>日期<\/th><th>标的<\/th><th>方向<\/th>/.test(live)
+  && /useSourceColumns: isVisionDraft/.test(live));
 
 /* —— severity 分色 —— */
 check('线上页：warning 与 blocking error 使用不同语义 class',

@@ -1211,6 +1211,40 @@ body {
   font-size: 13px;
 }
 
+.tm-draft-table .tm-cell-static {
+  display: inline-block;
+  min-width: 82px;
+  padding: 5px 7px;
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  text-align: right;
+}
+
+.tm-draft-table .tm-cell-static.is-missing {
+  color: var(--warn);
+}
+
+.tm-draft-table .tm-cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tm-draft-table .tm-cell-stack .tm-cell-input {
+  width: 100%;
+}
+
+.tm-draft-table .tm-cell-stack .sym-name {
+  margin-left: 0;
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+.tm-draft-table.is-source-columns td {
+  vertical-align: top;
+}
+
 .tm-draft-table td[aria-label] {
   width: 90px;
 }
