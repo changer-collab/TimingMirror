@@ -15,6 +15,8 @@ const app = readFileSync(join(ROOT, 'prototype/user-frontend/app.js'), 'utf8');
 const css = readFileSync(join(ROOT, 'prototype/user-frontend/real-views.css'), 'utf8');
 const realImport = readFileSync(join(ROOT, 'prototype/user-frontend/realImport.js'), 'utf8');
 const realReport = readFileSync(join(ROOT, 'prototype/user-frontend/realReport.js'), 'utf8');
+const realChat = readFileSync(join(ROOT, 'prototype/user-frontend/realChat.js'), 'utf8');
+const baseCss = readFileSync(join(ROOT, 'prototype/user-frontend/styles.css'), 'utf8');
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -139,6 +141,7 @@ check('隐藏：未确认/非本地账单不渲染横幅',
   const shellRule = cssBlock('.tm-bill-banner-shell {');
   const bannerRule = cssBlock('.tm-bill-banner {');
   const qaLayoutRule = cssBlock('.tm-qa-layout {');
+  const containerRule = block(baseCss, '.container {', '}');
   check('布局：横幅外壳使用 container，卡片不再把 container padding 覆盖成 16px',
     /class="container tm-bill-banner-shell/.test(bannerSource)
     && /margin-top:\s*18px/.test(shellRule)
@@ -148,12 +151,18 @@ check('隐藏：未确认/非本地账单不渲染横幅',
     && /class="container page-body"/.test(realImport)
     && /class="container report-body"/.test(realReport)
     && /class="container page-body tm-scenario-page"/.test(scenarioPage));
-  check('布局：问答横幅不跟随当前问答布局收窄，正文宽度由 .tm-qa-layout 决定',
-    /max-width:\s*1200px/.test(qaLayoutRule) && /padding:\s*0 clamp\(14px, 2\.2vw, 26px\)/.test(qaLayoutRule)
+  check('布局：问答横幅与正文共用 container 宽度，.tm-qa-layout 不再单独收窄',
+    /class="container tm-bill-banner-shell/.test(bannerSource)
+    && /class="container">\s*<div class="tm-qa-layout">/.test(realChat)
+    && !/max-width/.test(qaLayoutRule) && !/padding/.test(qaLayoutRule)
+    && /max-width:\s*calc\(1200px \+ var\(--gutter\) \* 2\)/.test(containerRule)
+    && /margin-inline:\s*auto/.test(containerRule)
+    && /padding-inline:\s*var\(--gutter\)/.test(containerRule)
     && !/max-width/.test(shellRule) && !/padding-inline/.test(shellRule));
-  check('布局：窄屏问答正文保留 14px gutter，横幅沿用全站 container gutter',
+  check('布局：窄屏问答正文保留 14px 内边距，横幅沿用全站 container gutter',
     /\.tm-qa-scroll\s*\{\s*padding:\s*16px 14px;\s*\}/.test(css)
-    && /\.tm-qa-layout\s*\{[^}]*padding:\s*0 12px;/s.test(css)
+    && !/\.tm-qa-layout\s*\{[^}]*padding:\s*0 12px;/s.test(css)
+    && /--gutter:\s*clamp\(20px, 5vw, 56px\)/.test(baseCss)
     && !/tm-bill-banner-shell[^{]*\{\s*padding-inline/.test(css));
   check('布局：问答横幅按 .tm-main 实际宽度动态对齐，覆盖助手开关与视口变化',
     /function alignChatBanner\(\)/.test(app)
