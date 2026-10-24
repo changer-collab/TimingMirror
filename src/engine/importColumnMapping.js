@@ -162,3 +162,94 @@ export function columnMappingRows(raw) {
     fields,
   };
 }
+
+function sourceText(entry) {
+  return `${entry.source_label} ${entry.source_subfield ?? ''}`;
+}
+
+/**
+ * 视觉草稿列：只根据原图映射生成列，未映射的字段不伪造列名。
+ * 成交额/清算额只作为展示列，不进入 fee/tax 或最终账本字段。
+ */
+export function visionDraftColumns(raw) {
+  const checked = Array.isArray(raw) ? validateColumnMapping(raw) : { ok: true, value: [] };
+  const entries = checked.ok ? checked.value : [];
+  if (entries.length === 0) return [];
+  const find = (target) => entries.find((entry) => entry.target_field === target) ?? null;
+  const settlementDate = find('settlement_date');
+  const date = settlementDate ?? find('date');
+  const symbol = find('symbol');
+  const name = find('name');
+  const direction = find('direction');
+  const price = find('price');
+  const quantity = find('quantity');
+  const amount = find('amount');
+  const settlementAmount = find('settlement_amount');
+  const fee = find('fee');
+  const tax = find('tax');
+  const columns = [];
+
+  if (date) {
+    columns.push({
+      key: 'date',
+      field: 'date',
+      label: settlementDate || /交收/.test(date.source_subfield ?? '') ? '交收日期' : '日期',
+      editable: true,
+      inputmode: 'numeric',
+      settlement: Boolean(settlementDate) || /交收/.test(date.source_subfield ?? ''),
+    });
+  }
+  if (symbol) {
+    columns.push({
+      key: 'symbol',
+      field: 'symbol',
+      label: name || /名称/.test(sourceText(symbol)) ? '标的/代码' : '标的',
+      editable: true,
+      inputmode: 'numeric',
+      nameAux: Boolean(name) || /名称/.test(symbol.source_label),
+    });
+  } else if (name) {
+    columns.push({ key: 'name', field: 'name', label: '名称', editable: false });
+  }
+  if (direction) {
+    columns.push({ key: 'side', field: 'side', label: '方向', editable: true, select: true });
+  }
+  if (price) {
+    columns.push({
+      key: 'price',
+      field: 'price',
+      label: /成交价/.test(sourceText(price)) ? '成交价' : '价格',
+      editable: true,
+      inputmode: 'decimal',
+      numeric: true,
+    });
+  }
+  if (quantity) {
+    columns.push({
+      key: 'quantity', field: 'quantity', label: '数量',
+      editable: true, inputmode: 'numeric', numeric: true,
+    });
+  }
+  if (amount) {
+    columns.push({ key: 'amount', field: 'amount', label: '成交额', editable: false, numeric: true });
+  }
+  if (settlementAmount) {
+    columns.push({
+      key: 'settlementAmount', field: 'settlementAmount', label: '清算额',
+      editable: false, numeric: true,
+    });
+  }
+  if (fee) {
+    columns.push({
+      key: 'fee', field: 'fee', label: '费用',
+      editable: true, inputmode: 'decimal', numeric: true,
+    });
+  }
+  if (tax) {
+    columns.push({
+      key: 'tax', field: 'tax', label: '税费',
+      editable: true, inputmode: 'decimal', numeric: true,
+    });
+  }
+  return columns;
+}

@@ -18,6 +18,8 @@ const VISION_RESPONSE_KEYS = new Set(['trades', 'unresolved', 'column_mapping'])
 const DIAGNOSTIC_RESPONSE_KEYS = new Set(['trades', 'unresolved', 'column_mapping']);
 const TRACE_ID_RE = /^[A-Za-z0-9._:-]{1,120}$/;
 const TRADE_KEYS = new Set(['date', 'symbol', 'side', 'price', 'quantity', 'fee', 'tax', 'confidence', 'issues']);
+// 成交额、清算额、名称是视觉草稿展示字段；文字通道保持原严格字段集。
+const VISION_TRADE_KEYS = new Set([...TRADE_KEYS, 'name', 'amount', 'settlement_amount']);
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isText = (v, max = 200) => typeof v === 'string' && v.length <= max;
 
@@ -228,16 +230,19 @@ export function validateImportRecoverResponse(rawText, {
     if (!isObject(raw)) {
       return failResponse(rawText, parsed, `trades[${i}] 必须为对象`, 'trade_not_object', 'trades[]');
     }
-    const extraKeys = Object.keys(raw).filter((key) => !TRADE_KEYS.has(key));
+    const extraKeys = Object.keys(raw).filter((key) => !(allowColumnMapping ? VISION_TRADE_KEYS : TRADE_KEYS).has(key));
     if (extraKeys.length) {
       return failResponse(rawText, parsed, `trades[${i}] 包含不允许字段`, 'trade_unexpected_key', 'trades[].keys');
     }
     const values = {
       date: raw.date === null || raw.date === undefined ? null : (isText(raw.date, 32) ? raw.date.trim() : undefined),
       symbol: raw.symbol === null || raw.symbol === undefined ? null : (isText(raw.symbol, 16) ? raw.symbol.trim() : undefined),
+      name: raw.name === null || raw.name === undefined ? null : (isText(raw.name, 32) ? raw.name.trim() : undefined),
       side: normalizeSide(raw.side),
       price: toText(raw.price),
       quantity: toText(raw.quantity),
+      amount: toText(raw.amount),
+      settlement_amount: toText(raw.settlement_amount),
       fee: toText(raw.fee),
       tax: toText(raw.tax),
     };
@@ -245,7 +250,7 @@ export function validateImportRecoverResponse(rawText, {
     if (invalidField) {
       return failResponse(rawText, parsed, `trades[${i}] 字段类型或长度非法`, 'trade_field_invalid', `trades[].${invalidField}`);
     }
-    const { date, symbol, side, price, quantity, fee, tax } = values;
+    const { date, symbol, name, side, price, quantity, amount, settlement_amount, fee, tax } = values;
     const confidence = raw.confidence === undefined ? 0 : raw.confidence;
     if (typeof confidence !== 'number' || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
       return failResponse(rawText, parsed, `trades[${i}].confidence 必须为 [0,1]`, 'trade_confidence_invalid', 'trades[].confidence');
@@ -257,9 +262,12 @@ export function validateImportRecoverResponse(rawText, {
     trades.push({
       date,
       symbol,
+      name,
       side,
       price,
       quantity,
+      amount,
+      settlement_amount,
       fee,
       tax,
       confidence,

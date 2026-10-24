@@ -241,7 +241,10 @@ export function validateRecoveryResponse(rawText, { allowColumnMapping = false }
   if (parsed.unresolved !== undefined && !Array.isArray(parsed.unresolved)) {
     return failure(IMPORT_RECOVERY_CODES.MODEL_RESPONSE, '识别响应 unresolved 必须为数组');
   }
-  const allowedTradeKeys = new Set(['date', 'symbol', 'side', 'price', 'quantity', 'fee', 'tax', 'confidence', 'issues']);
+  const baseTradeKeys = ['date', 'symbol', 'side', 'price', 'quantity', 'fee', 'tax', 'confidence', 'issues'];
+  const allowedTradeKeys = new Set(allowColumnMapping
+    ? [...baseTradeKeys, 'name', 'amount', 'settlement_amount']
+    : baseTradeKeys);
   const trades = [];
   for (let i = 0; i < parsed.trades.length; i++) {
     const raw = parsed.trades[i];
@@ -250,12 +253,15 @@ export function validateRecoveryResponse(rawText, { allowColumnMapping = false }
     if (extraKeys.length) return failure(IMPORT_RECOVERY_CODES.MODEL_RESPONSE, `trades[${i}] 包含不允许字段：${extraKeys.join(',')}`);
     const date = raw.date === null || raw.date === undefined ? null : (isText(raw.date, 32) ? raw.date.trim() : undefined);
     const symbol = raw.symbol === null || raw.symbol === undefined ? null : (isText(raw.symbol, 16) ? raw.symbol.trim() : undefined);
+    const name = raw.name === null || raw.name === undefined ? null : (isText(raw.name, 32) ? raw.name.trim() : undefined);
     const side = normalizeSide(raw.side);
     const price = toText(raw.price);
     const quantity = toText(raw.quantity);
+    const amount = toText(raw.amount);
+    const settlementAmount = toText(raw.settlement_amount);
     const fee = toText(raw.fee);
     const tax = toText(raw.tax);
-    if ([date, symbol, side, price, quantity, fee, tax].some((v) => v === undefined)) {
+    if ([date, symbol, name, side, price, quantity, amount, settlementAmount, fee, tax].some((v) => v === undefined)) {
       return failure(IMPORT_RECOVERY_CODES.MODEL_RESPONSE, `trades[${i}] 字段类型或长度非法`);
     }
     const confidence = raw.confidence === undefined ? 0 : raw.confidence;
@@ -269,9 +275,12 @@ export function validateRecoveryResponse(rawText, { allowColumnMapping = false }
     trades.push({
       date: date === null ? null : date,
       symbol,
+      name,
       side,
       price,
       quantity,
+      amount,
+      settlement_amount: settlementAmount,
       fee,
       tax,
       confidence,

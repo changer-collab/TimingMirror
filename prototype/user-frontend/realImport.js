@@ -21,7 +21,7 @@ import {
   draftRowSeverity,
   unresolvedRowLabel,
 } from '../../src/engine/importDraft.js';
-import { columnMappingRows } from '../../src/engine/importColumnMapping.js';
+import { columnMappingRows, visionDraftColumns } from '../../src/engine/importColumnMapping.js';
 import {
   IMPORT_VISION_MAX_IMAGES,
   validateVisionInput,
@@ -399,30 +399,60 @@ function lastPdfBusy(rec) {
   return rec?.vision?.status === 'rendering' || rec?.vision?.status === 'preparing';
 }
 
-function draftTable(rec) {
+function draftTable(rec, { useSourceColumns = false } = {}) {
   const draft = rec.draft;
   if (!draft) return '';
+  const sourceColumns = useSourceColumns ? visionDraftColumns(draft.columnMapping) : [];
+  const sourceMode = sourceColumns.length > 0;
+  const columnHasValue = new Map(sourceColumns.map((column) => [
+    column.field,
+    draft.rows.some((row) => String(row.fields[column.field] ?? '').trim() !== ''),
+  ]));
+  const input = (row, key, extra = '') => `<input class="tm-cell-input" data-row="${esc(row.id)}" data-field="${key}" value="${esc(row.fields[key] ?? '')}" ${extra}>`;
+  const sourceCell = (row, column) => {
+    if (!column.editable) {
+      const value = String(row.fields[column.field] ?? '').trim();
+      const emptyText = columnHasValue.get(column.field) ? '—' : '未匹配';
+      return `<span class="tm-cell-static${value ? '' : ' is-missing'}">${esc(value || emptyText)}</span>`;
+    }
+    const placeholder = columnHasValue.get(column.field) ? '' : ' placeholder="未匹配"';
+    if (column.select) {
+      return `<select class="tm-cell-input" data-row="${esc(row.id)}" data-field="${column.field}"><option value="买入" ${row.fields.side === '买入' ? 'selected' : ''}>买入</option><option value="卖出" ${row.fields.side === '卖出' ? 'selected' : ''}>卖出</option></select>`;
+    }
+    if (column.key === 'symbol') {
+      const name = String(row.fields.name ?? '').trim();
+      return `<div class="tm-cell-stack">${input(row, column.field, `inputmode="${column.inputmode}"${placeholder}`)}${column.nameAux && name ? `<span class="sym-name">${esc(name)}</span>` : ''}</div>`;
+    }
+    return input(row, column.field, `inputmode="${column.inputmode}"${placeholder}`);
+  };
+  const headers = sourceMode
+    ? sourceColumns.map((column) => `<th${column.numeric ? ' class="num"' : ''}>${esc(column.label)}</th>`).join('')
+    : '<th>日期</th><th>标的</th><th>方向</th><th class="num">价格</th><th class="num">数量</th><th class="num">费用</th><th class="num">税费</th>';
   const rows = draft.rows.map((row, index) => {
     const status = draftRowStatusText(row);
     const severity = draftRowSeverity(row);
     const issues = Array.isArray(row.issues) && row.issues.length ? row.issues.join('；') : '';
-    const input = (key, extra = '') => `<input class="tm-cell-input" data-row="${esc(row.id)}" data-field="${key}" value="${esc(row.fields[key] ?? '')}" ${extra}>`;
+    const cells = sourceMode
+      ? sourceColumns.map((column) => `<td${column.numeric ? ' class="num"' : ''}>${sourceCell(row, column)}</td>`).join('')
+      : [
+        `<td>${input(row, 'date', 'inputmode="numeric"')}</td>`,
+        `<td>${input(row, 'symbol', 'inputmode="numeric"')}</td>`,
+        `<td><select class="tm-cell-input" data-row="${esc(row.id)}" data-field="side"><option value="买入" ${row.fields.side === '买入' ? 'selected' : ''}>买入</option><option value="卖出" ${row.fields.side === '卖出' ? 'selected' : ''}>卖出</option></select></td>`,
+        `<td class="num">${input(row, 'price', 'inputmode="decimal"')}</td>`,
+        `<td class="num">${input(row, 'quantity', 'inputmode="numeric"')}</td>`,
+        `<td class="num">${input(row, 'fee', 'inputmode="decimal"')}</td>`,
+        `<td class="num">${input(row, 'tax', 'inputmode="decimal"')}</td>`,
+      ].join('');
     return `<tr class="tm-draft-row ${row.status} tm-severity-${severity}">
       <td class="line-no"><label class="tm-line-pick"><input type="checkbox" data-row="${esc(row.id)}" data-include ${row.include === false ? '' : 'checked'} aria-label="导入第 ${row.line ?? index + 2} 行"><span>${String(row.line ?? index + 2).padStart(2, '0')}</span></label></td>
-      <td>${input('date', 'inputmode="numeric"')}</td>
-      <td>${input('symbol', 'inputmode="numeric"')}</td>
-      <td><select class="tm-cell-input" data-row="${esc(row.id)}" data-field="side"><option value="买入" ${row.fields.side === '买入' ? 'selected' : ''}>买入</option><option value="卖出" ${row.fields.side === '卖出' ? 'selected' : ''}>卖出</option></select></td>
-      <td>${input('price', 'inputmode="decimal"')}</td>
-      <td>${input('quantity', 'inputmode="numeric"')}</td>
-      <td>${input('fee', 'inputmode="decimal"')}</td>
-      <td>${input('tax', 'inputmode="decimal"')}</td>
+      ${cells}
       <td class="tm-row-status is-${severity}">${esc(status)}${issues ? `<span>${esc(issues)}</span>` : ''}</td>
       <td><button class="tm-link tm-row-remove" type="button" data-action="remove-row" data-row="${esc(row.id)}">删除</button></td>
     </tr>`;
   }).join('');
-  return `<div class="table-wrap"><table class="ledger tm-draft-table">
-    <caption class="sr-only">交易草稿，可逐行核对日期、标的、方向、价格、数量、费用与税费。</caption>
-    <thead><tr><th>行</th><th>日期</th><th>标的</th><th>方向</th><th class="num">价格</th><th class="num">数量</th><th class="num">费用</th><th class="num">税费</th><th>状态</th><th></th></tr></thead>
+  return `<div class="table-wrap"><table class="ledger tm-draft-table${sourceMode ? ' is-source-columns' : ''}">
+    <caption class="sr-only">${sourceMode ? '交易草稿，列名对齐原图识别结果；可逐行核对并编辑。' : '交易草稿，可逐行核对日期、标的、方向、价格、数量、费用与税费。'}</caption>
+    <thead><tr><th>行</th>${headers}<th>状态</th><th></th></tr></thead>
     <tbody>${rows}</tbody>
   </table></div>`;
 }
@@ -625,7 +655,7 @@ function draftPanelHTML(state, rec) {
     ${errorLine(rec)}
     ${validationErrorsHTML(rec)}
     ${isVisionDraft ? columnMappingHTML(mappingView) : ''}
-    ${draftTable(rec)}
+    ${draftTable(rec, { useSourceColumns: isVisionDraft })}
     ${unresolvedPanelHTML(rec)}
     <div class="bill-actions">
       <div class="bill-actions-note">

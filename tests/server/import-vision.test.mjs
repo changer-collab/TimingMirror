@@ -334,6 +334,9 @@ async function invokeRecover(handler, body) {
   check('DashScope vision：提示词要求可选 column_mapping、交收日期标记且费用不伪装',
     ['column_mapping', 'settlement_date', 'settlement_amount', '绝不把成交额或清算额映射成 fee']
       .every((keyword) => prompt.includes(keyword)), prompt);
+  check('DashScope vision：提示词要求成交额/清算额独立输出且不推导',
+    ['“成交额/成交金额”写入 amount', '“清算额/结算金额”写入 settlement_amount', '不要用 price×quantity 推导', 'name']
+      .every((keyword) => prompt.includes(keyword)), prompt);
 }
 
 const failed = results.filter((r) => !r.ok);

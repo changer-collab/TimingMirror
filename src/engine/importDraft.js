@@ -177,9 +177,12 @@ function aiTradeToFields(trade) {
   return {
     date: trade.date ?? '',
     symbol: trade.symbol ?? '',
+    name: trade.name ?? '',
     side: normalizeSide(trade.side ?? ''),
     price: trade.price ?? '',
     quantity: trade.quantity ?? '',
+    amount: trade.amount ?? '',
+    settlementAmount: trade.settlement_amount ?? '',
     fee: trade.fee ?? '',
     tax: trade.tax ?? '',
   };
@@ -276,7 +279,10 @@ export function buildAiDraft({
 export function addBlankRow(draft) {
   const rows = Array.isArray(draft?.rows) ? [...draft.rows] : [];
   const row = makeRow({
-    fields: { date: '', symbol: '', side: '', price: '', quantity: '', fee: '', tax: '' },
+    fields: {
+      date: '', symbol: '', name: '', side: '', price: '', quantity: '',
+      amount: '', settlementAmount: '', fee: '', tax: '',
+    },
     source: 'manual',
     line: rows.length + 2,
     trade: null,
