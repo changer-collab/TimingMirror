@@ -77,6 +77,10 @@ async function invoke(handler, body, { method = 'POST' } = {}) {
     && ok.value.trades[0].price === '100.00', JSON.stringify(ok));
   const unresolved = validateImportRecoverResponse(JSON.stringify({ trades: [], unresolved: [{ row: 2, reason: '日期无法确定' }] }));
   check('响应：只有待确认说明允许', unresolved.ok === true && unresolved.value.unresolved[0].reason.includes('日期'));
+  const stringRow = validateImportRecoverResponse(JSON.stringify({ trades: [], unresolved: [{ row: '6', reason: '日期无法确定' }] }));
+  check('响应：文字导入仍拒绝字符串 row（视觉兼容不外溢）', stringRow.ok === false
+    && stringRow.code === IMPORT_RECOVER_CODES.RESPONSE
+    && stringRow.diagnostics?.validation_reason === 'unresolved_row_invalid', JSON.stringify(stringRow));
   const noResult = validateImportRecoverResponse(JSON.stringify({ trades: [], unresolved: [] }));
   check('响应：空结果拒绝', noResult.ok === false && noResult.code === IMPORT_RECOVER_CODES.RESPONSE);
   const extra = validateImportRecoverResponse(JSON.stringify({ trades: [{ ...JSON.parse(VALID).trades[0], total: 1 }], unresolved: [] }));

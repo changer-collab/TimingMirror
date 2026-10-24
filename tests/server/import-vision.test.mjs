@@ -15,6 +15,7 @@ import {
 import {
   DASHSCOPE_MULTIMODAL_ENDPOINT,
   DASHSCOPE_VISION_MODEL,
+  MODEL_PROMPTS,
   ModelTransportError,
   createDashScopeTransport,
 } from '../../server/site-functions/dashscope.mjs';
@@ -179,6 +180,52 @@ async function invokeRecover(handler, body) {
     && recoverOut.json?.code === SITE_FUNCTION_CODES.IMPORT_RECOVER_RESPONSE
     && !('validation_reason' in (recoverOut.json ?? {}))
     && !('field' in (recoverOut.json ?? {})), recoverOut.text);
+}
+
+/* —— unresolved[].row：视觉兼容与严格拒绝 —— */
+{
+  const run = (row) => invoke(createHandler({
+    transport: fakeTransport(JSON.stringify({
+      trades: [],
+      unresolved: [{ row, reason: '第6行 证券转银行 600519 ¥9,999.00，非交易记录' }],
+    })),
+  }), { images: [IMAGE], stage: IMPORT_VISION_STAGE, source_kind: 'image' });
+
+  const numberRow = await run(6);
+  check('row：非负整数 6 通过并原样保留', numberRow.status === 200
+    && JSON.parse(numberRow.json.rawText).unresolved[0].row === 6, numberRow.text);
+  const nullRow = await run(null);
+  check('row：null 通过', nullRow.status === 200
+    && JSON.parse(nullRow.json.rawText).unresolved[0].row === null, nullRow.text);
+  const stringRow = await run('6');
+  check('row：视觉入口把严格数字字符串 "6" 无损归一化为整数', stringRow.status === 200
+    && JSON.parse(stringRow.json.rawText).unresolved[0].row === 6
+    && JSON.parse(stringRow.json.rawText).unresolved[0].reason.includes('证券转银行'), stringRow.text);
+
+  const rejectedRows = [
+    ['前导零字符串', '06'],
+    ['带空格字符串', ' 6 '],
+    ['文字', '第6行'],
+    ['负数', -1],
+    ['负数字符串', '-1'],
+    ['小数', 1.5],
+    ['小数字符串', '1.5'],
+  ];
+  for (const [name, row] of rejectedRows) {
+    const out = await run(row);
+    check(`row：${name}拒绝并保留固定诊断`, out.status === 502
+      && out.json?.code === SITE_FUNCTION_CODES.IMPORT_VISION_RESPONSE
+      && out.json?.validation_reason === 'unresolved_row_invalid'
+      && out.json?.field === 'unresolved[].row'
+      && !out.text.includes('证券转银行')
+      && !out.text.includes('600519')
+      && !out.text.includes('9,999.00'), out.text);
+  }
+
+  check('提示词：row 必须为 JSON number 非负整数或 null，禁止字符串和文字', MODEL_PROMPTS.importVisionSystem.includes('JSON number 类型的非负整数或 null')
+    && MODEL_PROMPTS.importVisionSystem.includes('禁止输出字符串数字')
+    && MODEL_PROMPTS.importVisionSystem.includes('文字只能放在 reason')
+    && MODEL_PROMPTS.importVisionSystem.includes('保持既有含义'), MODEL_PROMPTS.importVisionSystem);
 }
 
 /* —— Handler 路由与图片请求体上限 —— */

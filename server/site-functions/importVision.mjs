@@ -78,4 +78,7 @@ export function normalizeImportVisionRequest(body) {
   };
 }
 
-export { validateImportRecoverResponse as validateImportVisionResponse };
+// 视觉模型可能把行号输出为严格数字字符串；row 仅用于展示，视觉入口无损归一化，文字导入保持严格。
+export function validateImportVisionResponse(rawText) {
+  return validateImportRecoverResponse(rawText, { normalizeVisionRow: true });
+}

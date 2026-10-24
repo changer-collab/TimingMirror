@@ -94,7 +94,7 @@ function normalizeSide(value) {
   return undefined;
 }
 
-export function validateImportRecoverResponse(rawText) {
+export function validateImportRecoverResponse(rawText, { normalizeVisionRow = false } = {}) {
   if (typeof rawText !== 'string') {
     return failResponse(rawText, null, '响应正文必须为字符串', 'response_not_string', 'response');
   }
@@ -181,10 +181,15 @@ export function validateImportRecoverResponse(rawText) {
     if (!isText(raw.reason, 300) || raw.reason.trim() === '') {
       return failResponse(rawText, parsed, `unresolved[${i}].reason 必须为非空短文本`, 'unresolved_reason_invalid', 'unresolved[].reason');
     }
-    if (raw.row !== undefined && raw.row !== null && (!Number.isInteger(raw.row) || raw.row < 0)) {
+    let row = raw.row ?? null;
+    if (typeof row === 'string' && normalizeVisionRow && /^(?:0|[1-9]\d*)$/.test(row)) {
+      const normalized = Number(row);
+      if (Number.isSafeInteger(normalized)) row = normalized;
+    }
+    if (row !== null && (!Number.isInteger(row) || row < 0)) {
       return failResponse(rawText, parsed, `unresolved[${i}].row 必须为非负整数或 null`, 'unresolved_row_invalid', 'unresolved[].row');
     }
-    unresolved.push({ row: raw.row ?? null, reason: raw.reason.trim() });
+    unresolved.push({ row, reason: raw.reason.trim() });
   }
   if (trades.length === 0 && unresolved.length === 0) {
     return failResponse(rawText, parsed, '响应没有可用的交易或待确认说明', 'empty_result', 'result');
