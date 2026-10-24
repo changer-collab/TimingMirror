@@ -40,6 +40,14 @@ const MONEY_FMT = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, max
 const fmtAxis = (v) => (Math.abs(v) >= 10000 ? `${(v / 10000).toFixed(1)}万` : AXIS_FMT.format(v));
 const fmtMoney = (v) => `¥${MONEY_FMT.format(v)}`;
 const fmtPrice = (v) => MONEY_FMT.format(v);
+const QTY_FMT = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 });
+
+// 标签宽度按字符估算（SVG 无排版测量）：中文约 10.6、西文数字约 5.9，再留内边距。
+function pillWidth(label) {
+  let w = 0;
+  for (const ch of String(label)) w += /[\x00-\xff]/.test(ch) ? 5.9 : 10.6;
+  return w + 18;
+}
 
 function extent(values) {
   const v = values.filter(Number.isFinite);
@@ -178,7 +186,7 @@ export function renderGhostChart(root, cf) {
   const xIdx = axisLabels(n);
   const dateIndex = new Map(points.map((p, i) => [p.date, i]));
 
-  const wrap = div('gc-wrap');
+  const wrap = div(merged ? 'gc-wrap is-merged' : 'gc-wrap');
   const tip = div('gc-tip');
   tip.setAttribute('style', 'display:none');
 
@@ -207,9 +215,10 @@ export function renderGhostChart(root, cf) {
   }
   svg1.append(isolatedLabels(points, xs, yA));
   if (merged) {
-    let sellNo = 0;
-    let lastSellX = -999;
     const ordered = [...markers].sort((a, b) => String(a.trade_date).localeCompare(String(b.trade_date)));
+    const pillY = [PAD.t + 4, PAD.t + 30];
+    const rowState = [null, null];
+    let rowCursor = 0;
     for (const m of ordered) {
       const i = dateIndex.get(m.trade_date);
       if (i === undefined) continue;
@@ -226,13 +235,34 @@ export function renderGhostChart(root, cf) {
           cx: x, cy: y, r: buy ? 2.4 : 3.2,
           class: `gc-trade-dot ${buy ? 'is-buy' : 'is-sell'}`,
         }));
+        if (m.replaced) svg1.append(svgEl('circle', { cx: x, cy: y, r: 10, class: 'gc-marker-ring' }));
       }
-      if (!buy) {
-        sellNo += 1;
-        const labelY = Math.abs(x - lastSellX) < 40 && sellNo % 2 === 0 ? PAD.t + 14 : 14;
-        svg1.append(svgText(x, labelY, String(sellNo).padStart(2, '0'), 'gc-trade-label is-sell', { 'text-anchor': 'middle' }));
-        lastSellX = x;
+      if (!Number.isFinite(m.price)) continue;
+      const label = `${buy ? '买' : '卖'} ¥${fmtPrice(m.price)} · ${QTY_FMT.format(m.quantity ?? 0)}股`;
+      const width = pillWidth(label);
+      const collides = (row) => rowState[row] && Math.abs(x - rowState[row].cx) < (width + rowState[row].w) / 2 + 6;
+      let row = rowCursor % 2;
+      rowCursor += 1;
+      if (collides(row)) row = 1 - row;
+      let cx = x;
+      if (collides(row)) {
+        const prev = rowState[row];
+        const gap = (width + prev.w) / 2 + 6;
+        cx = prev.cx + (x >= prev.cx ? gap : -gap);
       }
+      cx = Math.min(W - PAD.r - width / 2, Math.max(PAD.l + width / 2, cx));
+      rowState[row] = { cx, w: width };
+      const top = pillY[row];
+      if (Number.isFinite(value) && y > top + 24) {
+        svg1.append(svgEl('line', {
+          x1: cx, x2: x, y1: top + 20, y2: y - 5,
+          class: `gc-trade-leader ${buy ? 'is-buy' : 'is-sell'}`,
+        }));
+      }
+      svg1.append(svgEl('g', { class: `gc-trade-pill ${buy ? 'is-buy' : 'is-sell'}` }, [
+        svgEl('rect', { x: cx - width / 2, y: top, width, height: 20, rx: 10, class: 'gc-trade-pill-bg' }),
+        svgText(cx, top + 13.6, label, 'gc-trade-pill-text', { 'text-anchor': 'middle' }),
+      ]));
     }
   }
   for (const i of xIdx) svg1.append(svgText(xs(i), H1 - 10, points[i].date, 'gc-axis', axisLabelAttrs(i, n)));

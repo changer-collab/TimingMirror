@@ -224,19 +224,19 @@ const TOOL_DEFS = [
   },
   {
     id: 'behavior.operationAttribution',
-    version: 'operation-attribution-1',
+    version: 'operation-attribution-2',
     status: 'offline_available',
-    description: '按行为证据把逐笔差额归到回补/快进快出/其他三类（金额只取自逐笔分解）',
-    params: { required: ['decomposition', 'behavior'], optional: [] },
-    invoke: ({ decomposition, behavior }) => buildOperationAttribution({ decomposition, behavior }),
+    description: '按行为证据与仓位事实把逐笔差额归到 7 类（回补/快进快出/涨跌中/清仓/减仓/其他；金额只取自逐笔分解）',
+    params: { required: ['decomposition', 'behavior'], optional: ['trades', 'market'] },
+    invoke: ({ decomposition, behavior, trades = null, market = null }) => buildOperationAttribution({ decomposition, behavior, trades, market }),
     toResult: ({ output }) => toolResult({
-      tool: 'behavior.operationAttribution', version: 'operation-attribution-1',
+      tool: 'behavior.operationAttribution', version: 'operation-attribution-2',
       ok: output?.ok === true,
-      facts: output?.ok ? (output.buckets ?? []).map((b) => ({
+      facts: output?.ok ? (output.buckets ?? []).filter((b) => b.count > 0).map((b) => ({
         key: b.id, label: b.label, value: `${b.display?.money ?? '—'} · ${b.count} 笔`,
       })) : [],
       records: output?.ok ? (output.buckets ?? []).map((b) => ({ bucket: b.id, count: b.count, share: b.share })) : [],
-      boundaries: ['按行为证据归类；不是对动机的判断'],
+      boundaries: ['按行为证据与仓位事实归类；不是对动机的判断'],
       missing: output?.ok ? [] : [output?.reason ?? '归因不可用'],
       coverage: output?.ok ? { total: output.total?.value ?? null } : null,
     }),

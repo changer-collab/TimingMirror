@@ -1221,7 +1221,7 @@ async function answerLegacy({ question, bill, ruleState, versions, preferOnline,
     const draft = rewriteDraftOf(answer, bill);
     const claims = rewriteClaimsOf(answer);
     if (!Array.isArray(answer.claims) || answer.claims.length === 0) answer.claims = claims;
-    trace.push('rewrite', 'running', '模型讲人话');
+    trace.push('rewrite', 'running', 'AI 转成白话');
     const result = await rewriter.rewrite({
       question,
       intent: answer.intent,
@@ -1235,7 +1235,7 @@ async function answerLegacy({ question, bill, ruleState, versions, preferOnline,
     answer.rewrite = result.rewrite;
     answer.rewrite_meta = result.meta;
     answer.narrative_policy = 'auto';
-    trace.push('rewrite', result.ok ? 'done' : 'skipped', '模型讲人话', {
+    trace.push('rewrite', result.ok ? 'done' : 'skipped', 'AI 转成白话', {
       detail: result.ok
         ? (result.meta.cached ? '使用缓存表述' : '已绑定 claim')
         : '本次改用本地表述',
