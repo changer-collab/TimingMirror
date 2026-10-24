@@ -216,6 +216,34 @@ function timeoutDiagnostics(error) {
   return Object.keys(out).length ? out : null;
 }
 
+function importVisionResponseDiagnostics(checked) {
+  if (!isPlainObject(checked) || !isPlainObject(checked.diagnostics)) return null;
+  const source = checked.diagnostics;
+  const out = {};
+  if (typeof source.validation_reason === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(source.validation_reason)) {
+    out.validation_reason = source.validation_reason;
+  }
+  if (typeof source.field === 'string' && /^[a-z][a-z0-9_.\[\]]{0,63}$/.test(source.field)) {
+    out.field = source.field;
+  }
+  if (['string', 'number', 'boolean', 'object', 'undefined'].includes(source.response_type)) {
+    out.response_type = source.response_type;
+  }
+  if (Number.isInteger(source.raw_length) && source.raw_length >= 0) {
+    out.raw_length = source.raw_length;
+  }
+  if (Array.isArray(source.parsed_keys)) {
+    out.parsed_keys = source.parsed_keys.filter((key) => key === 'trades' || key === 'unresolved');
+  }
+  if (Number.isInteger(source.trades_count) && source.trades_count >= 0) {
+    out.trades_count = source.trades_count;
+  }
+  if (Number.isInteger(source.unresolved_count) && source.unresolved_count >= 0) {
+    out.unresolved_count = source.unresolved_count;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 function hasOnlyKeys(value, allowed) {
   return isPlainObject(value) && Object.keys(value).every((key) => allowed.has(key));
 }
@@ -629,7 +657,7 @@ export function createHandler({
       if (!result.ok) return errorResponse(result.status, result.code, {}, result.diagnostics);
       const checked = validateImportVisionResponse(result.rawText);
       if (!checked.ok) {
-        return errorResponse(502, SITE_FUNCTION_CODES.IMPORT_VISION_RESPONSE);
+        return errorResponse(502, SITE_FUNCTION_CODES.IMPORT_VISION_RESPONSE, {}, importVisionResponseDiagnostics(checked));
       }
       return jsonResponse(200, { rawText: JSON.stringify(checked.value) });
     }

@@ -15,8 +15,10 @@ import {
 import {
   DASHSCOPE_MULTIMODAL_ENDPOINT,
   DASHSCOPE_VISION_MODEL,
+  ModelTransportError,
   createDashScopeTransport,
 } from '../../server/site-functions/dashscope.mjs';
+import { IMPORT_RECOVER_STAGE } from '../../server/site-functions/importRecover.mjs';
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -40,8 +42,8 @@ function fakeTransport(response = VALID) {
   };
 }
 
-async function invoke(handler, body, { method = 'POST' } = {}) {
-  const response = await handler(new Request('https://timingmirror.example/functions/v1/app/api/llm/import-vision', {
+async function invokePath(handler, path, body, { method = 'POST' } = {}) {
+  const response = await handler(new Request(`https://timingmirror.example/functions/v1/app${path}`, {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: method === 'POST' ? JSON.stringify(body) : undefined,
@@ -50,6 +52,14 @@ async function invoke(handler, body, { method = 'POST' } = {}) {
   let json = null;
   try { json = JSON.parse(text); } catch { /* 非 JSON */ }
   return { status: response.status, text, json };
+}
+
+async function invoke(handler, body, options) {
+  return invokePath(handler, '/api/llm/import-vision', body, options);
+}
+
+async function invokeRecover(handler, body) {
+  return invokePath(handler, '/api/llm/import-recover', body);
 }
 
 /* —— 请求校验 —— */
@@ -83,6 +93,92 @@ async function invoke(handler, body, { method = 'POST' } = {}) {
   check('响应：统一 {trades,unresolved} schema', ok.ok === true && ok.value.trades.length === 1);
   const bad = validateImportVisionResponse(JSON.stringify({ trades: 'x', unresolved: [] }));
   check('响应：结构错误拒绝', bad.ok === false && bad.code === 'E_IMPORT_RECOVER_RESPONSE_INVALID');
+}
+
+/* —— 502 脱敏诊断：失败子类与边界 —— */
+{
+  const trade = JSON.parse(VALID).trades[0];
+  const diagnose = (raw) => invoke(createHandler({ transport: fakeTransport(raw) }), {
+    images: [IMAGE], stage: IMPORT_VISION_STAGE, source_kind: 'image',
+  });
+  const cases = [
+    ['非法 JSON', 'not-json', 'invalid_json', 'json'],
+    ['顶层不是对象', '[]', 'response_not_object', 'response'],
+    ['缺少 trades', JSON.stringify({ unresolved: [] }), 'missing_trades', 'trades'],
+    ['trades 类型错误', JSON.stringify({ trades: 'x', unresolved: [] }), 'trades_not_array', 'trades'],
+    ['unresolved 类型错误', JSON.stringify({ trades: [], unresolved: 'x' }), 'unresolved_not_array', 'unresolved'],
+    ['交易项不是对象', JSON.stringify({ trades: [1], unresolved: [] }), 'trade_not_object', 'trades[]'],
+    ['交易项额外字段', JSON.stringify({ trades: [{ ...trade, total: 1 }], unresolved: [] }), 'trade_unexpected_key', 'trades[].keys'],
+    ['交易字段类型错误', JSON.stringify({ trades: [{ ...trade, price: { secret: 'CANDIDATE-9999' } }], unresolved: [] }), 'trade_field_invalid', 'trades[].price'],
+    ['交易置信度错误', JSON.stringify({ trades: [{ ...trade, confidence: 2 }], unresolved: [] }), 'trade_confidence_invalid', 'trades[].confidence'],
+    ['交易 issues 错误', JSON.stringify({ trades: [{ ...trade, issues: 'x' }], unresolved: [] }), 'trade_issues_invalid', 'trades[].issues'],
+    ['unresolved 项不是对象', JSON.stringify({ trades: [], unresolved: [1] }), 'unresolved_not_object', 'unresolved[]'],
+    ['unresolved 额外字段', JSON.stringify({ trades: [], unresolved: [{ row: 1, reason: '待确认', extra: 1 }] }), 'unresolved_unexpected_key', 'unresolved[].keys'],
+    ['unresolved 缺少说明', JSON.stringify({ trades: [], unresolved: [{ row: 1 }] }), 'unresolved_reason_invalid', 'unresolved[].reason'],
+    ['unresolved row 错误', JSON.stringify({ trades: [], unresolved: [{ row: -1, reason: '待确认' }] }), 'unresolved_row_invalid', 'unresolved[].row'],
+    ['空结果', JSON.stringify({ trades: [], unresolved: [] }), 'empty_result', 'result'],
+    ['顶层额外字段', JSON.stringify({ trades: [trade], unresolved: [], reasoning: 'CANDIDATE-9999' }), 'response_unexpected_key', 'response.keys'],
+  ];
+  const outputs = {};
+  for (const [name, raw, reason, field] of cases) {
+    const out = await diagnose(raw);
+    outputs[reason] = out;
+    check(`诊断：${name} → 502 ${reason}`, out.status === 502
+      && out.json?.code === SITE_FUNCTION_CODES.IMPORT_VISION_RESPONSE
+      && out.json?.validation_reason === reason
+      && out.json?.field === field
+      && out.json?.response_type === 'string'
+      && out.json?.raw_length === [...raw].length
+      && !out.text.includes('CANDIDATE-9999')
+      && !out.text.includes('not-json')
+      && !out.text.includes('待确认'), JSON.stringify(out.json));
+  }
+  check('诊断：非法 JSON 不带 parsed_keys/计数', outputs.invalid_json.json
+    && !('parsed_keys' in outputs.invalid_json.json)
+    && !('trades_count' in outputs.invalid_json.json)
+    && !('unresolved_count' in outputs.invalid_json.json), JSON.stringify(outputs.invalid_json.json));
+  check('诊断：缺少 trades 只回传白名单键与 unresolved 计数', outputs.missing_trades.json?.parsed_keys?.join(',') === 'unresolved'
+    && outputs.missing_trades.json?.unresolved_count === 0
+    && !('trades_count' in (outputs.missing_trades.json ?? {})), JSON.stringify(outputs.missing_trades.json));
+  check('诊断：额外顶层字段不回传字段名', outputs.response_unexpected_key.json?.parsed_keys?.join(',') === 'trades,unresolved'
+    && !('reasoning' in (outputs.response_unexpected_key.json ?? {})), JSON.stringify(outputs.response_unexpected_key.json));
+  check('诊断：交易/待确认计数仅整数', outputs.trade_unexpected_key.json?.trades_count === 1
+    && outputs.trade_unexpected_key.json?.unresolved_count === 0
+    && outputs.empty_result.json?.trades_count === 0
+    && outputs.empty_result.json?.unresolved_count === 0,
+  JSON.stringify([outputs.trade_unexpected_key.json, outputs.empty_result.json]));
+
+  const validOut = await diagnose(VALID);
+  check('诊断：合法响应仍 200 且不带校验诊断', validOut.status === 200
+    && !('validation_reason' in (validOut.json ?? {}))
+    && !('field' in (validOut.json ?? {})), validOut.text);
+
+  const missingUnresolved = await diagnose(JSON.stringify({ trades: [trade] }));
+  check('边界：缺少 unresolved 按现有契约归一化为空（本次不收紧）', missingUnresolved.status === 200, missingUnresolved.text);
+  const sparseTrade = await diagnose(JSON.stringify({ trades: [{}], unresolved: [] }));
+  check('边界：交易可空字段缺失归一化为 null（本次不收紧）', sparseTrade.status === 200, sparseTrade.text);
+
+  const timeoutOut = await invoke(createHandler({
+    transport: { async vision() { throw new ModelTransportError('E_MODEL_TIMEOUT', { timeout_ms: 20000, elapsed_ms: 20001, phase: 'response_headers' }); } },
+  }), { images: [IMAGE], stage: IMPORT_VISION_STAGE, source_kind: 'image' });
+  check('错误码：超时保持 504 E_MODEL_TIMEOUT，不混入校验诊断', timeoutOut.status === 504
+    && timeoutOut.json?.code === SITE_FUNCTION_CODES.MODEL_TIMEOUT
+    && !('validation_reason' in (timeoutOut.json ?? {})), timeoutOut.text);
+
+  const transportOut = await invoke(createHandler({
+    transport: { async vision() { throw new ModelTransportError('E_MODEL_RESPONSE_INVALID'); } },
+  }), { images: [IMAGE], stage: IMPORT_VISION_STAGE, source_kind: 'image' });
+  check('错误码：transport 解析失败保持 502 E_MODEL_RESPONSE_INVALID', transportOut.status === 502
+    && transportOut.json?.code === SITE_FUNCTION_CODES.MODEL_RESPONSE
+    && !('validation_reason' in (transportOut.json ?? {})), transportOut.text);
+
+  const recoverOut = await invokeRecover(createHandler({
+    transport: { async importRecover() { return { rawText: 'not-json' }; } },
+  }), { content: '合成文本', stage: IMPORT_RECOVER_STAGE, source_kind: 'text' });
+  check('诊断：仅 import-vision 放行，import-recover 不带校验诊断', recoverOut.status === 502
+    && recoverOut.json?.code === SITE_FUNCTION_CODES.IMPORT_RECOVER_RESPONSE
+    && !('validation_reason' in (recoverOut.json ?? {}))
+    && !('field' in (recoverOut.json ?? {})), recoverOut.text);
 }
 
 /* —— Handler 路由与图片请求体上限 —— */

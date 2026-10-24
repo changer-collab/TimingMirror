@@ -23,6 +23,27 @@ function fail(code, message) {
   return { ok: false, code, errors: [message] };
 }
 
+function responseMeta(rawText, parsed) {
+  const meta = { response_type: typeof rawText };
+  if (typeof rawText === 'string') meta.raw_length = [...rawText].length;
+  if (isObject(parsed)) {
+    meta.parsed_keys = Object.keys(parsed).filter((key) => RESPONSE_KEYS.has(key));
+    if (Array.isArray(parsed.trades)) meta.trades_count = parsed.trades.length;
+    if (Array.isArray(parsed.unresolved)) meta.unresolved_count = parsed.unresolved.length;
+  }
+  return meta;
+}
+
+function failResponse(rawText, parsed, message, validationReason, field) {
+  const result = fail(IMPORT_RECOVER_CODES.RESPONSE, message);
+  result.diagnostics = {
+    validation_reason: validationReason,
+    field,
+    ...responseMeta(rawText, parsed),
+  };
+  return result;
+}
+
 export function normalizeImportRecoverRequest(body) {
   if (!isObject(body)) return fail(IMPORT_RECOVER_CODES.REQUEST_INVALID, '请求体必须为对象');
   for (const key of Object.keys(body)) {
@@ -74,46 +95,66 @@ function normalizeSide(value) {
 }
 
 export function validateImportRecoverResponse(rawText) {
-  if (typeof rawText !== 'string') return fail(IMPORT_RECOVER_CODES.RESPONSE, '响应正文必须为字符串');
+  if (typeof rawText !== 'string') {
+    return failResponse(rawText, null, '响应正文必须为字符串', 'response_not_string', 'response');
+  }
   let parsed;
   try {
     parsed = JSON.parse(rawText);
   } catch {
-    return fail(IMPORT_RECOVER_CODES.RESPONSE, '响应不是合法 JSON');
+    return failResponse(rawText, null, '响应不是合法 JSON', 'invalid_json', 'json');
   }
-  if (!isObject(parsed)) return fail(IMPORT_RECOVER_CODES.RESPONSE, '响应必须为对象');
+  if (!isObject(parsed)) {
+    return failResponse(rawText, parsed, '响应必须为对象', 'response_not_object', 'response');
+  }
   for (const key of Object.keys(parsed)) {
-    if (!RESPONSE_KEYS.has(key)) return fail(IMPORT_RECOVER_CODES.RESPONSE, `响应不允许字段：${key}`);
+    if (!RESPONSE_KEYS.has(key)) {
+      return failResponse(rawText, parsed, `响应不允许字段：${key}`, 'response_unexpected_key', 'response.keys');
+    }
   }
-  if (!Array.isArray(parsed.trades) || parsed.trades.length > IMPORT_RECOVER_MAX_TRADES) {
-    return fail(IMPORT_RECOVER_CODES.RESPONSE, 'trades 必须为数组且不超过上限');
+  if (parsed.trades === undefined) {
+    return failResponse(rawText, parsed, 'trades 必须为数组且不超过上限', 'missing_trades', 'trades');
+  }
+  if (!Array.isArray(parsed.trades)) {
+    return failResponse(rawText, parsed, 'trades 必须为数组且不超过上限', 'trades_not_array', 'trades');
+  }
+  if (parsed.trades.length > IMPORT_RECOVER_MAX_TRADES) {
+    return failResponse(rawText, parsed, 'trades 必须为数组且不超过上限', 'trades_too_many', 'trades');
   }
   if (parsed.unresolved !== undefined && !Array.isArray(parsed.unresolved)) {
-    return fail(IMPORT_RECOVER_CODES.RESPONSE, 'unresolved 必须为数组');
+    return failResponse(rawText, parsed, 'unresolved 必须为数组', 'unresolved_not_array', 'unresolved');
   }
   const trades = [];
   for (let i = 0; i < parsed.trades.length; i++) {
     const raw = parsed.trades[i];
-    if (!isObject(raw)) return fail(IMPORT_RECOVER_CODES.RESPONSE, `trades[${i}] 必须为对象`);
-    const extraKeys = Object.keys(raw).filter((key) => !TRADE_KEYS.has(key));
-    if (extraKeys.length) return fail(IMPORT_RECOVER_CODES.RESPONSE, `trades[${i}] 包含不允许字段`);
-    const date = raw.date === null || raw.date === undefined ? null : (isText(raw.date, 32) ? raw.date.trim() : undefined);
-    const symbol = raw.symbol === null || raw.symbol === undefined ? null : (isText(raw.symbol, 16) ? raw.symbol.trim() : undefined);
-    const side = normalizeSide(raw.side);
-    const price = toText(raw.price);
-    const quantity = toText(raw.quantity);
-    const fee = toText(raw.fee);
-    const tax = toText(raw.tax);
-    if ([date, symbol, side, price, quantity, fee, tax].some((v) => v === undefined)) {
-      return fail(IMPORT_RECOVER_CODES.RESPONSE, `trades[${i}] 字段类型或长度非法`);
+    if (!isObject(raw)) {
+      return failResponse(rawText, parsed, `trades[${i}] 必须为对象`, 'trade_not_object', 'trades[]');
     }
+    const extraKeys = Object.keys(raw).filter((key) => !TRADE_KEYS.has(key));
+    if (extraKeys.length) {
+      return failResponse(rawText, parsed, `trades[${i}] 包含不允许字段`, 'trade_unexpected_key', 'trades[].keys');
+    }
+    const values = {
+      date: raw.date === null || raw.date === undefined ? null : (isText(raw.date, 32) ? raw.date.trim() : undefined),
+      symbol: raw.symbol === null || raw.symbol === undefined ? null : (isText(raw.symbol, 16) ? raw.symbol.trim() : undefined),
+      side: normalizeSide(raw.side),
+      price: toText(raw.price),
+      quantity: toText(raw.quantity),
+      fee: toText(raw.fee),
+      tax: toText(raw.tax),
+    };
+    const invalidField = Object.keys(values).find((key) => values[key] === undefined);
+    if (invalidField) {
+      return failResponse(rawText, parsed, `trades[${i}] 字段类型或长度非法`, 'trade_field_invalid', `trades[].${invalidField}`);
+    }
+    const { date, symbol, side, price, quantity, fee, tax } = values;
     const confidence = raw.confidence === undefined ? 0 : raw.confidence;
     if (typeof confidence !== 'number' || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
-      return fail(IMPORT_RECOVER_CODES.RESPONSE, `trades[${i}].confidence 必须为 [0,1]`);
+      return failResponse(rawText, parsed, `trades[${i}].confidence 必须为 [0,1]`, 'trade_confidence_invalid', 'trades[].confidence');
     }
     const issues = raw.issues === undefined ? [] : raw.issues;
     if (!Array.isArray(issues) || issues.length > 5 || issues.some((issue) => !isText(issue, 200) || issue.trim() === '')) {
-      return fail(IMPORT_RECOVER_CODES.RESPONSE, `trades[${i}].issues 必须为最多 5 条短文本`);
+      return failResponse(rawText, parsed, `trades[${i}].issues 必须为最多 5 条短文本`, 'trade_issues_invalid', 'trades[].issues');
     }
     trades.push({
       date,
@@ -130,19 +171,23 @@ export function validateImportRecoverResponse(rawText) {
   const unresolved = [];
   for (let i = 0; i < (parsed.unresolved ?? []).length; i++) {
     const raw = parsed.unresolved[i];
-    if (!isObject(raw)) return fail(IMPORT_RECOVER_CODES.RESPONSE, `unresolved[${i}] 必须为对象`);
+    if (!isObject(raw)) {
+      return failResponse(rawText, parsed, `unresolved[${i}] 必须为对象`, 'unresolved_not_object', 'unresolved[]');
+    }
     const extraKeys = Object.keys(raw).filter((key) => !['row', 'reason'].includes(key));
-    if (extraKeys.length) return fail(IMPORT_RECOVER_CODES.RESPONSE, `unresolved[${i}] 包含不允许字段`);
+    if (extraKeys.length) {
+      return failResponse(rawText, parsed, `unresolved[${i}] 包含不允许字段`, 'unresolved_unexpected_key', 'unresolved[].keys');
+    }
     if (!isText(raw.reason, 300) || raw.reason.trim() === '') {
-      return fail(IMPORT_RECOVER_CODES.RESPONSE, `unresolved[${i}].reason 必须为非空短文本`);
+      return failResponse(rawText, parsed, `unresolved[${i}].reason 必须为非空短文本`, 'unresolved_reason_invalid', 'unresolved[].reason');
     }
     if (raw.row !== undefined && raw.row !== null && (!Number.isInteger(raw.row) || raw.row < 0)) {
-      return fail(IMPORT_RECOVER_CODES.RESPONSE, `unresolved[${i}].row 必须为非负整数或 null`);
+      return failResponse(rawText, parsed, `unresolved[${i}].row 必须为非负整数或 null`, 'unresolved_row_invalid', 'unresolved[].row');
     }
     unresolved.push({ row: raw.row ?? null, reason: raw.reason.trim() });
   }
   if (trades.length === 0 && unresolved.length === 0) {
-    return fail(IMPORT_RECOVER_CODES.RESPONSE, '响应没有可用的交易或待确认说明');
+    return failResponse(rawText, parsed, '响应没有可用的交易或待确认说明', 'empty_result', 'result');
   }
   return { ok: true, value: { trades, unresolved } };
 }
