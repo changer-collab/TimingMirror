@@ -83,6 +83,23 @@ check('样式：删除按钮默认中性，hover/focus 才变红',
   && /\.tm-row-remove:hover[\s\S]*?color:\s*var\(--loss\)/.test(css)
   && /\.tm-thumb-remove:hover[\s\S]*?color:\s*var\(--loss\)/.test(css));
 
+/* —— 手动新增成交行 —— */
+check('线上页：草稿表格底部提供添加成交行按钮', /data-action="add-row"/.test(live)
+  && /＋ 添加成交行/.test(live) && /tm-add-row-bar/.test(live));
+check('线上页：添加按钮只在可编辑草稿面板', live.indexOf('data-action="add-row"') > live.indexOf('function draftPanelHTML')
+  && live.indexOf('data-action="add-row"') < live.indexOf('function billPanelHTML'));
+const addRowStart = live.indexOf("action === 'add-row'");
+const addRowBranch = live.slice(addRowStart, live.indexOf("action === 'remove-row'", addRowStart));
+check('线上页：添加行只更新草稿，不触发模型请求', addRowBranch.includes('addBlankRow(state.importRecovery.draft)')
+  && !/requestVision|requestRecovery|client\(/.test(addRowBranch), addRowBranch.slice(0, 240));
+check('线上页：手动行状态与金额字段接入草稿渲染', draftModule.includes('手动新增 · 待确认')
+  && /row\.source === 'manual'/.test(live) && /column\.key === 'amount'/.test(live)
+  && /column\.key === 'settlementAmount'/.test(live));
+check('样式：添加按钮虚线、手动行有独立样式', /\.tm-add-row-btn\s*\{[\s\S]*?border-style:\s*dashed/.test(css)
+  && /\.tm-draft-table tr\.is-manual-row/.test(css));
+check('线上页：图片删除与重新识别会清空旧草稿/手动行', /localDraft: null/.test(live)
+  && /draft: null/.test(live) && /localDraft: rec\.localDraft \?\? null/.test(live));
+
 const failed = results.filter((r) => !r.ok);
 for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.ok ? '' : '   → ' + r.detail}`);
 console.log(`\n== 合计 ${results.length} 项检查：通过 ${results.length - failed.length}，失败 ${failed.length} ==`);

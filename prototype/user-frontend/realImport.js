@@ -410,20 +410,28 @@ function draftTable(rec, { useSourceColumns = false } = {}) {
   ]));
   const input = (row, key, extra = '') => `<input class="tm-cell-input" data-row="${esc(row.id)}" data-field="${key}" value="${esc(row.fields[key] ?? '')}" ${extra}>`;
   const sourceCell = (row, column) => {
-    if (!column.editable) {
+    const manual = row.source === 'manual';
+    const manualMoney = manual && (column.key === 'amount' || column.key === 'settlementAmount');
+    if (!column.editable && !manualMoney) {
       const value = String(row.fields[column.field] ?? '').trim();
       const emptyText = columnHasValue.get(column.field) ? '—' : '未匹配';
       return `<span class="tm-cell-static${value ? '' : ' is-missing'}">${esc(value || emptyText)}</span>`;
     }
-    const placeholder = columnHasValue.get(column.field) ? '' : ' placeholder="未匹配"';
+    const manualPlaceholder = manual
+      ? ({ date: 'YYYY-MM-DD', symbol: '6 位代码', price: '0.00', quantity: '股数', amount: '可留空', settlementAmount: '可留空' }[column.key] ?? '')
+      : '';
+    const placeholder = manualMoney || manualPlaceholder
+      ? ` placeholder="${manualPlaceholder || '可留空'}"`
+      : columnHasValue.get(column.field) ? '' : ' placeholder="未匹配"';
     if (column.select) {
-      return `<select class="tm-cell-input" data-row="${esc(row.id)}" data-field="${column.field}"><option value="买入" ${row.fields.side === '买入' ? 'selected' : ''}>买入</option><option value="卖出" ${row.fields.side === '卖出' ? 'selected' : ''}>卖出</option></select>`;
+      const blank = manual && !row.fields.side ? '<option value="" selected>请选择</option>' : '';
+      return `<select class="tm-cell-input" data-row="${esc(row.id)}" data-field="${column.field}">${blank}<option value="买入" ${row.fields.side === '买入' ? 'selected' : ''}>买入</option><option value="卖出" ${row.fields.side === '卖出' ? 'selected' : ''}>卖出</option></select>`;
     }
     if (column.key === 'symbol') {
       const name = String(row.fields.name ?? '').trim();
       return `<div class="tm-cell-stack">${input(row, column.field, `inputmode="${column.inputmode}"${placeholder}`)}${column.nameAux && name ? `<span class="sym-name">${esc(name)}</span>` : ''}</div>`;
     }
-    return input(row, column.field, `inputmode="${column.inputmode}"${placeholder}`);
+    return input(row, column.field, `inputmode="${column.inputmode ?? 'decimal'}"${placeholder}`);
   };
   const headers = sourceMode
     ? sourceColumns.map((column) => `<th${column.numeric ? ' class="num"' : ''}>${esc(column.label)}</th>`).join('')
@@ -431,19 +439,22 @@ function draftTable(rec, { useSourceColumns = false } = {}) {
   const rows = draft.rows.map((row, index) => {
     const status = draftRowStatusText(row);
     const severity = draftRowSeverity(row);
+    const manual = row.source === 'manual';
     const issues = Array.isArray(row.issues) && row.issues.length ? row.issues.join('；') : '';
+    const ph = (text) => manual ? ` placeholder="${text}"` : '';
+    const sideOptions = `${manual && !row.fields.side ? '<option value="" selected>请选择</option>' : ''}<option value="买入" ${row.fields.side === '买入' ? 'selected' : ''}>买入</option><option value="卖出" ${row.fields.side === '卖出' ? 'selected' : ''}>卖出</option>`;
     const cells = sourceMode
       ? sourceColumns.map((column) => `<td${column.numeric ? ' class="num"' : ''}>${sourceCell(row, column)}</td>`).join('')
       : [
-        `<td>${input(row, 'date', 'inputmode="numeric"')}</td>`,
-        `<td>${input(row, 'symbol', 'inputmode="numeric"')}</td>`,
-        `<td><select class="tm-cell-input" data-row="${esc(row.id)}" data-field="side"><option value="买入" ${row.fields.side === '买入' ? 'selected' : ''}>买入</option><option value="卖出" ${row.fields.side === '卖出' ? 'selected' : ''}>卖出</option></select></td>`,
-        `<td class="num">${input(row, 'price', 'inputmode="decimal"')}</td>`,
-        `<td class="num">${input(row, 'quantity', 'inputmode="numeric"')}</td>`,
-        `<td class="num">${input(row, 'fee', 'inputmode="decimal"')}</td>`,
-        `<td class="num">${input(row, 'tax', 'inputmode="decimal"')}</td>`,
+        `<td>${input(row, 'date', `inputmode="numeric"${ph('YYYY-MM-DD')}`)}</td>`,
+        `<td>${input(row, 'symbol', `inputmode="numeric"${ph('6 位代码')}`)}</td>`,
+        `<td><select class="tm-cell-input" data-row="${esc(row.id)}" data-field="side">${sideOptions}</select></td>`,
+        `<td class="num">${input(row, 'price', `inputmode="decimal"${ph('0.00')}`)}</td>`,
+        `<td class="num">${input(row, 'quantity', `inputmode="numeric"${ph('股数')}`)}</td>`,
+        `<td class="num">${input(row, 'fee', `inputmode="decimal"${ph('可留空')}`)}</td>`,
+        `<td class="num">${input(row, 'tax', `inputmode="decimal"${ph('可留空')}`)}</td>`,
       ].join('');
-    return `<tr class="tm-draft-row ${row.status} tm-severity-${severity}">
+    return `<tr class="tm-draft-row ${row.status} tm-severity-${severity}${manual ? ' is-manual-row' : ''}">
       <td class="line-no"><label class="tm-line-pick"><input type="checkbox" data-row="${esc(row.id)}" data-include ${row.include === false ? '' : 'checked'} aria-label="导入第 ${row.line ?? index + 2} 行"><span>${String(row.line ?? index + 2).padStart(2, '0')}</span></label></td>
       ${cells}
       <td class="tm-row-status is-${severity}">${esc(status)}${issues ? `<span>${esc(issues)}</span>` : ''}</td>
@@ -656,6 +667,10 @@ function draftPanelHTML(state, rec) {
     ${validationErrorsHTML(rec)}
     ${isVisionDraft ? columnMappingHTML(mappingView) : ''}
     ${draftTable(rec, { useSourceColumns: isVisionDraft })}
+    <div class="tm-add-row-bar">
+      <button class="btn btn-outline btn-sm tm-add-row-btn" type="button" data-action="add-row">＋ 添加成交行</button>
+      <p class="tm-note">手动新增行会一起参与校验；成交额/清算额可留空，确认前请补齐。</p>
+    </div>
     ${unresolvedPanelHTML(rec)}
     <div class="bill-actions">
       <div class="bill-actions-note">
@@ -663,7 +678,6 @@ function draftPanelHTML(state, rec) {
         <p class="fine">只导入勾选的行；错误与重复提示在对应行。修改后请先校验。</p>
       </div>
       <div class="tm-action-group">
-        <button class="btn btn-ghost btn-sm" type="button" data-action="add-row">添加一行</button>
         <button class="btn btn-primary" type="button" data-action="validate">校验并用于导入</button>
       </div>
     </div>

@@ -6,6 +6,7 @@ import { CANONICAL_HEADER, mapTableHeader, normalizeSide } from './importSource.
 const FIELD_KEYS = Object.freeze(['date', 'symbol', 'side', 'price', 'quantity', 'fee', 'tax']);
 const REQUIRED_KEYS = Object.freeze(['date', 'symbol', 'side', 'price', 'quantity']);
 const REQUIRED_HEADER = Object.freeze(['日期', '标的', '方向', '价格', '数量']);
+let manualRowSequence = 0;
 
 const ISSUE_TEXT = Object.freeze({
   E_DATE_FORMAT: '日期需写成 2024-09-25 这样的年-月-日',
@@ -287,10 +288,10 @@ export function addBlankRow(draft) {
     line: rows.length + 2,
     trade: null,
     status: 'needs_review',
-    issues: ['请补充日期、标的、方向、价格和数量'],
+    issues: ['手动新增：请补齐日期、标的、方向、价格和数量；成交额/清算额可留空'],
     meta: { confidence: null },
   });
-  row.id = `draft-${rows.length + 1}-manual-${Date.now()}`;
+  row.id = `draft-${rows.length + 1}-manual-${++manualRowSequence}`;
   rows.push(row);
   return { ...draft, rows };
 }
@@ -368,7 +369,7 @@ export function draftSummary(draft) {
 
 export function draftRowStatusText(row) {
   if (row.status === 'duplicate') return '疑似重复，默认不导入';
-  if (row.status === 'needs_review') return '待确认';
+  if (row.status === 'needs_review') return row.source === 'manual' ? '手动新增 · 待确认' : '待确认';
   if (row.status === 'invalid') return '需修正';
   if (row.status === 'valid') return '可导入';
   return '待确认';
