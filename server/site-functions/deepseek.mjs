@@ -92,7 +92,7 @@ export function createDeepSeekTransport({
   if (typeof baseUrl !== 'string' || baseUrl.trim() === '') throw new TypeError('baseUrl 必须为非空字符串');
   const endpoint = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
 
-  async function request(body, requestTimeoutMs = timeoutMs) {
+  async function request(body, requestTimeoutMs = timeoutMs, { rejectTruncated = false } = {}) {
     const startedAt = Date.now();
     let phase = 'response_headers';
     const controller = new AbortController();
@@ -142,6 +142,9 @@ export function createDeepSeekTransport({
       const text = contentText(message.content);
       const rawText = stripCodeFence(text);
       if (rawText === '') throw fail(DEEPSEEK_ERROR_CODES.RESPONSE);
+      if (rejectTruncated && choices[0]?.finish_reason === 'length') {
+        throw new ModelTransportError(DEEPSEEK_ERROR_CODES.RESPONSE, { finish_reason: 'length' });
+      }
       return { rawText };
     } catch (error) {
       if (error instanceof ModelTransportError) throw error;
@@ -268,9 +271,9 @@ export function createDeepSeekTransport({
         model,
         messages,
         temperature: 0,
-        max_tokens: 500,
+        max_tokens: 700,
         response_format: { type: 'json_object' },
-      }, Math.min(timeoutMs, 4000));
+      }, Math.min(timeoutMs, 5500), { rejectTruncated: true });
     },
     vision({ images }) {
       return callVision(images);

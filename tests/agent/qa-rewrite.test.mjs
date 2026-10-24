@@ -62,7 +62,7 @@ function build(overrides = {}) {
     && Object.keys(built.request).join(',') === 'question,intent,scope,draft,claims,facts,evidence,allowed,glossary,limits'
     && built.request.limits.headline_max_chars === 45
     && QA_REWRITE_VERSION === 'rewrite-v2', JSON.stringify(built.request ?? built));
-  check('请求：allowed 从已展示内容重算', built.request.allowed.displays.includes('-¥1,200.00')
+  check('请求：allowed 从已展示内容重算', built.request.allowed.displays.includes('money:-1200')
     && built.request.allowed.numbers.includes('1200.00')
     && built.request.allowed.numbers.includes('2500.00'), JSON.stringify(built.request.allowed));
   check('请求：claim 编号不进 allowed 数字', !built.request.allowed.numbers.includes('1'), JSON.stringify(built.request.allowed));
