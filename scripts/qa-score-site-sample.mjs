@@ -208,14 +208,13 @@ const CASES = [
   },
 ];
 
-const STATE_KIND = Object.freeze({
-  local: 'factual',
-  clarify: 'clarify',
-  refusal: 'refusal',
-  withheld: 'withheld',
-  unavailable: 'unavailable',
-  help: 'help',
-});
+// 页面 state 为 local 时无法区分事实回答与页面帮助，按 intent 补判；其余拒绝/澄清/扣发按 state。
+function actualKindOf(answer, fallback) {
+  if (answer.state === 'clarify' || answer.state === 'refusal'
+    || answer.state === 'withheld' || answer.state === 'unavailable') return answer.state;
+  if (answer.intent === 'product_help' || answer.intent === 'none') return 'help';
+  return fallback;
+}
 
 const snapshotPath = process.argv[2] ?? DEFAULT_SNAPSHOT;
 const snapshot = JSON.parse(readFileSync(snapshotPath, 'utf8'));
@@ -238,7 +237,7 @@ for (const item of CASES) {
     answer: answer.text,
     allowed: item.allowed,
     claims: null,
-    actualKind: STATE_KIND[answer.state] ?? item.kind,
+    actualKind: actualKindOf(answer, item.kind),
   });
   rows.push({ answer, result });
 }
