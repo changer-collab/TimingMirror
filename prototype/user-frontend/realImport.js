@@ -32,6 +32,7 @@ import {
 import { getPdfPageCount, renderPdfPages } from '../../src/engine/pdfRender.js';
 import { prepareImageFiles } from '../../src/engine/visionImage.js';
 import { finalizeConfirmedBill } from '../../src/agent/importFinalize.js';
+import { normalizeCloudBills } from '../../src/agent/cloudProfileModel.js';
 import { REPORT_SCENARIOS, matchReportScenario } from '../../src/demo/reportScenarios.js';
 import {
   billSyncStatus, cloudStatusText, cloudStatusTitle,
@@ -768,8 +769,142 @@ function visionPanelHTML(state, rec) {
   </section>`;
 }
 
+/* ---------- 云端历史账单 ---------- */
+
+let historyCache = { status: 'idle', rows: [], error: '' };
+let historyPromise = null;
+let historyHost = null;
+
+function historyErrorMessage(error) {
+  const code = error?.upstreamCode ?? error?.code ?? '';
+  if (code === 'login_required' || code === 'invalid_user_context') return '登录后显示这个账号的历史账单';
+  if (code === 'database_unavailable' || code === 'read_failed') return '云端数据库暂不可用';
+  return '云端历史账单暂时读取失败';
+}
+
+function historyTimeText(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return /^\d{4}-\d{2}-\d{2}/u.test(text) ? text.replace('T', ' ').slice(0, 16) : '—';
+}
+
+function historyRowHTML(row, currentId) {
+  const meta = row.metadata ?? {};
+  const from = meta.date_from ?? '—';
+  const to = meta.date_to ?? '—';
+  const trades = Number.isInteger(meta.trades_count) ? `${meta.trades_count} 笔` : '—';
+  const symbols = Number.isInteger(meta.symbol_count) ? `${meta.symbol_count} 个标的` : '—';
+  const current = row.id === currentId;
+  const drag = row.snapshot?.outcome?.display?.drag_money;
+  const reportText = drag ? `报告差额 ${drag}` : (row.snapshot ? '已存报告快照' : '未存报告快照');
+  const action = row.has_payload
+    ? `<button class="btn btn-outline btn-sm" type="button" data-history-action="open" data-bill-id="${esc(row.id)}" ${current ? 'disabled' : ''}>${current ? '当前使用' : '查看报告'}</button>`
+    : '<span class="status-tag">仅有统计</span>';
+  return `<li class="tm-history-row${current ? ' is-current' : ''}" data-bill-id="${esc(row.id)}">
+    <div class="tm-history-main">
+      <strong>${esc(from)} → ${esc(to)}</strong>
+      <span>${esc(historyTimeText(row.imported_at))} 导入 · ${esc(trades)} · ${esc(symbols)}</span>
+      <span class="tm-history-report">${esc(reportText)}</span>
+    </div>
+    <div class="tm-history-action">${action}</div>
+    <p class="tm-inline-error" data-role="history-row-error" role="alert" hidden></p>
+  </li>`;
+}
+
+function historyBodyHTML(state) {
+  const currentId = state.bill?.cloudBillId ?? billSyncStatus(state.bill ?? {})?.billId ?? null;
+  if (historyCache.status === 'error') {
+    return `<p class="tm-note">${esc(historyCache.error)}。<button class="tm-link" type="button" data-history-action="retry">重试</button></p>`;
+  }
+  if (!historyCache.rows.length) {
+    return historyCache.status === 'loading'
+      ? '<p class="tm-note">正在读取云端历史账单…</p>'
+      : '<p class="tm-note">这个账号还没有云端账单；确认第一份账单后会出现在这里。</p>';
+  }
+  return `<ul class="tm-history-list">${historyCache.rows.map((row) => historyRowHTML(row, currentId)).join('')}</ul>`;
+}
+
+function historySectionHTML(state) {
+  const ready = historyCache.status === 'ready';
+  return `<section class="panel tm-history" id="tm-import-history" aria-labelledby="tm-history-title">
+    <div class="panel-head"><span>HISTORY / 云端账单</span><span>${ready ? `最近 ${historyCache.rows.length} 份` : '按导入时间排序'}</span></div>
+    <h2 id="tm-history-title">历史导入账单</h2>
+    <p class="tm-note">点开任意一份，重新载入它的成交明细与已存报告；原始 CSV 与文件名没有上传，重算时按云端明细逐笔核对。</p>
+    <div data-role="history-body">${historyBodyHTML(state)}</div>
+  </section>`;
+}
+
+function paintHistory(ctx) {
+  if (!historyHost || !historyHost.isConnected) return;
+  const body = historyHost.querySelector('[data-role="history-body"]');
+  if (!body) return;
+  body.innerHTML = historyBodyHTML(ctx.state ?? {});
+  historyHost.querySelectorAll('[data-history-action]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (button.getAttribute('data-history-action') === 'retry') {
+        button.disabled = true;
+        historyCache = { ...historyCache, status: 'loading', error: '' };
+        paintHistory(ctx);
+        void ensureHistory(ctx, { force: true });
+        return;
+      }
+      openHistoryBill(ctx, button);
+    });
+  });
+}
+
+function ensureHistory(ctx, { force = false } = {}) {
+  if (historyPromise) {
+    return force ? historyPromise.then(() => ensureHistory(ctx, { force: true })) : historyPromise;
+  }
+  if (typeof ctx.cloudDeps?.listBills !== 'function') return undefined;
+  if (!force && historyCache.status === 'ready') return undefined;
+  historyPromise = Promise.resolve()
+    .then(() => ctx.cloudDeps.listBills({ limit: 20 }))
+    .then((payload) => {
+      historyCache = { status: 'ready', rows: normalizeCloudBills(payload), error: '' };
+    })
+    .catch((error) => {
+      historyCache = { status: 'error', rows: [], error: historyErrorMessage(error) };
+    })
+    .finally(() => {
+      historyPromise = null;
+      paintHistory(ctx);
+    });
+  return historyPromise;
+}
+
+function refreshImportHistory(ctx) {
+  if (typeof ctx.cloudDeps?.listBills !== 'function') return;
+  historyCache = { ...historyCache, status: 'idle', error: '' };
+  void ensureHistory(ctx, { force: true });
+}
+
+async function openHistoryBill(ctx, button) {
+  const id = button.getAttribute('data-bill-id');
+  if (!id || typeof ctx.cloudDeps?.loadCloudBill !== 'function') return;
+  const row = button.closest('.tm-history-row');
+  const note = row?.querySelector('[data-role="history-row-error"]');
+  if (note) note.hidden = true;
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = '读取中…';
+  try {
+    await ctx.cloudDeps.loadCloudBill({ id });
+    ctx.go('report');
+  } catch {
+    button.disabled = false;
+    button.textContent = label;
+    if (note) {
+      note.textContent = '这份云端账单暂时无法读取，请稍后再试。';
+      note.hidden = false;
+    }
+  }
+}
+
 function renderBelow(state, rec) {
   const bill = state.bill ?? {};
+  // 云端恢复的账单只作为当前账单展示；重新打开导入页时不应伪装成本次导入结果。
+  if (bill.cloudRestored === true) return '';
   if (rec.pending) return pendingPanelHTML(rec);
   if (bill.status === 'confirmed') return billPanelHTML(state, rec);
   const visionActive = !!rec.vision && (rec.sourceKind === 'image' || rec.sourceKind === 'pdf')
@@ -813,7 +948,12 @@ export function renderRealImport(host, ctx) {
       </div>
       ${renderBelow(state, rec)}
       ${hasDetails ? details(rec) : ''}
+      ${historySectionHTML(state)}
     </div>`;
+
+  historyHost = host.querySelector('#tm-import-history');
+  paintHistory(ctx);
+  ensureHistory(ctx);
 
   const drop = host.querySelector('#dropzone');
   const input = host.querySelector('#file-input');
@@ -896,7 +1036,9 @@ export function renderRealImport(host, ctx) {
         if (result?.ok) {
           void ctx.prewarmScenario?.(state.bill);
           if (typeof ctx.cloudDeps?.syncBill === 'function') {
-            Promise.resolve(ctx.cloudDeps.syncBill({ bill: state.bill })).catch(() => {});
+            Promise.resolve(ctx.cloudDeps.syncBill({ bill: state.bill }))
+              .catch(() => {})
+              .finally(() => refreshImportHistory(ctx));
           }
         }
       } else if (action === 'return-draft') {

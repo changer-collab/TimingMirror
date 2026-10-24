@@ -51,7 +51,7 @@ const ROUTES = ['home', 'import', 'report', 'chat', 'scenario'];
 const EXPECTED_LINKS = [
   ['#/report', '查看报告 →'],
   ['#/chat', '去事实问答 →'],
-  ['#/scenario', '历史情境测试 →'],
+  ['#/scenario', '去操作复盘 →'],
   ['#/import', '更换账单 →'],
 ];
 

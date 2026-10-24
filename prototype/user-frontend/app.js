@@ -394,14 +394,14 @@ import { renderRealProfile } from './realProfile.js';
       title: failed ? '云端记录暂时连不上。' : '正在恢复云端账单。',
       intro: `<p>${failed
         ? '账单、报告与规则都保存在云端；连接失败时不会用本机旧数据代替。'
-        : '每次进入页面都会从云端恢复账单、报告与规则；本机不保存用户数据。'}</p>`,
+        : '每次进入页面都会从云端恢复规则、画像与历史账单列表；本机不保存用户数据。'}</p>`,
       right: `<span class="sample-tag">${failed ? '云端未连接' : '云端恢复中'}</span>`,
     })}
     <div class="container page-body">
       <section class="panel tm-empty-state">
         <p class="mono-label">CLOUD / ${failed ? 'UNAVAILABLE' : 'LOADING'}</p>
         <h2>${failed ? '请稍后重试，或先导入一份账单。' : '正在读取云端数据。'}</h2>
-        ${failed ? `<p class="muted">${esc(restore.error || '云端记录读取失败。')}</p>` : '<p class="muted">恢复完成后会自动显示最近的账单与报告。</p>'}
+        ${failed ? `<p class="muted">${esc(restore.error || '云端记录读取失败。')}</p>` : '<p class="muted">恢复完成后可在导入页选择历史账单，或导入新账单。</p>'}
         <div class="actions">
           ${failed ? '<button class="btn btn-primary" type="button" data-cloud-retry>重试 <span class="arrow">→</span></button>' : ''}
           <a class="btn btn-outline" href="#/import">导入账单</a>
@@ -466,7 +466,7 @@ import { renderRealProfile } from './realProfile.js';
       : [
         '<a class="text-link" href="#/report">查看报告 →</a>',
         '<a class="text-link" href="#/chat">去事实问答 →</a>',
-        '<a class="text-link" href="#/scenario">历史情境测试 →</a>',
+        '<a class="text-link" href="#/scenario">去操作复盘 →</a>',
         '<a class="text-link" href="#/import">更换账单 →</a>',
       ];
     const summary = demo

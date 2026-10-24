@@ -16,7 +16,7 @@ export function defaultBill() {
     status: 'none', scenario: 'R', trades: [], warnings: [], errors: [],
     sourceNote: '', resultLabelling: null, error: '',
     sourceType: null, fileName: '', fileSize: 0, blocked: false, dataMode: null,
-    contextId: null, importMethod: null,
+    contextId: null, importMethod: null, cloudRestored: false, cloudBillId: null,
   };
 }
 
