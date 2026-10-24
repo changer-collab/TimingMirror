@@ -33,9 +33,12 @@ check('线上页：渲染 unresolved 及原因', /unresolvedPanelHTML/.test(live
 check('线上页：unresolved row 为 null 时显示未标明原图行号', /unresolvedRowLabel/.test(live)
   && /未标明原图行号/.test(draftModule) && !/记录 \$\{esc\(item\.row\)\}/.test(live));
 check('线上页：视觉重复只警示，不自动取消勾选', /duplicatePolicy: 'warn'/.test(live));
-check('线上页：视觉草稿显示交收日期来源提示', /AI 使用了交收日期/.test(live) && /日期来源需要核对/.test(live));
-check('线上页：最终账本校验显示明确阻断原因且保留草稿', /validationErrorsHTML/.test(live)
-  && /最终账本校验未通过/.test(live) && /草稿仍保留/.test(live));
+check('线上页：交收日期提示只在全局出现一次', /当前日期来自交收日期，请确认后再导入/.test(live)
+  && !/AI 使用了交收日期/.test(live) && !/title="原图使用交收日期/.test(live));
+check('线上页：校验成功/失败/未选行均有明确反馈并定位首条错误', /已通过校验，可用于导入/.test(live)
+  && /请先修正以下字段/.test(live) && /请至少选择一条交易/.test(live)
+  && /validationState/.test(live) && /data-validation-focus/.test(live)
+  && /tm-validation-feedback/.test(live) && /action === 'validate'[\s\S]*?validateDraft\(ctx\)/.test(live));
 check('线上页：长截图走分片入口', /prepareImageFiles\(files/.test(live));
 check('样式：删除按钮有定位样式', /\.tm-thumb-remove\s*\{/.test(css));
 
@@ -61,12 +64,28 @@ check('线上页：图片草稿显示行状态且 not 全部呈现阻断红', /t
   && /tm-status-pill/.test(live) && /draftRowSeverity/.test(live));
 check('线上页：文件确认表格保持只读', !/tm-cell-input|data-field=|remove-row/.test(confirmedBlock)
   && /只读/.test(confirmedBlock) && /已确认/.test(confirmedBlock));
-check('线上页：费用税费可留空且不阻断导入', /费用、税费可留空/.test(live)
-  && /留空按 0 记录并标注，不阻断导入/.test(live));
+check('线上页：费用税费为空提示只在全局出现一次', /费用、税费为空时保留为空，可在确认前补填/.test(live)
+  && !/tm-fee-note/.test(live));
+check('线上页：顶部只保留一个识别摘要', /已识别 \$\{rows\.length\} 条交易，另有 \$\{unresolvedCount\} 条待处理/.test(live)
+  && /已识别 \$\{rows\.length\} 条交易`/.test(live)
+  && !/已整理 \$\{draft\.rows\.length\} 行草稿/.test(live)
+  && !/已选 \$\{summary\.included\}/.test(live));
+const shortStatusStart = live.indexOf('function draftRowShortStatus');
+const shortStatusBlock = live.slice(shortStatusStart, live.indexOf('function rowDetailIssues', shortStatusStart));
+check('线上页：行内只显示四个简短状态标签', ['可导入', '待确认', '需修正', '手动新增 · 待确认']
+  .every((label) => shortStatusBlock.includes(label)));
+check('线上页：详细原因只在需修正、展开或定位时显示', /data-action="toggle-row-detail"/.test(live)
+  && /row\.status === 'invalid' \|\| focus \|\| row\.detailOpen === true/.test(live)
+  && /rowDetailIssues/.test(live) && /data-validation-focus="true"/.test(live));
+check('线上页：未确定记录使用简洁格式与统一说明', /esc\(unresolvedRowLabel\(item\.row\)\)\}：/.test(live)
+  && /未确定记录不会自动导入，请根据原图手动处理。/.test(live)
+  && /有 \$\{unresolvedCount\} 条记录未进入交易草稿，请查看下方说明/.test(live));
+check('线上页：手动新增行说明精简且仍提示参与校验',
+  /手动新增行会参与校验；成交额、清算额可留空，确认前请补齐。/.test(live));
 
 /* —— 原图列名映射与金额补充展示 —— */
 check('线上页：渲染原图列名映射且独立于统一表头', /columnMappingHTML/.test(live)
-  && /原图列名映射/.test(live) && /展示识别到的原图列名，不改变可编辑表格列/.test(live));
+  && /原图列名映射/.test(live) && /仅展示，不改变表格字段/.test(live));
 check('线上页：复合列显示子字段与箭头', /tm-column-map-groups/.test(live)
   && /group\.source_display/.test(live) && /group\.target_display/.test(live)
   && /columnMappingRows\(draft\.columnMapping\)/.test(live));
@@ -74,9 +93,9 @@ check('线上页：每个规范字段显示原图列名或未匹配', /view\.fie
   && /source_display:\s*first/.test(mappingModule) && /未匹配/.test(mappingModule));
 check('线上页：缺少映射只显示中性说明，不阻断草稿', /本次识别没有返回原图列名映射/.test(live)
   && /不影响已有交易草稿/.test(live) && /hasMapping/.test(mappingModule));
-check('线上页：交收日期提示保持确定性且不推导成交日期', /使用交收日期/.test(live)
-  && /系统不会倒推成交日期/.test(live) && /hasSettlementDate/.test(live)
-  && /不代表成交日期/.test(live));
+check('线上页：交收日期提示保持确定性且不重复展示', /当前日期来自交收日期/.test(live)
+  && /hasSettlementDate/.test(live) && /importNoticesHTML/.test(live)
+  && !/系统不会倒推成交日期/.test(live));
 check('映射：复合列标签覆盖名称/代码、标志/交收日期、成交价/量、成交/清算额',
   ['名称', '标的', '方向', '交收日期', '价格', '数量', '成交额', '清算额'].every((label) => mappingModule.includes(label)));
 check('线上页：成交额/清算额只在原图补充信息中展示', /visionExtrasHTML/.test(live)
@@ -88,8 +107,9 @@ check('线上页：视觉草稿不再按原图列名改写统一表头', !/visio
 
 /* —— severity 分色 —— */
 check('线上页：warning 与 blocking error 使用不同语义 class',
-  /tm-alert tm-alert--warning/.test(live) && /tm-alert tm-alert--error/.test(live)
-  && /tm-alert tm-alert--info/.test(live) && /status-tag--success/.test(live)
+  /tm-alert--warning/.test(live) && /tm-alert--error/.test(live)
+  && /tm-alert--info/.test(live) && /tm-alert--success/.test(live)
+  && /status-tag--success/.test(live)
   && /status-tag--warning/.test(live) && /status-tag--info/.test(live));
 check('线上页：行状态带显式 severity，红色只用于 invalid',
   /tm-severity-\$\{severity\}/.test(live) && /tm-row-status is-\$\{severity\}/.test(live)
