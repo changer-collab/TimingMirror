@@ -245,6 +245,7 @@ export function renderRealProfile(host, ctx) {
   }
   if (bill.demo === true) {
     host.innerHTML = emptyState('示例场景只用于演示，不写入画像；导入并确认自己的账单后才会开始记录。');
+    mountCloud(host, ctx);
     return;
   }
   const cached = getRealReportBundle(bill);

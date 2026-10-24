@@ -45,6 +45,11 @@ let lastScrollKey = null;
 let handoffNotice = null;
 let clearArmed = false;
 
+// 离开问答页时重置，下一次进入重新播放一次入页滚动。
+export function resetChatScroll() {
+  lastScrollKey = null;
+}
+
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -600,10 +605,11 @@ export function renderRealChat(host, ctx) {
   const scroller = host.querySelector('[data-role="qa-scroll"]');
   const preview = host.querySelector('[data-role="qa-send-preview"]');
   const logKey = `${contextId ?? 'none'}:${messages.length}:${pending ? 'pending' : 'idle'}`;
-  if (scroller && lastScrollKey !== null && lastScrollKey !== logKey) {
+  const firstRender = lastScrollKey === null;
+  if (scroller && lastScrollKey !== logKey) {
     requestAnimationFrame(() => {
       const top = Number.isFinite(scroller.scrollHeight) ? scroller.scrollHeight : 0;
-      if (typeof scroller.scrollTo === 'function') {
+      if (firstRender && typeof scroller.scrollTo === 'function') {
         scroller.scrollTo({ top, behavior: 'smooth' });
       } else {
         scroller.scrollTop = top;
