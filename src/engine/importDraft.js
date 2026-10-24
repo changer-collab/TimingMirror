@@ -1,6 +1,6 @@
 // 导入补救草稿（纯函数）：逐行校验、可编辑行、疑似重复标记、最终整表校验。
 // 最终写入仍由 normalizeRows 决定；草稿不是正式账单。
-import { normalizeRows } from './csvNormalize.js';
+import { normalizeQuantity, normalizeRows } from './csvNormalize.js';
 import { CANONICAL_HEADER, mapTableHeader, normalizeSide } from './importSource.js';
 
 const FIELD_KEYS = Object.freeze(['date', 'symbol', 'side', 'price', 'quantity', 'fee', 'tax']);
@@ -169,8 +169,8 @@ function fingerprint(fields) {
   const side = normalizeSide(fields.side);
   if (side !== '买入' && side !== '卖出') return null;
   const price = Number(fields.price);
-  const quantity = Number(fields.quantity);
-  if (!Number.isFinite(price) || !Number.isFinite(quantity)) return null;
+  const quantity = normalizeQuantity(fields.quantity);
+  if (!Number.isFinite(price) || quantity === null) return null;
   return [fields.date, fields.symbol, side, price, quantity].join('|');
 }
 
