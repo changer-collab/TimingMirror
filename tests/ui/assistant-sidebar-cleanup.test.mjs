@@ -576,16 +576,39 @@ for (const route of ['home', 'import', 'report', 'contract']) {
     reviewCalls += 1;
     return { ok: true, text: 'AI 解释了本次复盘结果。' };
   };
+  const REVIEW = { summary: { trades_n: 1 }, operations: [] };
+
   state.route = 'contract';
+  state.contractPage = 'me';
+  state.contracts = { ...defaultContracts(), versions: [], simContext: { review: REVIEW } };
   state.assistant = {
     ...defaultAssistant(),
     view: 'explain',
     qaMessages: [],
     simulation: { result_id: 'sim-1' },
   };
+  const meCard = render('contract');
+  check('个人中心：助手只提供前往历史复盘，不显示复盘 AI 解释或申报前自检',
+    reviewCalls === 0
+    && nodesByTag(meCard, 'button').some((node) => allText(node).includes('前往历史复盘'))
+    && !nodesByTag(meCard, 'button').some((node) => allText(node).includes('让 AI 解释复盘结果'))
+    && !allText(meCard).match(/申报前自检|SELF CHECK|假如买入|假如卖出/),
+    allText(meCard).slice(0, 360));
+
+  state.contractPage = 'scenario';
+  state.contracts = { ...defaultContracts(), versions: [], simContext: null };
+  state.assistant = { ...defaultAssistant(), view: 'explain', qaMessages: [], simulation: { result_id: 'sim-1' } };
+  const loadingCard = render('contract');
+  check('复盘页：复盘结果加载完成前只提供打开规则管理',
+    reviewCalls === 0
+    && nodesByTag(loadingCard, 'button').some((node) => allText(node).includes('打开规则管理'))
+    && !nodesByTag(loadingCard, 'button').some((node) => allText(node).includes('让 AI 解释复盘结果')),
+    allText(loadingCard).slice(0, 360));
+
+  state.contracts = { ...defaultContracts(), versions: [], simContext: { review: REVIEW } };
   const card = render('contract');
   const primary = nodesByTag(card, 'button').find((node) => allText(node).includes('让 AI 解释复盘结果'));
-  check('复盘页：有复盘结果时显示 AI 解释入口与发送范围说明',
+  check('复盘页：复盘结果加载完成且已有复核摘要时显示 AI 解释入口与发送范围说明',
     reviewCalls === 0
     && !!primary
     && allText(card).includes('只发送本次复盘已核对的规则与结果摘要'),

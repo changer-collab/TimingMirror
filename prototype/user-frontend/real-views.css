@@ -166,9 +166,6 @@ body {
   font-size: 11.5px;
 }
 
-.tm-me-selfcheck { margin-top: 26px; }
-.tm-me-selfcheck #tm-real-selfcheck { margin-top: 4px; }
-
 .tm-mode-chip.real {
   border-color: var(--ink);
   color: var(--ink);

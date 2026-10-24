@@ -92,14 +92,18 @@ check('问答页：重复账单状态栏代码与专用样式已移除',
 check('问答页：仍保留顶部共享横幅，面板内不再重复渲染',
   /confirmedBillBanner\(\)\}\$\{realChatPage\(\)\}/.test(chatPage)
   && !/confirmedBillBanner|tm-bill-banner/.test(realChat));
-check('个人中心：申报前自检区块挂载独立自检视图',
-  /id="tm-real-selfcheck"/.test(mePage) && /申报前自检/.test(mePage)
-  && /不是实时提醒/.test(mePage)
-  && /mountSelfCheckView\(document\.getElementById\('tm-real-selfcheck'\)\)/.test(app)
-  && /export function mountSelfCheckView/.test(bridge) && /section: 'selfcheck'/.test(bridge)
-  && /section === 'selfcheck'/.test(contract)
-  && /用当前生效规则重放历史行情/.test(contract)
-  && /不是实时提醒/.test(contract));
+check('个人中心：标题为“画像与规则”，不再挂载申报前自检',
+  /<h1>画像与规则<\/h1>/.test(mePage)
+  && !/SELF CHECK|申报前自检|tm-real-selfcheck|假如买入|假如卖出|sim-date|sim-symbol|测试该日/.test(mePage)
+  && !/mountSelfCheckView|tm-real-selfcheck/.test(app)
+  && !/mountSelfCheckView/.test(bridge)
+  && !/section === 'selfcheck'|申报前自检|假如买入|假如卖出|sim-symbol|sim-date|测试该日/.test(contract));
+check('个人中心：仍挂载画像与规则管理',
+  /id="tm-real-profile"/.test(mePage) && /id="tm-real-rules"/.test(mePage)
+  && /renderRealProfile\(document\.getElementById\('tm-real-profile'\)/.test(app)
+  && /mountContractView\(document\.getElementById\('tm-real-rules'\)\)/.test(app));
+check('个人中心：不再保留自检专用样式',
+  !/tm-me-selfcheck|tm-real-selfcheck/.test(css));
 check('样式：统一横幅及窄屏规则存在',
   /\.tm-bill-banner\s*\{/.test(css) && /\.tm-bill-banner-links\s*\{/.test(css)
   && /\.tm-bill-banner \{[\s\S]*?flex-direction: column/.test(css));

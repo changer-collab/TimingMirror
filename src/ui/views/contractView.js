@@ -1,35 +1,11 @@
-// 交易规则（契约）：当前生效规则（每种类型最多一条）→ 历史规则（折叠）→ 新增 / 修改弹窗 → 当前规则的操作复盘（本地账单与示例：Tushare 动态 / 合成回归）
+// 交易规则（契约）：当前生效规则（每种类型最多一条）→ 历史规则（折叠）→ 新增 / 修改弹窗；历史操作复盘在 #/scenario。
 // 边界：当前 / 历史划分、版本状态机、解析与判定全部由 adapter 提供（adapter 内部调用引擎）；本页只渲染返回的文本与 display。
 import { el, chip } from '../components.js';
 import * as adapter from '../../demo/adapter.js';
 import { renderScenarioReview } from './scenarioReviewView.js';
 import { saveContractsDemo, defaultContracts } from '../../state.js';
-import { createHttpTransport, SAME_ORIGIN_BASE, SITE_FUNCTION_PATHS } from '../../agent/httpTransport.js';
-import { createRuleFallback, pickScenarioForJudgment, ruleSetHash } from '../../agent/ruleFallback.js';
-import { createCustomRuleJudgment, CUSTOM_RULE_JUDGMENT_CODES } from '../../agent/customRuleJudgment.js';
 
-const VERDICT = {
-  triggered: { text: '命中', kind: 'warn' },
-  not_triggered: { text: '未命中', kind: 'ok' },
-  missing_data: { text: '数据不足', kind: 'mode' },
-  unable: { text: '无法判断', kind: 'mode' },
-  custom_pending: { text: '判定中…', kind: 'mode' },
-};
-// 买入后卖出提醒：账单没有“历史买入完整”依据，找不到窗口内买入时一律不显示“未命中”。
-const UNCONFIRMED_BUY_CODES = new Set(['E_BUY_HISTORY_UNCONFIRMED', 'E_BUY_OUTSIDE_WINDOW_UNCONFIRMED', 'E_SAME_DAY_BUY_UNCONFIRMED']);
-const BUY_SELL_MISSING_NOTE = Object.freeze({
-  E_BUY_HISTORY_UNCONFIRMED: '数据不足：账单中没有该标的在申报日前的买入记录，也没有“历史买入完整”的可靠依据；不能当成“从未买入”，本次不显示“未命中”。',
-  E_BUY_OUTSIDE_WINDOW_UNCONFIRMED: '数据不足：当前账单里可见的最近买入已超出窗口，但可能存在未导出的窗口内买入；本次不显示“未命中”，也不作命中判定。',
-  E_SAME_DAY_BUY_UNCONFIRMED: '数据不足：当前账单只有同日买入，成交先后顺序未知，且可能存在未导出的更早或窗口内买入；本次不显示“未命中”，也不作命中判定。',
-});
-const SUMMARY = [['triggered', '命中', 'warn'], ['not_triggered', '未命中', 'ok'], ['missing_data', '数据不足', 'mode'], ['not_applicable', '不适用', 'mode'], ['unable', '无法判断', 'mode'], ['error', '无法判定', 'warn']];
-const SIM_CANDIDATE_LINE = '候选口径（待冻结）：规则只用于提醒，不自动交易，也不改变报告结论。';
 const ACTION_LABEL = Object.freeze({ buy: '买入提醒', sell: '卖出提醒' });
-// 自定义规则判定：与页面其他说明一致地写明发送内容；判定失败或数据不足时显示“无法判断”，不显示“未命中”。
-const CUSTOM_PENDING_NOTE = '正在结合本次情境数据判定这条自定义规则…';
-const CUSTOM_UNABLE_NOTE = '无法判断：本次不显示“未命中”，也不作命中判定。';
-const CUSTOM_DISCLOSURE = '这条自定义规则参与测试时，会把规则原文、提醒动作、适用范围、情境标的与日期、当日涨跌幅（如有）、该标的的买入与卖出日期和相关交易日历发送到站点服务端，由模型辅助理解后给出判定；不发送原始账单、CSV 文件、价格金额或其他标的的交易记录。判定只用于提醒，不下单、不阻止交易。';
-const CUSTOM_USED_DATA_LABEL = Object.freeze({ change_pct: '当日涨跌幅', buys: '买入日期', sells: '卖出日期', calendar: '交易日历' });
 const INTRO = '设置在操作复盘中用于提醒自己的交易规则。规则仅用于提醒，不会自动交易或阻止交易。';
 const PRIVACY = '不会自动交易，也不会改变分析报告结论。操作复盘只使用当前生效规则。';
 // const AGENT_NOTE = '操作复盘只使用当前生效规则。';
@@ -39,72 +15,6 @@ const STOP_NOTE = '停用后，该规则进入历史规则，不再参与之后�
 const RECONFIRM_NOTE = '这条规则的保存内容与当前校验标识不一致。为避免误用，它暂不参与测试。请核对后用“新增规则”重新保存，或停用该规则。';
 const EMPTY_NOTE = '暂无当前生效的规则，测试时不会产生规则提醒。点击“新增规则”开始设置。';
 
-function ledgerEventRow(e) {
-  const kind = e.outcome === 'violated' ? 'warn' : e.outcome === 'compliant' ? 'ok' : 'mode';
-  return el('div', { class: 'cv-ledger-event', 'data-outcome': e.outcome }, [
-    el('span', { class: 'cv-ledger-date' }, [safe(e.at)]),
-    el('span', { class: 'cv-ledger-sym' }, [`${safe(e.symbol)} · ${safe(e.side_label)}`]),
-    chip(e.outcome_label, kind),
-    el('span', { class: 'cv-ledger-msg' }, [safe(e.message)]),
-  ]);
-}
-
-function ledgerCard(ledger) {
-  const s = ledger.summary;
-  const box = el('div', { class: 'cv-ledger', 'data-role': 'rule-ledger' }, [
-    el('div', { class: 'cv-ledger-head' }, [
-      el('div', { class: 'section-title' }, ['守约账本']),
-      el('span', { class: 'muted small' }, [`按当前生效规则复核账单中的 ${safe(ledger.trades_n)} 笔交易${ledger.as_of ? `（截至 ${safe(ledger.as_of)}）` : ''}`]),
-    ]),
-    el('div', { class: 'cv-ledger-stats' }, [
-      chip(`复核 ${s.reviewed_n} 笔`, 'mode'),
-      chip(`违反 ${s.violated_n} 笔`, s.violated_n ? 'warn' : 'mode'),
-      chip(`已提醒 ${s.warned_n} 笔`, 'mode'),
-      chip(`数据不足 ${s.missing_n} 笔`, 'mode'),
-    ]),
-  ]);
-  if (!ledger.rules.length) {
-    box.append(el('div', { class: 'muted small' }, ['暂无当前生效规则：账本没有可复核的规则。']));
-  } else {
-    box.append(el('div', { class: 'cv-ledger-rules' }, ledger.rules.map((r) => el('div', { class: 'cv-ledger-row', 'data-hash': r.hash }, [
-      el('div', { class: 'cv-ledger-row-head' }, [
-        el('span', { class: 'cv-ledger-name' }, [safe(r.template_name)]),
-        chip(r.enforcement_label, r.enforcement === 'remind' ? 'mode' : 'warn'),
-        el('span', { class: 'muted small' }, [safe(r.scope_text)]),
-      ]),
-      el('div', { class: 'cv-ledger-status' }, [safe(r.status_text)]),
-      r.missing_codes.length ? el('div', { class: 'muted small' }, [`数据不足原因：${r.missing_codes.map((c) => `${c.code}×${c.n}`).join('、')}`]) : null,
-    ]))));
-  }
-  if (ledger.events.length) {
-    box.append(el('div', { class: 'cv-ledger-subtitle' }, ['最近事件']));
-    box.append(el('div', { class: 'cv-ledger-events' }, ledger.events.map(ledgerEventRow)));
-  }
-  box.append(el('details', { class: 'cv-tech-note' }, [
-    el('summary', {}, ['账本口径']),
-    ...ledger.notes.map((n) => el('div', { class: 'muted small' }, [n])),
-  ]));
-  return box;
-}
-
-let fallbackClient = null;
-function getFallbackClient() {
-  if (!fallbackClient) {
-    fallbackClient = createRuleFallback({
-      transport: createHttpTransport({ baseUrl: SAME_ORIGIN_BASE, paths: SITE_FUNCTION_PATHS }),
-    });
-  }
-  return fallbackClient;
-}
-let customJudgeClient = null;
-function getCustomJudgeClient() {
-  if (!customJudgeClient) {
-    customJudgeClient = createCustomRuleJudgment({
-      transport: createHttpTransport({ baseUrl: SAME_ORIGIN_BASE, paths: SITE_FUNCTION_PATHS }),
-    });
-  }
-  return customJudgeClient;
-}
 const HISTORY_NOTE = '被新规则替代、手动停用的规则和旧演示记录都保留在这里，不参与测试；版本记录只追加、不删除。';
 const HISTORY_TAG = Object.freeze({ replaced: '已被替代', superseded: '已被替代', stopped: '已停用' });
 const NL_INTRO = '用一句话描述你想遵守的交易规则，系统会识别并生成规则预览；识别与关键词检查只是辅助，请对照原话核对。你确认后才会保存并启用，取消或修改描述都不会生效。';
@@ -138,8 +48,6 @@ function computeCustomHashForSave(text, action, scope) {
   return adapter.CONTRACT_CUSTOM_HASH(canonical);
 }
 
-let simContextLoadingKey = null;
-let simToken = null;
 let nlToken = null;
 let focusedModal = null;
 let closeActiveModal = null;
@@ -236,7 +144,6 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     return;
   }
   const { state, set } = ctx;
-  const standalone = section === 'selfcheck';
   state.contracts = { ...defaultContracts(), ...state.contracts };
   const c = state.contracts;
   const templates = adapter.contractTemplates();
@@ -245,8 +152,6 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
 
   function commitAll(recs, extra = {}) {
     if (!recs || !recs.length) return;
-    simToken = null;
-    simContextLoadingKey = null;
     const versions = [...c.versions, ...recs];
     set({ contracts: { versions, simContext: null, sim: { ...c.sim, result: null, running: false, runId: null, fallback: null }, ...extra } });
     const saveRules = ctx?.cloudDeps?.saveRules;
@@ -283,7 +188,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
   const page = el('div', { class: 'stack cv-page' });
 
   /* —— 页头 —— */
-  if (!standalone) page.append(el('div', { class: 'card cv-head' }, [
+  page.append(el('div', { class: 'card cv-head' }, [
     el('div', { class: 'cv-head-main' }, [
       el('h2', { class: 'cv-title' }, ['交易规则']),
       el('div', { class: 'cv-intro' }, [INTRO]),
@@ -427,10 +332,10 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     currentBox.replaceChildren(...nodes);
   }
   paintCurrent();
-  if (!standalone) page.append(currentBox);
+  page.append(currentBox);
 
   /* —— 待重新确认（异常）：不计入当前规则、不参与测试 —— */
-  if (!standalone && ruleSet.needsReconfirm.length) {
+  if (ruleSet.needsReconfirm.length) {
     page.append(el('div', { class: 'card cv-reconfirm-box' }, [
       el('div', { class: 'cv-group-title' }, [`待重新确认的规则（${ruleSet.needsReconfirm.length}）`]),
       el('div', { class: 'muted small' }, ['以下规则不计入当前生效规则，也不参与操作复盘。']),
@@ -480,7 +385,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     el('div', { class: 'cv-hist-reason' }, ['未经规则引擎解析：不参与测试，不能恢复。']),
   ]);
   const histCount = ruleSet.history.length + ruleSet.legacy.length;
-  if (!standalone) page.append(el('details', { class: 'card cv-history', 'data-role': 'history', open: c.restorePending ? '' : null }, [
+  page.append(el('details', { class: 'card cv-history', 'data-role': 'history', open: c.restorePending ? '' : null }, [
     el('summary', {}, [`历史规则（${histCount}）`]),
     el('div', { class: 'muted small' }, [HISTORY_NOTE]),
     histCount ? null : el('div', { class: 'muted small' }, ['暂无历史规则。']),
@@ -488,217 +393,10 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     ...ruleSet.legacy.map(legacyItem),
   ]));
 
-  /* —— 操作复盘：所有当前规则逐条判定；交易来源由 adapter 按账单状态决定 —— */
-  let simBtn = null;
-  let simResultBox = null;
-
-  function buildSimulation() {
-  const current = ruleSet.current;
-  const hasBuyback = current.some((r) => r.kind === 'sell_buyback_window');
-  const hasBuySell = current.some((r) => r.kind === 'buy_sell_window');
-  const hasTrades = hasBuyback || hasBuySell;
-  const hasSurge = current.some((r) => r.kind === 'change_pct_threshold');
-  const demoFrozen = adapter.isDemoFrozenBill(state.bill);
-  const localBill = !demoFrozen && !!(state.bill && state.bill.status === 'confirmed' && state.bill.sourceType === 'local');
-  const demoSimulationAllowed = ctx.allowDemoSimulation !== false;
-  const marketSource = demoFrozen
-    ? 'demo-frozen'
-    : localBill ? adapter.DEFAULT_MARKET_SOURCE : (c.marketSource === 'synthetic-fixture' ? 'synthetic-fixture' : adapter.DEFAULT_MARKET_SOURCE);
-  const sim = el('div', { class: 'card', 'data-role': 'sim-section' });
-  simResultBox = el('div', { class: 'cv-sim-out' });
-  if (!localBill && !demoFrozen && !demoSimulationAllowed) {
-    sim.append(el('div', { class: 'section-title' }, ['申报前自检']));
-    sim.append(el('div', { class: 'cv-sim-empty' }, [
-      el('div', { class: 'muted' }, ['导入并确认一份账单后，可用当前规则做申报前自检。没有账单时不会自动加载行情，也不会用示例数据代替。']),
-      el('a', { class: 'btn small', href: '#/import' }, ['去导入账单']),
-    ]));
-  } else {
-  sim.append(el('div', { class: 'section-title' }, [demoFrozen
-    ? '申报前自检（示例行情 · 历史模拟）'
-    : marketSource === 'synthetic-fixture'
-      ? '申报前自检（合成行情）'
-      : '申报前自检（Tushare 动态行情）']));
-  sim.append(el('div', { class: 'muted small cv-selfcheck-note' }, ['这是历史模拟，不是实时提醒；不会下单，也不会阻止交易。']));
-  // 示例场景账单固定使用冻结行情（无行情来源切换）；其他示例账单可切换 Tushare 动态 / 合成回归。
-  if (!localBill && !demoFrozen) {
-    const srcGroup = el('div', { class: 'rp-control-group' });
-    srcGroup.append(el('span', { class: 'rp-control-label' }, ['行情来源']));
-    const srcSeg = el('div', { class: 'rp-seg' });
-    for (const o of adapter.CONTRACT_MARKET_OPTIONS) {
-      srcSeg.append(el('button', {
-        class: marketSource === o.id ? 'active' : '',
-        onclick: () => {
-          if (marketSource === o.id) return;
-          simToken = null;
-          simContextLoadingKey = null;
-          set({ contracts: { marketSource: o.id, simContext: null, sim: { ...state.contracts.sim, result: null, running: false, runId: null, fallback: null } } });
-        },
-      }, [o.label]));
-    }
-    srcGroup.append(srcSeg);
-    sim.append(srcGroup);
-    const labels = adapter.contractSimLabels(marketSource);
-    sim.append(el('div', { class: 'row' }, [chip(labels.label, 'mode'), chip(labels.scopeNote, 'mode')]));
-  }
-  const src = adapter.contractTradeSource(state.bill, marketSource);
-  if (c.simContext && c.simContext.sourceKey !== src.key) {
-    simToken = null;
-    c.simContext = null;
-    c.sim = { ...c.sim, result: null, running: false, runId: null };
-  }
-  const sc = c.simContext;
-  const marketLabel = sc?.marketSource?.label ?? src.market_label;
-  if (localBill || demoFrozen) {
-    sim.append(el('div', { class: 'row' }, [chip(`${marketLabel} · 非实时行情 · 不构成投资建议`, 'mode')]));
-    sim.append(el('div', { class: 'muted small' }, [SIM_CANDIDATE_LINE]));
-  }
-  // 交易来源明细按当前规则的模板类型显示：不追回读取卖出记录，买入后卖出提醒读取买入记录，涨幅只读行情。
-  const tradeUse = hasBuyback && hasBuySell
-    ? '不追回读取卖出记录，买入后卖出提醒读取买入记录'
-    : hasBuySell
-      ? '买入后卖出提醒只读取同一标的的买入记录'
-      : '不追回读取卖出记录';
-  const otherUse = hasBuySell
-    ? '交易类规则只用交易日历和账单交易，不读取价格'
-    : '涨幅规则不读取账单交易；交易类规则只用交易日历和账单交易，不读取价格';
-  const srcNote = localBill
-    ? (hasTrades && hasSurge
-      ? `（仅${tradeUse}；${otherUse}）`
-      : hasTrades
-        ? `（${tradeUse}；只用交易日历和账单交易，不读取价格）`
-        : hasSurge
-          ? `（涨幅规则只读取${marketLabel}，不使用账单交易）`
-          : '')
-    : (hasTrades && hasSurge
-      ? `（仅${tradeUse}；涨幅规则不读取账单交易）`
-      : hasTrades
-        ? `（${tradeUse}）`
-        : hasSurge
-          ? '（涨幅规则只读取行情，不使用账单交易）'
-          : '');
-  sim.append(el('div', { class: `calc-line cv-source ${src.kind}` }, [
-    `交易来源：${displayTradeSource(src)} · ${localBill && hasTrades && !hasSurge ? '交易日历来源' : '行情'}：${displayMarket(marketLabel)}`,
-    srcNote,
-  ]));
-  if (localBill && sc?.supportScope) sim.append(el('div', { class: 'muted small cv-market-scope' }, [
-    `支持标的：${sc.supportScope.symbols.join('、')}；支持日期范围：${sc.supportScope.range.start} 至 ${sc.supportScope.range.end}；asOfDate：${sc.asOfDate}；快照：${sc.marketSource.snapshotId ?? '无'}；拉取时间：${sc.marketSource.fetchedAt ? fmtAt(sc.marketSource.fetchedAt) : '无'}。`,
-  ]));
-  if (!sc) {
-    sim.append(el('div', { class: 'muted' }, [demoFrozen
-      ? '正在读取示例账单与历史行情快照…'
-      : localBill
-        ? '正在获取 Tushare 动态行情与交易来源…'
-        : `正在加载${marketSource === 'synthetic-fixture' ? '合成回归' : 'Tushare 动态'}行情与交易来源…`]));
-    if (simContextLoadingKey !== src.key) {
-      simContextLoadingKey = src.key;
-      adapter.contractSimContext({ bill: state.bill, marketSource, versions: c.versions })
-        .then((d) => {
-          if (d.error) return { simContext: d, sim: { ...state.contracts.sim, result: null, running: false, runId: null, fallback: null } };
-          const cur = state.contracts.sim;
-          const symbol = d.symbols.some((s) => s.symbol === cur.symbol) ? cur.symbol : d.symbols[0]?.symbol ?? '';
-          return { simContext: d, sim: { ...cur, symbol, date: cur.date && cur.date >= d.range.start && cur.date <= d.range.end ? cur.date : d.asOfDate, result: null, runId: null, fallback: null } };
-        })
-        .catch((e) => ({ simContext: { error: String(e && e.message ? e.message : e), sourceKey: src.key } }))
-        .then((patch) => {
-          if (simContextLoadingKey !== src.key || adapter.contractTradeSource(state.bill, marketSource).key !== src.key) return;
-          simContextLoadingKey = null;
-          set({ contracts: patch });
-        });
-    }
-  } else if (sc.error) {
-    sim.append(el('div', { class: 'error' }, [`${localBill || demoFrozen ? '自检阻断' : '行情加载失败'}：${sc.error}`]));
-  } else {
-    const simAction = c.sim.action === 'sell' ? 'sell' : 'buy';
-    sim.append(el('div', { class: 'muted small' }, [
-      `用当前生效的规则（${current.length} 条，每种类型一条）分别判定“假如在该日${simAction === 'sell' ? '卖出' : '买入'}该标的”；历史规则不参与。行情范围 ${sc.range.start} ~ ${sc.range.end}，共 ${sc.tradingDays.length} 个交易日；缺价、超范围不补造、不回退。`,
-    ]));
-    if (sc.marketSource && sc.marketSource.dynamic) {
-      sim.append(el('div', { class: 'muted small' }, [
-        `行情拉取：${fmtAt(sc.marketSource.fetchedAt)} · 最新交易日 ${sc.marketSource.latestTradeDate ?? sc.marketSource.asOfDate}${sc.marketSource.snapshotId ? ` · 快照 ${sc.marketSource.snapshotId}` : ''}${sc.marketSource.checksum ? ` · 校验 ${sc.marketSource.checksum.slice(0, 12)}…` : ''}（服务端获取，非实时）`,
-      ]));
-    }
-    const actGroup = el('div', { class: 'rp-control-group' });
-    actGroup.append(el('span', { class: 'rp-control-label' }, ['情境动作']));
-    const actSeg = el('div', { class: 'rp-seg' });
-    for (const o of [{ id: 'buy', label: '假如买入' }, { id: 'sell', label: '假如卖出' }]) {
-      actSeg.append(el('button', {
-        type: 'button',
-        class: simAction === o.id ? 'active' : '',
-        'data-role': `sim-action-${o.id}`,
-        onclick: () => {
-          if (simAction === o.id) return;
-          simToken = null;
-          set({ contracts: { sim: { ...state.contracts.sim, action: o.id, result: null, running: false, runId: null, fallback: null } } });
-        },
-      }, [o.label]));
-    }
-    actGroup.append(actSeg);
-    sim.append(actGroup);
-    sim.append(el('div', { class: 'muted small cv-action-note' }, [
-      '买入提醒类规则只在“假如买入”情境判定，卖出提醒类规则只在“假如卖出”情境判定。规则只做历史复盘提醒，不下单、不阻止交易，也不是实时监控。',
-    ]));
-    const symSelect = el('select', {
-      class: 'input', 'data-role': 'sim-symbol',
-      onchange: (e) => { simToken = null; c.sim = { ...c.sim, symbol: e.target.value, result: null, running: false, runId: null, fallback: null }; paintSim(); },
-    }, sc.symbols.map((s) => el('option', { value: s.symbol, selected: s.symbol === c.sim.symbol ? 'selected' : null }, [
-      `${s.symbol}${s.in_bill && src.kind === 'user_bill' ? '（账单标的）' : ''}${s.in_market_cache ? '' : '（不在本次行情）'}`,
-    ])));
-    const dateInput = el('input', { class: 'input cv-input', type: 'date', 'data-role': 'sim-date', value: c.sim.date });
-    dateInput.addEventListener('input', (e) => { simToken = null; c.sim = { ...c.sim, date: e.target.value, result: null, running: false, runId: null, fallback: null }; paintSim(); });
-    simBtn = el('button', {
-      class: 'btn primary',
-      onclick: async () => {
-        const req = { versions: c.versions, symbol: c.sim.symbol, date: c.sim.date, bill: state.bill, marketSource, action: simAction };
-        const token = {};
-        simToken = token;
-        const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        set({ contracts: { sim: { ...state.contracts.sim, running: true, result: null, runId, fallback: null } } });
-        const result = await adapter.simulateContracts(req);
-        const applied = simToken === token && adapter.contractTradeSource(state.bill, marketSource).key === src.key;
-        if (applied) {
-          set({ contracts: { sim: { ...state.contracts.sim, running: false, result, runId, fallback: null } } });
-          runUnmatchedFallback({ result, versions: c.versions, runId, set, state });
-          runCustomJudgment({ result, runId, set, state });
-        }
-      },
-    }, [c.sim.running ? '测试中…' : `测试该日${simAction === 'sell' ? '卖出' : '买入'}是否触发规则`]);
-    sim.append(el('div', { class: 'row' }, [
-      el('label', { class: 'cv-field' }, [el('span', { class: 'muted small' }, [demoFrozen ? '标的（示例账单标的 + 示例行情标的）' : localBill ? '标的（账单标的 + 本次行情标的）' : '标的（账单标的 + 示例标的）']), symSelect]),
-      el('label', { class: 'cv-field' }, [el('span', { class: 'muted small' }, ['申报日期']), dateInput]),
-      simBtn,
-    ]));
-    if (hasBuyback) {
-      const sells = sc.sells.map((s) => `${s.trade_id} ${s.symbol} ${s.trade_date}`).join('；') || '无';
-      sim.append(el('div', { class: 'muted small cv-sells' }, [`卖出记录来源：${displayTradeSource(sc.tradesSource)}——卖出：${sells}`]));
-    }
-    if (hasBuySell) {
-      const buys = sc.buys.map((b) => `${b.trade_id} ${b.symbol} ${b.trade_date}`).join('；') || '无';
-      sim.append(el('div', { class: 'muted small cv-buys' }, [`买入记录来源：${displayTradeSource(sc.tradesSource)}——买入：${buys}`]));
-    }
-  }
-  }
-  sim.append(simResultBox);
-  if (c.simContext && !c.simContext.error && c.simContext.ledger) sim.append(ledgerCard(c.simContext.ledger));
-  return sim;
-  }
-
-  function paintSim() {
-    if (simBtn) simBtn.disabled = !!c.sim.running;
-    simResultBox.replaceChildren(...(c.sim.result ? [simBatch(c.sim.result, c.sim.fallback)] : []));
-  }
-  if (standalone) {
-    page.append(el('div', { class: 'card cv-selfcheck-head' }, [
-      el('h2', { class: 'cv-title' }, ['申报前自检']),
-      el('div', { class: 'cv-intro' }, ['用当前生效规则重放历史行情，看看某个标的在某个日期会触发哪条规则。这是历史模拟，不是实时提醒；不会下单，也不会阻止交易。']),
-    ]));
-    page.append(buildSimulation());
-    paintSim();
-  }
-
   /* —— 新增 / 修改弹窗：背景不可操作；Esc / 关闭 / 取消均不写记录 —— */
-  const backdrop = !standalone && c.modal ? renderModal() : null;
-  closeActiveModal = !standalone && c.modal ? closeEditor : null;
-  if (!standalone && c.modal) {
+  const backdrop = c.modal ? renderModal() : null;
+  closeActiveModal = c.modal ? closeEditor : null;
+  if (c.modal) {
     bindEsc();
     page.setAttribute('inert', '');
     page.setAttribute('aria-hidden', 'true');
@@ -1191,277 +889,4 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     if (mountModal) mountModal(null);
     focusedModal = null;
   }
-}
-
-function setFallback(set, state, runId, fallback) {
-  if (state.contracts.sim.runId !== runId) return;
-  set({ contracts: { sim: { ...state.contracts.sim, fallback } } });
-}
-
-/* —— 自定义规则判定：范围/动作适用的自定义规则逐条请求模型辅助判定；失败一律“无法判断”，不显示“未命中”；
-      结果按规则分别回填（互不覆盖），只有绑定（运行标识 + 规则哈希/版本 + 情境）完全一致时才采用 —— */
-function resummarize(results) {
-  const summary = { triggered: 0, not_triggered: 0, missing_data: 0, not_applicable: 0, error: 0, unable: 0, custom_pending: 0 };
-  for (const r of results) summary[r.display_verdict] = (summary[r.display_verdict] ?? 0) + 1;
-  return summary;
-}
-
-function patchSimResult({ runId, set, state }, entry, patch) {
-  if (state.contracts.sim.runId !== runId) return;
-  const cur = state.contracts.sim.result;
-  if (!cur || !Array.isArray(cur.results)) return;
-  const i = cur.results.indexOf(entry);
-  if (i < 0) return;
-  const results = cur.results.slice();
-  results[i] = { ...entry, ...patch };
-  set({ contracts: { sim: { ...state.contracts.sim, result: { ...cur, results, summary: resummarize(results) } } } });
-}
-
-function runCustomJudgment({ result, runId, set, state }) {
-  if (!result || !Array.isArray(result.results)) return;
-  const pendings = result.results.filter((r) => r.display_verdict === 'custom_pending' && r.custom);
-  if (!pendings.length) return;
-  const judge = getCustomJudgeClient();
-  for (const entry of pendings) {
-    judge.judgeRule({ entry, runId })
-      .then((judged) => {
-        if (state.contracts.sim.runId !== runId) return;
-        if (judged.ok) {
-          const verdict = judged.verdict === 'triggered' ? 'triggered' : judged.verdict === 'not_triggered' ? 'not_triggered' : 'unable';
-          patchSimResult({ runId, set, state }, entry, {
-            verdict, display_verdict: verdict, code: null, message: judged.reason,
-            custom: { ...entry.custom, status: 'judged', judgment: { reason: judged.reason, used_data: judged.used_data } },
-          });
-        } else {
-          patchSimResult({ runId, set, state }, entry, {
-            verdict: 'unable', display_verdict: 'unable', code: judged.code, message: judged.message,
-            custom: { ...entry.custom, status: 'failed', failure: { code: judged.code, message: judged.message } },
-          });
-        }
-      })
-      .catch(() => {
-        patchSimResult({ runId, set, state }, entry, {
-          verdict: 'unable', display_verdict: 'unable',
-          code: CUSTOM_RULE_JUDGMENT_CODES.UNAVAILABLE, message: '自定义规则判定服务不可用',
-          custom: { ...entry.custom, status: 'failed', failure: { code: CUSTOM_RULE_JUDGMENT_CODES.UNAVAILABLE, message: '自定义规则判定服务不可用' } },
-        });
-      });
-  }
-}
-
-function runUnmatchedFallback({ result, versions, runId, set, state }) {
-  if (!result) return;
-  if (result.marketSourceId !== 'dynamic-tushare') {
-    setFallback(set, state, runId, { status: 'skipped', reason: 'non_dynamic_market', message: '当前不是动态行情情境：不调用 AI 判断' });
-    return;
-  }
-  const current = adapter.contractRuleSet(versions).current;
-  const picked = pickScenarioForJudgment({ simulation: result, currentRules: current });
-  if (!picked.ok) {
-    setFallback(set, state, runId, { status: 'skipped', reason: picked.code, message: picked.message });
-    return;
-  }
-  const expectedRuleSetHash = ruleSetHash(current.map((r) => r.hash));
-  setFallback(set, state, runId, {
-    status: 'pending',
-    rule_count: current.length,
-    scenario_id: `scenario-${runId}`,
-    rule_set_hash: expectedRuleSetHash,
-  });
-  getFallbackClient().judgeScenario({ simulation: result, currentRules: current, runId })
-    .then((judged) => {
-      if (state.contracts.sim.runId !== runId) return;
-      const currentNow = adapter.contractRuleSet(state.contracts.versions).current;
-      if (ruleSetHash(currentNow.map((r) => r.hash)) !== expectedRuleSetHash) {
-        setFallback(set, state, runId, { status: 'skipped', reason: 'rule_changed', message: '规则已变化：本次 AI 判断已丢弃' });
-        return;
-      }
-      setFallback(set, state, runId, judged.ok
-        ? {
-          status: 'ok',
-          rule_count: current.length,
-          scenario_id: judged.binding.scenario_id,
-          rule_set_hash: judged.binding.rule_set_hash,
-          judgment: judged.judgment,
-          answer_text: judged.answer_text,
-          request_id: judged.binding.request_id,
-        }
-        : {
-          status: 'failed',
-          rule_count: current.length,
-          scenario_id: `scenario-${runId}`,
-          rule_set_hash: expectedRuleSetHash,
-          code: judged.code,
-          message: judged.message,
-        });
-    })
-    .catch(() => {
-      setFallback(set, state, runId, {
-        status: 'failed',
-        rule_count: current.length,
-        scenario_id: `scenario-${runId}`,
-        rule_set_hash: expectedRuleSetHash,
-        code: 'W_RULE_FALLBACK_UNAVAILABLE',
-        message: 'AI 判断不可用；规则结果仍以本地判定为准',
-      });
-    });
-}
-
-function fallbackBlock(fallback) {
-  if (!fallback) return null;
-  if (fallback.status === 'pending') {
-    return el('div', { class: 'cv-ai-fallback' }, [
-      el('div', { class: 'cv-ai-fallback-head' }, ['AI 判断（未匹配已锁定规则）']),
-      el('div', { class: 'muted small' }, ['正在请求 AI 判断理由…已有规则命中时不会调用。']),
-    ]);
-  }
-  if (fallback.status === 'ok') {
-    return el('div', { class: 'cv-ai-fallback' }, [
-      el('div', { class: 'cv-ai-fallback-head' }, ['AI 判断（未匹配已锁定规则）']),
-      el('div', { class: 'calc-line' }, [safe(fallback.answer_text)]),
-      el('div', { class: 'muted small' }, ['AI 只解释未匹配原因；不改写规则、不自动保存，也不覆盖本地规则判定。']),
-    ]);
-  }
-  if (fallback.status === 'failed') {
-    return el('div', { class: 'cv-ai-fallback' }, [
-      el('div', { class: 'cv-ai-fallback-head' }, ['AI 判断未生成']),
-      el('div', { class: 'calc-line' }, ['规则结果仍以本地判定为准，不会用 AI 结论覆盖。']),
-    ]);
-  }
-  return null;
-}
-
-function simBatch(b, fallback = null) {
-  const box = el('div', { class: 'cv-sim-batch' });
-  box.append(el('div', { class: 'row' }, [el('strong', {}, [`${safe(b.symbol)} · 申报日 ${safe(b.requested_date)} · ${b.scenario_action === 'sell' ? '假如卖出' : '假如买入'}`])]));
-  const reconfirmNote = b.needs_reconfirm_n
-    ? el('div', { class: 'muted small cv-reconfirm-note' }, [`另有 ${b.needs_reconfirm_n} 条规则因内容与候选哈希不一致未参与本次判定（见“待重新确认的规则”），不会自动修正。`])
-    : null;
-  if (b.empty) {
-    box.append(el('div', { class: 'cv-sim-empty' }, ['本次没有当前生效的规则参与判定，不会产生规则提醒（不等于“未命中”）。']));
-    const emptyFallback = fallbackBlock(fallback);
-    if (emptyFallback) box.append(emptyFallback);
-    if (reconfirmNote) box.append(reconfirmNote);
-    return box;
-  }
-  box.append(el('div', { class: 'row cv-sim-summary' }, SUMMARY.filter(([k]) => (b.summary[k] ?? 0) > 0).map(([k, label, kind]) => el('span', { class: `chip ${kind}`, 'data-verdict': k }, [`${label} ${b.summary[k]} 条`]))));
-  const aiFallback = fallbackBlock(fallback);
-  if (aiFallback) box.append(aiFallback);
-  if (reconfirmNote) box.append(reconfirmNote);
-  for (const r of b.results) {
-    // 范围 / 动作不适用的规则不进入结果列表（只计入上方汇总），避免与参与判定的规则混排。
-    if (r.ok && r.verdict === 'not_applicable') continue;
-    box.append(simResult(r));
-  }
-  return box;
-}
-
-function factLines(fact, change) {
-  const lines = [`标的：${safe(fact.symbol)}`];
-  if (change && change.complete) {
-    lines.push(`有效交易日：${change.effective_date}（前收日 ${change.prev_date}）`);
-    lines.push(`当日涨跌幅：${change.display.change_pct}`);
-  } else if (fact.display && fact.display.change_pct) {
-    lines.push(`当日涨跌幅：${fact.display.change_pct}`);
-  } else {
-    lines.push(`申报日：${safe(fact.date)}`);
-  }
-  if (fact.last_sell) lines.push(`最近卖出：${fact.last_sell.trade_id} · ${fact.last_sell.trade_date}`);
-  if (fact.last_buy) lines.push(`最近买入：${fact.last_buy.trade_id} · ${fact.last_buy.trade_date}`);
-  if (fact.distance_trading_days !== undefined) {
-    lines.push(fact.last_buy
-      ? `距最近买入：${fact.distance_trading_days} 个交易日（窗口 ${fact.window_days} 个交易日）`
-      : `距最近卖出：${fact.distance_trading_days} 个交易日（窗口 ${fact.window_days} 个交易日）`);
-  }
-  if (fact.same_day_buy_count) lines.push(`同日买入 ${fact.same_day_buy_count} 笔：账单没有成交时刻，先后顺序未知，不计为“买入后”`);
-  if (fact.result_basis === 'imported_records') lines.push('结果依据：当前导入账单中的可见买入记录');
-  if (fact.history_completeness === 'unconfirmed') lines.push('账单完整性：未确认');
-  return lines;
-}
-
-function simResult(r) {
-  const verdict = r.display_verdict ?? (r.ok ? r.verdict : 'error');
-  const v = verdict === 'missing_data' && UNCONFIRMED_BUY_CODES.has(r.code)
-    ? { text: '无法确认', kind: 'mode' }
-    : VERDICT[verdict] ?? { text: '无法判定', kind: 'warn' };
-  const box = el('div', { class: `cv-sim-result ${verdict}`, 'data-hash': r.rule.hash });
-  box.append(el('div', { class: 'row' }, [
-    el('span', { class: `chip cv-verdict ${v.kind}` }, [v.text]),
-    chip(`版本 v${safe(r.rule.v)}`, 'mode'),
-    chip(`适用：${safe(r.rule.scope_text)}`, 'mode'),
-    chip(r.scenario_action === 'sell' ? '情境：卖出' : '情境：买入', 'mode'),
-    el('strong', {}, [safe(r.rule.text)]),
-  ]));
-  if (r.date_mapping) box.append(el('div', { class: 'calc-line cv-date-mapping' }, [`申报日 ${r.date_mapping.requested_date} → ${r.date_mapping.has_price ? '实际使用交易日' : '映射交易日'} ${r.date_mapping.effective_date}：${r.date_mapping.message}`]));
-  // 自定义规则：判定中 / 命中 / 未命中 / 无法判断，展示与确定性判断一致（不标注“AI 辅助分析”）；
-  // 显示判断依据与实际使用的数据，并写明发送到服务端的内容。
-  if (r.custom) {
-    const j = r.custom.judgment;
-    if (r.custom.status === 'pending') {
-      box.append(el('div', { class: 'calc-line' }, [CUSTOM_PENDING_NOTE]));
-    } else if (r.custom.status === 'judged' && j) {
-      if (verdict === 'triggered') {
-        box.append(el('div', { class: 'cv-warning' }, [
-          el('strong', {}, ['规则提醒：此情境命中你确认的规则']),
-          el('div', { class: 'calc-line' }, [`规则：${safe(r.rule.text)}`]),
-          el('div', { class: 'calc-line' }, [`判断依据：${safe(j.reason)}`]),
-          el('div', { class: 'muted small' }, ['提醒：此提醒只用于复盘对照，不下单、不阻止交易。']),
-        ]));
-      } else if (verdict === 'not_triggered') {
-        box.append(el('div', { class: 'calc-line' }, [`判断依据：${safe(j.reason)}`]));
-      } else {
-        box.append(el('div', { class: 'calc-line' }, [`原因：${safe(j.reason)}`]));
-        box.append(el('div', { class: 'muted small' }, [CUSTOM_UNABLE_NOTE]));
-      }
-      box.append(el('div', { class: 'calc-line cv-custom-used' }, [`使用的数据：${j.used_data.length ? j.used_data.map((u) => CUSTOM_USED_DATA_LABEL[u] ?? u).join('、') : '仅规则原文与情境信息'}`]));
-    } else {
-      box.append(el('div', { class: 'calc-line' }, [safe(r.message) || '未提供具体原因']));
-      box.append(el('div', { class: 'muted small' }, [CUSTOM_UNABLE_NOTE]));
-    }
-    const data = r.custom.data ?? {};
-    box.append(el('div', { class: 'muted small cv-custom-data' }, [
-      `本次判定可用数据：${safe(data.market_label)}（当日涨跌幅${data.change_pct !== null && data.change_pct !== undefined ? '可用' : '暂缺'}）；该标的账单记录：买入 ${(data.buys ?? []).length} 笔、卖出 ${(data.sells ?? []).length} 笔（只使用日期）；交易日历 ${(data.trading_days ?? []).length} 天${data.calendar_truncated ? '（超出部分未发送）' : ''}。`,
-    ]));
-    box.append(el('div', { class: 'muted small cv-custom-disclosure' }, [CUSTOM_DISCLOSURE]));
-    return box;
-  }
-  if (verdict === 'error') {
-    box.append(el('div', { class: 'cv-error' }, [
-      el('div', { class: 'error' }, ['无法判定']),
-      el('div', { class: 'calc-line' }, [safe(r.message) || '未提供具体原因']),
-    ]));
-  } else if (verdict === 'missing_data') {
-    box.append(el('div', { class: 'calc-line' }, [`引擎原因：${r.change && !r.change.complete ? r.change.message : safe(r.message)}`]));
-    if (r.rule.kind === 'buy_sell_window' && r.match && r.match.fact) {
-      box.append(el('div', { class: 'calc-line' }, [`情境事实：${factLines(r.match.fact, r.change).join('；')}`]));
-    }
-    const buySellNote = r.rule.kind === 'buy_sell_window'
-      ? (BUY_SELL_MISSING_NOTE[r.code] ?? '数据不足：无法计算买入后的交易日窗口，不猜测；本次不显示“未命中”，也不作命中判定。')
-      : null;
-    box.append(el('div', { class: 'muted small' }, [buySellNote
-      ?? '数据不足：不补造数值，缺价时不改用其他日期的价格，本次不作命中判定。']));
-  } else {
-    const m = r.match;
-    box.append(el('div', { class: 'calc-line' }, [safe(r.message)]));
-    if (m.warning) {
-      box.append(el('div', { class: 'cv-warning' }, [
-        el('strong', {}, ['规则提醒：此情境命中你确认的规则']),
-        el('div', { class: 'calc-line' }, [`规则：${m.warning.rule_text}`]),
-        el('div', { class: 'calc-line' }, [`阈值：${m.warning.threshold_display}`]),
-        el('div', { class: 'calc-line' }, [`情境事实：${factLines(m.warning.situation, r.change).join('；')}`]),
-        el('div', { class: 'muted small' }, [`提醒：${m.reminder}`]),
-      ]));
-    } else {
-      box.append(el('div', { class: 'calc-line' }, [`情境事实：${factLines(m.fact, r.change).join('；')}`]));
-    }
-  }
-  if (r.in_market_cache === false) {
-    const tradeOnly = r.rule.kind === 'buy_sell_window'
-      ? '买入后卖出提醒只使用交易日历与账单交易，不读取价格'
-      : '不追回判定只使用交易日历与账单交易，不读取价格';
-    box.append(el('div', { class: 'muted small' }, [r.tradesSource && r.tradesSource.kind === 'user_bill'
-      ? `标的 ${safe(r.symbol)} 不在本次行情支持范围：${r.uses_trades ? tradeOnly : '无法读取涨跌幅'}；不替换标的、不回退演示账单。`
-      : `标的 ${safe(r.symbol)} 不在本次行情支持范围：${r.uses_trades ? tradeOnly : '无法读取涨跌幅'}；不替换标的、不回退其他行情来源。`]));
-  }
-  return box;
 }

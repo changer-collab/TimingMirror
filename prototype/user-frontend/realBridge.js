@@ -608,6 +608,7 @@ export function getCtx() { return ctx; }
 export function setRoute(route) {
   currentRoute = route;
   shared.route = route === 'me' || route === 'scenario' ? 'contract' : route;
+  shared.contractPage = route === 'scenario' ? 'scenario' : route === 'me' ? 'me' : null;
   if (route !== 'me') setRuleModal(null);
 }
 
@@ -746,11 +747,6 @@ export function mountImportView(host) {
 export function mountContractView(host) {
   if (!host) return;
   renderInShadow(host, renderContract);
-}
-
-export function mountSelfCheckView(host) {
-  if (!host) return;
-  renderInShadow(host, (root, ctx) => renderContract(root, ctx, { section: 'selfcheck' }));
 }
 
 export function mountScenarioView(host) {
