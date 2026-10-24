@@ -337,6 +337,10 @@ async function invokeRecover(handler, body) {
   check('DashScope vision：提示词要求成交额/清算额独立输出且不推导',
     ['“成交额/成交金额”写入 amount', '“清算额/结算金额”写入 settlement_amount', '不要用 price×quantity 推导', 'name']
       .every((keyword) => prompt.includes(keyword)), prompt);
+  check('DashScope vision：提示词明确 fee/tax 可选且禁止猜测或编造',
+    ['fee、tax 是可选字段', '缺失、null 或空字符串都允许', '不要为了补全字段而猜测或编造费用',
+      '绝不把成交额或清算额映射成 fee 或 tax']
+      .every((keyword) => prompt.includes(keyword)), prompt);
 }
 
 const failed = results.filter((r) => !r.ok);

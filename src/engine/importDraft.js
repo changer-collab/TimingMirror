@@ -21,6 +21,7 @@ const ISSUE_TEXT = Object.freeze({
 });
 
 const missingRequired = (fields) => REQUIRED_KEYS.some((key) => String(fields?.[key] ?? '').trim() === '');
+const normalizeMoneyField = (value) => String(value ?? '').trim();
 
 function issueFor(error) {
   return ISSUE_TEXT[error.code] ?? error.message ?? '这一行未通过校验';
@@ -43,8 +44,8 @@ function cellsForValidation(fields) {
     fields.side ?? '',
     fields.price ?? '',
     fields.quantity ?? '',
-    fields.fee ?? '',
-    fields.tax ?? '',
+    normalizeMoneyField(fields.fee),
+    normalizeMoneyField(fields.tax),
   ];
 }
 
@@ -143,8 +144,8 @@ function tableForDraft(draft, includedRows) {
     header,
     rows: includedRows.map((row, index) => {
       const cells = [row.fields.date ?? '', row.fields.symbol ?? '', row.fields.side ?? '', row.fields.price ?? '', row.fields.quantity ?? ''];
-      if (includeFee) cells.push(row.fields.fee ?? '');
-      if (includeTax) cells.push(row.fields.tax ?? '');
+      if (includeFee) cells.push(normalizeMoneyField(row.fields.fee));
+      if (includeTax) cells.push(normalizeMoneyField(row.fields.tax));
       return { line: Number.isFinite(row.line) ? row.line : index + 2, cells };
     }),
   };
@@ -184,8 +185,8 @@ function aiTradeToFields(trade) {
     quantity: trade.quantity ?? '',
     amount: trade.amount ?? '',
     settlementAmount: trade.settlement_amount ?? '',
-    fee: trade.fee ?? '',
-    tax: trade.tax ?? '',
+    fee: normalizeMoneyField(trade.fee),
+    tax: normalizeMoneyField(trade.tax),
   };
 }
 
@@ -301,10 +302,16 @@ export function removeRow(draft, rowId) {
 }
 
 export function refreshRowStatus(row, sourceFile) {
-  const checked = validateFields(row.fields, sourceFile, row.line ?? 2);
+  const fields = {
+    ...row.fields,
+    fee: normalizeMoneyField(row.fields?.fee),
+    tax: normalizeMoneyField(row.fields?.tax),
+  };
+  const checked = validateFields(fields, sourceFile, row.line ?? 2);
   if (row.duplicateOf && row.duplicateWarn) {
     return {
       ...row,
+      fields,
       trade: checked.trade,
       status: checked.status === 'valid' ? 'needs_review' : checked.status,
       issues: [`与${row.duplicateOf}字段相同，可能是真实多笔或重叠片段重复；请核对后决定是否保留`, ...checked.issues],
@@ -314,6 +321,7 @@ export function refreshRowStatus(row, sourceFile) {
   if (row.duplicateOf && checked.status === 'valid') {
     return {
       ...row,
+      fields,
       trade: checked.trade,
       status: 'duplicate',
       issues: [`疑似与${row.duplicateOf}重复，默认不导入`, ...checked.issues],
@@ -322,6 +330,7 @@ export function refreshRowStatus(row, sourceFile) {
   }
   return {
     ...row,
+    fields,
     trade: checked.trade,
     status: checked.status,
     issues: checked.issues,

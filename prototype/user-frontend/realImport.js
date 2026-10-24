@@ -21,7 +21,7 @@ import {
   draftRowSeverity,
   unresolvedRowLabel,
 } from '../../src/engine/importDraft.js';
-import { columnMappingRows, visionDraftColumns } from '../../src/engine/importColumnMapping.js';
+import { columnMappingRows } from '../../src/engine/importColumnMapping.js';
 import {
   IMPORT_VISION_MAX_IMAGES,
   validateVisionInput,
@@ -39,6 +39,22 @@ import {
 
 const FILE_ACCEPT = '.csv,.tsv,.xlsx,.pdf,.txt,.png,.jpg,.jpeg,.webp,text/csv,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/*';
 const SOURCE_LABEL = Object.freeze({ csv: 'CSV', tsv: 'TSV', xlsx: 'Excel', pdf: 'PDF', text: '粘贴文字', image: '截图', unsupported: '文件' });
+const TABLE_HEADERS = Object.freeze([
+  { label: '行', className: 'tm-col-line' },
+  { label: '日期' },
+  { label: '标的' },
+  { label: '方向' },
+  { label: '价格', className: 'num' },
+  { label: '数量', className: 'num' },
+  { label: '费用', className: 'num' },
+  { label: '税费', className: 'num' },
+  { label: '状态', className: 'tm-col-status' },
+  { label: '操作', className: 'tm-col-action' },
+]);
+
+function tableHeadHTML() {
+  return `<thead><tr>${TABLE_HEADERS.map(({ label, className }) => `<th${className ? ` class="${className}"` : ''}>${label}</th>`).join('')}</tr></thead>`;
+}
 
 let pdfSource = null;
 let sourceSeq = 0;
@@ -399,83 +415,84 @@ function lastPdfBusy(rec) {
   return rec?.vision?.status === 'rendering' || rec?.vision?.status === 'preparing';
 }
 
-function draftTable(rec, { useSourceColumns = false } = {}) {
+function amountValue(value) {
+  return String(value ?? '').trim();
+}
+
+function visionExtrasHTML(draft) {
+  if (!draft || !Array.isArray(draft.rows)) return '';
+  const rows = draft.rows
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => amountValue(row.fields?.amount) || amountValue(row.fields?.settlementAmount));
+  if (!rows.length) return '';
+  const items = rows.map(({ row, index }) => {
+    const line = String(Number.isFinite(row.line) ? row.line : index + 2).padStart(2, '0');
+    const parts = [];
+    const amount = amountValue(row.fields?.amount);
+    const settlement = amountValue(row.fields?.settlementAmount);
+    if (amount) parts.push(`成交额 <b>${esc(amount)}</b>`);
+    if (settlement) parts.push(`清算额 <b>${esc(settlement)}</b>`);
+    return `<li><span>第 ${line} 行</span>${parts.join(' · ')}</li>`;
+  }).join('');
+  return `<div class="tm-vision-extras" role="status">
+    <strong>原图金额补充</strong>
+    <ul>${items}</ul>
+    <span>成交额、清算额只按原图展示，不写入费用或税费，也不参与最终账本计算。</span>
+  </div>`;
+}
+
+function draftTable(rec, { mappingView = null } = {}) {
   const draft = rec.draft;
   if (!draft) return '';
-  const sourceColumns = useSourceColumns ? visionDraftColumns(draft.columnMapping) : [];
-  const sourceMode = sourceColumns.length > 0;
-  const columnHasValue = new Map(sourceColumns.map((column) => [
-    column.field,
-    draft.rows.some((row) => String(row.fields[column.field] ?? '').trim() !== ''),
-  ]));
+  const visionDraft = rec.sourceKind === 'image' || rec.vision?.kind === 'image' || rec.vision?.kind === 'pdf_scan';
+  const mappedFields = new Set((mappingView?.fields ?? []).filter((field) => field.matched).map((field) => field.key));
+  const mapped = (key) => !visionDraft || mappedFields.has(key);
+  const dateTitle = visionDraft && mappingView?.hasSettlementDate
+    ? '原图使用交收日期，不代表成交日期；请逐行核对'
+    : '';
   const input = (row, key, extra = '') => `<input class="tm-cell-input" data-row="${esc(row.id)}" data-field="${key}" value="${esc(row.fields[key] ?? '')}" ${extra}>`;
-  const sourceCell = (row, column) => {
-    const manual = row.source === 'manual';
-    const manualMoney = manual && (column.key === 'amount' || column.key === 'settlementAmount');
-    if (!column.editable && !manualMoney) {
-      const value = String(row.fields[column.field] ?? '').trim();
-      const emptyText = columnHasValue.get(column.field) ? '—' : '未匹配';
-      return `<span class="tm-cell-static${value ? '' : ' is-missing'}">${esc(value || emptyText)}</span>`;
-    }
-    const manualPlaceholder = manual
-      ? ({ date: 'YYYY-MM-DD', symbol: '6 位代码', price: '0.00', quantity: '股数', amount: '可留空', settlementAmount: '可留空' }[column.key] ?? '')
-      : '';
-    const placeholder = manualMoney || manualPlaceholder
-      ? ` placeholder="${manualPlaceholder || '可留空'}"`
-      : columnHasValue.get(column.field) ? '' : ' placeholder="未匹配"';
-    if (column.select) {
-      const blank = manual && !row.fields.side ? '<option value="" selected>请选择</option>' : '';
-      return `<select class="tm-cell-input" data-row="${esc(row.id)}" data-field="${column.field}">${blank}<option value="买入" ${row.fields.side === '买入' ? 'selected' : ''}>买入</option><option value="卖出" ${row.fields.side === '卖出' ? 'selected' : ''}>卖出</option></select>`;
-    }
-    if (column.key === 'symbol') {
-      const name = String(row.fields.name ?? '').trim();
-      return `<div class="tm-cell-stack">${input(row, column.field, `inputmode="${column.inputmode}"${placeholder}`)}${column.nameAux && name ? `<span class="sym-name">${esc(name)}</span>` : ''}</div>`;
-    }
-    return input(row, column.field, `inputmode="${column.inputmode ?? 'decimal'}"${placeholder}`);
+  const placeholderFor = (key, manual, fallback) => {
+    if (manual) return ` placeholder="${fallback}"`;
+    return mapped(key) ? '' : ' placeholder="未匹配"';
   };
-  const headers = sourceMode
-    ? sourceColumns.map((column) => `<th${column.numeric ? ' class="num"' : ''}>${esc(column.label)}</th>`).join('')
-    : '<th>日期</th><th>标的</th><th>方向</th><th class="num">价格</th><th class="num">数量</th><th class="num">费用</th><th class="num">税费</th>';
   const rows = draft.rows.map((row, index) => {
     const status = draftRowStatusText(row);
     const severity = draftRowSeverity(row);
     const manual = row.source === 'manual';
     const issues = Array.isArray(row.issues) && row.issues.length ? row.issues.join('；') : '';
-    const ph = (text) => manual ? ` placeholder="${text}"` : '';
+    const name = String(row.fields.name ?? '').trim();
     const sideOptions = `${manual && !row.fields.side ? '<option value="" selected>请选择</option>' : ''}<option value="买入" ${row.fields.side === '买入' ? 'selected' : ''}>买入</option><option value="卖出" ${row.fields.side === '卖出' ? 'selected' : ''}>卖出</option>`;
-    const cells = sourceMode
-      ? sourceColumns.map((column) => `<td${column.numeric ? ' class="num"' : ''}>${sourceCell(row, column)}</td>`).join('')
-      : [
-        `<td>${input(row, 'date', `inputmode="numeric"${ph('YYYY-MM-DD')}`)}</td>`,
-        `<td>${input(row, 'symbol', `inputmode="numeric"${ph('6 位代码')}`)}</td>`,
-        `<td><select class="tm-cell-input" data-row="${esc(row.id)}" data-field="side">${sideOptions}</select></td>`,
-        `<td class="num">${input(row, 'price', `inputmode="decimal"${ph('0.00')}`)}</td>`,
-        `<td class="num">${input(row, 'quantity', `inputmode="numeric"${ph('股数')}`)}</td>`,
-        `<td class="num">${input(row, 'fee', `inputmode="decimal"${ph('可留空')}`)}</td>`,
-        `<td class="num">${input(row, 'tax', `inputmode="decimal"${ph('可留空')}`)}</td>`,
-      ].join('');
+    const dateExtra = `${dateTitle ? ` title="${esc(dateTitle)}"` : ''}`;
     return `<tr class="tm-draft-row ${row.status} tm-severity-${severity}${manual ? ' is-manual-row' : ''}">
-      <td class="line-no"><label class="tm-line-pick"><input type="checkbox" data-row="${esc(row.id)}" data-include ${row.include === false ? '' : 'checked'} aria-label="导入第 ${row.line ?? index + 2} 行"><span>${String(row.line ?? index + 2).padStart(2, '0')}</span></label></td>
-      ${cells}
-      <td class="tm-row-status is-${severity}">${esc(status)}${issues ? `<span>${esc(issues)}</span>` : ''}</td>
-      <td><button class="tm-link tm-row-remove" type="button" data-action="remove-row" data-row="${esc(row.id)}">删除</button></td>
+      <td class="line-no tm-col-line"><label class="tm-line-pick"><input type="checkbox" data-row="${esc(row.id)}" data-include ${row.include === false ? '' : 'checked'} aria-label="导入第 ${row.line ?? index + 2} 行"><span>${String(row.line ?? index + 2).padStart(2, '0')}</span></label></td>
+      <td>${input(row, 'date', `inputmode="numeric"${placeholderFor('date', manual, 'YYYY-MM-DD')}${dateExtra}`)}</td>
+      <td><div class="tm-cell-stack">${input(row, 'symbol', `inputmode="numeric"${placeholderFor('symbol', manual, '6 位代码')}`)}${name ? `<span class="sym-name">${esc(name)}</span>` : ''}</div></td>
+      <td><select class="tm-cell-input" data-row="${esc(row.id)}" data-field="side">${sideOptions}</select></td>
+      <td class="num">${input(row, 'price', `inputmode="decimal"${placeholderFor('price', manual, '0.00')}`)}</td>
+      <td class="num">${input(row, 'quantity', `inputmode="numeric"${placeholderFor('quantity', manual, '股数')}`)}</td>
+      <td class="num">${input(row, 'fee', `inputmode="decimal"${placeholderFor('fee', manual, '可留空')}`)}</td>
+      <td class="num">${input(row, 'tax', `inputmode="decimal"${placeholderFor('tax', manual, '可留空')}`)}</td>
+      <td class="tm-row-status is-${severity}"><span class="tm-status-pill">${esc(status)}</span>${issues ? `<span class="tm-row-issue">${esc(issues)}</span>` : ''}</td>
+      <td class="tm-col-action"><button class="tm-link tm-row-remove" type="button" data-action="remove-row" data-row="${esc(row.id)}">删除</button></td>
     </tr>`;
   }).join('');
-  return `<div class="table-wrap"><table class="ledger tm-draft-table${sourceMode ? ' is-source-columns' : ''}">
-    <caption class="sr-only">${sourceMode ? '交易草稿，列名对齐原图识别结果；可逐行核对并编辑。' : '交易草稿，可逐行核对日期、标的、方向、价格、数量、费用与税费。'}</caption>
-    <thead><tr><th>行</th>${headers}<th>状态</th><th></th></tr></thead>
+  return `<div class="table-wrap tm-import-table-wrap"><table class="ledger tm-import-table tm-draft-table">
+    <caption class="sr-only">交易草稿，使用统一表头；可逐行核对并编辑。</caption>
+    ${tableHeadHTML()}
     <tbody>${rows}</tbody>
   </table></div>`;
 }
 
-function tradesTableHTML(trades) {
+function tradesTableHTML(trades, bill = {}) {
+  const confirmed = bill.status === 'confirmed';
+  const statusText = confirmed ? '已确认' : '校验通过';
   const rows = trades.map((trade, index) => {
     const line = trade.source?.line ?? index + 2;
     const date = trade.trade_date || trade.date;
     const feeMissing = trade.fee_missing === true || trade.fee === null || trade.fee === undefined;
     const taxMissing = trade.tax_missing === true || trade.tax === null || trade.tax === undefined;
     return `<tr class="${feeMissing || taxMissing ? 'is-missing' : ''}">
-      <td class="line-no">${String(line).padStart(2, '0')}</td>
+      <td class="line-no tm-col-line">${String(line).padStart(2, '0')}</td>
       <td>${esc(date)}</td>
       <td><span class="sym">${esc(trade.symbol)}</span></td>
       <td><span class="side ${trade.side === 'buy' ? 'buy' : 'sell'}">${trade.side === 'buy' ? '买入' : '卖出'}</span></td>
@@ -483,12 +500,14 @@ function tradesTableHTML(trades) {
       <td class="num">${Number(trade.quantity)}</td>
       <td class="num">${feeMissing ? '<span class="missing">缺失（按 0）</span>' : Number(trade.fee ?? 0).toFixed(2)}</td>
       <td class="num">${taxMissing ? '<span class="missing">缺失（按 0）</span>' : Number(trade.tax ?? 0).toFixed(2)}</td>
+      <td class="tm-row-status is-success"><span class="tm-status-pill">${statusText}</span></td>
+      <td class="tm-col-action"><span class="tm-readonly">只读</span></td>
     </tr>`;
   }).join('');
-  return `<div class="table-wrap">
-    <table class="ledger">
-      <caption class="sr-only">交易列表，可逐行核对日期、标的、方向、价格、数量、费用与税费。</caption>
-      <thead><tr><th>行</th><th>日期</th><th>标的</th><th>方向</th><th class="num">价格</th><th class="num">数量</th><th class="num">费用</th><th class="num">税费</th></tr></thead>
+  return `<div class="table-wrap tm-import-table-wrap">
+    <table class="ledger tm-import-table">
+      <caption class="sr-only">交易列表，只读；可逐行核对日期、标的、方向、价格、数量、费用与税费。</caption>
+      ${tableHeadHTML()}
       <tbody>${rows}</tbody>
     </table>
   </div>`;
@@ -666,7 +685,9 @@ function draftPanelHTML(state, rec) {
     ${errorLine(rec)}
     ${validationErrorsHTML(rec)}
     ${isVisionDraft ? columnMappingHTML(mappingView) : ''}
-    ${draftTable(rec, { useSourceColumns: isVisionDraft })}
+    ${isVisionDraft ? visionExtrasHTML(draft) : ''}
+    ${draftTable(rec, { mappingView })}
+    <p class="tm-note tm-fee-note">费用、税费可留空：留空按 0 记录并标注，不阻断导入；确认前可手动填写。</p>
     <div class="tm-add-row-bar">
       <button class="btn btn-outline btn-sm tm-add-row-btn" type="button" data-action="add-row">＋ 添加成交行</button>
       <p class="tm-note">手动新增行会一起参与校验；成交额/清算额可留空，确认前请补齐。</p>
@@ -717,7 +738,7 @@ function billPanelHTML(state, rec) {
     </div>
     ${billWarningsHTML(bill)}
     ${errorLine(rec)}
-    ${tradesTableHTML(trades)}
+    ${tradesTableHTML(trades, bill)}
     <div class="bill-actions">
       <div class="bill-actions-note">
         <span class="plus" aria-hidden="true">＋</span>

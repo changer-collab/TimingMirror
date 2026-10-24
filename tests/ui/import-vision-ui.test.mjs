@@ -39,9 +39,34 @@ check('线上页：最终账本校验显示明确阻断原因且保留草稿', /
 check('线上页：长截图走分片入口', /prepareImageFiles\(files/.test(live));
 check('样式：删除按钮有定位样式', /\.tm-thumb-remove\s*\{/.test(css));
 
-/* —— 原图列名映射展示 —— */
-check('线上页：渲染原图列名映射且独立于可编辑列', /columnMappingHTML/.test(live)
-  && /原图列名映射/.test(live) && /<th>日期<\/th><th>标的<\/th><th>方向<\/th>/.test(live));
+/* —— 统一表头与两类表格的行为边界 —— */
+check('线上页：表头统一定义为 行/日期/标的/方向/价格/数量/费用/税费/状态/操作',
+  /const TABLE_HEADERS = Object\.freeze\(\[[\s\S]*?label: '行'[\s\S]*?label: '日期'[\s\S]*?label: '标的'[\s\S]*?label: '方向'[\s\S]*?label: '价格'[\s\S]*?label: '数量'[\s\S]*?label: '费用'[\s\S]*?label: '税费'[\s\S]*?label: '状态'[\s\S]*?label: '操作'[\s\S]*?\]\)/.test(live)
+  && /function tableHeadHTML/.test(live));
+const draftTableStart = live.indexOf('function draftTable');
+const tradesTableStart = live.indexOf('function tradesTableHTML');
+const tradesTableEnd = live.indexOf('function billWarningsHTML');
+const draftBlock = live.slice(draftTableStart, tradesTableStart);
+const confirmedBlock = live.slice(tradesTableStart, tradesTableEnd);
+check('线上页：草稿表与确认表都使用统一表头', draftBlock.includes('${tableHeadHTML()}')
+  && confirmedBlock.includes('${tableHeadHTML()}'));
+check('线上页：两类表格共用 tm-import-table 样式类', /class="ledger tm-import-table tm-draft-table"/.test(live)
+  && /class="ledger tm-import-table"/.test(live));
+check('线上页：图片草稿保留可编辑字段与删除入口',
+  /input\(row, 'date'/.test(draftBlock) && /input\(row, 'symbol'/.test(draftBlock)
+  && /data-field="side"/.test(draftBlock) && /input\(row, 'price'/.test(draftBlock)
+  && /input\(row, 'quantity'/.test(draftBlock) && /input\(row, 'fee'/.test(draftBlock)
+  && /input\(row, 'tax'/.test(draftBlock) && /data-action="remove-row"/.test(draftBlock));
+check('线上页：图片草稿显示行状态且 not 全部呈现阻断红', /tm-row-status is-\$\{severity\}/.test(live)
+  && /tm-status-pill/.test(live) && /draftRowSeverity/.test(live));
+check('线上页：文件确认表格保持只读', !/tm-cell-input|data-field=|remove-row/.test(confirmedBlock)
+  && /只读/.test(confirmedBlock) && /已确认/.test(confirmedBlock));
+check('线上页：费用税费可留空且不阻断导入', /费用、税费可留空/.test(live)
+  && /留空按 0 记录并标注，不阻断导入/.test(live));
+
+/* —— 原图列名映射与金额补充展示 —— */
+check('线上页：渲染原图列名映射且独立于统一表头', /columnMappingHTML/.test(live)
+  && /原图列名映射/.test(live) && /展示识别到的原图列名，不改变可编辑表格列/.test(live));
 check('线上页：复合列显示子字段与箭头', /tm-column-map-groups/.test(live)
   && /group\.source_display/.test(live) && /group\.target_display/.test(live)
   && /columnMappingRows\(draft\.columnMapping\)/.test(live));
@@ -50,17 +75,16 @@ check('线上页：每个规范字段显示原图列名或未匹配', /view\.fie
 check('线上页：缺少映射只显示中性说明，不阻断草稿', /本次识别没有返回原图列名映射/.test(live)
   && /不影响已有交易草稿/.test(live) && /hasMapping/.test(mappingModule));
 check('线上页：交收日期提示保持确定性且不推导成交日期', /使用交收日期/.test(live)
-  && /系统不会倒推成交日期/.test(live) && /hasSettlementDate/.test(live));
+  && /系统不会倒推成交日期/.test(live) && /hasSettlementDate/.test(live)
+  && /不代表成交日期/.test(live));
 check('映射：复合列标签覆盖名称/代码、标志/交收日期、成交价/量、成交/清算额',
   ['名称', '标的', '方向', '交收日期', '价格', '数量', '成交额', '清算额'].every((label) => mappingModule.includes(label)));
-check('线上页：视觉草稿按原图映射动态出列', /visionDraftColumns/.test(live)
-  && /draftTable\(rec, \{ useSourceColumns: isVisionDraft \}\)/.test(live)
-  && /sourceColumns\.map/.test(live) && /is-source-columns/.test(live));
-check('线上页：金额列只读展示，标的可带名称辅助值', /tm-cell-static/.test(live)
-  && /settlementAmount/.test(mappingModule) && /column\.nameAux/.test(live)
-  && /tm-cell-stack/.test(live));
-check('线上页：CSV/文字仍使用固定规范表头', /<th>日期<\/th><th>标的<\/th><th>方向<\/th>/.test(live)
-  && /useSourceColumns: isVisionDraft/.test(live));
+check('线上页：成交额/清算额只在原图补充信息中展示', /visionExtrasHTML/.test(live)
+  && /原图金额补充/.test(live) && /成交额、清算额只按原图展示，不写入费用或税费/.test(live)
+  && /fields\?\.amount/.test(live) && /fields\?\.settlementAmount/.test(live)
+  && !/fields\.fee\s*=\s*[^;\n]*(amount|settlementAmount)/.test(live));
+check('线上页：视觉草稿不再按原图列名改写统一表头', !/visionDraftColumns/.test(live)
+  && !/useSourceColumns/.test(live) && !/is-source-columns/.test(live));
 
 /* —— severity 分色 —— */
 check('线上页：warning 与 blocking error 使用不同语义 class',
@@ -75,13 +99,28 @@ check('样式：warning 用琥珀色、error 用红色、info 用中性蓝灰',
   && /\.tm-alert--warning\s*\{[\s\S]*?var\(--warn\)/.test(styles)
   && /\.tm-alert--error\s*\{[\s\S]*?var\(--loss\)/.test(styles)
   && /\.tm-alert--info\s*\{[\s\S]*?var\(--info\)/.test(styles));
-check('样式：行状态按 severity 着色', /\.tm-row-status\.is-warning\s*\{[\s\S]*?var\(--warn\)/.test(css)
-  && /\.tm-row-status\.is-error\s*\{[\s\S]*?var\(--loss\)/.test(css)
-  && /\.tm-row-status\.is-success\s*\{[\s\S]*?var\(--ok\)/.test(css));
+check('样式：行状态按 severity 着色', /\.tm-row-status\.is-warning \.tm-status-pill\s*\{[\s\S]*?var\(--warn\)/.test(css)
+  && /\.tm-row-status\.is-error \.tm-status-pill\s*\{[\s\S]*?var\(--loss\)/.test(css)
+  && /\.tm-row-status\.is-success \.tm-status-pill\s*\{[\s\S]*?var\(--ok\)/.test(css));
+check('样式：待确认行只用浅 warning 底色，不用 error 红',
+  /\.tm-import-table tr\.tm-severity-warning > td\s*\{[\s\S]*?rgba\(154, 90, 19/.test(css)
+  && !/\.tm-import-table tr\.tm-severity-warning > td\s*\{[^}]*var\(--loss\)/.test(css));
 check('样式：删除按钮默认中性，hover/focus 才变红',
   /\.tm-row-remove\s*\{[\s\S]*?color:\s*var\(--gray\)/.test(css)
   && /\.tm-row-remove:hover[\s\S]*?color:\s*var\(--loss\)/.test(css)
   && /\.tm-thumb-remove:hover[\s\S]*?color:\s*var\(--loss\)/.test(css));
+check('样式：统一表头高度、行高、内边距与分隔线',
+  /table\.ledger\.tm-import-table th,\s*\n\s*table\.ledger\.tm-import-table td\s*\{[\s\S]*?height:\s*40px;[\s\S]*?padding:\s*8px 10px;[\s\S]*?border-bottom:\s*1px solid var\(--line-soft\)/.test(styles)
+  && /table\.ledger\.tm-import-table th\s*\{[\s\S]*?height:\s*34px;/.test(styles));
+check('样式：数字列右对齐，紧凑输入框统一高度与聚焦色',
+  /table\.ledger\.tm-import-table td\.num\s*\{[\s\S]*?text-align:\s*right/.test(styles)
+  && /\.tm-import-table td\.num \.tm-cell-input\s*\{[\s\S]*?text-align:\s*right/.test(css)
+  && /\.tm-import-table \.tm-cell-input\s*\{[\s\S]*?height:\s*28px;[\s\S]*?border-radius:\s*4px/.test(css)
+  && /\.tm-import-table \.tm-cell-input:focus\s*\{[\s\S]*?var\(--ink\)/.test(css));
+check('样式：移动端表格可横向滚动且不挤压列',
+  /table\.ledger\.tm-import-table\s*\{[\s\S]*?min-width:\s*860px;/.test(styles)
+  && /\.tm-import-table-wrap\s*\{[\s\S]*?overscroll-behavior-x:\s*contain/.test(css)
+  && /\.table-wrap\s*\{[\s\S]*?overflow-x:\s*auto/.test(styles));
 
 /* —— 手动新增成交行 —— */
 check('线上页：草稿表格底部提供添加成交行按钮', /data-action="add-row"/.test(live)
@@ -93,10 +132,10 @@ const addRowBranch = live.slice(addRowStart, live.indexOf("action === 'remove-ro
 check('线上页：添加行只更新草稿，不触发模型请求', addRowBranch.includes('addBlankRow(state.importRecovery.draft)')
   && !/requestVision|requestRecovery|client\(/.test(addRowBranch), addRowBranch.slice(0, 240));
 check('线上页：手动行状态与金额字段接入草稿渲染', draftModule.includes('手动新增 · 待确认')
-  && /row\.source === 'manual'/.test(live) && /column\.key === 'amount'/.test(live)
-  && /column\.key === 'settlementAmount'/.test(live));
+  && /row\.source === 'manual'/.test(live) && /visionExtrasHTML/.test(live)
+  && /fields\?\.amount/.test(live) && /fields\?\.settlementAmount/.test(live));
 check('样式：添加按钮虚线、手动行有独立样式', /\.tm-add-row-btn\s*\{[\s\S]*?border-style:\s*dashed/.test(css)
-  && /\.tm-draft-table tr\.is-manual-row/.test(css));
+  && /\.tm-import-table tr\.is-manual-row/.test(css));
 check('线上页：图片删除与重新识别会清空旧草稿/手动行', /localDraft: null/.test(live)
   && /draft: null/.test(live) && /localDraft: rec\.localDraft \?\? null/.test(live));
 
