@@ -292,8 +292,8 @@ export function validateRewriteResponse(rawText, request) {
   return { ok: true, value: { headline, plain, used_terms: usedTerms } };
 }
 
-function failure(code, message) {
-  return { ok: false, code, message: message ?? 'AI 改写未完成' };
+function failure(code, message, extra = {}) {
+  return { ok: false, code, message: message ?? 'AI 改写未完成', ...extra };
 }
 
 export function createQaRewrite({ transport = null } = {}) {
@@ -302,8 +302,13 @@ export function createQaRewrite({ transport = null } = {}) {
     let result;
     try {
       result = await transport.qaRewrite(request, { signal });
-    } catch {
-      return failure(signal?.aborted ? QA_REWRITE_CODES.TRANSPORT : QA_REWRITE_CODES.TRANSPORT);
+    } catch (error) {
+      // 只保留固定状态码/错误码用于前端区分原因；不携带响应正文。
+      return failure(QA_REWRITE_CODES.TRANSPORT, null, {
+        transport_status: Number.isInteger(error?.status) ? error.status : null,
+        upstream_code: typeof error?.upstreamCode === 'string' ? error.upstreamCode : null,
+        aborted: signal?.aborted === true,
+      });
     }
     if (!result || typeof result.rawText !== 'string') return failure(QA_REWRITE_CODES.RESPONSE);
     const checked = validateRewriteResponse(result.rawText, request);

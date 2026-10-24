@@ -210,17 +210,27 @@ function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function timeoutDiagnostics(error) {
-  if (!error || error.code !== SITE_FUNCTION_CODES.MODEL_TIMEOUT || !isPlainObject(error.details)) return null;
+// 只透传固定枚举的传输诊断；不包含上游正文、请求内容或 key。
+function transportDiagnostics(error) {
+  if (!isPlainObject(error?.details)) return null;
   const out = {};
-  if (Number.isInteger(error.details.timeout_ms) && error.details.timeout_ms > 0) {
-    out.timeout_ms = error.details.timeout_ms;
+  if (error.code === SITE_FUNCTION_CODES.MODEL_TIMEOUT) {
+    if (Number.isInteger(error.details.timeout_ms) && error.details.timeout_ms > 0) {
+      out.timeout_ms = error.details.timeout_ms;
+    }
+    if (Number.isInteger(error.details.elapsed_ms) && error.details.elapsed_ms >= 0) {
+      out.elapsed_ms = error.details.elapsed_ms;
+    }
+    if (error.details.phase === 'response_headers' || error.details.phase === 'response_body') {
+      out.phase = error.details.phase;
+    }
   }
-  if (Number.isInteger(error.details.elapsed_ms) && error.details.elapsed_ms >= 0) {
-    out.elapsed_ms = error.details.elapsed_ms;
+  if (Number.isInteger(error.details.upstream_status)
+    && error.details.upstream_status >= 100 && error.details.upstream_status <= 599) {
+    out.upstream_status = error.details.upstream_status;
   }
-  if (error.details.phase === 'response_headers' || error.details.phase === 'response_body') {
-    out.phase = error.details.phase;
+  if (error.details.finish_reason === 'length' || error.details.finish_reason === 'content_filter') {
+    out.finish_reason = error.details.finish_reason;
   }
   return Object.keys(out).length ? out : null;
 }
@@ -340,7 +350,12 @@ async function callTransport(transport, stage, request, options) {
     return { ok: false, status: 503, code: SITE_FUNCTION_CODES.MODEL_NOT_CONFIGURED };
   }
   if (typeof transport[stage] !== 'function') {
-    return { ok: false, status: 502, code: SITE_FUNCTION_CODES.MODEL_UNAVAILABLE };
+    return {
+      ok: false,
+      status: 502,
+      code: SITE_FUNCTION_CODES.MODEL_UNAVAILABLE,
+      diagnostics: { reason: 'transport_method_missing' },
+    };
   }
   try {
     const result = options === undefined
@@ -353,7 +368,7 @@ async function callTransport(transport, stage, request, options) {
   } catch (error) {
     const code = error && typeof error.code === 'string' ? error.code : '';
     const status = MODEL_STATUS[code];
-    if (status) return { ok: false, status, code, diagnostics: timeoutDiagnostics(error) };
+    if (status) return { ok: false, status, code, diagnostics: transportDiagnostics(error) };
     return { ok: false, status: 502, code: SITE_FUNCTION_CODES.MODEL_UNAVAILABLE };
   }
 }
@@ -578,7 +593,7 @@ export function createHandler({
       const validated = normalizeQaRewriteRequest(body);
       if (!validated.ok) return errorResponse(400, SITE_FUNCTION_CODES.QA_REWRITE_REQUEST_INVALID);
       const result = await callTransport(transport, 'qaRewrite', validated.request);
-      if (!result.ok) return errorResponse(result.status, result.code);
+      if (!result.ok) return errorResponse(result.status, result.code, {}, result.diagnostics);
       let checked = validateQaRewriteResponse(result.rawText, validated.request);
       // 校验失败只带固定原因重写一次；不回灌模型原文，仍按同一规则复核。
       if (!checked.ok) {

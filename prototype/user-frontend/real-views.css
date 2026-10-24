@@ -2434,7 +2434,8 @@ body.tm-qa-standalone #tm-real-chat { flex: 1 1 auto; height: auto; min-height: 
 }
 .tm-qa-entry[data-state="refusal"],
 .tm-qa-entry[data-state="registration"],
-.tm-qa-entry[data-state="unavailable"] {
+.tm-qa-entry[data-state="unavailable"],
+.tm-qa-entry[data-state="withheld"] {
   box-shadow: inset 2px 0 0 var(--line-strong), 0 9px 20px -18px rgba(21, 25, 28, 0.55);
 }
 .tm-qa-entry.is-pending { opacity: 0.92; }
