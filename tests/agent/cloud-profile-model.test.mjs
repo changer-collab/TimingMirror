@@ -136,6 +136,7 @@ function snapshot(overrides = {}) {
     schema_version: 1,
     headline: '追高是主要损耗来源',
     summary: '最近 24 笔成交里，追高买入集中在两次行情高点。',
+    keywords: ['追高买入', '止损偏慢', '交易频率高', '这个关键词明显超过十二个字'],
     strengths: ['亏损时愿意止损', '', '仓位集中'],
     blind_spots: ['卖出后上涨的情况没有记录'],
     next_actions: ['下次买入前写下理由'],
@@ -143,7 +144,10 @@ function snapshot(overrides = {}) {
     data_limits: ['交易样本少于 20 笔'],
     extra: 'ignored',
   });
-  check('摘要：保留规定的八个字段', value && Object.keys(value).join(',') === 'schema_version,headline,summary,strengths,blind_spots,next_actions,confidence,data_limits', Object.keys(value).join(','));
+  check('摘要：保留规定的九个字段', value && Object.keys(value).join(',') === 'schema_version,headline,summary,keywords,strengths,blind_spots,next_actions,confidence,data_limits', Object.keys(value).join(','));
+  check('摘要：关键词最多 6 个、每个最多 12 字', value.keywords.length === 4
+    && value.keywords[0] === '追高买入'
+    && value.keywords.every((word) => [...word].length <= 12), JSON.stringify(value.keywords));
   check('摘要：列表去空并截断', value.strengths.length === 2 && value.strengths[1] === '仓位集中');
   check('摘要：非规定置信度降为 low', validSummaryValue({ headline: 'x', summary: 'y', confidence: 'certain' }).confidence === 'low');
   check('摘要：缺少标题或正文返回 null',
@@ -156,9 +160,24 @@ function snapshot(overrides = {}) {
     source: 'ai',
     source_hash: 'a'.repeat(64),
     fallback_reason: null,
+    fallback_detail: null,
     summary: value,
   });
   check('摘要响应：保留来源与哈希', response && response.source === 'ai' && response.source_hash === 'a'.repeat(64), JSON.stringify(response));
+  check('摘要响应：保留失败详情（有界）', summaryResponseView({
+    ok: true,
+    source: 'template',
+    fallback_reason: 'model_unavailable',
+    fallback_detail: 'upstream_request',
+    summary: value,
+  })?.fallback_detail === 'upstream_request');
+  check('摘要响应：超长失败详情截断', summaryResponseView({
+    ok: true,
+    source: 'template',
+    fallback_reason: 'model_unavailable',
+    fallback_detail: 'x'.repeat(200),
+    summary: value,
+  })?.fallback_detail.length === 40);
   check('摘要响应：非法来源降为模板', summaryResponseView({ ok: true, source: 'gpt', summary: value }).source === 'template');
   check('摘要响应：ok=false 或摘要非法返回 null',
     summaryResponseView({ ok: false, source: 'ai', summary: value }) === null
@@ -166,11 +185,23 @@ function snapshot(overrides = {}) {
 
   check('摘要回退：已知原因映射为中文', summaryFallbackText('model_timeout') === '模型响应超时。'
     && summaryFallbackText('model_response_invalid') === '模型返回内容未通过校验。');
+  check('摘要回退：失败详情优先给出具体说明',
+    summaryFallbackText('model_unavailable', 'upstream_auth') === '服务端模型凭据未通过校验，请联系维护者。'
+    && summaryFallbackText('model_unavailable', 'upstream_forbidden') === '当前模型没有访问权限，请联系维护者。'
+    && summaryFallbackText('model_unavailable', 'upstream_rate_limited') === '模型请求被限流，已自动重试一次。'
+    && summaryFallbackText('model_unavailable', 'upstream_request') === '模型请求被拒绝，可能是模型名或参数配置问题。'
+    && summaryFallbackText('model_unavailable', 'upstream_unavailable') === '模型服务临时不可用，已自动重试一次。'
+    && summaryFallbackText('model_unavailable', 'upstream_timeout') === '模型响应超时。'
+    && summaryFallbackText('model_unavailable', 'upstream_response') === '模型返回内容格式异常。');
+  check('摘要回退：未知详情回退到原因文案',
+    summaryFallbackText('model_unavailable', 'not_a_detail') === summaryFallbackText('model_unavailable'));
   check('摘要回退：未知原因使用通用文案', summaryFallbackText('something_else') === '模型暂时不可用。'
     && summaryFallbackText(null) === '模型暂时不可用。');
-  check('摘要回退：页面不出现原始错误码', !/model_/u.test(
-    `${summaryFallbackText('model_timeout')}${summaryFallbackText('model_response_invalid')}${summaryFallbackText('x')}`,
+  check('摘要回退：页面不出现原始错误码', !/model_|upstream_/u.test(
+    `${summaryFallbackText('model_timeout')}${summaryFallbackText('model_response_invalid')}${summaryFallbackText('x')}`
+    + `${summaryFallbackText('model_unavailable', 'upstream_auth')}${summaryFallbackText('model_unavailable', 'upstream_request')}`,
   ));
+  check('摘要回退：未知详情不显示原始代码', !/upstream_|model_/u.test(summaryFallbackText('model_unavailable', 'upstream_bogus')));
 }
 
 const failed = results.filter((r) => !r.ok);

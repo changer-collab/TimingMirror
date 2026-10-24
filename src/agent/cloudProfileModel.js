@@ -23,7 +23,21 @@ export const SUMMARY_FALLBACK_LABELS = Object.freeze({
   model_response_invalid: '模型返回内容未通过校验。',
 });
 
-export function summaryFallbackText(reason) {
+// 只保留脱敏的失败类型，用于把笼统的“不可用”拆成可行动的原因。
+export const SUMMARY_FALLBACK_DETAIL_LABELS = Object.freeze({
+  upstream_auth: '服务端模型凭据未通过校验，请联系维护者。',
+  upstream_forbidden: '当前模型没有访问权限，请联系维护者。',
+  upstream_rate_limited: '模型请求被限流，已自动重试一次。',
+  upstream_request: '模型请求被拒绝，可能是模型名或参数配置问题。',
+  upstream_unavailable: '模型服务临时不可用，已自动重试一次。',
+  upstream_timeout: '模型响应超时。',
+  upstream_response: '模型返回内容格式异常。',
+  upstream_unknown: '模型服务暂时不可用。',
+});
+
+export function summaryFallbackText(reason, detail = null) {
+  const specific = typeof detail === 'string' ? SUMMARY_FALLBACK_DETAIL_LABELS[detail] : null;
+  if (specific) return specific;
   return SUMMARY_FALLBACK_LABELS[reason] ?? '模型暂时不可用。';
 }
 
@@ -190,6 +204,7 @@ export function validSummaryValue(value) {
     schema_version: Number.isInteger(value.schema_version) ? value.schema_version : 1,
     headline,
     summary,
+    keywords: boundedList(value.keywords, 6, 12),
     strengths: boundedList(value.strengths, 3, 60),
     blind_spots: boundedList(value.blind_spots, 3, 60),
     next_actions: boundedList(value.next_actions, 3, 60),
@@ -208,6 +223,7 @@ export function summaryResponseView(payload) {
       ? payload.source_hash
       : null,
     fallback_reason: text(payload.fallback_reason, 120) || null,
+    fallback_detail: text(payload.fallback_detail, 40) || null,
     summary,
   };
 }

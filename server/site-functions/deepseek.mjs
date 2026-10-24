@@ -46,10 +46,12 @@ function contentText(content) {
 }
 
 function statusError(status) {
-  if (status === 401) return fail(DEEPSEEK_ERROR_CODES.AUTH_FAILED);
-  if (status === 403) return fail(DEEPSEEK_ERROR_CODES.FORBIDDEN);
-  if (status === 429) return fail(DEEPSEEK_ERROR_CODES.RATE_LIMITED);
-  return fail(DEEPSEEK_ERROR_CODES.UNAVAILABLE);
+  const code = status === 401 ? DEEPSEEK_ERROR_CODES.AUTH_FAILED
+    : status === 403 ? DEEPSEEK_ERROR_CODES.FORBIDDEN
+      : status === 429 ? DEEPSEEK_ERROR_CODES.RATE_LIMITED
+        : DEEPSEEK_ERROR_CODES.UNAVAILABLE;
+  // 只保留状态码用于诊断；响应正文、header 与 key 一律不进入错误对象。
+  return new ModelTransportError(code, { upstream_status: status });
 }
 
 function validateImages(images) {

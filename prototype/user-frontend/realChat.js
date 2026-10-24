@@ -1,5 +1,5 @@
 // 独立问答页「对话账本」：问题 → 意图 → 最小事实包 → 本地/在线回答 → 证据。
-// 只渲染 qaAnswer 信封；普通提问不触发画像，用户主动选择后才按“授权发送 → 候选确认 → 保存”执行。
+// 只渲染 qaAnswer 信封；回答后从用户明确陈述的长期目标/偏好/约束中被动记录画像依据，失败静默。
 // 无网络/DOM 之外的副作用：发送、在线复述、画像抽取/保存与规则打开由 ctx 注入。
 import {
   QA_SUGGESTIONS,
@@ -181,109 +181,11 @@ function evidenceHTML(evidence) {
   </details>`;
 }
 
-function profileFactsHTML(facts, saved) {
-  const list = Array.isArray(facts) ? facts : [];
-  if (!list.length) return '';
-  const shown = list.slice(0, 3);
-  const rest = list.slice(3);
-  const row = (fact) => `
-    <li class="tm-qa-profile-fact">
-      <span class="tm-qa-profile-kind">${esc(FACT_KIND_LABELS[fact.kind] ?? '事实')}</span>
-      <strong>${esc(fact.value)}</strong>
-      ${fact.evidence ? `<span class="tm-qa-profile-evidence">原文：${esc(fact.evidence)}</span>` : ''}
-    </li>`;
-  const more = rest.length
-    ? `<details class="tm-qa-profile-more"><summary>还有 ${rest.length} 条</summary><ul>${rest.map(row).join('')}</ul></details>`
-    : '';
-  return `<ul class="tm-qa-profile-list${saved ? ' is-saved' : ''}" data-role="qa-profile-facts">${shown.map(row).join('')}</ul>${more}`;
-}
-
-function profileFactHTML(message) {
-  const fact = message?.profile_fact;
-  if (!fact) return '';
-  const messageId = esc(message.id ?? '');
-  const actions = (...items) => `<div class="tm-qa-actions">${items.join('')}</div>`;
-  if (fact.state === 'confirm') {
-    return `<div class="tm-qa-profilefact" data-role="qa-profilefact">
-      <p class="tm-qa-profilefact-head">记入画像前确认</p>
-      <blockquote class="tm-qa-profile-quote">${esc(fact.message)}</blockquote>
-      <p class="tm-qa-profilefact-note">将把你选择的这句话发送给模型，用于提取可保存的画像事实；不会上传原始 CSV 或成交明细。保存时会关联当前账单。</p>
-      ${actions(
-        `<button type="button" class="btn primary small" data-fact-action="extract" data-message-id="${messageId}">继续并提取</button>`,
-        `<button type="button" class="btn small" data-fact-action="cancel" data-message-id="${messageId}">取消</button>`,
-      )}
-    </div>`;
-  }
-  if (fact.state === 'extracting') {
-    return '<p class="tm-qa-profilefact is-muted" data-role="qa-profilefact">正在提取候选事实…</p>';
-  }
-  if (fact.state === 'candidates') {
-    return `<div class="tm-qa-profilefact" data-role="qa-profilefact">
-      <p class="tm-qa-profilefact-head">候选事实 · 请确认后保存</p>
-      ${profileFactsHTML(fact.facts, false)}
-      ${actions(
-        `<button type="button" class="btn primary small" data-fact-action="save" data-message-id="${messageId}">保存到画像</button>`,
-        `<button type="button" class="btn small" data-fact-action="cancel" data-message-id="${messageId}">取消</button>`,
-      )}
-    </div>`;
-  }
-  if (fact.state === 'empty') {
-    return `<div class="tm-qa-profilefact" data-role="qa-profilefact">
-      <p class="tm-qa-profilefact is-muted">没有找到可长期保存的画像信息。你可以换个说法再试。</p>
-      ${actions(`<button type="button" class="btn small" data-fact-action="cancel" data-message-id="${messageId}">关闭</button>`)}
-    </div>`;
-  }
-  if (fact.state === 'saving') {
-    return '<p class="tm-qa-profilefact is-muted" data-role="qa-profilefact">正在保存到画像…</p>';
-  }
-  if (fact.state === 'saved') {
-    const duplicates = fact.duplicates ? ` · 另有 ${esc(fact.duplicates)} 条已存在` : '';
-    const stale = fact.summary_stale
-      ? '<p class="tm-qa-profilefact-note is-warn">画像已更新；<a href="#/me">个人中心</a>的旧解读需要重新生成。</p>'
-      : '';
-    return `<div class="tm-qa-profilefact" data-role="qa-profilefact">
-      <div class="tm-qa-profilefact-head">
-        <span>已记入画像 · ${esc(fact.facts?.length ?? 0)} 条${duplicates}</span>
-        <button type="button" class="tm-qa-profile-undo" data-fact-action="undo" data-message-id="${messageId}">撤销</button>
-      </div>
-      ${profileFactsHTML(fact.facts, true)}
-      <p class="tm-qa-profilefact-note">来自你的陈述；可到 <a href="#/me">个人中心</a> 查看和删除。</p>
-      ${stale}
-    </div>`;
-  }
-  if (fact.state === 'duplicate') {
-    return `<p class="tm-qa-profilefact is-muted" data-role="qa-profilefact">这条陈述已在画像中，未重复记录。可到 <a href="#/me">个人中心</a> 查看。</p>`;
-  }
-  if (fact.state === 'extract-failed' || fact.state === 'save-failed') {
-    const text = fact.state === 'save-failed'
-      ? '未能保存到云端画像；问答回答不受影响。'
-      : '这次没有提取成功，可以稍后重试。';
-    const retry = fact.state === 'save-failed' ? 'retry-save' : 'retry-extract';
-    return `<div class="tm-qa-profilefact" data-role="qa-profilefact">
-      <p class="tm-qa-profilefact is-warn">${text}</p>
-      ${actions(
-        `<button type="button" class="btn small" data-fact-action="${retry}" data-message-id="${messageId}">重试</button>`,
-        `<button type="button" class="btn small" data-fact-action="cancel" data-message-id="${messageId}">取消</button>`,
-      )}
-    </div>`;
-  }
-  if (fact.state === 'undoing') return '<p class="tm-qa-profilefact is-muted" data-role="qa-profilefact">正在撤销画像记录…</p>';
-  if (fact.state === 'undone') return '<p class="tm-qa-profilefact is-muted" data-role="qa-profilefact">已撤销这次的画像记录。</p>';
-  if (fact.state === 'undo-failed') {
-    return `<div class="tm-qa-profilefact" data-role="qa-profilefact">
-      <p class="tm-qa-profilefact is-warn">撤销失败，可稍后重试，或到个人中心删除。</p>
-      ${actions(`<button type="button" class="btn small" data-fact-action="undo" data-message-id="${messageId}">重试撤销</button>`)}
-    </div>`;
-  }
-  return '';
-}
-
-function profileActionHTML(message, question, allowProfile) {
-  if (!allowProfile || message?.profile_fact) return '';
-  return `<div class="tm-qa-profile-actions" data-role="qa-profile-actions">
-    <button type="button" class="btn small" data-fact-action="record" data-message-id="${esc(message?.id ?? '')}" data-question="${esc(question)}">记入画像</button>
-    <span class="tm-qa-profile-hint">仅在你主动选择并确认后发送</span>
-  </div>`;
+function autoFactsHTML(message) {
+  const auto = message?.profile_auto;
+  if (!auto || auto.state !== 'saved') return '';
+  // 只提示“已记录”，不提供手动入口；撤销统一在个人中心。
+  return `<p class="tm-qa-notice" data-role="qa-profile-auto">已自动记入画像依据 · ${esc(auto.count)} 条 · 可在<a href="#/me">个人中心</a>撤销</p>`;
 }
 
 function savedFactsHTML(answer) {
@@ -291,10 +193,10 @@ function savedFactsHTML(answer) {
   if (!list.length) return '';
   const total = Number.isFinite(answer?.saved_fact_total) ? answer.saved_fact_total : list.length;
   const more = total > list.length
-    ? `<p class="tm-qa-notice">画像中共 ${esc(total)} 条，这里显示最近 ${list.length} 条。</p>`
+    ? `<p class="tm-qa-notice">画像依据共 ${esc(total)} 条，这里显示最近 ${list.length} 条。</p>`
     : '';
   return `<section class="tm-qa-savedfacts" data-role="qa-saved-facts">
-    <div class="tm-qa-savedfacts-head"><span>你主动记入的画像事实</span><a href="#/me">查看 / 删除</a></div>
+    <div class="tm-qa-savedfacts-head"><span>画像依据（系统自动记录）</span><a href="#/me">查看 / 撤销</a></div>
     <ul class="tm-qa-profile-list is-saved">${list.map((fact) => `
       <li class="tm-qa-profile-fact">
         <span class="tm-qa-profile-kind">${esc(FACT_KIND_LABELS[fact.kind] ?? '事实')}</span>
@@ -302,7 +204,7 @@ function savedFactsHTML(answer) {
         ${fact.evidence ? `<span class="tm-qa-profile-evidence">原文：${esc(fact.evidence)}</span>` : ''}
       </li>`).join('')}</ul>
     ${more}
-    <p class="tm-qa-notice">只读展示；补充或删除请到个人中心。</p>
+    <p class="tm-qa-notice">只读展示；系统从你明确说出的长期目标、偏好和约束中自动记录，可到个人中心撤销。</p>
   </section>`;
 }
 
@@ -425,7 +327,7 @@ function findMessage(ctx, messageId) {
   return messages.find((message) => message?.id === messageId) ?? null;
 }
 
-function answerHTML(entry, actionMap, currentRuleKey, allowOnline, allowProfile) {
+function answerHTML(entry, actionMap, currentRuleKey, allowOnline) {
   const answer = entry.answer;
   const status = statusOf(answer);
   const intent = answer.intent ?? '';
@@ -446,11 +348,10 @@ function answerHTML(entry, actionMap, currentRuleKey, allowOnline, allowProfile)
     ${entry.message?.rewrite_hint ? `<p class="tm-qa-rewrite-hint">${esc(entry.message.rewrite_hint)}</p>` : ''}
     ${factsHTML(facts)}
     ${savedFactsHTML(answer)}
+    ${autoFactsHTML(entry.message)}
     ${evidenceHTML(answer.evidence)}
     ${actionsHTML(answer, entry.message, actionMap, currentRuleKey, entry.question, allowOnline)}
     ${onlineHTML(entry.message)}
-    ${profileActionHTML(entry.message, entry.question, allowProfile)}
-    ${profileFactHTML(entry.message)}
     ${answer.notice ? `<p class="tm-qa-notice">${esc(answer.notice)}</p>` : ''}
   </article>`;
 }
@@ -477,7 +378,7 @@ function emptyHTML() {
 
 function clearConfirmHTML() {
   return `<div class="tm-qa-clear-confirm" data-role="qa-clear-confirm">
-    <p>清空对话不会删除已保存的云端画像事实；你仍可到个人中心查看和删除。</p>
+    <p>清空对话不会删除已自动记录的云端画像依据；仍可到个人中心撤销。</p>
     <div class="tm-qa-actions">
       <button type="button" class="btn small" data-role="qa-clear-confirm">确认清空</button>
       <button type="button" class="btn small" data-role="qa-clear-cancel">取消</button>
@@ -499,12 +400,12 @@ function headHTML(hasEntries, isDemo, showClearConfirm) {
 
 function privacyLine(question) {
   const text = questionText(question);
-  if (!text) return '本地回答不上传；在线复述、AI 解读和画像记录只在你主动选择后发送。';
+  if (!text) return '本地回答不上传；在线复述与 AI 解读只在你点击后发送；明确说出的长期目标、偏好或约束会自动记入画像依据。';
   if (isPageHelpQuestion(text)) return '本次：页面帮助问题，不发送；请查看 AI 助手帮助。';
   const route = routeQuestion(text);
   if (route.intent === 'loss_overview') return '本次：本机回答，不上传。需要在线复述时，请在回答上单独选择。';
-  if (route.intent) return '本次：本机回答，不上传；AI 解读只在你点击后发送问题与上方事实。';
-  return '本次：本机未匹配；发送后会先发送问题文本理解问法，不发送账单数字。';
+  if (route.intent) return '本次：本机回答，不上传；AI 解读只在你点击后发送问题与上方事实；明确陈述会自动记入画像依据。';
+  return '本次：本机未匹配；发送后会先发送问题文本理解问法，不发送账单数字；明确陈述会自动记入画像依据。';
 }
 
 function askHTML(pending, privacy, handoff) {
@@ -641,11 +542,10 @@ export function renderRealChat(host, ctx) {
   const isDemo = state.bill?.demo === true;
   const confirmed = state.bill?.status === 'confirmed' && state.bill?.sourceType === 'local' && !state.bill?.blocked;
   const allowOnline = confirmed && !isDemo;
-  const allowProfileBase = confirmed && !isDemo;
 
   const logHTML = entries.length || pending
     ? `${entries.map((entry) => (entry.answer
-      ? answerHTML(entry, actionMap, currentRuleKey, allowOnline, allowProfileBase && shouldExtractProfileFacts(entry.question))
+      ? answerHTML(entry, actionMap, currentRuleKey, allowOnline)
       : pendingHTML(entry.question, state.chat.requestId))).join('')}${pending && !entries.some((e) => !e.answer) ? pendingHTML(lastQuestion, state.chat.requestId) : ''}`
     : emptyHTML();
 
@@ -774,6 +674,51 @@ export function renderRealChat(host, ctx) {
         messages: [...state.chat.messages, assistantMessage],
       },
     });
+    void autoExtractProfileFacts(question, requestId, messageContextId, answer);
+  }
+
+  // 回答后异步被动抽取：只记录明确陈述，失败静默；不阻塞回答，也不提供手动入口。
+  async function autoExtractProfileFacts(question, messageId, messageContextId, answer) {
+    if (!answer || answer.status === 'error') return;
+    if (!shouldExtractProfileFacts(question)) return;
+    const bill = state.bill;
+    const usable = bill && bill.contextId === messageContextId
+      && bill.status === 'confirmed' && bill.sourceType === 'local' && !bill.blocked && bill.demo !== true;
+    if (!usable) return;
+    if (typeof ctx.qaDeps?.extractProfileFacts !== 'function' || typeof ctx.qaDeps?.saveProfileFacts !== 'function') return;
+
+    let extracted = null;
+    try {
+      extracted = await ctx.qaDeps.extractProfileFacts({ message: question, contextId: messageContextId });
+    } catch {
+      return;
+    }
+    if (!extracted?.ok || !Array.isArray(extracted.facts) || !extracted.facts.length) return;
+    if (state.bill?.contextId !== messageContextId) return;
+
+    let saved = null;
+    try {
+      saved = await ctx.qaDeps.saveProfileFacts({ facts: extracted.facts, contextId: messageContextId });
+    } catch {
+      return;
+    }
+    if (!saved?.ok || state.bill?.contextId !== messageContextId) return;
+    const payload = saved.result ?? {};
+    const added = Array.isArray(payload.added) ? payload.added : [];
+    const duplicates = Array.isArray(payload.duplicates) ? payload.duplicates : [];
+    if (added.length) {
+      ctx.cloudDeps?.appendCachedCloudFacts?.(added);
+      ctx.cloudDeps?.invalidateCloudProfile?.();
+      patchMessage(ctx, messageId, {
+        profile_auto: {
+          state: 'saved',
+          count: added.length,
+          ids: added.map((item) => item?.id).filter((id) => typeof id === 'string'),
+        },
+      });
+    } else if (duplicates.length) {
+      patchMessage(ctx, messageId, { profile_auto: { state: 'duplicate' } });
+    }
   }
 
   function setMessages(messages, messageContextId = contextId) {
@@ -786,116 +731,6 @@ export function renderRealChat(host, ctx) {
         messages,
       },
     });
-  }
-
-  function startProfileRecord(messageId, question) {
-    const message = findMessage(ctx, messageId);
-    if (!message || !message.bill_context_id || message.bill_context_id !== state.bill?.contextId) return;
-    patchMessage(ctx, messageId, {
-      profile_fact: { state: 'confirm', message: question, facts: [] },
-    });
-  }
-
-  async function extractProfile(messageId) {
-    const current = findMessage(ctx, messageId);
-    const fact = current?.profile_fact;
-    if (!current || !fact || fact.state === 'extracting' || fact.state === 'saving') return;
-    if (!fact.message || current.bill_context_id !== state.bill?.contextId) return;
-    const requestId = `profile-${++seq}`;
-    patchMessage(ctx, messageId, { profile_fact: { ...fact, state: 'extracting', requestId } });
-    let result = null;
-    try {
-      result = typeof ctx.qaDeps?.extractProfileFacts === 'function'
-        ? await ctx.qaDeps.extractProfileFacts({ message: fact.message, contextId: current.bill_context_id })
-        : null;
-    } catch {
-      result = null;
-    }
-    if (state.bill?.contextId !== current.bill_context_id) return;
-    const latest = findMessage(ctx, messageId)?.profile_fact;
-    if (!latest || latest.requestId !== requestId) return;
-    if (result?.ok && Array.isArray(result.facts) && result.facts.length) {
-      patchMessage(ctx, messageId, { profile_fact: { ...fact, state: 'candidates', requestId: null, facts: result.facts } });
-      return;
-    }
-    if (result?.ok) {
-      patchMessage(ctx, messageId, { profile_fact: { ...fact, state: 'empty', requestId: null, facts: [] } });
-      return;
-    }
-    patchMessage(ctx, messageId, { profile_fact: { ...fact, state: 'extract-failed', requestId: null, facts: [] } });
-  }
-
-  async function saveProfile(messageId) {
-    const current = findMessage(ctx, messageId);
-    const fact = current?.profile_fact;
-    if (!current || !fact || fact.state !== 'candidates' || !Array.isArray(fact.facts) || !fact.facts.length) return;
-    if (current.bill_context_id !== state.bill?.contextId) return;
-    const requestId = `profile-save-${++seq}`;
-    patchMessage(ctx, messageId, { profile_fact: { ...fact, state: 'saving', requestId } });
-    let result = null;
-    try {
-      result = typeof ctx.qaDeps?.saveProfileFacts === 'function'
-        ? await ctx.qaDeps.saveProfileFacts({ facts: fact.facts, contextId: current.bill_context_id })
-        : null;
-    } catch {
-      result = null;
-    }
-    if (state.bill?.contextId !== current.bill_context_id) return;
-    const latest = findMessage(ctx, messageId)?.profile_fact;
-    if (!latest || latest.requestId !== requestId) return;
-    if (!result?.ok) {
-      patchMessage(ctx, messageId, { profile_fact: { ...fact, state: 'save-failed', requestId: null } });
-      return;
-    }
-    const payload = result.result ?? {};
-    const added = Array.isArray(payload.added) ? payload.added : [];
-    const duplicates = Array.isArray(payload.duplicates) ? payload.duplicates : [];
-    if (added.length) {
-      ctx.cloudDeps?.appendCachedCloudFacts?.(added);
-      patchMessage(ctx, messageId, {
-        profile_fact: {
-          state: 'saved',
-          message: fact.message,
-          facts: added,
-          ids: added.map((item) => item?.id).filter((id) => typeof id === 'string'),
-          duplicates: duplicates.length,
-          summary_stale: true,
-          requestId: null,
-        },
-      });
-      return;
-    }
-    ctx.cloudDeps?.invalidateCloudProfile?.();
-    patchMessage(ctx, messageId, {
-      profile_fact: { ...fact, state: duplicates.length ? 'duplicate' : 'empty', requestId: null, facts: [] },
-    });
-  }
-
-  function cancelProfile(messageId) {
-    const current = findMessage(ctx, messageId);
-    if (!current?.profile_fact) return;
-    patchMessage(ctx, messageId, { profile_fact: null });
-  }
-
-  async function undoProfileFacts(messageId) {
-    const message = findMessage(ctx, messageId);
-    const fact = message?.profile_fact;
-    const ids = Array.isArray(fact?.ids) ? fact.ids : [];
-    if (!message || !ids.length || typeof ctx.cloudDeps?.deleteFact !== 'function') return;
-    patchMessage(ctx, messageId, { profile_fact: { ...fact, state: 'undoing' } });
-    try {
-      for (const id of ids) {
-        try {
-          await ctx.cloudDeps.deleteFact({ id });
-        } catch (error) {
-          if ((error?.upstreamCode ?? error?.code) !== 'not_found') throw error;
-        }
-      }
-      patchMessage(ctx, messageId, { profile_fact: { state: 'undone', ids: [] } });
-      ctx.cloudDeps.invalidateCloudProfile?.();
-    } catch {
-      patchMessage(ctx, messageId, { profile_fact: { ...fact, state: 'undo-failed' } });
-    }
   }
 
   async function runOnline(question, messageId) {
@@ -1024,17 +859,6 @@ export function renderRealChat(host, ctx) {
     if (clearCancel && host.contains(clearCancel)) {
       clearArmed = false;
       set({ chat: { ...state.chat } });
-      return;
-    }
-    const factButton = e.target.closest('[data-fact-action]');
-    if (factButton && host.contains(factButton)) {
-      const action = factButton.getAttribute('data-fact-action');
-      const messageId = factButton.getAttribute('data-message-id');
-      if (action === 'undo') void undoProfileFacts(messageId);
-      else if (action === 'record') startProfileRecord(messageId, factButton.getAttribute('data-question') || '');
-      else if (action === 'extract' || action === 'retry-extract') void extractProfile(messageId);
-      else if (action === 'save' || action === 'retry-save') void saveProfile(messageId);
-      else if (action === 'cancel') cancelProfile(messageId);
       return;
     }
     const button = e.target.closest('[data-action]');

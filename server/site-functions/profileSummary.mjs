@@ -19,6 +19,7 @@ export const PROFILE_SUMMARY_DETAILS = Object.freeze({
   INVESTMENT_ADVICE: 'investment_advice',
   UNLISTED_NUMBER: 'unlisted_number',
   UNLISTED_DATE: 'unlisted_date',
+  INVALID_KEYWORDS: 'invalid_keywords',
 });
 
 const REQUEST_KEYS = new Set(['digest']);
@@ -32,7 +33,7 @@ const BEHAVIOR_KEYS = new Set(['tags', 'patterns']);
 const RULE_KEYS = new Set(['total', 'kept', 'warned']);
 const FACT_KEYS = new Set(['kind', 'key', 'value']);
 const SUMMARY_KEYS = Object.freeze([
-  'schema_version', 'headline', 'summary', 'strengths',
+  'schema_version', 'headline', 'summary', 'keywords', 'strengths',
   'blind_spots', 'next_actions', 'confidence', 'data_limits',
 ]);
 export const PROFILE_FACT_KINDS = Object.freeze(['goal', 'preference', 'constraint', 'habit', 'risk_tolerance']);
@@ -389,6 +390,38 @@ function validateItems(value, { maxItems, maxChars, label }) {
   return { ok: true, value: output };
 }
 
+function validateKeywords(value) {
+  if (value === undefined || value === null) return { ok: true, value: [] };
+  if (!Array.isArray(value)) {
+    return { ok: false, detail: PROFILE_SUMMARY_DETAILS.INVALID_KEYWORDS, message: 'keywords 非法' };
+  }
+  if (!value.length) return { ok: true, value: [] };
+  const output = [];
+  const seen = new Set();
+  for (const item of value) {
+    if (typeof item !== 'string') {
+      return { ok: false, detail: PROFILE_SUMMARY_DETAILS.INVALID_KEYWORDS, message: 'keywords 非法' };
+    }
+    const text = cleanText(item);
+    if (!text || charLength(text) < 2 || charLength(text) > 12) {
+      return { ok: false, detail: PROFILE_SUMMARY_DETAILS.INVALID_KEYWORDS, message: 'keywords 长度非法' };
+    }
+    if (UNSAFE_RE.test(text)) {
+      return { ok: false, detail: PROFILE_SUMMARY_DETAILS.UNSAFE_CONTENT, message: 'keywords 包含越界内容' };
+    }
+    if (ADVICE_RE.test(text)) {
+      return { ok: false, detail: PROFILE_SUMMARY_DETAILS.INVESTMENT_ADVICE, message: 'keywords 包含投资建议' };
+    }
+    if (seen.has(text)) continue;
+    seen.add(text);
+    output.push(text);
+  }
+  if (output.length < 3 || output.length > 6) {
+    return { ok: false, detail: PROFILE_SUMMARY_DETAILS.INVALID_KEYWORDS, message: 'keywords 数量非法' };
+  }
+  return { ok: true, value: output };
+}
+
 export function validateProfileSummaryValue(value, digest) {
   const summary = summaryObject(value);
   if (!summary) return fail(PROFILE_SUMMARY_CODES.RESPONSE, '解读必须为对象', PROFILE_SUMMARY_DETAILS.INVALID_SHAPE);
@@ -403,6 +436,8 @@ export function validateProfileSummaryValue(value, digest) {
     : summaryText.value;
   const headline = validateText(headlineSource, 24, 'headline');
   if (!headline.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, headline.message, headline.detail);
+  const keywords = validateKeywords(summary.keywords);
+  if (!keywords.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, keywords.message, keywords.detail);
   const strengths = validateItems(summary.strengths, { maxItems: 3, maxChars: 60, label: 'strengths' });
   if (!strengths.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, strengths.message, strengths.detail);
   const blindSpots = validateItems(summary.blind_spots, { maxItems: 3, maxChars: 60, label: 'blind_spots' });
@@ -412,7 +447,10 @@ export function validateProfileSummaryValue(value, digest) {
   const dataLimits = validateItems(summary.data_limits, { maxItems: 3, maxChars: 80, label: 'data_limits' });
   if (!dataLimits.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, dataLimits.message, dataLimits.detail);
   const confidence = normalizeConfidence(summary.confidence);
-  const allText = [headline.value, summaryText.value, ...strengths.value, ...blindSpots.value, ...nextActions.value, ...dataLimits.value].join('\n');
+  const allText = [
+    headline.value, summaryText.value, ...keywords.value,
+    ...strengths.value, ...blindSpots.value, ...nextActions.value, ...dataLimits.value,
+  ].join('\n');
   const numbers = validateNumbers(allText, digest);
   if (!numbers.ok) return fail(PROFILE_SUMMARY_CODES.RESPONSE, numbers.message, numbers.detail);
   const cap = confidenceCap(digest);
@@ -423,6 +461,7 @@ export function validateProfileSummaryValue(value, digest) {
       schema_version: schemaVersion,
       headline: headline.value,
       summary: summaryText.value,
+      keywords: keywords.value,
       strengths: strengths.value,
       blind_spots: blindSpots.value,
       next_actions: nextActions.value,
@@ -447,6 +486,40 @@ function percentText(value) {
   return `${value >= 0 ? '+' : ''}${(value * 100).toFixed(1)}%`;
 }
 
+function safeKeyword(value) {
+  const text = cleanText(String(value ?? ''));
+  if (!text || charLength(text) < 2 || charLength(text) > 12 || UNSAFE_RE.test(text) || ADVICE_RE.test(text)) return '';
+  return text;
+}
+
+function fallbackKeywords(digest) {
+  const { metrics } = digest;
+  const seeds = [
+    ...digest.behavior.tags.map(safeKeyword),
+    metrics.drag_pp === null ? '择时待观察'
+      : metrics.drag_pp > 0.005 ? '择时拖累'
+        : metrics.drag_pp < -0.005 ? '择时正贡献' : '择时影响有限',
+    (metrics.trade_count ?? 0) >= 20 ? '交易样本充足' : '交易样本偏少',
+    digest.bills.count >= 3 ? '跨账单观察' : '账单样本偏少',
+    digest.facts.length ? '目标与约束已记录' : '',
+  ];
+  const output = [];
+  const seen = new Set();
+  for (const seed of seeds) {
+    if (!seed || seen.has(seed)) continue;
+    seen.add(seed);
+    output.push(seed);
+    if (output.length === 6) break;
+  }
+  for (const filler of ['画像积累中', '行为标签观察', '跨账单记录']) {
+    if (output.length >= 3) break;
+    if (seen.has(filler)) continue;
+    seen.add(filler);
+    output.push(filler);
+  }
+  return output.slice(0, 6);
+}
+
 export function buildProfileSummaryFallback(digest) {
   const { metrics } = digest;
   const confidence = confidenceCap(digest);
@@ -468,6 +541,7 @@ export function buildProfileSummaryFallback(digest) {
     schema_version: PROFILE_SUMMARY_VERSION,
     headline,
     summary: parts.join(''),
+    keywords: fallbackKeywords(digest),
     strengths: digest.behavior.tags.slice(0, 2),
     blind_spots: [],
     next_actions: [],

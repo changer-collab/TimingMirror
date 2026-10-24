@@ -858,7 +858,8 @@ state.report = { scenario: 'A', symbol: 'pool' };
       && chips().every((b) => !labelOf(b).includes('ONLINE'))
       && !pageVisibleTxt().includes('规则 v0 · 生效 0 条') && !findByClass(current, 'tm-qa-context').length
       && pageVisibleTxt().includes('本地回答不上传')
-      && pageVisibleTxt().includes('在线复述、AI 解读和画像记录只在你主动选择后发送')
+      && pageVisibleTxt().includes('在线复述与 AI 解读只在你点击后发送')
+      && pageVisibleTxt().includes('明确说出的长期目标、偏好或约束会自动记入画像依据')
       && entries().length === 0, pageTxt().slice(0, 360));
   }
 
@@ -977,12 +978,12 @@ state.report = { scenario: 'A', symbol: 'pool' };
     await flush();
     const warning = findByClass(current, 'tm-qa-clear-confirm')[0];
     const confirm = findButtons(current).find((b) => b.attrs['data-role'] === 'qa-clear-confirm');
-    check('问答账本·清空对话：先提示不会删除云端画像事实，未确认前不清空',
-      !!warning && texts(warning).join('|').includes('不会删除已保存的云端画像事实')
+    check('问答账本·清空对话：先提示不会删除云端画像依据，未确认前不清空',
+      !!warning && texts(warning).join('|').includes('不会删除已自动记录的云端画像依据')
       && state.chat.messages.length > 0 && !!confirm, JSON.stringify({ messages: state.chat.messages.length, warning: warning ? texts(warning) : null }));
     if (confirm) clickNode(confirm);
     await flush();
-    check('问答账本·确认清空：消息清空、回到空状态，不删除云端画像事实',
+    check('问答账本·确认清空：消息清空、回到空状态，不删除云端画像依据',
       state.chat.messages.length === 0 && entries().length === 0
       && pageVisibleTxt().includes('还没有提问') && profileDeleteCalls === 0,
       JSON.stringify({ chat: state.chat, profileDeleteCalls }));
@@ -1188,7 +1189,7 @@ state.report = { scenario: 'A', symbol: 'pool' };
       JSON.stringify({ attrs: entry?.attrs, url: call?.url, body, text: entryTxt.slice(0, 240), chat: state.chat }));
   }
 
-  /* 15) 画像：默认不请求；主动记入 → 授权发送 → 候选确认 → 保存/撤销 */
+  /* 15) 画像：明确陈述后自动抽取并记录，不再提供手动入口；提问句不触发 */
   resetChat();
   profileExtractCalls = 0;
   profileSaveCalls = 0;
@@ -1197,51 +1198,25 @@ state.report = { scenario: 'A', symbol: 'pool' };
   await askText('我希望把仓位控制在五成以内，也不做短线交易。');
   {
     const entry = entryOf('profile');
-    const record = entry ? findButtons(entry).find((b) => b.attrs['data-fact-action'] === 'record') : null;
-    check('问答账本·画像：普通提问不触发画像请求，回答下出现“记入画像”',
-      !!entry && !!record && profileExtractCalls === 0 && profileSaveCalls === 0
-      && texts(entry).join('|').includes('记入画像'), JSON.stringify({ entry: entry?.attrs, calls: { profileExtractCalls, profileSaveCalls } }));
+    const auto = entry ? findByTag(entry, 'p').find((n) => n.attrs?.['data-role'] === 'qa-profile-auto') ?? null : null;
+    const manual = entry ? findButtons(entry).filter((b) => b.attrs['data-fact-action']) : [];
+    const autoTxt = auto ? texts(auto).join('|') : '';
+    check('问答账本·画像：明确陈述后自动抽取并记录，不再出现手动入口',
+      !!entry && !!auto && autoTxt.includes('已自动记入画像依据') && autoTxt.includes('个人中心')
+      && profileExtractCalls === 1 && profileSaveCalls === 1 && manual.length === 0,
+      JSON.stringify({ entry: entry?.attrs, auto: autoTxt, calls: { profileExtractCalls, profileSaveCalls }, manual: manual.map((b) => b.attrs) }));
+  }
 
-    if (record) clickNode(record);
-    await flush();
-    const confirmEntry = entryOf('profile');
-    const confirmBox = confirmEntry ? findByClass(confirmEntry, 'tm-qa-profilefact')[0] : null;
-    check('问答账本·画像授权：先说明将发送所选陈述，尚未抽取',
-      !!confirmBox && texts(confirmBox).join('|').includes('记入画像前确认')
-      && texts(confirmBox).join('|').includes('将把你选择的这句话发送给模型')
-      && profileExtractCalls === 0, JSON.stringify({ text: confirmBox ? texts(confirmBox) : null, calls: profileExtractCalls }));
-
-    const extract = confirmBox ? findButtons(confirmBox).find((b) => b.attrs['data-fact-action'] === 'extract') : null;
-    if (extract) clickNode(extract);
-    await flush();
-    const candidateEntry = entryOf('profile');
-    const candidateBox = candidateEntry ? findByClass(candidateEntry, 'tm-qa-profilefact')[0] : null;
-    const candidateTxt = candidateBox ? texts(candidateBox).join('|') : '';
-    check('问答账本·画像候选：抽取后展示候选事实与原文证据，未保存',
-      !!candidateBox && profileExtractCalls === 1 && profileSaveCalls === 0
-      && candidateTxt.includes('候选事实') && candidateTxt.includes('仓位控制在五成以内')
-      && candidateTxt.includes('原文：把仓位控制在五成以内'),
-      JSON.stringify({ text: candidateTxt, calls: { profileExtractCalls, profileSaveCalls } }));
-
-    const save = candidateBox ? findButtons(candidateBox).find((b) => b.attrs['data-fact-action'] === 'save') : null;
-    if (save) clickNode(save);
-    await flush();
-    const savedEntry = entryOf('profile');
-    const savedBox = savedEntry ? findByClass(savedEntry, 'tm-qa-profilefact')[0] : null;
-    const savedTxt = savedBox ? texts(savedBox).join('|') : '';
-    check('问答账本·画像保存：确认后展示实际事实、原文证据与撤销',
-      !!savedBox && profileSaveCalls === 1 && savedTxt.includes('已记入画像')
-      && savedTxt.includes('仓位控制在五成以内') && savedTxt.includes('原文：把仓位控制在五成以内')
-      && savedTxt.includes('撤销'), JSON.stringify({ text: savedTxt, calls: profileSaveCalls }));
-
-    const undo = savedBox ? findButtons(savedBox).find((b) => b.attrs['data-fact-action'] === 'undo') : null;
-    if (undo) clickNode(undo);
-    await flush();
-    const undoneEntry = entryOf('profile');
-    const undoneBox = undoneEntry ? findByClass(undoneEntry, 'tm-qa-profilefact')[0] : null;
-    check('问答账本·画像撤销：消息内撤销已保存事实',
-      !!undoneBox && profileDeleteCalls === 1 && texts(undoneBox).join('|').includes('已撤销这次的画像记录'),
-      JSON.stringify({ text: undoneBox ? texts(undoneBox) : null, calls: profileDeleteCalls }));
+  resetChat();
+  profileExtractCalls = 0;
+  profileSaveCalls = 0;
+  siteQueue.push({ status: 200, body: { rawText: JSON.stringify({ intent: 'profile', slots: {}, confidence: 0.9 }) } });
+  await askText('我的仓位上限是多少？');
+  {
+    const entry = entryOf('profile');
+    check('问答账本·画像：提问句不触发自动抽取',
+      !!entry && profileExtractCalls === 0 && profileSaveCalls === 0,
+      JSON.stringify({ entry: entry?.attrs, calls: { profileExtractCalls, profileSaveCalls } }));
   }
   siteQueue.length = 0;
 
@@ -1355,8 +1330,10 @@ const openCustom = async () => { await clickRole('add-rule-buy'); await fire(byR
 {
   const adapterMod = await imp('src/demo/adapter.js');
   const viewSrc = readFileSync(join(ROOT, 'src/ui/views/contractView.js'), 'utf8');
-  check('契约：页面只经 adapter 取数（不 import contractMatch / marketCache / engine），当前 / 历史划分由 adapter 提供（页面不自行比较版本或排序），旧的并行 / 整理接口已移除',
-    !/from\s+['"][^'"]*engine\//.test(viewSrc) && !viewSrc.includes('contractMatch') && !viewSrc.includes('marketCache') && !viewSrc.includes('.activated')
+  const engineImports = [...viewSrc.matchAll(/from\s+['"]([^'"]*engine\/[^'"]+)['"]/g)].map((m) => m[1]);
+  check('契约：页面只经 adapter 取数（候选构建用画像纯模块），当前 / 历史划分由 adapter 提供（页面不自行比较版本或排序），旧的并行 / 整理接口已移除',
+    engineImports.length === 1 && engineImports[0].endsWith('engine/userProfile.js')
+    && !viewSrc.includes('contractMatch') && !viewSrc.includes('marketCache') && !viewSrc.includes('.activated')
     && typeof adapterMod.contractOrganizeRecords === 'undefined' && typeof adapterMod.contractToggleRecord === 'undefined' && typeof adapterMod.contractEditorRecord === 'undefined'
     && adapterMod.CAPABILITY.contractEngine.label.includes('已接入（候选口径）') && adapterMod.CAPABILITY.bailian.label.includes('未接通'), adapterMod.CAPABILITY.contractEngine.label);
   const H = (template_id, fields) => adapterMod.previewContract({ template_id, fields }).hash;
@@ -2782,12 +2759,50 @@ check('报告·用户摘要·复核未运行：阻断原因（估值日早于末
     qaBridgeSrc.slice(0, 200));
   check('画像事实：对话内只读展示并提供个人中心入口',
     qaChatSrc.includes('function savedFactsHTML')
-    && qaChatSrc.includes('你主动记入的画像事实')
-    && qaChatSrc.includes('href="#/me"'), qaChatSrc.slice(0, 200));
-  check('画像事实：保存后提示旧解读需重新生成，不自动重算摘要',
-    qaChatSrc.includes('summary_stale: true')
-    && qaChatSrc.includes('画像已更新；')
-    && !qaChatSrc.includes('generateProfileSummary('), qaChatSrc.slice(0, 200));
+    && qaChatSrc.includes('画像依据（系统自动记录）')
+    && qaChatSrc.includes('href="#/me"')
+    && !qaChatSrc.includes('data-fact-action'), qaChatSrc.slice(0, 200));
+  check('画像事实：明确陈述后自动抽取并保存，失败不影响回答',
+    qaChatSrc.includes('async function autoExtractProfileFacts')
+    && qaChatSrc.includes('shouldExtractProfileFacts(question)')
+    && qaChatSrc.includes("answer.status === 'error'")
+    && qaChatSrc.includes('已自动记入画像依据')
+    && qaChatSrc.includes('invalidateCloudProfile')
+    && !qaChatSrc.includes('startProfileRecord'), qaChatSrc.slice(0, 200));
+
+  const realProfileSrc = readFileSync(join(ROOT, 'prototype/user-frontend/realProfile.js'), 'utf8');
+  check('个人中心：画像维度/历史 → 画像解读 → 跨账单记录，跨账单只含账单表',
+    (() => {
+      const render = realProfileSrc.slice(
+        realProfileSrc.indexOf('function renderProfile('),
+        realProfileSrc.indexOf('export function renderRealProfile'),
+      );
+      const dims = render.indexOf('${dimensionCards(shown)}');
+      const history = render.indexOf('${historyBlock(profile)}');
+      const summary = render.indexOf('<div data-role="cloud-summary"></div>');
+      const bills = render.indexOf('${cloudBillsSection()}');
+      const billsSection = realProfileSrc.slice(
+        realProfileSrc.indexOf('function cloudBillsSection()'),
+        realProfileSrc.indexOf('function emptyState'),
+      );
+      return dims > 0 && history > dims && summary > history && bills > summary
+        && billsSection.includes('data-role="cloud-bills"')
+        && billsSection.includes('跨账单记录')
+        && !/cloud-summary|profile-basis|画像解读|规则候选/.test(billsSection);
+    })(), realProfileSrc.slice(0, 300));
+  check('画像解读：关键词 chips 优先 AI 关键词，旧缓存回退行为标签',
+    cloudProfileSrc.includes('function keywordList(state)')
+    && cloudProfileSrc.includes('state.summary?.keywords')
+    && cloudProfileSrc.includes('state.digest?.behavior?.tags')
+    && cloudProfileSrc.includes('rp-ai-keywords')
+    && cloudProfileSrc.includes('rp-chip'), cloudProfileSrc.slice(0, 200));
+
+  const contractSrc = readFileSync(join(ROOT, 'src/ui/views/contractView.js'), 'utf8');
+  check('规则工作区：候选框位于当前生效规则上方，记录忽略/恢复状态',
+    contractSrc.indexOf('page.append(candidateBox, currentBox)') > 0
+    && contractSrc.indexOf("'data-role': 'rule-candidates'") > 0
+    && contractSrc.includes("recordCandidateEvent?.(candidate.candidate_id, status)")
+    && contractSrc.includes("'dismissed'") && contractSrc.includes("'restored'"), contractSrc.slice(0, 220));
 }
 
 /* ---- 输出 ---- */

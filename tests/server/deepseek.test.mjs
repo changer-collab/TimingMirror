@@ -285,12 +285,16 @@ async function invoke(handler, path, body) {
   }
 }
 
-/* ==== 401 / 403 / 429 / 5xx ==== */
+/* ==== 401 / 403 / 429 / 400 / 404 / 413 / 422 / 5xx ==== */
 {
   const cases = [
     [401, DEEPSEEK_ERROR_CODES.AUTH_FAILED],
     [403, DEEPSEEK_ERROR_CODES.FORBIDDEN],
     [429, DEEPSEEK_ERROR_CODES.RATE_LIMITED],
+    [400, DEEPSEEK_ERROR_CODES.UNAVAILABLE],
+    [404, DEEPSEEK_ERROR_CODES.UNAVAILABLE],
+    [413, DEEPSEEK_ERROR_CODES.UNAVAILABLE],
+    [422, DEEPSEEK_ERROR_CODES.UNAVAILABLE],
     [500, DEEPSEEK_ERROR_CODES.UNAVAILABLE],
     [503, DEEPSEEK_ERROR_CODES.UNAVAILABLE],
   ];
@@ -301,6 +305,10 @@ async function invoke(handler, path, body) {
     });
     const result = await expectTransportError(transport.intent({ question: QUESTION }), code);
     check(`上游 ${status} → ${code}`, result.ok, result.actual);
+    check(`上游 ${status}：只保留状态码，不泄露供应商正文`,
+      result.error?.details?.upstream_status === status
+      && !JSON.stringify(result.error).includes('provider body must not leak'),
+      JSON.stringify(result.error));
   }
 }
 
@@ -310,6 +318,10 @@ async function invoke(handler, path, body) {
     [401, 502, SITE_FUNCTION_CODES.MODEL_AUTH_FAILED],
     [403, 502, SITE_FUNCTION_CODES.MODEL_FORBIDDEN],
     [429, 429, SITE_FUNCTION_CODES.MODEL_RATE_LIMITED],
+    [400, 502, SITE_FUNCTION_CODES.MODEL_UNAVAILABLE],
+    [404, 502, SITE_FUNCTION_CODES.MODEL_UNAVAILABLE],
+    [413, 502, SITE_FUNCTION_CODES.MODEL_UNAVAILABLE],
+    [422, 502, SITE_FUNCTION_CODES.MODEL_UNAVAILABLE],
     [500, 502, SITE_FUNCTION_CODES.MODEL_UNAVAILABLE],
   ];
   for (const [upstream, status, code] of cases) {

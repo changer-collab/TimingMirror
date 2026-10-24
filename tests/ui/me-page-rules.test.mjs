@@ -14,15 +14,17 @@ import { defaultAssistant, defaultBill, defaultContracts } from '../../src/state
 import { pageHelpInfo } from '../../src/ui/qaAssistant.js';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
-const app = readFileSync(join(ROOT, 'prototype/user-frontend/app.js'), 'utf8');
-const bridge = readFileSync(join(ROOT, 'prototype/user-frontend/realBridge.js'), 'utf8');
-const contractView = readFileSync(join(ROOT, 'src/ui/views/contractView.js'), 'utf8');
-const scenarioView = readFileSync(join(ROOT, 'src/ui/views/scenarioReviewView.js'), 'utf8');
-const reviewEngine = readFileSync(join(ROOT, 'src/engine/tradeReview.js'), 'utf8');
-const realProfile = readFileSync(join(ROOT, 'prototype/user-frontend/realProfile.js'), 'utf8');
-const assistant = readFileSync(join(ROOT, 'src/ui/qaAssistant.js'), 'utf8');
-const css = readFileSync(join(ROOT, 'prototype/user-frontend/real-views.css'), 'utf8');
-const pkg = readFileSync(join(ROOT, 'package.json'), 'utf8');
+const read = (path) => readFileSync(join(ROOT, path), 'utf8').replace(/\r\n/g, '\n');
+const app = read('prototype/user-frontend/app.js');
+const bridge = read('prototype/user-frontend/realBridge.js');
+const contractView = read('src/ui/views/contractView.js');
+const scenarioView = read('src/ui/views/scenarioReviewView.js');
+const reviewEngine = read('src/engine/tradeReview.js');
+const realProfile = read('prototype/user-frontend/realProfile.js');
+const cloudProfile = read('prototype/user-frontend/cloudProfile.js');
+const assistant = read('src/ui/qaAssistant.js');
+const css = read('prototype/user-frontend/real-views.css');
+const pkg = read('package.json');
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -59,8 +61,50 @@ check('个人中心：保留画像、历史观察与规则管理挂载',
   && /mountContractView\(document\.getElementById\('tm-real-rules'\)\)/.test(app)
   && /function historyBlock\(profile\)/.test(realProfile)
   && /最近观察/.test(realProfile)
-  && /class="rp-profile"/.test(realProfile),
+  && /class="rp-profile\b/.test(realProfile),
   mePage);
+
+check('个人中心：画像维度/历史 → 画像解读 → 跨账单记录',
+  (() => {
+    const render = block(realProfile, 'function renderProfile(host, ctx, bundle, bill)', '\n}\n');
+    const dims = render.indexOf('${dimensionCards(shown)}');
+    const history = render.indexOf('${historyBlock(profile)}');
+    const summary = render.indexOf('<div data-role="cloud-summary"></div>');
+    const bills = render.indexOf('${cloudBillsSection()}');
+    return dims > 0 && history > dims && summary > history && bills > summary;
+  })(), realProfile.slice(0, 320));
+
+check('个人中心：画像解读自带关键词、短结论与只读画像依据',
+  /<h4>画像解读<\/h4>/.test(cloudProfile)
+  && /rp-ai-keywords/.test(cloudProfile) && /class="rp-chip"/.test(cloudProfile)
+  && /state\.summary\.keywords/.test(cloudProfile)
+  && /state\.digest\?\.behavior\?\.tags/.test(cloudProfile)
+  && /画像依据（\$\{facts\.length\} 条，可撤销）/.test(cloudProfile)
+  && /系统从你明确说过的长期目标、偏好和约束中自动记录/.test(cloudProfile)
+  && /data-fact-id=/.test(cloudProfile)
+  && /data-cloud-action="delete-fact"/.test(cloudProfile),
+  cloudProfile.slice(0, 320));
+
+check('个人中心：跨账单记录只含云端账单，不再包含画像解读或候选',
+  (() => {
+    const section = block(realProfile, 'function cloudBillsSection()', '\n}\n');
+    return section.includes('跨账单记录')
+      && section.includes('data-role="cloud-bills"')
+      && !/cloud-summary|profile-basis|画像解读|规则候选|data-role="rule-candidates"/.test(section);
+  })(), block(realProfile, 'function cloudBillsSection()', '\n}\n'));
+
+check('个人中心：不再出现“规则候选”或“你主动记入的事实”',
+  !/规则候选|你主动记入的事实|记入画像前确认|data-fact-action/.test(realProfile)
+  && !/你主动记入的事实/.test(cloudProfile)
+  && !/规则候选/.test(mePage)
+  && /规则候选（来自本账单证据）/.test(contractView),
+  [realProfile, cloudProfile, mePage].join('\n').slice(0, 480));
+
+check('个人中心：空态也挂载画像解读与云端账单',
+  (() => {
+    const empty = block(realProfile, 'function emptyState(reason', '\n}\n');
+    return empty.includes('data-role="cloud-summary"') && empty.includes('${cloudBillsSection()}');
+  })(), block(realProfile, 'function emptyState(reason', '\n}\n'));
 
 check('个人中心：规则新增/编辑/停用/恢复/版本历史仍在规则工作区',
   /data-role': `add-rule-\$\{action\}`/.test(contractView)

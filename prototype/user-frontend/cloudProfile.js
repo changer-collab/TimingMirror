@@ -17,6 +17,7 @@ let cache = { status: 'idle', at: 0, data: null, error: null, promise: null };
 let confirmTimer = null;
 // 同一 digest 只自动尝试一次；失败后隔一段时间才允许重试，避免每次进入页面都打模型。
 const autoSummaryTried = new Map();
+const autoSummaryInFlight = new Set();
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
@@ -103,14 +104,14 @@ function ensureData(ctx, { force = false } = {}) {
   return promise;
 }
 
-function twoStep(button) {
+function twoStep(button, confirmText = '确认删除') {
   if (button.dataset.confirm === 'true') {
     clearTimeout(confirmTimer);
     return true;
   }
   button.dataset.confirm = 'true';
   button.dataset.label = button.textContent;
-  button.textContent = '确认删除';
+  button.textContent = confirmText;
   button.classList.add('is-confirming');
   clearTimeout(confirmTimer);
   confirmTimer = setTimeout(() => {
@@ -128,6 +129,20 @@ function list(items, className = '') {
   return `<ul class="${className}">${values.map((item) => `<li>${esc(item)}</li>`).join('')}</ul>`;
 }
 
+function keywordList(state) {
+  const own = Array.isArray(state.summary?.keywords) ? state.summary.keywords.filter(Boolean) : [];
+  if (own.length) return own.slice(0, 6);
+  // 旧缓存没有 keywords 时，用同一份画像摘要里的行为标签兜底。
+  const tags = Array.isArray(state.digest?.behavior?.tags) ? state.digest.behavior.tags : [];
+  return tags.slice(0, 6).map((tag) => String(tag ?? '').trim().slice(0, 12)).filter(Boolean);
+}
+
+function keywordsHTML(state) {
+  const rows = keywordList(state);
+  if (!rows.length) return '';
+  return `<div class="rp-ai-keywords" aria-label="画像关键词">${rows.map((word) => `<span class="rp-chip">${esc(word)}</span>`).join('')}</div>`;
+}
+
 function summaryHTML(state) {
   if (state.loading && !state.data) {
     return `<p class="rp-cloud-loading">正在核对云端记录与画像摘要…</p>`;
@@ -139,7 +154,7 @@ function summaryHTML(state) {
     const staleNote = state.data?.summary ? '<p class="rp-note">画像已更新，旧解读已隐藏；可重新生成。</p>' : '';
     return `<div class="rp-ai-empty">
       ${staleNote}
-      <p class="rp-note">解读只使用画像摘要里的确定性统计与你主动选择记入的事实，不评价交易好坏。</p>
+      <p class="rp-note">解读只使用画像摘要里的确定性统计与系统自动记录的画像依据，不评价交易好坏。</p>
       <div class="rp-ai-actions">
         <button class="btn btn-outline btn-sm" type="button" data-cloud-action="summary" ${state.summaryBusy ? 'disabled' : ''}>${state.summaryBusy ? '正在生成…' : '生成 AI 解读'}</button>
         ${state.summaryError ? `<span class="rp-cloud-warn" role="alert">${esc(state.summaryError)}</span>` : ''}
@@ -152,7 +167,7 @@ function summaryHTML(state) {
       ? '本地模板'
       : '已保存解读';
   const sourceNote = state.summarySource === 'template'
-    ? `<p class="rp-ai-fallback">本次由本地模板生成。${esc(summaryFallbackText(state.summaryFallback))}</p>`
+    ? `<p class="rp-ai-fallback">本次由本地模板生成。${esc(summaryFallbackText(state.summaryFallback, state.summaryFallbackDetail))}</p>`
     : '';
   const saveNote = state.summarySaved
     ? '已保存到云端'
@@ -162,6 +177,7 @@ function summaryHTML(state) {
   return `<div class="rp-ai-read">
     <div class="rp-ai-source"><span class="rp-badge mode">${esc(source)}</span><span>${esc(CONFIDENCE_LABELS[state.summary.confidence] ?? '偏低')}置信度</span></div>
     <h4 class="rp-ai-headline">${esc(state.summary.headline)}</h4>
+    ${keywordsHTML(state)}
     <p class="rp-ai-text">${esc(state.summary.summary)}</p>
     ${state.summary.strengths.length ? `<div class="rp-ai-group"><span>已经做得好的</span>${list(state.summary.strengths)}</div>` : ''}
     ${state.summary.blind_spots.length ? `<div class="rp-ai-group"><span>可能没注意的</span>${list(state.summary.blind_spots)}</div>` : ''}
@@ -191,17 +207,24 @@ function cloudSnapshotHTML(state, profile) {
   </div>`;
 }
 
-function factsHTML(data) {
+function basisHTML(data) {
   const facts = Array.isArray(data?.facts) ? data.facts : [];
   if (!facts.length) {
-    return `<p class="rp-note">还没有主动记入的画像事实。你可以在问答页的回答下选择“记入画像”，确认后再保存。</p>`;
+    return `<details class="rp-basis rp-cloud-basis" data-role="profile-basis">
+      <summary>画像依据（0 条）</summary>
+      <p class="rp-note">还没有画像依据。问答中明确说出长期目标、偏好或约束时，系统会自动记录。</p>
+    </details>`;
   }
   const shown = facts.slice(0, 20);
-  return `<div class="rp-cloud-fact-list">${shown.map((fact) => `<article class="rp-cloud-fact" data-fact-id="${esc(fact.id)}">
-    <div class="rp-cloud-fact-top"><span class="rp-cloud-kind">${esc(PROFILE_FACT_KIND_LABELS[fact.kind] ?? '事实')}</span><p>${esc(fact.value)}</p></div>
-    ${fact.evidence ? `<p class="rp-cloud-evidence">原话：${esc(fact.evidence)}</p>` : ''}
-    <div class="rp-cloud-fact-foot"><span>${esc(fmtAt(fact.created_at))} · ${fact.source === 'manual' ? '手动记录' : '来自你的陈述'}</span><button type="button" class="rp-cloud-delete" data-cloud-action="delete-fact" data-id="${esc(fact.id)}">删除</button></div>
-  </article>`).join('')}${facts.length > shown.length ? `<p class="rp-note">只显示最近 ${shown.length} 条，共 ${facts.length} 条。</p>` : ''}</div>`;
+  return `<details class="rp-basis rp-cloud-basis" data-role="profile-basis">
+    <summary>画像依据（${facts.length} 条，可撤销）</summary>
+    <p class="rp-note">系统从你明确说过的长期目标、偏好和约束中自动记录；撤销后画像解读会在下次进入时重算。</p>
+    <div class="rp-cloud-fact-list">${shown.map((fact) => `<article class="rp-cloud-fact" data-fact-id="${esc(fact.id)}">
+      <div class="rp-cloud-fact-top"><span class="rp-cloud-kind">${esc(PROFILE_FACT_KIND_LABELS[fact.kind] ?? '事实')}</span><p>${esc(fact.value)}</p></div>
+      ${fact.evidence ? `<p class="rp-cloud-evidence">原话：${esc(fact.evidence)}</p>` : ''}
+      <div class="rp-cloud-fact-foot"><span>${esc(fmtAt(fact.created_at))} · ${fact.source === 'manual' ? '旧版手动记录' : '自动记录'}</span><button type="button" class="rp-cloud-delete" data-cloud-action="delete-fact" data-id="${esc(fact.id)}">撤销</button></div>
+    </article>`).join('')}${facts.length > shown.length ? `<p class="rp-note">只显示最近 ${shown.length} 条，共 ${facts.length} 条。</p>` : ''}</div>
+  </details>`;
 }
 
 function billRange(bill) {
@@ -238,56 +261,67 @@ function billsHTML(data) {
   <p class="rp-note">删除只影响这份云端账单记录。</p>`;
 }
 
-function cloudHTML(state, profile) {
+function cloudStatus(state) {
   const data = state.data;
-  const statusText = state.error
+  const text = state.error
     ? '云端不可用'
     : state.loading && !data
       ? '读取中'
       : data
-        ? `已连接 · ${data.bills.length} 份账单 / ${data.facts.length} 条事实`
+        ? `已连接 · ${data.bills.length} 份账单 / ${data.facts.length} 条画像依据`
         : '未连接';
-  const statusState = state.error ? 'error' : state.loading && !data ? 'pending' : data ? 'ok' : 'idle';
-  const errorBanner = state.error
-    ? `<div class="rp-cloud-error" role="alert">
-      <strong>云端记录暂不可用</strong>
-      <p>${esc(cloudErrorMessage(state.error))} 账单与画像都以云端为准，不会用本机旧数据代替。</p>
-      <button class="btn btn-outline btn-sm" type="button" data-cloud-action="retry">重试</button>
-    </div>`
-    : '';
+  const tone = state.error ? 'error' : state.loading && !data ? 'pending' : data ? 'ok' : 'idle';
+  return { text, tone };
+}
+
+function errorBanner(state) {
+  if (!state.error) return '';
+  return `<div class="rp-cloud-error" role="alert">
+    <strong>云端记录暂不可用</strong>
+    <p>${esc(cloudErrorMessage(state.error))} 账单与画像都以云端为准，不会用本机旧数据代替。</p>
+    <button class="btn btn-outline btn-sm" type="button" data-cloud-action="retry">重试</button>
+  </div>`;
+}
+
+function summaryViewHTML(state, profile) {
+  const status = cloudStatus(state);
+  const data = state.data;
   const body = data
     ? `${cloudSnapshotHTML(state, profile)}
       <div class="rp-cloud-section">
-        <div class="rp-cloud-section-head"><h4>画像解读</h4><span class="rp-cloud-muted">基于已发布报告与你主动记入的事实</span></div>
         ${summaryHTML(state)}
-      </div>
-      <div class="rp-cloud-section">
-        <div class="rp-cloud-section-head"><h4>你主动记入的事实</h4><span class="rp-cloud-muted">${data.facts.length} 条</span></div>
-        <p class="rp-note">这些只来自你的主动陈述，与报告推导的行为发现分开保存；可随时删除，删除后相关解读会一并隐藏。</p>
-        ${factsHTML(data)}
-      </div>
-      <div class="rp-cloud-section">
-        <div class="rp-cloud-section-head"><h4>云端账单</h4><span class="rp-cloud-muted">最近 ${data.bills.length} 份</span></div>
-        ${billsHTML(data)}
+        ${basisHTML(data)}
       </div>`
     : state.loading
       ? '<p class="rp-cloud-loading">正在读取云端账单与画像…</p>'
       : '';
-  return `<div class="rp-cloud-head">
-      <div><p class="mono-label">CLOUD / 云端画像</p><h3>跨账单记录</h3></div>
-      <span class="rp-cloud-status" data-state="${statusState}">${esc(statusText)}</span>
+  return `<div class="rp-cloud-section-head">
+      <h4>画像解读</h4>
+      <span class="rp-cloud-status" data-state="${status.tone}">${esc(status.text)}</span>
     </div>
-    <p class="rp-note">云端保存成交明细、账单统计、报告快照与你主动记入的画像事实；原始 CSV 与文件名不上传。</p>
+    <p class="rp-note">云端保存成交明细、账单统计、报告快照与画像依据；原始 CSV 与文件名不上传。</p>
     ${state.notice ? `<p class="rp-cloud-notice" role="status">${esc(state.notice)}</p>` : ''}
-    ${errorBanner}
+    ${errorBanner(state)}
     ${body}`;
 }
 
-export function mountCloudProfile(root, ctx, { profile = null } = {}) {
-  if (!root) return null;
+function billsViewHTML(state) {
+  const data = state.data;
+  if (!data) {
+    return state.loading ? '<p class="rp-cloud-loading">正在读取云端账单…</p>' : '';
+  }
+  return `<div class="rp-cloud-section-head"><h4>云端账单</h4><span class="rp-cloud-muted">最近 ${data.bills.length} 份</span></div>
+    ${billsHTML(data)}`;
+}
+
+export function mountCloudProfile(roots, ctx, { profile = null } = {}) {
+  const summaryRoot = roots && typeof roots === 'object' && 'summary' in roots ? roots.summary : roots;
+  const billsRoot = roots && typeof roots === 'object' && 'bills' in roots ? roots.bills : null;
+  if (!summaryRoot && !billsRoot) return null;
   const deps = ctx?.cloudDeps;
   if (!deps || typeof deps.listBills !== 'function' || typeof deps.getProfile !== 'function') {
-    root.innerHTML = '';
+    if (summaryRoot) summaryRoot.innerHTML = '';
+    if (billsRoot) billsRoot.innerHTML = '';
     return null;
   }
   const state = {
@@ -300,6 +334,7 @@ export function mountCloudProfile(root, ctx, { profile = null } = {}) {
     summarySource: null,
     summaryHash: null,
     summaryFallback: null,
+    summaryFallbackDetail: null,
     summaryBusy: false,
     summaryError: null,
     summarySaved: false,
@@ -308,8 +343,12 @@ export function mountCloudProfile(root, ctx, { profile = null } = {}) {
     notice: '',
   };
   const paint = () => {
-    if (root.isConnected) root.innerHTML = cloudHTML(state, profile);
+    if (summaryRoot?.isConnected) summaryRoot.innerHTML = summaryViewHTML(state, profile);
+    if (billsRoot?.isConnected) billsRoot.innerHTML = billsViewHTML(state);
   };
+  const isMounted = () => summaryRoot?.isConnected || billsRoot?.isConnected;
+  let autoRetryTimer = null;
+  let autoRetryCount = 0;
 
   async function prepareSummaryState() {
     const cloudProfile = cloudProfileFromBills(state.data?.bills);
@@ -326,12 +365,14 @@ export function mountCloudProfile(root, ctx, { profile = null } = {}) {
       state.summarySource = 'cached';
       state.summaryHash = state.data.summary_source_hash;
       state.summaryFallback = null;
+      state.summaryFallbackDetail = null;
       state.generatedHash = state.digestHash;
     } else if (!generatedFresh) {
       state.summary = null;
       state.summarySource = null;
       state.summaryHash = null;
       state.summaryFallback = null;
+      state.summaryFallbackDetail = null;
       state.summarySaved = false;
       state.summarySaveError = null;
       state.generatedHash = null;
@@ -346,14 +387,14 @@ export function mountCloudProfile(root, ctx, { profile = null } = {}) {
     paint();
     try {
       const data = await ensureData(ctx, { force });
-      if (!root.isConnected) return;
+      if (!isMounted()) return;
       state.data = data;
       state.loading = false;
       await prepareSummaryState();
       paint();
       maybeAutoSummary();
     } catch (error) {
-      if (!root.isConnected) return;
+      if (!isMounted()) return;
       state.loading = false;
       state.error = error;
       paint();
@@ -363,19 +404,36 @@ export function mountCloudProfile(root, ctx, { profile = null } = {}) {
   function maybeAutoSummary() {
     if (state.summaryBusy || !state.digest || !state.digestHash) return;
     if (state.summary && state.generatedHash === state.digestHash) return;
+    if (autoSummaryInFlight.has(state.digestHash)) {
+      // 旧挂载点（例如报告加载后被替换的节点）可能仍在请求；等它结束后由本挂载点重试。
+      if (!autoRetryTimer && autoRetryCount < 20) {
+        autoRetryTimer = setTimeout(() => {
+          autoRetryTimer = null;
+          autoRetryCount += 1;
+          if (isMounted()) maybeAutoSummary();
+        }, 1500);
+      }
+      return;
+    }
     const last = autoSummaryTried.get(state.digestHash);
     if (last && Date.now() - last < AUTO_SUMMARY_RETRY_MS) return;
     if (typeof deps.requestProfileSummary !== 'function') return;
-    autoSummaryTried.set(state.digestHash, Date.now());
+    autoRetryCount = 0;
+    autoSummaryInFlight.add(state.digestHash);
     void generateSummary({ auto: true });
   }
 
   async function generateSummary({ auto = false } = {}) {
-    if (state.summaryBusy || !state.digest) return;
+    const hash = state.digestHash;
+    if (state.summaryBusy || !state.digest) {
+      if (auto && hash) autoSummaryInFlight.delete(hash);
+      return;
+    }
     state.summaryBusy = true;
     state.summaryError = null;
     state.summarySaveError = null;
     paint();
+    let finalSource = null;
     try {
       const response = await deps.requestProfileSummary({ digest: state.digest });
       const view = summaryResponseView(response);
@@ -383,9 +441,11 @@ export function mountCloudProfile(root, ctx, { profile = null } = {}) {
       state.summary = view.summary;
       state.summarySource = view.source;
       state.summaryFallback = view.fallback_reason;
+      state.summaryFallbackDetail = view.fallback_detail;
       state.summaryHash = view.source_hash ?? state.digestHash;
       state.generatedHash = state.digestHash;
       state.summarySaved = false;
+      finalSource = view.source;
       // 模板兜底不写入云端，避免把兜底文案冒充为已保存的 AI 解读。
       if (view.source !== 'ai' || typeof deps.saveProfileSummary !== 'function') return;
       try {
@@ -403,26 +463,31 @@ export function mountCloudProfile(root, ctx, { profile = null } = {}) {
     } catch {
       state.summaryError = auto ? '自动解读暂不可用，可稍后重试。' : '解读生成失败，请稍后重试。';
     } finally {
+      if (auto && hash) {
+        autoSummaryInFlight.delete(hash);
+        if (finalSource === 'ai' && state.summary) autoSummaryTried.delete(hash);
+        else autoSummaryTried.set(hash, Date.now());
+      }
       state.summaryBusy = false;
       paint();
     }
   }
 
   async function deleteFact(id, button) {
-    if (!twoStep(button)) return;
+    if (!twoStep(button, '确认撤销')) return;
     button.disabled = true;
-    button.textContent = '删除中…';
+    button.textContent = '撤销中…';
     try {
       await deps.deleteFact({ id });
       if (state.data) {
         state.data = { ...state.data, facts: state.data.facts.filter((fact) => fact.id !== id) };
         if (cache.status === 'ready') cache = { ...cache, data: state.data };
       }
-      state.notice = '已从云端删除这条事实。';
+      state.notice = '已撤销这条画像依据；画像解读会在下次进入时重算。';
       await prepareSummaryState();
       paint();
     } catch (error) {
-      state.notice = `删除失败：${cloudErrorMessage(error)}`;
+      state.notice = `撤销失败：${cloudErrorMessage(error)}`;
       paint();
     }
   }
@@ -447,9 +512,9 @@ export function mountCloudProfile(root, ctx, { profile = null } = {}) {
     }
   }
 
-  root.onclick = (event) => {
+  const onClick = (event) => {
     const button = event.target?.closest?.('[data-cloud-action]');
-    if (!button || !root.contains(button)) return;
+    if (!button || !event.currentTarget.contains(button)) return;
     const action = button.getAttribute('data-cloud-action');
     const id = button.getAttribute('data-id');
     if (action === 'retry') void refresh({ force: true });
@@ -457,6 +522,8 @@ export function mountCloudProfile(root, ctx, { profile = null } = {}) {
     else if (action === 'delete-fact' && id) void deleteFact(id, button);
     else if (action === 'delete-bill' && id) void deleteBill(id, button);
   };
+  if (summaryRoot) summaryRoot.onclick = onClick;
+  if (billsRoot) billsRoot.onclick = onClick;
 
   if (cache.status === 'ready' && cache.data) {
     state.loading = false;

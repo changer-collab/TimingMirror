@@ -2,6 +2,7 @@
 // 边界：当前 / 历史划分、版本状态机、解析与判定全部由 adapter 提供（adapter 内部调用引擎）；本页只渲染返回的文本与 display。
 import { el, chip } from '../components.js';
 import * as adapter from '../../demo/adapter.js';
+import { buildRuleCandidates } from '../../engine/userProfile.js';
 import { renderScenarioReview } from './scenarioReviewView.js';
 import { saveContractsDemo, defaultContracts } from '../../state.js';
 
@@ -202,6 +203,124 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
   let pendingStop = null;
   const stop = (hash, rule_id) => commitAll(adapter.contractStopRecords(c.versions, { hash, rule_id }));
 
+  /* —— 规则候选：只来自本账单证据，放在当前生效规则上方 —— */
+  const candidateBox = el('div', { class: 'card cv-candidates', 'data-role': 'rule-candidates' });
+  let candidateToken = 0;
+  const CANDIDATE_TITLE = '规则候选（来自本账单证据）';
+  const CANDIDATE_NOTE = '候选只做模板预填；保存前由你确认或改写，系统不会自动启用。';
+
+  function candidateEmpty(message) {
+    candidateBox.replaceChildren(
+      el('div', { class: 'section-title' }, [CANDIDATE_TITLE]),
+      el('div', { class: 'muted small' }, [message]),
+    );
+  }
+
+  function markCandidate(candidate, status) {
+    try {
+      ctx.qaDeps?.recordCandidateEvent?.(candidate.candidate_id, status);
+    } catch { /* 本地画像记录失败不阻断候选区重绘 */ }
+    void paintCandidates();
+  }
+
+  function openCandidate(candidate) {
+    if (typeof ctx.qaDeps?.openRuleCandidate === 'function') ctx.qaDeps.openRuleCandidate(ctx, candidate);
+  }
+
+  function candidateCard(candidate) {
+    const tone = candidate.status === 'available' ? 'warn' : candidate.status === 'active' ? 'ok' : 'mode';
+    const actions = [];
+    if (candidate.status === 'available') {
+      actions.push(el('button', { class: 'btn small', 'data-role': 'candidate-open', onclick: () => openCandidate(candidate) }, ['打开模板确认']));
+      actions.push(el('button', { class: 'btn small', 'data-role': 'candidate-dismiss', onclick: () => markCandidate(candidate, 'dismissed') }, ['忽略这条候选']));
+    } else if (candidate.status === 'dismissed') {
+      actions.push(el('button', { class: 'btn small', 'data-role': 'candidate-restore', onclick: () => markCandidate(candidate, 'restored') }, ['恢复候选']));
+    }
+    const evidence = Array.isArray(candidate.evidence) ? candidate.evidence.slice(0, 6) : [];
+    return el('div', { class: 'cv-candidate', 'data-candidate-id': candidate.candidate_id, 'data-status': candidate.status }, [
+      el('div', { class: 'row cv-candidate-head' }, [
+        chip(candidate.status_text, tone),
+        el('span', { class: 'cv-candidate-name' }, [safe(candidate.template_name)]),
+      ]),
+      el('div', { class: 'cv-rule-text' }, [safe(candidate.text)]),
+      el('div', { class: 'muted small' }, [safe(candidate.reason)]),
+      el('div', { class: 'muted small' }, [safe(candidate.basis)]),
+      evidence.length
+        ? el('ul', { class: 'cv-candidate-evidence' }, evidence.map((item) => el('li', {}, [`${safe(item.trade_id)} · ${safe(item.line)}`])))
+        : null,
+      el('div', { class: 'muted small cv-candidate-caveat' }, [safe(candidate.caveat)]),
+      actions.length ? el('div', { class: 'row cv-candidate-actions' }, actions) : null,
+    ]);
+  }
+
+  async function paintCandidates() {
+    const token = ++candidateToken;
+    const bill = state.bill;
+    const usable = bill && bill.status === 'confirmed' && bill.sourceType === 'local' && bill.demo !== true;
+    if (!usable) {
+      candidateBox.hidden = true;
+      return;
+    }
+    candidateBox.hidden = false;
+    candidateEmpty('正在读取本账单证据…');
+
+    let bundle = null;
+    try {
+      bundle = ctx.qaDeps?.getReportBundle?.(bill) ?? null;
+      if (!bundle && typeof ctx.qaDeps?.loadReportBundle === 'function') bundle = await ctx.qaDeps.loadReportBundle(bill);
+    } catch (error) {
+      if (token !== candidateToken || !candidateBox.isConnected) return;
+      candidateEmpty(`本次没有读取到规则候选：${safe(error && error.message ? error.message : error)}`);
+      return;
+    }
+    if (token !== candidateToken || !candidateBox.isConnected) return;
+    if (state.bill?.contextId !== bill.contextId) return;
+
+    const published = bundle?.review?.portfolio_published === true;
+    const behavior = published && bundle?.insights?.behavior?.available ? bundle.insights.behavior.data : null;
+    if (!published) {
+      candidateEmpty('当前账单组合结果未发布：暂不生成规则候选。');
+      return;
+    }
+    if (!behavior) {
+      candidateEmpty('本账单的行为发现暂不可用：暂不生成规则候选。');
+      return;
+    }
+
+    let pack = null;
+    try {
+      pack = buildRuleCandidates({
+        behavior,
+        ruleState: typeof ctx.qaDeps?.ruleStateOf === 'function' ? ctx.qaDeps.ruleStateOf(c.versions) : null,
+        profile: typeof ctx.qaDeps?.loadProfile === 'function' ? ctx.qaDeps.loadProfile() : null,
+      });
+    } catch {
+      pack = null;
+    }
+    const candidates = Array.isArray(pack?.candidates) ? pack.candidates : [];
+    if (!candidates.length) {
+      candidateEmpty('当前没有可建立的规则候选。');
+      return;
+    }
+
+    const visible = candidates.filter((item) => item.status !== 'not_recommended');
+    const notRecommended = candidates.filter((item) => item.status === 'not_recommended');
+    const nodes = [
+      el('div', { class: 'section-title' }, [CANDIDATE_TITLE]),
+      el('div', { class: 'muted small' }, [CANDIDATE_NOTE]),
+    ];
+    if (visible.length) nodes.push(...visible.map(candidateCard));
+    else nodes.push(el('div', { class: 'muted cv-empty' }, ['当前没有可建立的规则候选。']));
+    if (notRecommended.length) {
+      nodes.push(el('details', { class: 'cv-candidate-more', 'data-role': 'not-recommended' }, [
+        el('summary', {}, [`${notRecommended.length} 条行为模式尚未达到可建规则的条件`]),
+        ...notRecommended.map(candidateCard),
+      ]));
+    }
+    candidateBox.replaceChildren(...nodes);
+  }
+
+
   function currentCard(rule) {
     const stopKey = `${rule.rule_id ?? ''}:${rule.hash}`;
     const confirming = pendingStop === stopKey;
@@ -332,7 +451,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     currentBox.replaceChildren(...nodes);
   }
   paintCurrent();
-  page.append(currentBox);
+  page.append(candidateBox, currentBox);
 
   /* —— 待重新确认（异常）：不计入当前规则、不参与测试 —— */
   if (ruleSet.needsReconfirm.length) {
@@ -877,6 +996,7 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
   }
 
   root.append(page);
+  void paintCandidates();
   const mountModal = typeof ctx.setRuleModal === 'function' ? ctx.setRuleModal : null;
   if (backdrop) {
     if (mountModal) mountModal(backdrop);
