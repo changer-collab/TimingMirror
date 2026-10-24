@@ -90,14 +90,11 @@ check('助手：报告异步加载完成/失败后刷新状态，避免停留在
 check('报告：AI 观察不再使用“规则引擎兜底/本地规则引擎”内部称呼',
   /本机规则补充/.test(realReport) && /本机规则识别/.test(realReport)
   && !/规则引擎兜底|本地规则引擎/.test(realReport));
-check('申报前自检：说明历史模拟，不显示内部错误码或模型计数',
-  (() => {
-    const selfcheck = block(contractView, 'if (standalone) {', '\n  }\n');
-    return selfcheck.length > 0
-      && /不是实时提醒/.test(selfcheck)
-      && /不会下单/.test(selfcheck)
-      && !/\b[EW]_[A-Z0-9_]+|modelCalls|model_calls|模型请求/.test(selfcheck);
-  })());
+check('个人中心：申报前自检已移除，规则工作区与历史复盘入口保留',
+  !/申报前自检|SELF CHECK|假如买入|假如卖出|sim-symbol|sim-date|测试该日|section === 'selfcheck'/.test(contractView)
+  && /交易规则/.test(contractView)
+  && /历史规则/.test(contractView)
+  && /renderScenarioReview/.test(contractView));
 check('报告：结论来源四层可展开、默认折叠且不显示内部编号',
   (() => {
     const method = block(realReport, 'function methodDisclosure', '\n}\n');

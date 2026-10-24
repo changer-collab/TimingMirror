@@ -128,6 +128,7 @@ export function defaultAssistant() {
 
 export const state = {
   route: 'import',
+  contractPage: null,
   bill: defaultBill(),
   report: { scenario: 'R', symbol: 'pool' },
   chat: defaultChat(),

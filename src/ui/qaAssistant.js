@@ -134,7 +134,7 @@ function pageIntro(state) {
   if (state.route === 'import') return '我说明导入格式、确认前检查和数据边界；不会读取或上传原始 CSV。';
   if (state.route === 'report') return '我说明当前页可见数字的含义、来源和状态；完整证据与追问请去报告细节或问答页。';
   if (state.route === 'chat') return '完整问答请在下方输入区继续；这里只说明本页操作、画像记录和隐私。';
-  if (state.route === 'contract') return '我说明规则保存与测试的入口；具体判定以你保存的规则为准。';
+  if (state.route === 'contract') return '我说明规则保存与历史复盘的入口；具体判定以你保存的规则为准。';
   return '我说明当前页面的操作、隐私和可见状态；账单的完整复盘请在导入并确认后去问答页。';
 }
 
@@ -372,12 +372,31 @@ function primaryAction(state, deps) {
     };
   }
   if (state.route === 'contract') {
-    if (state.assistant?.marketNotice) {
+    // contract 同时承载个人中心与 #/scenario；按 contractPage 区分，避免个人中心出现单次自检或复盘解读入口。
+    if (state.contractPage !== 'scenario') {
       return {
         id: 'review-open',
         kind: 'link',
-        label: '查看操作复盘',
+        label: '前往历史复盘',
         href: '#/scenario',
+        note: '个人中心只管理画像与规则；逐笔历史复盘在复盘页完成。',
+      };
+    }
+    if (!state.contracts?.simContext?.review) {
+      return {
+        id: 'rules-open',
+        kind: 'link',
+        label: '打开规则管理',
+        href: '#/me',
+        note: '复盘结果加载完成后，可在这里让 AI 解释本次复盘。',
+      };
+    }
+    if (state.assistant?.marketNotice) {
+      return {
+        id: 'rules-open',
+        kind: 'link',
+        label: '打开规则管理',
+        href: '#/me',
         note: '行情暂不可用，暂时不能解释复盘结果。',
       };
     }
@@ -391,11 +410,11 @@ function primaryAction(state, deps) {
       };
     }
     return {
-      id: 'review-open',
+      id: 'rules-open',
       kind: 'link',
-      label: '去操作复盘',
-      href: '#/scenario',
-      note: '生成复盘结果后，可在这里让 AI 解释本次结果。',
+      label: '打开规则管理',
+      href: '#/me',
+      note: '当前没有可解释的复盘摘要；逐笔结果仍以本地判定为准。',
     };
   }
   if (state.route === 'chat') {
@@ -803,6 +822,8 @@ async function runImportAi(ctx, action) {
 async function runReviewExplain(ctx) {
   const deps = ctx.qaDeps ?? {};
   if (ctx.state.assistant?.qaAiPending || typeof deps.explainReviewResult !== 'function') return;
+  // 只解释已加载的历史复盘；个人中心不提供该入口，也不构造 simulation/flow 触发解释。
+  if (ctx.state.contractPage !== 'scenario' || !ctx.state.contracts?.simContext?.review) return;
   const id = pushAiTurn(ctx, '让 AI 解释复盘结果', '正在请 AI 解释本次复盘结果…', 'AI 解释');
   let result;
   try {

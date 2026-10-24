@@ -609,21 +609,11 @@ import { renderRealProfile } from './realProfile.js';
   function mePage() {
     return `<div class="container page-body tm-me-page">
       <section class="tm-workspace-head">
-        <p class="mono-label">MY MIRROR / 个人中心</p>
-        <h1>画像、规则与自检</h1>
-        <p class="muted">画像来自已复核账单，以及你在问答页主动选择记入的事实；规则保存在云端，每次进入都会自动恢复。</p>
+        <p class="mono-label">PROFILE &amp; RULES / 画像与规则</p>
+        <h1>画像与规则</h1>
+        <p class="muted">画像来自已复核账单，以及你在问答页主动选择记入的事实；规则保存在云端，每次进入都会自动恢复。历史操作复盘请在「复盘」页完成。</p>
       </section>
       <div id="tm-real-profile"></div>
-      <section class="tm-me-rules tm-me-selfcheck" aria-label="申报前自检">
-        <div class="tm-me-rules-head">
-          <div>
-            <p class="mono-label">SELF CHECK / 申报前自检</p>
-            <p class="muted">用当前生效规则重放历史行情；这是历史模拟，不是实时提醒，也不会下单。</p>
-          </div>
-          <a class="text-link" href="#/scenario">打开操作复盘 →</a>
-        </div>
-        <div id="tm-real-selfcheck"></div>
-      </section>
       <section class="tm-me-rules" aria-label="规则工作区">
         <div class="tm-me-rules-head">
           <div>
@@ -2089,7 +2079,6 @@ import { renderRealProfile } from './realProfile.js';
     }
     if (state.route === 'me' && !gated) {
       renderRealProfile(document.getElementById('tm-real-profile'), bridge.getCtx());
-      bridge.mountSelfCheckView(document.getElementById('tm-real-selfcheck'));
       bridge.mountContractView(document.getElementById('tm-real-rules'));
     }
     if (state.route === 'scenario' && !gated) {
