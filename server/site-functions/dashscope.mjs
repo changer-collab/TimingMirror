@@ -136,6 +136,7 @@ const IMPORT_VISION_SYSTEM = [
   'column_mapping 每项只允许 source_label、source_subfield、target_field、confidence 四个字段；source_label 为原图列名，source_subfield 为同一复合列中的子列（可为空），target_field 只能取 name、symbol、direction、date、settlement_date、price、quantity、amount、settlement_amount、fee、tax，confidence 只能取 high、medium、low。',
   '复合列必须拆成子字段：例如“名称/代码”中的“代码”映射为 symbol；“标志/交收日期”中的“标志”映射为 direction，“交收日期”映射为 settlement_date；“成交价/量”中的“成交价”映射为 price、“量”映射为 quantity；“成交/清算额”映射为 amount 或 settlement_amount。',
   'fee、tax 只有原图存在独立的手续费、印花税、过户费等费用列时才映射；没有独立费用列就省略，绝不把成交额或清算额映射成 fee 或 tax。',
+  'fee、tax 是可选字段：缺失、null 或空字符串都允许；原图没有独立费用或税费列时输出 null 或省略字段，不要为了补全字段而猜测或编造费用。',
   'column_mapping 不得包含图片、Base64、CSV、账户信息、模型原文或额外字段；缺少 column_mapping 不影响 trades 和 unresolved 返回。',
   'date 必须为 YYYY-MM-DD；优先使用“成交日期”；如果只有“交收日期”，使用它并在 issues 中说明“使用交收日期”，不要根据交收日期推算成交日期。',
   'symbol 为 6 位数字代码并保留前导零；“名称/代码”在同一单元格时只提取代码，不要把名称写进 symbol；如能可靠识别证券名称，可单独写入 name，否则填 null。',

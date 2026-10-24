@@ -1202,85 +1202,174 @@ body {
   font-size: 12px;
 }
 
-.tm-draft-table th,
-.tm-draft-table td {
-  padding: 8px;
+.tm-import-table th,
+.tm-import-table td {
   white-space: nowrap;
 }
 
-.tm-draft-table .tm-cell-input {
-  width: 82px;
-  padding: 5px 7px;
-  font-size: 13px;
+.tm-import-table .tm-cell-input {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 3px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  background: var(--sheet);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.3;
 }
 
-.tm-draft-table .tm-cell-static {
-  display: inline-block;
-  min-width: 82px;
-  padding: 5px 7px;
-  color: var(--ink-soft);
-  font-family: var(--font-mono);
-  font-size: 13px;
+.tm-import-table .tm-cell-input:hover {
+  border-color: var(--line-strong);
+}
+
+.tm-import-table .tm-cell-input:focus {
+  border-color: var(--ink);
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+
+.tm-import-table td.num .tm-cell-input {
   text-align: right;
 }
 
-.tm-draft-table .tm-cell-static.is-missing {
-  color: var(--warn);
+.tm-import-table select.tm-cell-input {
+  padding-right: 4px;
 }
 
-.tm-draft-table .tm-cell-stack {
+.tm-import-table .tm-cell-stack {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 
-.tm-draft-table .tm-cell-stack .tm-cell-input {
+.tm-import-table .tm-cell-stack .tm-cell-input {
   width: 100%;
 }
 
-.tm-draft-table .tm-cell-stack .sym-name {
-  margin-left: 0;
-  font-size: 9.5px;
-  line-height: 1.4;
-}
-
-.tm-draft-table.is-source-columns td {
-  vertical-align: top;
-}
-
-.tm-draft-table td[aria-label] {
-  width: 90px;
-}
-
-.tm-draft-table .tm-row-status {
-  min-width: 126px;
-  max-width: 170px;
+.tm-import-table .tm-row-status {
+  min-width: 128px;
+  max-width: 180px;
   white-space: normal;
-  color: var(--gray);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
-.tm-draft-table .tm-row-status span {
-  display: block;
-  color: inherit;
-  margin-top: 2px;
+.tm-status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 1.6;
+  white-space: nowrap;
 }
 
-.tm-draft-table .tm-row-status.is-error {
-  color: var(--loss);
-}
-
-.tm-draft-table .tm-row-status.is-warning {
+.tm-import-table .tm-row-status.is-warning .tm-status-pill {
   color: var(--warn);
+  background: var(--warn-soft);
 }
 
-.tm-draft-table tr.is-manual-row .tm-cell-input {
+.tm-import-table .tm-row-status.is-error .tm-status-pill {
+  color: var(--loss);
+  background: var(--loss-soft);
+}
+
+.tm-import-table .tm-row-status.is-success .tm-status-pill {
+  color: var(--ok);
+  background: var(--ok-soft);
+}
+
+.tm-import-table .tm-row-status.is-info .tm-status-pill {
+  color: var(--info);
+  background: var(--info-soft);
+}
+
+.tm-import-table .tm-row-issue {
+  display: block;
+  margin-top: 3px;
+  color: var(--gray);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.tm-import-table tr.is-manual-row .tm-cell-input {
   background: rgba(255, 255, 255, 0.78);
 }
 
-.tm-draft-table tr.is-manual-row .tm-row-status.is-warning {
+.tm-import-table tr.tm-severity-warning > td {
+  background: rgba(154, 90, 19, 0.035);
+}
+
+.tm-import-table tr.tm-severity-error > td {
+  background: var(--loss-soft);
+}
+
+.tm-import-table .tm-col-action .tm-row-remove {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.tm-import-table .tm-readonly {
+  color: var(--faint);
+  font-size: 10.5px;
+}
+
+.tm-import-table input[type="checkbox"] {
+  accent-color: var(--ink);
+}
+
+.tm-vision-extras {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--line-strong);
+  background: rgba(234, 239, 237, 0.35);
+  color: var(--gray);
+  font-size: 11px;
+}
+
+.tm-vision-extras strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--ink-soft);
+  font-size: 12px;
   font-weight: 500;
+}
+
+.tm-vision-extras ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding-left: 16px;
+}
+
+.tm-vision-extras li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tm-vision-extras li span {
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.tm-vision-extras > span {
+  display: block;
+  margin-top: 6px;
+  color: var(--faint);
+  font-size: 10.5px;
+}
+
+.tm-fee-note {
+  margin-top: 8px;
+  color: var(--faint);
+  font-size: 11px;
 }
 
 .tm-add-row-bar {
@@ -1311,21 +1400,13 @@ body {
   }
 }
 
-.tm-draft-table .tm-row-status.is-success {
-  color: var(--ok);
-}
-
-.tm-draft-table .tm-row-status.is-info {
-  color: var(--info);
-}
-
-.tm-draft-table tr.invalid,
-.tm-draft-table tr.tm-severity-error {
+.tm-import-table tr.invalid,
+.tm-import-table tr.tm-severity-error {
   background: var(--loss-soft);
 }
 
-.tm-draft-table tr.duplicate,
-.tm-draft-table tr.tm-severity-warning {
+.tm-import-table tr.duplicate,
+.tm-import-table tr.tm-severity-warning {
   background: var(--warn-soft);
 }
 
@@ -1561,12 +1642,8 @@ body {
     padding: 20px;
   }
 
-  .tm-draft-table {
-    min-width: 820px;
-  }
-
-  .tm-draft-table .tm-cell-input {
-    width: 72px;
+  .tm-import-table-wrap {
+    overscroll-behavior-x: contain;
   }
 
   .tm-primary-row .btn {
@@ -1574,14 +1651,13 @@ body {
   }
 }
 
-.tm-draft-table .line-no { width: 58px; }
-.tm-draft-table input[data-field="date"] { width: 100px; }
-.tm-draft-table input[data-field="symbol"] { width: 70px; }
-.tm-draft-table select[data-field="side"] { width: 68px; }
-.tm-draft-table input[data-field="price"],
-.tm-draft-table input[data-field="quantity"] { width: 68px; }
-.tm-draft-table input[data-field="fee"],
-.tm-draft-table input[data-field="tax"] { width: 58px; }
+.tm-import-table input[data-field="date"] { min-width: 100px; }
+.tm-import-table input[data-field="symbol"] { min-width: 76px; }
+.tm-import-table select[data-field="side"] { min-width: 68px; }
+.tm-import-table input[data-field="price"],
+.tm-import-table input[data-field="quantity"] { min-width: 72px; }
+.tm-import-table input[data-field="fee"],
+.tm-import-table input[data-field="tax"] { min-width: 64px; }
 
 /* 全局 AI 助手：页面问答 */
 .tm-assistant .qa-assistant { display: flex; flex: 1 1 auto; flex-direction: column; gap: 14px; min-width: 0; min-height: 0; overflow: hidden; padding-bottom: 0; border-bottom: 1px solid var(--line); }

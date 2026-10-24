@@ -2590,6 +2590,77 @@ table.ledger tr.is-missing {
   background: var(--warn-soft);
 }
 
+/* 导入结果表：图片草稿与文件确认表共用同一套表头、行高与分隔线。 */
+table.ledger.tm-import-table {
+  width: 100%;
+  min-width: 860px;
+  font-size: 12px;
+}
+
+table.ledger.tm-import-table th,
+table.ledger.tm-import-table td {
+  height: 40px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: middle;
+}
+
+table.ledger.tm-import-table th {
+  height: 34px;
+  padding-top: 7px;
+  padding-bottom: 7px;
+  background: rgba(234, 239, 237, 0.42);
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-align: left;
+  white-space: nowrap;
+}
+
+table.ledger.tm-import-table th.num,
+table.ledger.tm-import-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+table.ledger.tm-import-table td {
+  white-space: nowrap;
+  color: var(--ink-soft);
+}
+
+table.ledger.tm-import-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+table.ledger.tm-import-table .line-no {
+  width: 54px;
+  font-size: 9.5px;
+}
+
+table.ledger.tm-import-table .tm-col-status {
+  width: 128px;
+}
+
+table.ledger.tm-import-table .tm-col-action {
+  width: 58px;
+  text-align: right;
+}
+
+table.ledger.tm-import-table .sym-name {
+  display: block;
+  margin-left: 0;
+  font-size: 9px;
+  line-height: 1.3;
+  color: var(--faint);
+}
+
+.tm-import-table-wrap {
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
+}
+
 .sym {
   font-family: var(--font-mono);
   font-size: 10.5px;
