@@ -10,6 +10,8 @@ import { createHandler, SITE_FUNCTION_CODES } from '../../server/site-functions/
 import {
   DEEPSEEK_CHAT_ENDPOINT,
   DEEPSEEK_DEFAULT_MODEL,
+  DEEPSEEK_DEFAULT_TIMEOUT_MS,
+  DEEPSEEK_VISION_DEFAULT_TIMEOUT_MS,
   DEEPSEEK_ERROR_CODES,
   createDeepSeekTransport,
 } from '../../server/site-functions/deepseek.mjs';
@@ -45,6 +47,25 @@ function fakeFetch(handler) {
       return handler(call, calls.length);
     },
   };
+}
+
+function delayedReply(delayMs, payload) {
+  return (call) => new Promise((resolve, reject) => {
+    const signal = call.init?.signal;
+    let timer;
+    const onAbort = () => {
+      clearTimeout(timer);
+      const error = new Error('aborted');
+      error.name = 'AbortError';
+      reject(error);
+    };
+    timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve(reply(200, payload));
+    }, delayMs);
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 async function expectTransportError(promise, code) {
@@ -129,6 +150,41 @@ async function invoke(handler, path, body) {
   check('图片：请求不包含文件名或原始路径', !JSON.stringify(call.body).includes('file_name')
     && !JSON.stringify(call.body).includes('scan.pdf'), JSON.stringify(call.body).slice(0, 400));
   check('图片：response_format=json_object', call.body.response_format?.type === 'json_object');
+  check('图片：请求体不包含 timeout 配置', !/timeout/i.test(JSON.stringify(call.body)),
+    JSON.stringify(call.body).slice(0, 300));
+}
+
+/* ==== 文本与视觉超时相互独立 ==== */
+{
+  check('超时默认值：文本 15000ms、视觉 20000ms',
+    DEEPSEEK_DEFAULT_TIMEOUT_MS === 15000 && DEEPSEEK_VISION_DEFAULT_TIMEOUT_MS === 20000,
+    JSON.stringify({ text: DEEPSEEK_DEFAULT_TIMEOUT_MS, vision: DEEPSEEK_VISION_DEFAULT_TIMEOUT_MS }));
+
+  const visionFake = fakeFetch(delayedReply(300, { choices: [{ message: { content: '{"trades":[],"unresolved":[]}' } }] }));
+  const visionTransport = createDeepSeekTransport({
+    apiKey: 'test-key',
+    timeoutMs: 1000,
+    visionTimeoutMs: 30,
+    fetchImpl: visionFake.fetchImpl,
+  });
+  const visionResult = await expectTransportError(
+    visionTransport.vision({ images: [{ mime: 'image/jpeg', data_base64: 'AAAA' }] }),
+    DEEPSEEK_ERROR_CODES.TIMEOUT,
+  );
+  check('超时：视觉使用独立 visionTimeoutMs（30ms），不等待文本 1000ms', visionResult.ok, visionResult.actual);
+
+  const textFake = fakeFetch(delayedReply(300, { choices: [{ message: { content: VALID_INTENT } }] }));
+  const textTransport = createDeepSeekTransport({
+    apiKey: 'test-key',
+    timeoutMs: 30,
+    visionTimeoutMs: 1000,
+    fetchImpl: textFake.fetchImpl,
+  });
+  const textResult = await expectTransportError(
+    textTransport.intent({ question: QUESTION }),
+    DEEPSEEK_ERROR_CODES.TIMEOUT,
+  );
+  check('超时：文本仍使用 timeoutMs（30ms），不受视觉 1000ms 影响', textResult.ok, textResult.actual);
 }
 
 /* ==== GIF / WebP 由浏览器先转 JPEG；transport 本身仍接受 image/* ==== */
@@ -305,6 +361,19 @@ async function invoke(handler, path, body) {
   await custom.intent({ question: QUESTION });
   check('Provider：DEEPSEEK_MODEL 可覆盖模型', fakeCustom.calls[0].body.model === 'custom-deepseek-model',
     fakeCustom.calls[0].body.model);
+
+  const visionFake = fakeFetch(delayedReply(300, { choices: [{ message: { content: '{"trades":[],"unresolved":[]}' } }] }));
+  const visionProvider = createModelTransport({
+    deepseekApiKey: 'test-key',
+    timeoutMs: 1000,
+    visionTimeoutMs: 30,
+    fetchImpl: visionFake.fetchImpl,
+  });
+  const visionResult = await expectTransportError(
+    visionProvider.vision({ images: [{ mime: 'image/jpeg', data_base64: 'AAAA' }] }),
+    DEEPSEEK_ERROR_CODES.TIMEOUT,
+  );
+  check('Provider：visionTimeoutMs 透传到视觉调用', visionResult.ok, visionResult.actual);
 }
 
 /* ==== qaNarrative：请求形状与 handler 校验 ==== */

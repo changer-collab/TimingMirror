@@ -7,8 +7,9 @@
 // 服务端是无状态的：只校验单次请求形状与响应结构，不接收/不计数 flow_id/request_id；
 //       flow_id、request_id、预算计数与 trace 由本模块维护（与现有规则助手相同）。
 // 边界：不读取凭证；不发送原始文件/文件名；不自动分批调用。
-// 超时口径：Qoder Sites MCP 与仓库文档未暴露函数 wall-clock 上限；站点日志实测 11.7s 成功，
-//       因此视觉客户端只保守设为 20s（服务端 DeepSeek 仍为 15s），不假设 60s 可用。
+// 超时口径：Qoder Sites 未公开函数 wall-clock 上限；日志仅验证约 15.05s 成功。
+//       视觉服务端 best-effort 设为 20s、客户端 25s，不假设 30s 或 60s 可用；
+//       若部署后出现无业务 code 的网关级 504，不能继续盲目增加 timeout。
 import { hashQuestion } from './planner.js';
 import { exportImportTraceJsonl } from './traceAudit.js';
 import {
@@ -20,7 +21,7 @@ import {
 export const IMPORT_RECOVERY_STAGE = 'bill_extract';
 export const IMPORT_RECOVERY_MAX_MODEL_CALLS = 2;
 export const IMPORT_RECOVERY_TIMEOUT_MS = 8000;
-export const IMPORT_VISION_TIMEOUT_MS = 20000;
+export const IMPORT_VISION_TIMEOUT_MS = 25000;
 export const IMPORT_RECOVERY_MAX_CONTENT_CHARS = 15000;
 export const IMPORT_RECOVERY_MAX_TRADES = 500;
 export const IMPORT_RECOVERY_SESSION_KEY = 'tm.importRecovery.session';

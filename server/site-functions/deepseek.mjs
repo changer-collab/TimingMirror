@@ -7,6 +7,7 @@ export const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 export const DEEPSEEK_CHAT_ENDPOINT = `${DEEPSEEK_BASE_URL}/chat/completions`;
 export const DEEPSEEK_DEFAULT_MODEL = 'deepseek-flash';
 export const DEEPSEEK_DEFAULT_TIMEOUT_MS = 15000;
+export const DEEPSEEK_VISION_DEFAULT_TIMEOUT_MS = 20000;
 
 export const DEEPSEEK_ERROR_CODES = Object.freeze({
   AUTH_FAILED: 'E_MODEL_AUTH_FAILED',
@@ -65,6 +66,7 @@ export function createDeepSeekTransport({
   apiKey,
   model = DEEPSEEK_DEFAULT_MODEL,
   timeoutMs = DEEPSEEK_DEFAULT_TIMEOUT_MS,
+  visionTimeoutMs = DEEPSEEK_VISION_DEFAULT_TIMEOUT_MS,
   fetchImpl = globalThis.fetch,
   baseUrl = DEEPSEEK_BASE_URL,
 } = {}) {
@@ -76,12 +78,13 @@ export function createDeepSeekTransport({
   }
   if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl 必须为函数');
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) throw new TypeError('timeoutMs 必须为正整数');
+  if (!Number.isInteger(visionTimeoutMs) || visionTimeoutMs <= 0) throw new TypeError('visionTimeoutMs 必须为正整数');
   if (typeof baseUrl !== 'string' || baseUrl.trim() === '') throw new TypeError('baseUrl 必须为非空字符串');
   const endpoint = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
 
-  async function request(body) {
+  async function request(body, requestTimeoutMs = timeoutMs) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
     try {
       let response;
       try {
@@ -165,7 +168,7 @@ export function createDeepSeekTransport({
         { role: 'user', content },
       ],
       response_format: { type: 'json_object' },
-    });
+    }, visionTimeoutMs);
   }
 
   return Object.freeze({
