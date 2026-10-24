@@ -134,7 +134,7 @@ function pageIntro(state) {
   if (state.route === 'import') return '我说明导入格式、确认前检查和数据边界；不会读取或上传原始 CSV。';
   if (state.route === 'report') return '我说明当前页可见数字的含义、来源和状态；完整证据与追问请去报告细节或问答页。';
   if (state.route === 'chat') return '完整问答请在下方输入区继续；这里只说明本页操作、画像记录和隐私。';
-  if (state.route === 'contract') return '我说明规则保存与测试的入口；具体判定以你保存的规则为准。';
+  if (state.route === 'contract') return '我说明规则保存与历史复盘的入口；具体判定以你保存的规则为准。';
   return '我说明当前页面的操作、隐私和可见状态；账单的完整复盘请在导入并确认后去问答页。';
 }
 
