@@ -16,9 +16,9 @@ import {
   removeRow,
   refreshRowStatus,
   draftToNormalized,
-  draftSummary,
   draftRowStatusText,
   draftRowSeverity,
+  draftValidationFeedback,
   unresolvedRowLabel,
 } from '../../src/engine/importDraft.js';
 import { columnMappingRows } from '../../src/engine/importColumnMapping.js';
@@ -62,6 +62,7 @@ const MIN_PARSE_FEEDBACK_MS = 450;
 let importFeedback = null;
 let importWatch = null;
 let importFlashTimer = null;
+let pendingErrorRowId = null;
 
 function parsingInFlight(state, rec) {
   return state?.bill?.status === 'loading' || rec?.status === 'reading';
@@ -117,6 +118,18 @@ function showImportError(title, detail, sourceId = null, context = 'top') {
 function clearImportFeedback() {
   stopImportWatch();
   importFeedback = null;
+}
+
+function afterDraftChange(rec, draft, { dirty = false } = {}) {
+  return {
+    ...rec,
+    draft,
+    draftDirty: dirty ? true : rec?.draftDirty === true,
+    validationFeedback: null,
+    validationErrors: [],
+    error: null,
+    reimportConfirm: false,
+  };
 }
 
 function feedbackFor(rec, busy) {
@@ -192,6 +205,21 @@ function budgetText(rec) {
   const used = Number.isInteger(rec?.modelCalls) ? rec.modelCalls : 0;
   const max = Number.isInteger(rec?.budgetMax) ? rec.budgetMax : 2;
   return `已用 ${used}/${max} 次，剩余 ${Math.max(0, max - used)} 次`;
+}
+
+function draftBudgetText(rec) {
+  const used = Number.isInteger(rec?.modelCalls) ? rec.modelCalls : 0;
+  const max = Number.isInteger(rec?.budgetMax) ? rec.budgetMax : 2;
+  return `本次识别已用 ${used}/${max} 次`;
+}
+
+function draftSummaryLine(draft, unresolvedCount = 0) {
+  const rows = Array.isArray(draft?.rows) ? draft.rows : [];
+  const selected = rows.filter((row) => row.include !== false);
+  const importable = selected.filter((row) => row.status === 'valid').length;
+  const pending = (selected.length - importable) + unresolvedCount;
+  const tail = pending > 0 ? ` · ${pending} 条待处理` : '';
+  return `已识别 ${rows.length} 条交易 · 可导入 ${importable} 条${tail}`;
 }
 
 function imageCountText(vision) {
@@ -419,17 +447,23 @@ function amountValue(value) {
   return String(value ?? '').trim();
 }
 
-function visionExtrasHTML(draft) {
-  if (!draft || !Array.isArray(draft.rows)) return '';
-  const rows = draft.rows
+function visionAmountEntries(draft) {
+  if (!draft || !Array.isArray(draft.rows)) return [];
+  return draft.rows
     .map((row, index) => ({ row, index }))
-    .filter(({ row }) => amountValue(row.fields?.amount) || amountValue(row.fields?.settlementAmount));
-  if (!rows.length) return '';
-  const items = rows.map(({ row, index }) => {
-    const line = String(Number.isFinite(row.line) ? row.line : index + 2).padStart(2, '0');
+    .filter(({ row }) => amountValue(row.fields?.amount) || amountValue(row.fields?.settlementAmount))
+    .map(({ row, index }) => ({
+      line: String(Number.isFinite(row.line) ? row.line : index + 2).padStart(2, '0'),
+      amount: amountValue(row.fields?.amount),
+      settlement: amountValue(row.fields?.settlementAmount),
+    }));
+}
+
+function visionExtrasHTML(draft) {
+  const entries = visionAmountEntries(draft);
+  if (!entries.length) return '';
+  const items = entries.map(({ line, amount, settlement }) => {
     const parts = [];
-    const amount = amountValue(row.fields?.amount);
-    const settlement = amountValue(row.fields?.settlementAmount);
     if (amount) parts.push(`成交额 <b>${esc(amount)}</b>`);
     if (settlement) parts.push(`清算额 <b>${esc(settlement)}</b>`);
     return `<li><span>第 ${line} 行</span>${parts.join(' · ')}</li>`;
@@ -441,18 +475,31 @@ function visionExtrasHTML(draft) {
   </div>`;
 }
 
+function visionDetailsHTML(draft, mappingView) {
+  const mappingCount = mappingView?.hasMapping
+    ? mappingView.groups.reduce((total, group) => total + group.targets.length, 0)
+    : 0;
+  const amountCount = visionAmountEntries(draft).length;
+  if (!mappingView?.hasMapping && !amountCount) return '';
+  return `<details class="tm-vision-details">
+    <summary><span>识别详情</span><span class="tm-vision-details-meta">列名映射 ${mappingCount} 项 · 金额补充 ${amountCount} 行</span></summary>
+    <div class="tm-vision-details-body">
+      ${columnMappingHTML(mappingView)}
+      ${visionExtrasHTML(draft)}
+    </div>
+  </details>`;
+}
+
 function draftTable(rec, { mappingView = null } = {}) {
   const draft = rec.draft;
   if (!draft) return '';
   const visionDraft = rec.sourceKind === 'image' || rec.vision?.kind === 'image' || rec.vision?.kind === 'pdf_scan';
   const mappedFields = new Set((mappingView?.fields ?? []).filter((field) => field.matched).map((field) => field.key));
   const mapped = (key) => !visionDraft || mappedFields.has(key);
-  const dateTitle = visionDraft && mappingView?.hasSettlementDate
-    ? '原图使用交收日期，不代表成交日期；请逐行核对'
-    : '';
   const input = (row, key, extra = '') => `<input class="tm-cell-input" data-row="${esc(row.id)}" data-field="${key}" value="${esc(row.fields[key] ?? '')}" ${extra}>`;
   const placeholderFor = (key, manual, fallback) => {
     if (manual) return ` placeholder="${fallback}"`;
+    if (key === 'fee' || key === 'tax') return '';
     return mapped(key) ? '' : ' placeholder="未匹配"';
   };
   const rows = draft.rows.map((row, index) => {
@@ -462,10 +509,9 @@ function draftTable(rec, { mappingView = null } = {}) {
     const issues = Array.isArray(row.issues) && row.issues.length ? row.issues.join('；') : '';
     const name = String(row.fields.name ?? '').trim();
     const sideOptions = `${manual && !row.fields.side ? '<option value="" selected>请选择</option>' : ''}<option value="买入" ${row.fields.side === '买入' ? 'selected' : ''}>买入</option><option value="卖出" ${row.fields.side === '卖出' ? 'selected' : ''}>卖出</option>`;
-    const dateExtra = `${dateTitle ? ` title="${esc(dateTitle)}"` : ''}`;
     return `<tr class="tm-draft-row ${row.status} tm-severity-${severity}${manual ? ' is-manual-row' : ''}">
       <td class="line-no tm-col-line"><label class="tm-line-pick"><input type="checkbox" data-row="${esc(row.id)}" data-include ${row.include === false ? '' : 'checked'} aria-label="导入第 ${row.line ?? index + 2} 行"><span>${String(row.line ?? index + 2).padStart(2, '0')}</span></label></td>
-      <td>${input(row, 'date', `inputmode="numeric"${placeholderFor('date', manual, 'YYYY-MM-DD')}${dateExtra}`)}</td>
+      <td>${input(row, 'date', `inputmode="numeric"${placeholderFor('date', manual, 'YYYY-MM-DD')}`)}</td>
       <td><div class="tm-cell-stack">${input(row, 'symbol', `inputmode="numeric"${placeholderFor('symbol', manual, '6 位代码')}`)}${name ? `<span class="sym-name">${esc(name)}</span>` : ''}</div></td>
       <td><select class="tm-cell-input" data-row="${esc(row.id)}" data-field="side">${sideOptions}</select></td>
       <td class="num">${input(row, 'price', `inputmode="decimal"${placeholderFor('price', manual, '0.00')}`)}</td>
@@ -544,7 +590,7 @@ function aiButton(state, rec) {
   const canVision = imageCount > 0 && rec.vision?.status === 'ready';
   if (!canText && !canVision) return '';
   if (rec.budgetExhausted) {
-    return `<p class="tm-note">本次 AI 识别次数已用完（${budgetText(rec)}）。${imageCount ? '可在下方结束本次识别后重新开始，' : ''}或手动修改。</p>`;
+    return `<p class="tm-note">本次 AI 识别次数已用完（${budgetText(rec)}）。${imageCount ? '可在下方重新导入，' : ''}或手动修改。</p>`;
   }
   const label = imageCount
     ? `让 AI 识别这 ${imageCountText(rec.vision)}`
@@ -599,23 +645,45 @@ function errorPanelHTML(state, rec) {
 function unresolvedPanelHTML(rec) {
   const items = rec?.draft?.unresolved ?? rec?.unresolved ?? [];
   if (!items.length) return '';
-  const rows = items.map((item) => `<li>${esc(unresolvedRowLabel(item.row))} · ${esc(item.reason)}</li>`).join('');
-  return `<div class="tm-alert tm-alert--warning" role="status">
-    <strong>${items.length} 条记录未进入交易草稿</strong>
+  const rows = items.map((item) => `<li>${esc(unresolvedRowLabel(item.row))}：${esc(item.reason)}</li>`).join('');
+  return `<details class="tm-unresolved-details">
+    <summary>${items.length} 条记录未进入交易草稿</summary>
     <ul class="tm-unresolved">${rows}</ul>
-    <span>它们可能是证券转银行、利息、汇总等非买卖记录；请核对原图后手动处理。</span>
-  </div>`;
+    <p class="tm-note">未确定记录不会自动导入，请根据原图手动处理。</p>
+  </details>`;
 }
 
-function validationErrorsHTML(rec) {
-  const errors = Array.isArray(rec?.validationErrors) ? rec.validationErrors : [];
-  if (!errors.length) return '';
-  const shown = errors.slice(0, 10);
-  const items = shown.map((error) => `<li>${error.line ? `第 ${error.line} 行 · ` : ''}${esc(error.message)}</li>`).join('');
-  return `<div class="tm-alert tm-alert--error" role="alert">
-    <strong>最终账本校验未通过</strong>
-    <ul class="tm-unresolved">${items}</ul>
-    <span>草稿仍保留；系统不会补猜期初持仓或自动改动交易。</span>
+function validationFeedbackHTML(feedback) {
+  if (!feedback || feedback.kind === 'ok') return '';
+  if (feedback.kind === 'empty') {
+    return `<div class="tm-alert tm-alert--error" role="alert">
+      <strong>${esc(feedback.message || '请至少选择一条交易')}</strong>
+      <span>勾选至少一行后再校验，或重新导入。</span>
+    </div>`;
+  }
+  const rowAlert = feedback.rowErrors?.length
+    ? `<div class="tm-alert tm-alert--error" role="alert">
+      <strong>有 ${Math.max(1, feedback.rowErrorCount || 0)} 行需要修正</strong>
+      <ul class="tm-unresolved">${feedback.rowErrors.slice(0, 10).map((error) => `<li>${error.line ? `第 ${error.line} 行 · ` : ''}${esc(error.message)}</li>`).join('')}</ul>
+    </div>`
+    : '';
+  const ledgerAlert = feedback.ledgerErrors?.length
+    ? `<div class="tm-alert tm-alert--error" role="alert">
+      <strong>${esc(feedback.ledgerMessage)}</strong>
+      <span>${esc(feedback.ledgerAdvice)}</span>
+    </div>`
+    : '';
+  return `${rowAlert}${ledgerAlert}`;
+}
+
+function reimportConfirmHTML(rec) {
+  if (rec?.reimportConfirm !== true) return '';
+  return `<div class="tm-alert tm-alert--warning tm-reimport-confirm" role="alert">
+    <strong>重新导入会清除当前识别结果和手动修改，是否继续？</strong>
+    <div class="tm-reimport-actions">
+      <button class="btn btn-outline btn-sm" type="button" data-action="reimport-cancel">取消</button>
+      <button class="btn btn-primary btn-sm" type="button" data-action="reimport-continue">继续重新导入</button>
+    </div>
   </div>`;
 }
 
@@ -648,28 +716,32 @@ function columnMappingHTML(view) {
 
 function draftPanelHTML(state, rec) {
   const draft = rec.draft;
-  const summary = draftSummary(draft);
   const dates = draft.rows.map((row) => row.fields.date).filter(Boolean).sort();
   const range = dates.length ? `${dates[0]} → ${dates[dates.length - 1]}` : '—';
   const symbols = new Set(draft.rows.map((row) => row.fields.symbol).filter(Boolean)).size;
+  const unresolvedCount = (draft.unresolved ?? rec.unresolved ?? []).length;
   const isVisionDraft = rec.sourceKind === 'image' || rec.vision?.kind === 'image' || rec.vision?.kind === 'pdf_scan';
   const sourceLabel = isVisionDraft ? 'AI 视觉识别' : rec.modelCalls > 0 ? 'AI 识别' : '本地解析';
   const mappingView = columnMappingRows(draft.columnMapping);
   const usesSettlementDate = (draft.rows ?? []).some((row) => (row.issues ?? []).some((issue) => String(issue).includes('交收日期')))
     || mappingView.hasSettlementDate;
-  const dateSourceNotice = isVisionDraft
-    ? `<div class="tm-alert tm-alert--warning" role="status">
-      <strong>${usesSettlementDate ? '使用交收日期' : '日期来源需要核对'}</strong>
-      <span>${usesSettlementDate
-        ? 'AI 使用了交收日期作为草稿日期，不代表成交日期；系统不会倒推成交日期，请逐行核对并按原始成交日期修正。'
-        : '视觉识别只使用截图中可见的日期列；若列名是“交收日期”，它不是成交日期。系统不会自动倒推，请逐行核对。'}</span>
-    </div>`
+  const settlementNotice = isVisionDraft && usesSettlementDate
+    ? '<p class="tm-inline-warning" role="status">日期来自交收日期，请确认</p>'
+    : '';
+  const fieldMatched = (key) => Boolean(mappingView.fields.find((field) => field.key === key)?.matched);
+  const moneyUnrecognized = isVisionDraft
+    ? (!fieldMatched('fee') || !fieldMatched('tax'))
+    : (draft.optionalPresent?.fee === false || draft.optionalPresent?.tax === false);
+  const moneyNotice = moneyUnrecognized
+    ? '<p class="tm-inline-warning" role="status">未识别到费用/税费，可在确认前补填</p>'
     : '';
   return `<section class="panel bill" aria-labelledby="draft-title">
     <div class="bill-head">
       <div>
         <p class="mono-label">BILL / 交易核对</p>
-        <h2 id="draft-title">已整理 ${draft.rows.length} 行草稿。</h2>
+        <h2 id="draft-title">核对交易草稿。</h2>
+        <p class="tm-draft-summary">${draftSummaryLine(draft, unresolvedCount)}</p>
+        <p class="tm-draft-subnote">${draftBudgetText(rec)}</p>
       </div>
       <div class="bill-tags"><span class="status-tag status-tag--warning">待核对</span><span class="status-tag status-tag--info">仅本机</span></div>
     </div>
@@ -679,26 +751,20 @@ function draftPanelHTML(state, rec) {
       <span>期间 <b>${range}</b></span>
       <span>标的 <b>${symbols} 个</b></span>
     </div>
-    <p class="tm-note">已选 ${summary.included} 行 · 可导入 ${summary.valid} 行${summary.duplicate ? ` · 疑似重复 ${summary.duplicate}` : ''} · 本次识别${budgetText(rec)}</p>
-    ${rec.notice ? `<div class="tm-alert tm-alert--info" role="status"><strong>${esc(rec.notice)}</strong><span>导入前仍需要你逐行核对并校验。</span></div>` : ''}
-    ${dateSourceNotice}
-    ${errorLine(rec)}
-    ${validationErrorsHTML(rec)}
-    ${isVisionDraft ? columnMappingHTML(mappingView) : ''}
-    ${isVisionDraft ? visionExtrasHTML(draft) : ''}
+    ${settlementNotice}
+    ${rec.validationFeedback ? validationFeedbackHTML(rec.validationFeedback) : errorLine(rec)}
     ${draftTable(rec, { mappingView })}
-    <p class="tm-note tm-fee-note">费用、税费可留空：留空按 0 记录并标注，不阻断导入；确认前可手动填写。</p>
+    ${moneyNotice}
+    ${isVisionDraft ? visionDetailsHTML(draft, mappingView) : ''}
     <div class="tm-add-row-bar">
       <button class="btn btn-outline btn-sm tm-add-row-btn" type="button" data-action="add-row">＋ 添加成交行</button>
       <p class="tm-note">手动新增行会一起参与校验；成交额/清算额可留空，确认前请补齐。</p>
     </div>
     ${unresolvedPanelHTML(rec)}
-    <div class="bill-actions">
-      <div class="bill-actions-note">
-        <span class="plus" aria-hidden="true">＋</span>
-        <p class="fine">只导入勾选的行；错误与重复提示在对应行。修改后请先校验。</p>
-      </div>
+    ${reimportConfirmHTML(rec)}
+    <div class="bill-actions tm-draft-actions-row">
       <div class="tm-action-group">
+        <button class="btn btn-outline" type="button" data-action="reimport">重新导入</button>
         <button class="btn btn-primary" type="button" data-action="validate">校验并用于导入</button>
       </div>
     </div>
@@ -718,6 +784,9 @@ function billPanelHTML(state, rec) {
     ? '<span class="status-tag status-tag--success">已确认</span>'
     : '<span class="status-tag status-tag--success">本地校验通过</span>';
   const sync = billSyncStatus(bill);
+  const validatedNotice = !confirmed && rec?.validationFeedback?.kind === 'ok'
+    ? `<div class="tm-alert tm-alert--success" role="status"><strong>${esc(rec.validationFeedback.message || '已通过校验，可用于导入')}</strong></div>`
+    : '';
   const cloudTag = confirmed
     ? `<span class="status-tag tm-cloud-chip" data-role="cloud-sync" data-context="${esc(bill.contextId ?? '')}" data-state="${esc(sync.state)}" title="${esc(cloudStatusTitle(sync))}">${esc(cloudStatusText(sync))}</span>`
     : '<span class="status-tag status-tag--info">仅本机</span>';
@@ -736,6 +805,7 @@ function billPanelHTML(state, rec) {
       <span>标的 <b>${symbols} 个</b></span>
       <span>文件大小 <b>${fileSize}</b></span>
     </div>
+    ${validatedNotice}
     ${billWarningsHTML(bill)}
     ${errorLine(rec)}
     ${tradesTableHTML(trades, bill)}
@@ -762,7 +832,7 @@ function visionPanelHTML(state, rec) {
   const emptyNote = count || preparing || vision.notice ? '' : `<p class="tm-note">${vision.status === 'error'
     ? '图片没有准备成功；请重新选择截图。'
     : '还没有选择截图；请从上方选择文件。'}</p>`;
-  const canRestart = rec.pending !== true && (rec.error || rec.budgetExhausted || vision.status === 'error');
+  const canReimport = rec.pending !== true && (count > 0 || rec.error || rec.budgetExhausted || vision.status === 'error');
   return `<section class="panel bill" aria-labelledby="vision-title">
     <div class="bill-head">
       <div>
@@ -784,7 +854,7 @@ function visionPanelHTML(state, rec) {
     <p class="tm-note">本次识别${budgetText(rec)}。</p>
     <div class="bill-actions">
       ${aiButton(state, rec) || '<p class="fine">图片与 PDF 页面先在本机处理；只有点击识别时才会发送所选内容。</p>'}
-      ${canRestart ? '<button class="btn btn-outline btn-sm" type="button" data-action="restart-import">结束本次识别并重新开始</button>' : ''}
+      ${canReimport ? '<button class="btn btn-outline btn-sm" type="button" data-action="reimport">重新导入</button>' : ''}
     </div>
   </section>`;
 }
@@ -906,8 +976,12 @@ export function renderRealImport(host, ctx) {
           sourceIndex: sourceAttr === null ? null : Number(sourceAttr),
           index: indexAttr === null ? null : Number(indexAttr),
         });
-      } else if (action === 'restart-import') {
-        restartImport(ctx);
+      } else if (action === 'reimport') {
+        requestReimport(ctx, host);
+      } else if (action === 'reimport-cancel') {
+        ctx.set({ importRecovery: cancelReimport(state.importRecovery) });
+      } else if (action === 'reimport-continue') {
+        performReimport(ctx, host);
       } else if (action === 'render-pdf') {
         renderPdf(ctx);
       } else if (action === 'validate') {
@@ -922,13 +996,23 @@ export function renderRealImport(host, ctx) {
         }
       } else if (action === 'return-draft') {
         clearImportFeedback();
-        ctx.set({ bill: freshBill({ contextId: state.bill.contextId, status: 'none', sourceType: 'local', fileName: state.bill.fileName, fileSize: state.bill.fileSize }), importRecovery: { ...state.importRecovery, status: 'draft' } });
+        ctx.set({
+          bill: freshBill({ contextId: state.bill.contextId, status: 'none', sourceType: 'local', fileName: state.bill.fileName, fileSize: state.bill.fileSize }),
+          importRecovery: {
+            ...state.importRecovery,
+            status: 'draft',
+            validationFeedback: null,
+            validationErrors: [],
+            error: null,
+            draftDirty: false,
+          },
+        });
       } else if (action === 'add-row') {
         if (!state.importRecovery?.draft) return;
-        ctx.set({ importRecovery: { ...state.importRecovery, draft: addBlankRow(state.importRecovery.draft) } });
+        ctx.set({ importRecovery: afterDraftChange(state.importRecovery, addBlankRow(state.importRecovery.draft), { dirty: true }) });
       } else if (action === 'remove-row') {
         if (!state.importRecovery?.draft) return;
-        ctx.set({ importRecovery: { ...state.importRecovery, draft: removeRow(state.importRecovery.draft, button.getAttribute('data-row')) } });
+        ctx.set({ importRecovery: afterDraftChange(state.importRecovery, removeRow(state.importRecovery.draft, button.getAttribute('data-row')), { dirty: true }) });
       }
     });
   });
@@ -940,16 +1024,23 @@ export function renderRealImport(host, ctx) {
       const row = draft.rows.find((r) => r.id === checkbox.getAttribute('data-row'));
       if (!row) return;
       row.include = checkbox.checked;
-      ctx.set({ importRecovery: { ...state.importRecovery, draft } });
+      ctx.set({ importRecovery: afterDraftChange(state.importRecovery, draft) });
     });
   });
   host.querySelectorAll('[data-row][data-field]').forEach((field) => {
     field.addEventListener('input', () => {
-      const draft = state.importRecovery?.draft;
+      const rec = state.importRecovery;
+      const draft = rec?.draft;
       if (!draft) return;
       const row = draft.rows.find((r) => r.id === field.getAttribute('data-row'));
       if (!row) return;
       row.fields[field.getAttribute('data-field')] = field.value;
+      // 输入即视为未保存修改，避免未失焦时“重新导入”绕过确认。
+      rec.draftDirty = true;
+      rec.validationFeedback = null;
+      rec.validationErrors = [];
+      rec.error = null;
+      rec.reimportConfirm = false;
     });
     field.addEventListener('change', () => {
       const draft = state.importRecovery?.draft;
@@ -957,9 +1048,17 @@ export function renderRealImport(host, ctx) {
       const row = draft.rows.find((r) => r.id === field.getAttribute('data-row'));
       if (!row) return;
       Object.assign(row, refreshRowStatus(row, state.importRecovery.fileName || '粘贴文字'));
-      ctx.set({ importRecovery: { ...state.importRecovery, draft } });
+      ctx.set({ importRecovery: afterDraftChange(state.importRecovery, draft, { dirty: true }) });
     });
   });
+
+  if (pendingErrorRowId) {
+    const rowId = pendingErrorRowId;
+    pendingErrorRowId = null;
+    const target = host.querySelector(`[data-row="${rowId}"]`);
+    target?.closest?.('tr')?.scrollIntoView?.({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center' });
+    target?.focus?.();
+  }
 
   if (importFeedback?.phase === 'success' && importFeedback.autoScrollPending) {
     importFeedback.autoScrollPending = false;
@@ -1122,7 +1221,7 @@ async function aiRecover(ctx) {
     }
     const draft = buildAiDraft({ aiTrades: result.draft.trades, unresolved: result.draft.unresolved, localDraft, sourceFile: rec.fileName || '粘贴文字', requestId: session.request_ids?.at(-1) ?? null });
     const duplicates = draft.rows.filter((row) => row.duplicateOf).length;
-    set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), status: 'draft', draft, unresolved: result.draft.unresolved, notice: aiDraftNotice(result.draft.trades, result.draft.unresolved, duplicates), error: null } });
+    set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), status: 'draft', draft, unresolved: result.draft.unresolved, notice: aiDraftNotice(result.draft.trades, result.draft.unresolved, duplicates), error: null, validationFeedback: null, validationErrors: [], draftDirty: false, reimportConfirm: false } });
     return { ok: true, kind: 'text', draftCount: draft.rows.filter((row) => row.include !== false).length };
   } catch {
     set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false }, client(ctx).getSession()), error: { code: 'E_IMPORT_RECOVERY_UNEXPECTED', message: '识别链路出现未预期错误' } } });
@@ -1166,33 +1265,72 @@ function removeImage(ctx, { sourceIndex = null, index = null } = {}) {
       error: null,
       notice: null,
       validationErrors: [],
+      validationFeedback: null,
+      draftDirty: false,
+      reimportConfirm: false,
     },
   });
 }
 
-function restartImport(ctx) {
-  const { set } = ctx;
+/** 重新导入的纯状态构造：清空当前批次，但保留已用识别次数与会话预算。 */
+export function buildReimportRecovery(recovery = {}, session = {}) {
+  const modelCalls = Math.max(
+    Number.isInteger(recovery.modelCalls) ? recovery.modelCalls : 0,
+    Number.isInteger(session.model_calls) ? session.model_calls : 0,
+  );
+  const budgetMax = Number.isInteger(session.budget_max)
+    ? session.budget_max
+    : (Number.isInteger(recovery.budgetMax) ? recovery.budgetMax : 2);
+  return {
+    ...defaultImportRecovery(),
+    modelCalls,
+    budgetMax,
+    budgetExhausted: modelCalls >= budgetMax,
+    flowId: session.flow_id ?? recovery.flowId ?? null,
+    requestId: recovery.requestId ?? null,
+    trace: recovery.trace ?? null,
+  };
+}
+
+export function reimportRequiresConfirm(recovery) {
+  return recovery?.draftDirty === true
+    && Array.isArray(recovery?.draft?.rows)
+    && recovery.draft.rows.length > 0;
+}
+
+export function cancelReimport(recovery) {
+  return { ...recovery, reimportConfirm: false };
+}
+
+function scrollToUpload(host) {
+  if (typeof requestAnimationFrame !== 'function') return;
+  requestAnimationFrame(() => {
+    host?.querySelector?.('#dropzone')?.scrollIntoView?.({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' });
+  });
+}
+
+function performReimport(ctx, host) {
+  const { state, set } = ctx;
   clearImportFeedback();
-  try {
-    client(ctx).completeFlow({ reason: 'user_restart' });
-  } catch { /* flow 收口失败不阻断新的本地导入 */ }
+  pendingErrorRowId = null;
   pdfSource = null;
   const contextId = createBillContextId();
   set({
-    bill: freshBill({ contextId, status: 'none', sourceType: 'local', fileName: '截图识别', fileSize: 0 }),
+    bill: freshBill({ contextId, status: 'none', sourceType: 'local', fileName: '', fileSize: 0 }),
     chat: defaultChat(contextId),
-    importRecovery: {
-      ...defaultImportRecovery(),
-      status: 'vision_pdf',
-      sourceKind: 'image',
-      vision: {
-        ...defaultImportRecovery().vision,
-        kind: 'image',
-        status: 'empty',
-        notice: '已结束本次识别任务；请重新选择截图。',
-      },
-    },
+    importRecovery: buildReimportRecovery(state.importRecovery, sessionInfo(ctx)),
   });
+  scrollToUpload(host);
+}
+
+function requestReimport(ctx, host) {
+  const rec = ctx?.state?.importRecovery;
+  if (!rec || rec.pending) return;
+  if (reimportRequiresConfirm(rec)) {
+    ctx.set({ importRecovery: { ...rec, reimportConfirm: true } });
+    return;
+  }
+  performReimport(ctx, host);
 }
 
 async function openImages(ctx, files) {
@@ -1291,7 +1429,7 @@ async function aiVision(ctx) {
       return { ok: false, kind: 'vision', code: result.code };
     }
     const draft = buildAiDraft({ aiTrades: result.draft.trades, unresolved: result.draft.unresolved, localDraft: rec.localDraft ?? null, sourceFile: rec.fileName || '视觉识别', requestId: session.request_ids?.at(-1) ?? null, duplicatePolicy: 'warn', nonTradePolicy: 'unresolved', columnMapping: result.draft.columnMapping ?? [] });
-    set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), status: 'draft', draft, unresolved: result.draft.unresolved, notice: aiDraftNotice(result.draft.trades, result.draft.unresolved), error: null } });
+    set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false, trace: result.trace ?? null }, session), status: 'draft', draft, unresolved: result.draft.unresolved, notice: aiDraftNotice(result.draft.trades, result.draft.unresolved), error: null, validationFeedback: null, validationErrors: [], draftDirty: false, reimportConfirm: false } });
     return { ok: true, kind: 'vision', draftCount: draft.rows.filter((row) => row.include !== false).length };
   } catch {
     set({ importRecovery: { ...applySession({ ...state.importRecovery, pending: false }, client(ctx).getSession()), error: { code: 'E_IMPORT_VISION_UNEXPECTED', message: '视觉识别链路出现未预期错误' } } });
@@ -1308,7 +1446,17 @@ async function validateDraft(ctx) {
   const draft = { ...rec.draft, rows: rec.draft.rows.map((row) => refreshRowStatus(row, sourceFile)) };
   const checked = draftToNormalized(draft, sourceFile);
   if (!checked.ok) {
-    set({ importRecovery: { ...rec, draft, error: { code: checked.code, message: checked.message }, validationErrors: checked.normalized?.errors ?? [] } });
+    const feedback = draftValidationFeedback({ draft, normalized: checked.normalized, included: checked.included });
+    pendingErrorRowId = feedback.firstRowId;
+    set({
+      importRecovery: {
+        ...rec,
+        draft,
+        error: { code: checked.code, message: feedback.message || checked.message },
+        validationErrors: checked.normalized?.errors ?? [],
+        validationFeedback: feedback,
+      },
+    });
     return;
   }
   const method = draft.rows.some((row) => row.source === 'ai' && row.include !== false) ? 'ai' : 'manual';
@@ -1317,6 +1465,15 @@ async function validateDraft(ctx) {
   const bill = await demo.loadUserBillFromTable(checked.table, sourceFile, { method, modality, scenario });
   set({
     bill: freshBill({ contextId: state.bill.contextId ?? createBillContextId(), status: 'loaded', sourceType: 'local', fileName: sourceFile, fileSize: rec.fileSize, blocked: false, ...loadedBillFields(bill), importMethod: method, importModality: modality }),
-    importRecovery: { ...rec, draft, status: 'accepted', error: null, validationErrors: [] },
+    importRecovery: {
+      ...rec,
+      draft,
+      status: 'accepted',
+      error: null,
+      validationErrors: [],
+      validationFeedback: { kind: 'ok', message: '已通过校验，可用于导入' },
+      draftDirty: false,
+      reimportConfirm: false,
+    },
   });
 }

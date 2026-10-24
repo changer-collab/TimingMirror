@@ -1372,6 +1372,110 @@ body {
   font-size: 11px;
 }
 
+.tm-draft-summary {
+  margin-top: 8px;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.tm-draft-subnote {
+  margin-top: 2px;
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.tm-inline-warning {
+  display: inline-flex;
+  max-width: 100%;
+  margin-top: 10px;
+  padding: 4px 9px;
+  border-left: 2px solid var(--warn);
+  border-radius: 0 3px 3px 0;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.tm-vision-details,
+.tm-unresolved-details {
+  margin-top: 16px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.tm-vision-details > summary,
+.tm-unresolved-details > summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 14px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.tm-vision-details > summary::-webkit-details-marker,
+.tm-unresolved-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tm-vision-details[open] > summary,
+.tm-unresolved-details[open] > summary {
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.tm-vision-details-meta {
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+.tm-vision-details-body {
+  padding: 0 12px 12px;
+}
+
+.tm-vision-details .tm-column-map {
+  margin-top: 12px;
+}
+
+.tm-vision-details .tm-vision-extras {
+  margin-top: 12px;
+}
+
+.tm-unresolved-details .tm-unresolved {
+  margin: 10px 12px 0;
+}
+
+.tm-unresolved-details .tm-note {
+  margin: 8px 12px 12px;
+}
+
+.tm-reimport-confirm {
+  align-items: center;
+}
+
+.tm-reimport-confirm .tm-reimport-actions {
+  display: flex;
+  flex: 1 1 100%;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.bill-actions.tm-draft-actions-row {
+  justify-content: flex-end;
+}
+
+.bill-actions.tm-draft-actions-row .tm-action-group {
+  flex-wrap: wrap;
+}
+
 .tm-add-row-bar {
   display: flex;
   align-items: center;
@@ -1620,6 +1724,20 @@ body {
 
   .bill-actions .tm-action-group .btn {
     width: 100%;
+  }
+
+  .bill-actions.tm-draft-actions-row {
+    width: 100%;
+  }
+
+  .tm-vision-details > summary,
+  .tm-unresolved-details > summary {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .tm-reimport-confirm .tm-reimport-actions .btn {
+    flex: 1 1 auto;
   }
 
   .bill .tm-ai-row {

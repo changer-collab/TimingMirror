@@ -27,15 +27,21 @@ check('线上页：删除通过 state 迁移并失效旧草稿/确认状态', /r
   && /draft: null/.test(live) && /unresolved: \[\]/.test(live) && /status: 'none'/.test(live) && /ctx\.set\(/.test(live));
 check('线上页：空状态使用明确标题', /visionStatusTitle\(vision\)/.test(live) && /请选择截图/.test(shared));
 check('线上页：标题只在 preparing 时显示正在准备', /status === 'preparing'/.test(shared) && !/count \? `已在本机准备 \$\{count\} 张截图。` : '正在准备截图…'/.test(live));
-check('线上页：提供结束本次识别/重新开始入口', /data-action="restart-import"/.test(live) && /completeFlow\(\{ reason: 'user_restart' \}\)/.test(live));
+check('线上页：提供统一的重新导入入口且不重置预算', /data-action="reimport"/.test(live)
+  && /重新导入/.test(live) && !/completeFlow\(\{ reason: 'user_restart' \}\)/.test(live)
+  && /buildReimportRecovery/.test(live) && /modelCalls/.test(live));
 check('线上页：显示已用/剩余预算', /budgetText/.test(live) && /剩余/.test(live));
 check('线上页：渲染 unresolved 及原因', /unresolvedPanelHTML/.test(live) && /rec\?\.draft\?\.unresolved/.test(live));
 check('线上页：unresolved row 为 null 时显示未标明原图行号', /unresolvedRowLabel/.test(live)
   && /未标明原图行号/.test(draftModule) && !/记录 \$\{esc\(item\.row\)\}/.test(live));
 check('线上页：视觉重复只警示，不自动取消勾选', /duplicatePolicy: 'warn'/.test(live));
-check('线上页：视觉草稿显示交收日期来源提示', /AI 使用了交收日期/.test(live) && /日期来源需要核对/.test(live));
-check('线上页：最终账本校验显示明确阻断原因且保留草稿', /validationErrorsHTML/.test(live)
-  && /最终账本校验未通过/.test(live) && /草稿仍保留/.test(live));
+check('线上页：视觉草稿只显示一条紧凑交收日期提示', /日期来自交收日期，请确认/.test(live)
+  && !/AI 使用了交收日期/.test(live) && !/日期来源需要核对/.test(live));
+check('线上页：行级与账本级校验反馈分开渲染', /validationFeedbackHTML/.test(live)
+  && /有 \$\{Math\.max\(1, feedback\.rowErrorCount/.test(live)
+  && /feedback\.ledgerMessage/.test(live) && /feedback\.ledgerAdvice/.test(live)
+  && /账本校验未通过/.test(draftModule) && /可能缺少期初持仓/.test(draftModule)
+  && /请补录期初持仓/.test(draftModule));
 check('线上页：长截图走分片入口', /prepareImageFiles\(files/.test(live));
 check('样式：删除按钮有定位样式', /\.tm-thumb-remove\s*\{/.test(css));
 
@@ -61,8 +67,9 @@ check('线上页：图片草稿显示行状态且 not 全部呈现阻断红', /t
   && /tm-status-pill/.test(live) && /draftRowSeverity/.test(live));
 check('线上页：文件确认表格保持只读', !/tm-cell-input|data-field=|remove-row/.test(confirmedBlock)
   && /只读/.test(confirmedBlock) && /已确认/.test(confirmedBlock));
-check('线上页：费用税费可留空且不阻断导入', /费用、税费可留空/.test(live)
-  && /留空按 0 记录并标注，不阻断导入/.test(live));
+check('线上页：费用税费缺失只显示一条补填提示', /未识别到费用\/税费，可在确认前补填/.test(live)
+  && /if \(key === 'fee' \|\| key === 'tax'\) return ''/.test(live)
+  && !/费用、税费可留空：/.test(live));
 
 /* —— 原图列名映射与金额补充展示 —— */
 check('线上页：渲染原图列名映射且独立于统一表头', /columnMappingHTML/.test(live)
@@ -74,9 +81,9 @@ check('线上页：每个规范字段显示原图列名或未匹配', /view\.fie
   && /source_display:\s*first/.test(mappingModule) && /未匹配/.test(mappingModule));
 check('线上页：缺少映射只显示中性说明，不阻断草稿', /本次识别没有返回原图列名映射/.test(live)
   && /不影响已有交易草稿/.test(live) && /hasMapping/.test(mappingModule));
-check('线上页：交收日期提示保持确定性且不推导成交日期', /使用交收日期/.test(live)
+check('线上页：交收日期提示保持确定性且不推导成交日期', /日期来自交收日期，请确认/.test(live)
   && /系统不会倒推成交日期/.test(live) && /hasSettlementDate/.test(live)
-  && /不代表成交日期/.test(live));
+  && /不改变可编辑表格列/.test(live));
 check('映射：复合列标签覆盖名称/代码、标志/交收日期、成交价/量、成交/清算额',
   ['名称', '标的', '方向', '交收日期', '价格', '数量', '成交额', '清算额'].every((label) => mappingModule.includes(label)));
 check('线上页：成交额/清算额只在原图补充信息中展示', /visionExtrasHTML/.test(live)
