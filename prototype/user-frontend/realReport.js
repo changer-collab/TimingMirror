@@ -237,16 +237,17 @@ function ghostSection(bundle) {
   const errorNote = errors.length
     ? `<details class="rp-details"><summary>${errors.length} 笔对照暂不可用</summary><ul class="rp-evidence">${errors.slice(0, 6).map((e) => `<li>${esc(e.symbol || '')} ${esc(e.message)}</li>`).join('')}</ul></details>`
     : '';
-  const hasBenchmark = list.some((cf) => cf.series?.benchmark?.available !== false && cf.series?.benchmark);
+  const points = list[0]?.series?.points ?? [];
+  const range = points.length > 1 ? `${points[0].date} → ${points[points.length - 1].date}` : '只替换一笔，其余成交不变';
   return `<section class="report-section rp-insight">
-    ${sectionHead('这笔卖出，如果没发生', hasBenchmark ? '只替换一笔，其余成交不变 · 含沪深300同额对照' : '只替换一笔，其余成交不变')}
-    <div class="rp-card">
-      <div class="rp-control-pair">
+    ${sectionHead('这笔卖出，如果没发生', range)}
+    <div class="rp-card chart-card">
+      <div class="rp-control-pair cf-controls">
         <label class="rp-control"><span>选择一笔卖出</span><select class="rp-select" data-role="cf-select">${options}</select></label>
         <label class="rp-control"><span>持有到</span><select class="rp-select rp-select-sm" data-role="cf-date"></select></label>
       </div>
       <p class="rp-cf-summary" data-role="cf-summary"></p>
-      <div class="rp-chart" data-role="ghost-chart"></div>
+      <div data-role="ghost-chart"></div>
       ${errorNote}
     </div>
   </section>`;
@@ -255,23 +256,37 @@ function ghostSection(bundle) {
 function waterfallSection(bundle) {
   const w = bundle.insights?.portfolio?.waterfall;
   const span = Math.max(w.scale.max - w.scale.min, Number.EPSILON);
-  const notes = { cost: '买入成本', ghost_gain: '同样的钱一直拿着', drag: '和一直持有相比', actual: '你的实际结果' };
+  const cost = Math.abs(Number(w.items[0]?.amount)) || Math.max(w.scale.max, 1);
+  const labels = { cost: 'COST', ghost_gain: 'BUY & HOLD', drag: 'TIMING GAP', actual: 'ACTUAL' };
+  const fills = { cost: 'base', ghost_gain: 'ghost', drag: 'hatch', actual: 'actual' };
   const rows = w.items.map((item) => {
     const start = Math.min(item.bar_start, item.bar_end);
     const width = Math.abs(item.bar_end - item.bar_start);
-    const leftPct = ((start - w.scale.min) / span) * 100;
-    const widthPct = width > 0 ? Math.max((width / span) * 100, 0.6) : 0;
-    return `<div class="wf-row">
-      <div class="wf-label"><span>${esc(item.label)}</span><small>${esc(notes[item.key] ?? '')}</small></div>
-      <div class="wf-track"><span class="wf-bar wf-${esc(item.kind)}" style="left:${leftPct.toFixed(2)}%;width:${widthPct.toFixed(2)}%"></span></div>
-      <div class="wf-value"><strong>${esc(moneyText(item.display.amount))}</strong><small>${esc(item.display.ratio)}</small></div>
+    const leftPct = Math.max(0, ((start - w.scale.min) / span) * 100);
+    const widthPct = width > 0 ? Math.max((width / span) * 100, 0.4) : 0;
+    return `<div class="scale-row">
+      <div class="scale-row-label"><strong>${esc(item.label)}</strong><span>${esc(labels[item.key] ?? '')}</span></div>
+      <div class="track"><span class="fill ${esc(fills[item.key] ?? 'actual')}" style="left:${leftPct.toFixed(2)}%;width:${widthPct.toFixed(2)}%"></span></div>
+      <div class="scale-row-value">${esc(moneyText(item.display.amount))}<small>${esc(item.display.ratio)}</small></div>
     </div>`;
   }).join('');
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((r) => `<span>${Math.round(cost * r).toLocaleString('en-US')}</span>`).join('');
+  const note = w.checks?.identity_ok === true
+    ? '四段拼起来等于投入本金。差额为正表示相对少拿，为负表示相对少亏。'
+    : '加总未通过，以下数字只作展示。';
   return `<section class="report-section rp-insight">
-    ${sectionHead('差距是怎么来的', '同样的本金，三种结果')}
-    <div class="rp-card">
-      <div class="rp-waterfall">${rows}</div>
-      <p class="rp-caption">${w.checks?.identity_ok === true ? '加总已核对。' : '加总未通过，以下数字只作展示。'}</p>
+    ${sectionHead('差距是怎么来的', '同样的本金，同一把尺')}
+    <div class="rp-card scale-card">
+      <div class="scale-top"><span>条形长度 = 金额区间 · 刻度 0–${Math.round(cost).toLocaleString('en-US')}</span><span>EST. ${esc(bundle.asOfDate || '—')}</span></div>
+      ${rows}
+      <div class="scale-axis"><div></div><div class="axis-ticks">${ticks}</div><div></div></div>
+      <div class="scale-legend">
+        <span><i class="lg-base"></i>投入本金</span>
+        <span><i class="lg-ghost"></i>买入不动收益</span>
+        <span><i class="lg-hatch"></i>择时损耗</span>
+        <span><i class="lg-actual"></i>实际到手收益</span>
+      </div>
+      <p class="scale-note">${esc(note)}</p>
     </div>
   </section>`;
 }
@@ -283,42 +298,45 @@ function attributionSection(bundle) {
     .filter((s) => Math.abs(s.dragMoney) > 0.004)
     .sort((a, b) => Math.abs(b.dragMoney) - Math.abs(a.dragMoney))
     .slice(0, 4);
-  const max = Math.max(...items.map((item) => Math.abs(item.dragMoney)), 1);
-  const symbolRows = symbols.length > 1 ? `<div class="rp-attrib-list">${symbols.map((s) => `<div class="rp-attrib-row">
-    <span class="rp-attrib-symbol">${esc(s.symbol)}</span>
-    <span class="rp-attrib-track"><i class="rp-attrib-bar ${s.dragMoney >= 0 ? 'loss' : 'good'}" style="width:${Math.max((Math.abs(s.dragMoney) / max) * 100, 1).toFixed(1)}%"></i></span>
-    <strong class="${s.dragMoney >= 0 ? 'loss' : 'good'}">${esc(moneyText(s.display.dragMoney))}</strong>
-  </div>`).join('')}</div>` : '';
-  const top = items.slice(0, 3);
-  const topRows = `<ul class="rp-sell-list">${top.map((item) => `<li>
-    <span class="rp-sell-date">${esc(item.trade_date)}</span>
-    <span class="rp-sell-name">${esc(item.symbol)} · ${esc(item.quantity)} 股</span>
-    <strong class="${item.dragMoney >= 0 ? 'loss' : 'good'}">${esc(moneyText(item.display.dragMoney))}</strong>
-  </li>`).join('')}</ul>`;
-  const allRows = items.map((item) => `<tr>
-    <td>${esc(item.trade_date)}</td>
-    <td>${esc(item.symbol)}</td>
-    <td class="num">${esc(item.quantity)}</td>
-    <td class="num">${esc(Number(item.price).toFixed(2))}</td>
-    <td class="num">${esc(Number(item.close).toFixed(2))}</td>
-    <td class="num ${item.dragMoney < 0 ? 'rp-good' : ''}">${esc(moneyText(item.display.dragMoney))}</td>
+  const qtyBySymbol = new Map();
+  for (const item of items) {
+    qtyBySymbol.set(item.symbol, (qtyBySymbol.get(item.symbol) ?? 0) + (Number(item.quantity) || 0));
+  }
+  const totalQty = items.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
+  const totalDrag = symbols.reduce((sum, s) => sum + (Number(s.dragMoney) || 0), 0);
+  const absTotal = symbols.reduce((sum, s) => sum + Math.abs(Number(s.dragMoney) || 0), 0) || 1;
+  const symbolRows = symbols.map((s) => `<tr>
+    <td><span class="sym">${esc(s.symbol)}</span></td>
+    <td class="num">${qtyBySymbol.get(s.symbol) ?? 0} 股</td>
+    <td class="num">${esc(moneyText(s.display.dragMoney))}</td>
+    <td class="num">${Math.round((Math.abs(Number(s.dragMoney) || 0) / absTotal) * 100)}%</td>
   </tr>`).join('');
-  const more = items.length > top.length
-    ? `<details class="rp-details"><summary>全部 ${items.length} 笔卖出</summary>
-        <div class="table-wrap"><table class="ledger rp-table">
-          <thead><tr><th>日期</th><th>标的</th><th class="num">数量</th><th class="num">卖出价</th><th class="num">估值日收盘</th><th class="num">差额</th></tr></thead>
-          <tbody>${allRows}</tbody>
-        </table></div>
-      </details>`
-    : '';
+  const notes = [...items]
+    .sort((a, b) => String(a.trade_date).localeCompare(String(b.trade_date)))
+    .slice(0, 3)
+    .map((item) => {
+      const positive = item.dragMoney >= 0;
+      return `<div class="sell-note">
+        <p class="sn-date"><span>${esc(item.trade_date)} · SELL</span><span class="${positive ? 'sn-loss' : 'sn-good'}">差额 ${esc(moneyText(item.display.dragMoney))}</span></p>
+        <strong>${esc(item.symbol)} × ${esc(item.quantity)}</strong>
+        <p>卖出价 ${esc(Number(item.price).toFixed(2))}，估值日收盘 ${esc(Number(item.close).toFixed(2))}。</p>
+      </div>`;
+    }).join('');
   const title = (bundle.insights?.portfolio?.report?.portfolio?.dragMoney ?? 0) >= 0 ? '代价集中在哪几笔' : '改善来自哪几笔';
   return `<section class="report-section rp-insight">
     ${sectionHead(title, '按卖出笔计算')}
-    <div class="rp-card">
-      ${symbolRows}
-      ${topRows}
-      ${more}
-      <p class="rp-caption">差额＝卖出数量 ×（估值日收盘 − 卖出价）。正值是少拿，负值是少亏。</p>
+    <div class="breakdown-grid">
+      <div class="rp-card breakdown-table-card">
+        <div class="table-wrap">
+          <table class="ledger">
+            <thead><tr><th>标的</th><th class="num">卖出股数</th><th class="num">差额</th><th class="num">占差额</th></tr></thead>
+            <tbody>${symbolRows}</tbody>
+            <tfoot><tr><td>合计</td><td class="num">${totalQty} 股</td><td class="num">${esc(`${totalDrag > 0 ? '+' : ''}${moneyText(fmtMoney(totalDrag))}`)}</td><td class="num">100%</td></tr></tfoot>
+          </table>
+        </div>
+        <p class="scale-note">差额＝卖出数量 ×（估值日收盘 − 卖出价）。正值是少拿，负值是少亏。</p>
+      </div>
+      <aside class="sell-notes">${notes}</aside>
     </div>
   </section>`;
 }
@@ -508,6 +526,7 @@ function pgrSection(data) {
   return `<section class="report-section rp-insight">
     ${sectionHead('卖出习惯', `卖出 ${counts.realized?.total ?? '—'} 笔 · 持仓 ${counts.paper?.total ?? '—'} 只`)}
     <div class="rp-card rp-habit">
+      <div class="panel-head"><span>先卖盈利还是先卖亏损</span><span>PROPORTION / 比例</span></div>
       <div class="rp-habit-grid">
         <div><span>盈利时卖出</span><strong>${esc(ratioPct(data.pgr))}</strong></div>
         <div><span>亏损时卖出</span><strong>${esc(ratioPct(data.plr))}</strong></div>
@@ -521,6 +540,7 @@ function candidateSection(candidates) {
   return `<section class="report-section rp-insight">
     ${sectionHead('要不要设一条规则？', '保存前由你确认或改写')}
     <div class="rp-card rp-candidate">
+      <div class="panel-head"><span>候选规则 · 由你确认</span><span>不会自动生效</span></div>
       ${candidates.map((candidate) => `<div class="rp-candidate-row" data-candidate-id="${esc(candidate.candidate_id)}">
         <div class="rp-candidate-top"><span class="rp-badge mode">${esc(candidate.template_name)}</span></div>
         <p class="rp-candidate-text">“${esc(candidate.text)}”</p>
@@ -605,24 +625,41 @@ function renderBundle(host, bundle, ctx, bill) {
     ? `<p class="rp-caption">有 ${warnings.length} 条账单提示已按 0 或缺省口径处理，不影响报告数字的可回查性。</p>`
     : '';
 
-  host.innerHTML = `<div class="container report-body">
+  const behaviorBlock = vis.behavior ? behaviorSection(vis) : '';
+  const pgrBlock = vis.pgr ? pgrSection(vis.pgrData) : '';
+  const compactMods = vis.behavior && vis.pgr
+    ? `<div class="mod-grid">${behaviorBlock}<div class="mod-col">${pgrBlock}</div></div>`
+    : `${behaviorBlock}${pgrBlock}`;
+
+  host.innerHTML = `<div class="container report-body real-report">
     ${source}
     ${deltaCard(bundle, bill, vis, demo)}
     ${vis.ghost ? ghostSection(bundle) : ''}
     ${vis.waterfall ? waterfallSection(bundle) : ''}
     ${vis.attribution ? attributionSection(bundle) : ''}
-    ${vis.behavior ? behaviorSection(vis) : ''}
+    ${compactMods}
     <div class="rp-analysis-slot" data-role="behavior-analysis"></div>
-    ${vis.pgr ? pgrSection(vis.pgrData) : ''}
     ${vis.candidate ? candidateSection(vis.candidates) : ''}
     ${vis.basis ? basisSection(bundle, demo) : ''}
     ${warningNote}
     ${footnote(vis)}
   </div>`;
 
+  indexReportSections(host);
   mountGhostChart(host, bundle);
   bindCandidateButtons(host, ctx, vis.candidates);
   hydrateBehaviorAnalysis(host, { bill, bundle, vis, profileKey });
+}
+
+function indexReportSections(host) {
+  host.querySelectorAll('.real-report .report-section:not(.rp-basis-section)').forEach((section, index) => {
+    const title = section.querySelector('.report-sec-head .rs-title');
+    if (!title || title.querySelector('.rs-idx')) return;
+    const badge = document.createElement('span');
+    badge.className = 'rs-idx';
+    badge.textContent = String(index + 1).padStart(2, '0');
+    title.prepend(badge);
+  });
 }
 
 // 反事实沙盒：复用 replaceSell 序列中逐日的 cf − actual；不引入新的价格假设。
@@ -660,8 +697,10 @@ function mountGhostChart(host, bundle) {
     chartApi = renderGhostChart(chartHost, {
       series: cf.series,
       markers: cf.markers,
+      symbol: cf.symbol,
       marketSource: { ...(bundle.marketSource ?? {}), dynamic: bundle.marketSource?.id === 'dynamic-tushare' },
       compact: true,
+      merged: true,
     });
     const dates = sandboxDates(cf);
     if (dateSelect) {
