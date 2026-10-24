@@ -3,7 +3,7 @@
 import { buildPlainDraft } from './plainLanguage.js';
 import { buildRewriteRequest, createQaRewrite } from './qaRewrite.js';
 
-export const REWRITE_TIMEOUT_MS = 4000;
+export const REWRITE_TIMEOUT_MS = 9000;
 export const REWRITE_CACHE_MAX = 64;
 
 const TIMEOUT = Symbol('timeout');

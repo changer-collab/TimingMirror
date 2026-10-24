@@ -302,7 +302,7 @@ async function readBody(request, maxBodyBytes) {
   return { text: new TextDecoder().decode(bytes) };
 }
 
-async function callTransport(transport, stage, request) {
+async function callTransport(transport, stage, request, options) {
   if (transport === null) {
     return { ok: false, status: 503, code: SITE_FUNCTION_CODES.MODEL_NOT_CONFIGURED };
   }
@@ -310,7 +310,9 @@ async function callTransport(transport, stage, request) {
     return { ok: false, status: 502, code: SITE_FUNCTION_CODES.MODEL_UNAVAILABLE };
   }
   try {
-    const result = await transport[stage](request);
+    const result = options === undefined
+      ? await transport[stage](request)
+      : await transport[stage](request, options);
     if (!isPlainObject(result) || typeof result.rawText !== 'string') {
       return { ok: false, status: 502, code: SITE_FUNCTION_CODES.MODEL_RESPONSE };
     }
@@ -542,7 +544,15 @@ export function createHandler({
       if (!validated.ok) return errorResponse(400, SITE_FUNCTION_CODES.QA_REWRITE_REQUEST_INVALID);
       const result = await callTransport(transport, 'qaRewrite', validated.request);
       if (!result.ok) return errorResponse(result.status, result.code);
-      const checked = validateQaRewriteResponse(result.rawText, validated.request);
+      let checked = validateQaRewriteResponse(result.rawText, validated.request);
+      // 校验失败只带固定原因重写一次；不回灌模型原文，仍按同一规则复核。
+      if (!checked.ok) {
+        const retried = await callTransport(transport, 'qaRewrite', validated.request, { repairReason: checked.message });
+        if (retried.ok) {
+          const rechecked = validateQaRewriteResponse(retried.rawText, validated.request);
+          if (rechecked.ok) checked = rechecked;
+        }
+      }
       if (!checked.ok) {
         // 只回传固定原因与字段路径；不回传模型原文或账单内容。
         return jsonResponse(502, {
