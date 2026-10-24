@@ -303,39 +303,6 @@ function interpretationSection(bundle, vis, demo, bill) {
   </section>`;
 }
 
-function hypothesisLead(pattern) {
-  if (pattern?.status === '成立') return patternLead(pattern);
-  const sample = pattern?.sample_n ?? 0;
-  if (pattern?.status === '不成立') {
-    return sample > 0
-      ? `检查了 ${esc(sample)} 次候选事件，没有达到成立条件。`
-      : '这份账单里没有找到符合条件的成交。';
-  }
-  return `目前只有 ${esc(sample)} 次候选事件，暂不判定。`;
-}
-
-function hypothesisSection(vis) {
-  const all = vis.allPatterns;
-  if (all.length < 2) return '';
-  const rows = all.map((pattern) => {
-    const status = pattern?.status || '证据不足';
-    const tone = status === '成立' ? 'ok' : status === '不成立' ? 'flat' : 'muted';
-    return `<li class="rp-hyp-row">
-      <span class="rp-hyp-status ${tone}">${esc(status)}</span>
-      <strong>${esc(pattern?.name ?? '未命名假设')}</strong>
-      <span class="rp-hyp-sample">候选 ${esc(pattern?.sample_n ?? 0)} 次</span>
-      <p>${hypothesisLead(pattern)}</p>
-    </li>`;
-  }).join('');
-  return `<section class="report-section rp-insight">
-    ${sectionHead('哪些假设成立，哪些没有', `成立 ${vis.patternStats.established} · 不成立 ${vis.patternStats.rejected} · 证据不足 ${vis.patternStats.insufficient}`)}
-    <div class="rp-card rp-hypothesis">
-      <ul class="rp-hyp-list">${rows}</ul>
-      <p class="rp-caption">同一套阈值逐条检查；不成立和证据不足也列出，不用别的说法补成结论。</p>
-    </div>
-  </section>`;
-}
-
 function ghostSection(bundle) {
   const portfolio = bundle.insights?.portfolio ?? {};
   const list = orderedCounterfactuals(portfolio.counterfactuals);
@@ -399,67 +366,62 @@ function waterfallSection(bundle) {
   </section>`;
 }
 
-function operationTypeSection(bundle) {
+function sellTypeChip(row) {
+  if (!row) return '<span class="rp-type is-unknown">未归类</span>';
+  return `<span class="rp-type rp-type-${esc(row.bucket_id)}" title="${esc(row.detail || row.hint || '')}">${esc(row.label)}</span>`;
+}
+
+// 02 并入原 05：逐笔表带操作类型列，下面只汇总实际命中的类别（0 笔不出现）；金额仍取逐笔分解。
+function sellTypeSection(bundle, bill) {
   const portfolio = bundle.insights?.portfolio ?? {};
-  const items = Array.isArray(portfolio.decomposition?.items) ? portfolio.decomposition.items : [];
+  const d = portfolio.decomposition;
+  const items = Array.isArray(d?.items) ? d.items : [];
   if (!items.length) return '';
-  const result = buildOperationAttribution({
-    decomposition: portfolio.decomposition,
-    behavior: bundle.insights?.behavior,
-  });
-  if (!result.ok) return '';
-  const rows = result.buckets.map((bucket) => {
+  const attribution = portfolio.operation_attribution?.ok === true || portfolio.operation_attribution?.ok === false
+    ? portfolio.operation_attribution
+    : buildOperationAttribution({
+      decomposition: d,
+      behavior: bundle.insights?.behavior,
+      trades: bill?.trades,
+      market: bundle.market,
+    });
+  const known = attribution?.ok === true;
+  const byTrade = known ? attribution.by_trade ?? {} : {};
+  const rows = items.map((item) => `<tr data-trade="${esc(item.trade_id)}">
+    <td><span class="sym">${esc(item.symbol)}</span><span class="rp-cell-sub" title="${esc(item.trade_date)}">${esc(String(item.trade_date).slice(5))}</span></td>
+    <td class="num">${esc(item.quantity)} 股</td>
+    <td>${sellTypeChip(byTrade[item.trade_id])}</td>
+    <td class="num">${esc(moneyText(item.display?.dragMoney ?? '—'))}</td>
+    <td class="num">${esc(item.display?.share ?? '—')}</td>
+  </tr>`).join('');
+  const totalQty = items.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
+  const totalDrag = Number(d.total?.value);
+  const totalText = Number.isFinite(totalDrag)
+    ? `${totalDrag > 0 ? '+' : ''}${moneyText(fmtMoney(totalDrag))}`
+    : (d.total?.display ?? '—');
+  const active = known
+    ? attribution.buckets
+      .filter((bucket) => bucket.count > 0)
+      .sort((a, b) => Math.abs(b.money) - Math.abs(a.money) || a.priority - b.priority)
+    : [];
+  const bars = active.map((bucket) => {
     const width = bucket.share === null ? 0 : Math.min(100, Math.abs(bucket.share) * 100);
     const tone = bucket.money > 0 ? 'loss' : bucket.money < 0 ? 'good' : 'flat';
     return `<div class="rp-optype-row" data-bucket="${esc(bucket.id)}" title="${esc(bucket.hint)}">
-      <div class="rp-optype-main"><strong>${esc(bucket.label)}</strong><span>${esc(bucket.count)} 笔</span></div>
+      <div class="rp-optype-main">${sellTypeChip({ bucket_id: bucket.id, label: bucket.label, hint: bucket.hint })}<span>${esc(bucket.count)} 笔 · ${esc(bucket.display.money)}</span></div>
       <div class="rp-optype-bar tone-${tone}"><i style="width:${width.toFixed(1)}%"></i></div>
-      <div class="rp-optype-value"><span>${esc(bucket.display.money)}</span><small>${esc(bucket.display.share)}</small></div>
+      <div class="rp-optype-value"><span>${esc(bucket.display.share)}</span></div>
     </div>`;
   }).join('');
-  return `<section class="report-section rp-insight">
-    ${sectionHead('按操作类型看差额', '同一笔卖出只归一类 · 金额以逐笔分解为准')}
-    <div class="rp-card rp-optype">
-      ${rows}
-      <p class="rp-caption">${esc(result.basis)}</p>
-    </div>
-  </section>`;
-}
-
-function attributionSection(bundle) {
-  const d = bundle.insights?.portfolio?.decomposition;
-  const items = [...(d.items ?? [])].sort((a, b) => Math.abs(b.dragMoney) - Math.abs(a.dragMoney));
-  const symbols = [...(d.by_symbol ?? [])]
-    .filter((s) => Math.abs(s.dragMoney) > 0.004)
-    .sort((a, b) => Math.abs(b.dragMoney) - Math.abs(a.dragMoney))
-    .slice(0, 4);
-  const qtyBySymbol = new Map();
-  for (const item of items) {
-    qtyBySymbol.set(item.symbol, (qtyBySymbol.get(item.symbol) ?? 0) + (Number(item.quantity) || 0));
-  }
-  const totalQty = items.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
-  const totalDrag = symbols.reduce((sum, s) => sum + (Number(s.dragMoney) || 0), 0);
-  const absTotal = symbols.reduce((sum, s) => sum + Math.abs(Number(s.dragMoney) || 0), 0) || 1;
-  const symbolRows = symbols.map((s) => `<tr>
-    <td><span class="sym">${esc(s.symbol)}</span></td>
-    <td class="num">${qtyBySymbol.get(s.symbol) ?? 0} 股</td>
-    <td class="num">${esc(moneyText(s.display.dragMoney))}</td>
-    <td class="num">${Math.round((Math.abs(Number(s.dragMoney) || 0) / absTotal) * 100)}%</td>
-  </tr>`).join('');
-  const notes = [...items]
-    .sort((a, b) => String(a.trade_date).localeCompare(String(b.trade_date)))
-    .slice(0, 3)
-    .map((item) => {
-      const positive = item.dragMoney >= 0;
-      return `<div class="sell-note">
-        <p class="sn-date"><span>${esc(item.trade_date)} · SELL</span><span class="${positive ? 'sn-loss' : 'sn-good'}">差额 ${esc(moneyText(item.display.dragMoney))}</span></p>
-        <strong>${esc(item.symbol)} × ${esc(item.quantity)}</strong>
-        <p>卖出价 ${esc(Number(item.price).toFixed(2))}，估值日收盘 ${esc(Number(item.close).toFixed(2))}。</p>
-      </div>`;
-    }).join('');
-  const title = (bundle.insights?.portfolio?.report?.portfolio?.dragMoney ?? 0) >= 0 ? '代价集中在哪几笔' : '改善来自哪几笔';
+  const summary = known
+    ? `<div class="rp-type-summary">
+      <div class="rp-type-summary-head"><strong>按操作类型汇总</strong><span>只显示命中的类别 · 0 笔不出现</span></div>
+      ${bars}
+      <p class="rp-caption">同一笔只归一类；${esc(attribution.notes?.[0]?.replace('同一笔只归一类；', '') ?? '')} 分类只描述成交与行情证据，不判断动机。</p>
+    </div>`
+    : `<p class="rp-caption">操作类型暂不可用：${esc(attribution?.reason ?? '归因未生成')}。逐笔差额仍按原口径展示。</p>`;
   const cfByTrade = new Map();
-  for (const cf of (bundle.insights?.portfolio?.counterfactuals ?? [])) {
+  for (const cf of (portfolio.counterfactuals ?? [])) {
     const tradeId = cf?.trade_id ?? cf?.replace?.replaced?.trade_id;
     if (tradeId) cfByTrade.set(tradeId, cf);
   }
@@ -471,36 +433,37 @@ function attributionSection(bundle) {
     return `<tr>
       <td>${esc(item.trade_date)}</td>
       <td><span class="sym">${esc(item.symbol)}</span></td>
+      <td class="num">${esc(Number(item.price).toFixed(2))}</td>
+      <td class="num">${esc(Number(item.close).toFixed(2))}</td>
       <td class="num">${esc(moneyText(item.display.dragMoney))}</td>
       <td>${esc(rangeText)}</td>
     </tr>`;
   }).join('');
   const rangeBlock = cfByTrade.size ? `<details class="rp-details rp-sell-ranges" data-role="sell-ranges">
-    <summary>每笔卖出的路径区间</summary>
+    <summary>每笔价格与路径区间</summary>
     <div class="table-wrap">
       <table class="ledger">
-        <thead><tr><th>卖出日期</th><th>标的</th><th class="num">差额</th><th>路径区间</th></tr></thead>
+        <thead><tr><th>卖出日期</th><th>标的</th><th class="num">卖出价</th><th class="num">收盘价</th><th class="num">差额</th><th>路径区间</th></tr></thead>
         <tbody>${rangeRows}</tbody>
       </table>
     </div>
-    <p class="scale-note">这是路径区间，不是概率预测：同一笔卖出持有到不同日期，差额会落在最低与最高之间。</p>
+    <p class="scale-note">路径区间不是概率预测：同一笔卖出持有到不同日期，差额会落在最低与最高之间。收盘价为单位价格，差额已按卖出数量折算。</p>
   </details>` : '';
+  const title = (portfolio.report?.portfolio?.dragMoney ?? 0) >= 0 ? '代价集中在哪几笔' : '改善来自哪几笔';
   return `<section class="report-section rp-insight">
-    ${sectionHead(title, '按卖出笔计算')}
-    <div class="breakdown-grid">
-      <div class="rp-card breakdown-table-card">
-        <div class="table-wrap">
-          <table class="ledger">
-            <thead><tr><th>标的</th><th class="num">卖出股数</th><th class="num">差额</th><th class="num">占差额</th></tr></thead>
-            <tbody>${symbolRows}</tbody>
-            <tfoot><tr><td>合计</td><td class="num">${totalQty} 股</td><td class="num">${esc(`${totalDrag > 0 ? '+' : ''}${moneyText(fmtMoney(totalDrag))}`)}</td><td class="num">100%</td></tr></tfoot>
-          </table>
-        </div>
-        <p class="scale-note">差额＝卖出数量 ×（估值日收盘 − 卖出价）。正值是少拿，负值是少亏。</p>
+    ${sectionHead(title, '按卖出笔计算 · 每笔只归一类')}
+    <div class="rp-card rp-selltype">
+      <div class="table-wrap">
+        <table class="ledger rp-selltype-table">
+          <thead><tr><th>标的</th><th class="num">卖出股数</th><th>操作类型</th><th class="num">差额</th><th class="num">占差额</th></tr></thead>
+          <tbody>${rows}</tbody>
+          <tfoot><tr><td>合计</td><td class="num">${totalQty} 股</td><td></td><td class="num">${esc(totalText)}</td><td class="num">100%</td></tr></tfoot>
+        </table>
       </div>
-      <aside class="sell-notes">${notes}</aside>
+      <p class="scale-note">差额＝卖出数量 ×（估值日收盘 − 卖出价）。正值是少拿，负值是少亏。</p>
+      ${summary}
+      ${rangeBlock}
     </div>
-    ${rangeBlock}
   </section>`;
 }
 
@@ -790,7 +753,7 @@ function renderBundle(host, bundle, ctx, bill) {
 
   const behaviorBlock = vis.behavior ? behaviorSection(vis) : '';
   const pgrBlock = vis.pgr ? pgrSection(vis.pgrData) : '';
-  const operationTypeBlock = operationTypeSection(bundle);
+  const sellTypeBlock = vis.attribution ? sellTypeSection(bundle, bill) : '';
   const compactMods = vis.behavior && vis.pgr
     ? `<div class="mod-grid">${behaviorBlock}<div class="mod-col">${pgrBlock}</div></div>`
     : `${behaviorBlock}${pgrBlock}`;
@@ -799,12 +762,10 @@ function renderBundle(host, bundle, ctx, bill) {
     ${source}
     ${deltaCard(bundle, bill, vis, demo)}
     ${interpretationSection(bundle, vis, demo, bill)}
-    ${operationTypeBlock}
+    ${sellTypeBlock}
     ${vis.ghost ? ghostSection(bundle) : ''}
     ${vis.waterfall ? waterfallSection(bundle) : ''}
-    ${vis.attribution ? attributionSection(bundle) : ''}
     ${compactMods}
-    ${hypothesisSection(vis)}
     <div class="rp-analysis-slot" data-role="behavior-analysis"></div>
     ${vis.candidate ? candidateSection(vis.candidates) : ''}
     ${vis.basis ? basisSection(bundle, demo) : ''}

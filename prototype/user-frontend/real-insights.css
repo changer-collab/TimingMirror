@@ -148,6 +148,11 @@
 .gc-marker-buy { fill: #2f6b33; }
 .gc-marker-sell { fill: #b23a3f; }
 .gc-marker-ring { fill: none; stroke: #a8650a; stroke-width: 2.5; }
+.gc-trade-pill-bg { fill: #2f6b33; }
+.gc-trade-pill.is-sell .gc-trade-pill-bg { fill: #b23a3f; }
+.gc-trade-pill-text { font-family: var(--font-mono); font-size: 10.4px; fill: #fff; letter-spacing: .01em; }
+.gc-trade-leader { stroke: #2f6b33; stroke-width: 1; stroke-dasharray: 2 3; opacity: .75; }
+.gc-trade-leader.is-sell { stroke: #b23a3f; }
 .gc-cross { stroke: #46536b; stroke-width: 1; stroke-dasharray: 4 4; opacity: .8; }
 .gc-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--ink); line-height: 1.7; }
 .gc-legend-item { display: inline-flex; align-items: center; gap: 6px; }
@@ -750,9 +755,10 @@
 .real-report .gc-trade-line.is-sell { stroke: rgba(196,64,44,.55); }
 .real-report .gc-trade-label { font-family: var(--font-mono); font-size: 9.5px; fill: var(--gray); }
 .real-report .gc-trade-label.is-sell { fill: var(--loss); }
-.real-report .gc-trade-dot.is-sell { fill: #c4402c; stroke: #fff; stroke-width: 1.2; }
-.real-report .gc-trade-dot.is-buy { fill: #15191c; stroke: #fff; stroke-width: 1; }
-.real-report .gc-sw-trade.is-buy { width: 6px; height: 6px; border-radius: 50%; background: var(--ink); }
+.real-report .gc-trade-dot.is-sell { fill: #b23a3f; stroke: #fff; stroke-width: 1.2; }
+.real-report .gc-trade-dot.is-buy { fill: #2f6b33; stroke: #fff; stroke-width: 1; }
+.real-report .gc-trade-pill-text { font-size: 10px; }
+.real-report .gc-sw-trade.is-buy { width: 10px; height: 10px; border-radius: 2px; background: #2f6b33; }
 .real-report .gc-sw-trade.is-sell { width: 12px; height: 2px; background: repeating-linear-gradient(90deg, var(--loss) 0 3px, transparent 3px 6px); }
 
 .real-report .gc-line-actual { stroke: #15191c; stroke-width: 2.2; }
@@ -866,6 +872,52 @@
 .real-report .rp-optype-bar.tone-flat i { background: #818c90; }
 .real-report .rp-optype .rp-caption { margin-top: 8px; }
 
+/* 02 逐笔表：操作类型列 + 命中类别汇总 */
+
+.real-report .rp-selltype { padding: 16px 20px 14px; }
+.real-report .rp-selltype .table-wrap { border: 0; background: transparent; }
+.real-report .rp-selltype-table { width: 100%; min-width: 0; }
+.real-report .rp-selltype-table th { padding: 7px 10px; }
+.real-report .rp-selltype-table td { padding: 10px; }
+.real-report .rp-selltype-table tfoot td { padding: 10px; }
+.real-report .rp-cell-sub { margin-left: 6px; font-family: var(--font-mono); font-size: 9.5px; color: var(--faint); }
+
+.real-report .rp-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+  background: #f2ede2;
+  color: #5c5548;
+}
+.real-report .rp-type::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: .7; }
+.real-report .rp-type-rebuy { background: #e9eef4; color: #2f5f7a; }
+.real-report .rp-type-quick_flip { background: #efeaf5; color: #5b4a7a; }
+.real-report .rp-type-down { background: #e8f0ec; color: #2f6b5a; }
+.real-report .rp-type-up { background: #f8efdc; color: #8a5508; }
+.real-report .rp-type-clear { background: #eceff0; color: #2a3236; }
+.real-report .rp-type-trim { background: #f2ede2; color: #5c5548; }
+.real-report .rp-type-other,
+.real-report .rp-type.is-unknown { background: #f2ede2; color: #8a8377; }
+
+.real-report .rp-type-summary { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); }
+.real-report .rp-type-summary-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 2px; }
+.real-report .rp-type-summary-head strong { font-size: 12.5px; }
+.real-report .rp-type-summary-head span { font-family: var(--font-mono); font-size: 9px; color: var(--faint); }
+.real-report .rp-selltype .rp-optype-row {
+  grid-template-columns: minmax(0, 250px) minmax(0, 1fr) 58px;
+  grid-template-areas: "main bar value";
+  align-items: center;
+  gap: 4px 14px;
+}
+.real-report .rp-selltype .rp-optype-main { align-items: center; }
+.real-report .rp-selltype .rp-caption { margin-top: 10px; }
+
 .real-report .rp-sell-ranges { margin-top: 14px; }
 .real-report .rp-sell-ranges .table-wrap { margin-top: 6px; }
 .real-report .rp-sell-ranges table.ledger td:last-child { font-size: 11.5px; color: var(--ink-soft); }
@@ -932,5 +984,21 @@
   .real-report .scale-row-value { font-size: 15px; }
   .real-report .rp-card.scale-card { padding: 16px 16px 12px; }
   .real-report .rp-optype-row { grid-template-columns: minmax(0, 1fr) 82px; }
-  .real-report .rp-sell-ranges table.ledger { min-width: 520px; }
+  .real-report .rp-selltype { padding: 14px 14px 12px; }
+  .real-report .rp-selltype .rp-optype-row {
+    grid-template-columns: minmax(0, 1fr) 58px;
+    grid-template-areas: "main value" "bar bar";
+  }
+  .real-report .rp-selltype-table { min-width: 0; }
+  .real-report .rp-selltype-table th:nth-child(5),
+  .real-report .rp-selltype-table td:nth-child(5) { display: none; }
+  .real-report .rp-selltype-table th,
+  .real-report .rp-selltype-table td { padding: 9px 6px; font-size: 11.5px; }
+  .real-report .rp-selltype-table th:first-child,
+  .real-report .rp-selltype-table td:first-child { padding-left: 0; }
+  .real-report .rp-selltype-table th:last-child,
+  .real-report .rp-selltype-table td:last-child { padding-right: 0; }
+  .real-report .rp-selltype-table .rp-type { padding: 1px 6px; font-size: 10px; }
+  .real-report .rp-selltype-table .rp-cell-sub { font-size: 9px; }
+  .real-report .rp-sell-ranges table.ledger { min-width: 620px; }
 }

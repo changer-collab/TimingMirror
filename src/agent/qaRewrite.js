@@ -1,4 +1,4 @@
-// rewrite-v2（浏览器端）：把本地事实草稿交给模型讲人话。
+// rewrite-v2（浏览器端）：把本地事实草稿交给 AI 转成白话。
 // 只发送已展示事实、草稿、claims 与允许值；响应必须逐句绑定 claim，数字/单位/实体/术语全部本地复核。
 import { collectAllowedValues, validateTextNumbers } from './qaNarrative.js';
 import {

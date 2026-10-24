@@ -23,6 +23,7 @@ import { buildBenchmarkLine } from '../engine/benchmarkLine.js';
 import { buildDragDecomposition } from '../engine/decompose.js';
 import { buildPatternList } from '../engine/behavior.js';
 import { buildBehaviorFactsRequest } from '../engine/behaviorFacts.js';
+import { buildOperationAttribution } from '../engine/operationAttribution.js';
 import { buildReturnWaterfall } from '../engine/waterfall.js';
 import { computeStockSelf } from '../engine/stockSelf.js';
 import { computePGR } from '../engine/pgr.js';
@@ -679,7 +680,7 @@ export function emptyUserInsights(reason = '尚未生成补充分析') {
   return {
     portfolio: {
       available: false, reason, report: null, decomposition: null, waterfall: null,
-      counterfactuals: [], counterfactual_errors: [],
+      operation_attribution: null, counterfactuals: [], counterfactual_errors: [],
     },
     behavior: { available: false, reason, data: null },
     stock_self: { available: false, reason, data: null },
@@ -808,6 +809,20 @@ function buildUserInsights({ stage, trades, closes, review }) {
     insights.behavior.reason = '';
   } catch (e) {
     insights.behavior.reason = `行为发现失败：${String(e && e.message ? e.message : e)}`;
+  }
+
+  try {
+    insights.portfolio.operation_attribution = buildOperationAttribution({
+      decomposition: insights.portfolio.decomposition,
+      behavior: insights.behavior,
+      trades,
+      market: stage.market,
+    });
+  } catch (e) {
+    insights.portfolio.operation_attribution = {
+      ok: false,
+      reason: `操作类型归因失败：${String(e && e.message ? e.message : e)}`,
+    };
   }
 
   try {

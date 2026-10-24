@@ -49,11 +49,21 @@ for (const { bill, bundle } of allScenarios) {
 
   const decomposition = bundle.insights.portfolio.decomposition;
   const items = Array.isArray(decomposition?.items) ? decomposition.items : [];
-  const attr = buildOperationAttribution({ decomposition, behavior: bundle.insights.behavior });
+  const attr = bundle.insights.portfolio.operation_attribution
+    ?? buildOperationAttribution({ decomposition, behavior: bundle.insights.behavior, trades: bill.trades, market: bundle.market });
   const behaviorAvailable = bundle.insights.behavior?.available === true;
   check(`${id}：操作类型归因可展示且加总等于逐笔差额`, attr.ok === behaviorAvailable
     && (!attr.ok || (Math.abs(attr.buckets.reduce((s, b) => s + b.money, 0) - attr.total.value) < 1e-6
       && attr.buckets.reduce((s, b) => s + b.count, 0) === items.length)), JSON.stringify(attr.buckets ?? attr));
+}
+
+{
+  const attr = chase.bundle.insights.portfolio.operation_attribution;
+  const bucket = (id) => attr?.buckets?.find((b) => b.id === id);
+  check('chase：操作类型按行情与仓位归到下跌中卖出/部分减仓', attr?.ok === true
+    && bucket('down')?.count === 2 && Math.abs(bucket('down').money - 1380.5) < 1e-6
+    && bucket('trim')?.count === 1 && Math.abs(bucket('trim').money - 370) < 1e-6
+    && bucket('rebuy')?.count === 0, JSON.stringify(attr?.buckets));
 }
 
 for (const { bill, vis } of allScenarios) {
