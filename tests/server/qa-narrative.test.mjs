@@ -13,7 +13,7 @@ import {
   normalizeQaNarrativeRequest,
   validateQaNarrativeResponse,
 } from '../../server/site-functions/qaNarrative.mjs';
-import { MODEL_PROMPTS } from '../../server/site-functions/dashscope.mjs';
+import { MODEL_PROMPTS, ModelTransportError } from '../../server/site-functions/dashscope.mjs';
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -157,10 +157,12 @@ async function invoke(handler, path, body) {
     && unsourced.json?.code === SITE_FUNCTION_CODES.QA_NARRATIVE_REQUEST_INVALID
     && badCalls.length === 0, unsourced.text);
 
+  const leakingText = '候选文本：这笔交易的差额是 ¥9,999.00，来自卖出前后的价差对照；它只说明这次操作的结果。';
+  const leakingRaw = JSON.stringify({ answer_text: leakingText });
   const leaking = await invoke(createHandler({
     transport: {
       async qaNarrative() {
-        return { rawText: JSON.stringify({ answer_text: '候选文本：这笔交易的差额是 ¥9,999.00，来自卖出前后的价差对照；它只说明这次操作的结果。' }) };
+        return { rawText: leakingRaw };
       },
     },
   }), '/api/llm/qa-narrative', requestBody());
@@ -174,6 +176,13 @@ async function invoke(handler, path, body) {
     && Number.isInteger(leaking.json?.raw_length) && leaking.json.raw_length > 0
     && Number.isInteger(leaking.json?.answer_text_length) && leaking.json.answer_text_length > 0,
   JSON.stringify(leaking.json));
+  check('handler：502 诊断字段固定，长度只回传数字', leaking.status === 502
+    && Object.keys(leaking.json ?? {}).sort().join(',')
+      === 'answer_text_length,code,field,message,ok,raw_length,response_type,validation_reason'
+    && leaking.json?.raw_length === [...leakingRaw].length
+    && leaking.json?.answer_text_length === [...leakingText].length
+    && !JSON.stringify(leaking.json).includes('9,999.00')
+    && !JSON.stringify(leaking.json).includes('候选文本'), JSON.stringify(leaking.json));
 
   const badJson = await invoke(createHandler({
     transport: { async qaNarrative() { return { rawText: 'not-json' }; } },
@@ -184,6 +193,24 @@ async function invoke(handler, path, body) {
     && badJson.json?.response_type === 'string'
     && badJson.json?.raw_length === 8
     && !badJson.text.includes('not-json'), JSON.stringify(badJson.json));
+
+  const transportFailures = [
+    ['超时', SITE_FUNCTION_CODES.MODEL_TIMEOUT, 504],
+    ['鉴权失败', SITE_FUNCTION_CODES.MODEL_AUTH_FAILED, 502],
+    ['限流', SITE_FUNCTION_CODES.MODEL_RATE_LIMITED, 429],
+    ['模型不可用', SITE_FUNCTION_CODES.MODEL_UNAVAILABLE, 502],
+  ];
+  for (const [label, code, status] of transportFailures) {
+    const transportFailure = await invoke(createHandler({
+      transport: { async qaNarrative() { throw new ModelTransportError(code); } },
+    }), '/api/llm/qa-narrative', requestBody());
+    check(`handler：${label}保持 ${status} ${code}，不混入响应校验码`, transportFailure.status === status
+      && transportFailure.json?.code === code
+      && transportFailure.json?.code !== SITE_FUNCTION_CODES.QA_NARRATIVE_RESPONSE
+      && !('validation_reason' in (transportFailure.json ?? {}))
+      && !('field' in (transportFailure.json ?? {}))
+      && !('raw_length' in (transportFailure.json ?? {})), transportFailure.text);
+  }
 
   const noMethod = await invoke(createHandler({ transport: { intent: async () => ({ rawText: '{}' }) } }),
     '/api/llm/qa-narrative', requestBody());
