@@ -88,7 +88,8 @@ const visionRecovery = {
     /data-field="fee" value=""[^>]*placeholder="未匹配"/.test(html)
     && /data-field="tax" value=""[^>]*placeholder="未匹配"/.test(html)
     && html.includes('可导入') && !html.includes('需修正'));
-  check('图片草稿：交收日期来源提示保留', /title="原图使用交收日期，不代表成交日期；请逐行核对"/.test(html)
+  check('图片草稿：交收日期提示改为全局一次', html.includes('当前日期来自交收日期，请确认后再导入')
+    && !/title="原图使用交收日期/.test(html)
     && html.includes('原图列名映射') && html.includes('交收日期'));
   check('图片草稿：成交额/清算额只在补充信息展示',
     html.includes('原图金额补充') && html.includes('成交额 <b>10,000.00</b>')
@@ -96,7 +97,8 @@ const visionRecovery = {
     && !/data-field="fee" value="10,000.00"/.test(html)
     && !/data-field="tax" value="10,005.00"/.test(html)
     && /成交额、清算额只按原图展示，不写入费用或税费/.test(html));
-  check('图片草稿：费用税费可留空说明可见', html.includes('费用、税费可留空'));
+  check('图片草稿：费用税费为空提示全局可见且只出现一次',
+    html.split('费用、税费为空时保留为空，可在确认前补填').length - 1 === 1);
   check('图片草稿：仍提供手动新增成交行', /data-action="add-row"/.test(html) && html.includes('＋ 添加成交行'));
 }
 
