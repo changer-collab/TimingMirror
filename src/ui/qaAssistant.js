@@ -26,6 +26,9 @@ const FACT_LABELS = Object.freeze({
 const HELP_CHIP_COUNT = 3;
 const PORTFOLIO_KEYS = Object.freeze(['actualRet', 'ghostRet', 'drag', 'dragMoney']);
 const VISIBLE_KINDS = Object.freeze(['help', 'help-user', 'ai']);
+const REPORT_AI_TAG = 'AI 解读';
+const REPORT_AI_PENDING_TEXT = '正在生成 AI 解读…';
+const REPORT_AI_FAILURE_TEXT = 'AI 解读暂时不可用，本地页面说明仍然有效。';
 
 let seq = 0;
 
@@ -51,6 +54,16 @@ function sanitizeAiText(value) {
 function isConfirmedLocal(bill) {
   return !!bill && bill.status === 'confirmed' && bill.sourceType === 'local' && !bill.blocked
     && Array.isArray(bill.trades) && bill.trades.length > 0;
+}
+
+// 报告页 AI 解读只针对已确认且非示例的用户账单；contextId 用于把解读绑定到当前账单。
+function isExplainableBill(bill) {
+  return isConfirmedLocal(bill) && bill.demo !== true && bill.source !== 'demo'
+    && typeof bill.contextId === 'string' && bill.contextId !== '';
+}
+
+function isDemoReport(bill, bundle) {
+  return bill?.demo === true || bill?.source === 'demo' || bundle?.demo === true;
 }
 
 function billContextId(state) {
@@ -317,6 +330,7 @@ function primaryAction(state, deps) {
     };
   }
   if (state.route === 'report') {
+    const bill = state.bill ?? {};
     const bundle = typeof deps?.getReportBundle === 'function' ? deps.getReportBundle(state.bill) : null;
     const scope = state.report?.symbol || 'pool';
     if (scope !== 'pool') {
@@ -328,7 +342,9 @@ function primaryAction(state, deps) {
         note: '当前是单标的视图；AI 解释只针对组合已发布数字，请先在报告页切回组合。',
       };
     }
-    if (!isConfirmedLocal(state.bill) || !bundle) {
+    // 示例场景/示例账单不提供真实账单的 AI 解读入口。
+    if (isDemoReport(bill, bundle)) return null;
+    if (!isExplainableBill(bill) || !bundle) {
       return {
         id: 'report-open',
         kind: 'link',
@@ -346,12 +362,13 @@ function primaryAction(state, deps) {
         note: '当前没有可解释的完整已发布组合数字；报告页会说明原因。',
       };
     }
+    const pending = state.assistant?.qaAiPending === true;
     return {
       id: 'report-ai',
       kind: 'report-ai',
-      label: '让 AI 解释当前数字',
+      label: pending ? REPORT_AI_PENDING_TEXT : '让 AI 解释当前数字',
       note: '将发送当前页面已发布的数字和你的问题，不发送原始账单文件。',
-      disabled: state.assistant?.qaAiPending === true || typeof deps?.explainReport !== 'function',
+      disabled: pending || typeof deps?.explainReport !== 'function',
     };
   }
   if (state.route === 'contract') {
@@ -424,6 +441,7 @@ export function visibleHelpMessages(state) {
   const contextId = billContextId(state);
   return (Array.isArray(state.assistant?.qaMessages) ? state.assistant.qaMessages : [])
     .filter((message) => VISIBLE_KINDS.includes(message?.kind)
+      && (message.route === null || message.route === undefined || message.route === state.route)
       && (message.billContextId === null || message.billContextId === undefined || message.billContextId === contextId));
 }
 
@@ -528,13 +546,22 @@ function aiMessageNode(message, ctx) {
   if (message.tag) box.append(el('div', { class: 'qa-tag' }, [message.tag]));
   if (status === 'failed') {
     box.append(el('div', { class: 'row qa-actions' }, [
-      el('button', {
-        class: 'btn small',
-        type: 'button',
-        'data-role': 'assistant-collapse',
-        'aria-label': '收起对话并查看页面说明',
-        onclick: () => setView(ctx, 'explain'),
-      }, ['查看页面说明']),
+      message.retryKind === 'report-ai'
+        ? el('button', {
+          class: 'btn small',
+          type: 'button',
+          'data-role': 'assistant-report-ai-retry',
+          'aria-label': '重试 AI 解读',
+          disabled: ctx.state.assistant?.qaAiPending === true ? '' : null,
+          onclick: () => runReportExplain(ctx),
+        }, ['重试 AI 解读'])
+        : el('button', {
+          class: 'btn small',
+          type: 'button',
+          'data-role': 'assistant-collapse',
+          'aria-label': '收起对话并查看页面说明',
+          onclick: () => setView(ctx, 'explain'),
+        }, ['查看页面说明']),
     ]));
   }
   return box;
@@ -661,37 +688,72 @@ function importFailureText(code) {
   return 'AI 识别未完成；本地解析结果仍然可用，可在导入页手动补全或稍后重试。';
 }
 
-function pushAiTurn(ctx, userText, pendingText, tag) {
+function pushAiTurn(ctx, userText, pendingText, tag, extra = {}) {
   const contextId = billContextId(ctx.state);
   const id = nextId();
+  const { route = null, ...aiExtra } = extra;
+  const routeField = route ? { route } : {};
   const messages = [
     ...(Array.isArray(ctx.state.assistant.qaMessages) ? ctx.state.assistant.qaMessages : []),
-    { id: nextId(), role: 'user', kind: 'help-user', text: userText, billContextId: contextId },
-    { id, role: 'assistant', kind: 'ai', tag, status: 'pending', text: pendingText, billContextId: contextId },
+    {
+      id: nextId(), role: 'user', kind: 'help-user', text: userText, billContextId: contextId, ...routeField,
+    },
+    {
+      id, role: 'assistant', kind: 'ai', tag, status: 'pending', text: pendingText, billContextId: contextId, ...routeField, ...aiExtra,
+    },
   ];
   setAssistant(ctx, { qaMessages: messages, qaInput: '', view: 'conversation', qaAiPending: true });
   return id;
 }
 
-function finishAiTurn(ctx, id, { ok, text }) {
+function finishAiTurn(ctx, id, { ok, text, ...extra }) {
   const cleaned = sanitizeAiText(text) || (ok ? 'AI 已返回结果。' : 'AI 未完成；本地说明仍然有效。');
   const messages = (Array.isArray(ctx.state.assistant.qaMessages) ? ctx.state.assistant.qaMessages : [])
-    .map((message) => (message.id === id ? { ...message, status: ok ? 'ok' : 'failed', text: cleaned } : message));
+    .map((message) => (message.id === id ? { ...message, ...extra, status: ok ? 'ok' : 'failed', text: cleaned } : message));
   setAssistant(ctx, { qaMessages: messages, qaAiPending: false });
+}
+
+function reportAiTurnId(state) {
+  const contextId = billContextId(state);
+  if (!contextId) return null;
+  const messages = Array.isArray(state.assistant?.qaMessages) ? state.assistant.qaMessages : [];
+  return [...messages].reverse()
+    .find((message) => message?.kind === 'ai' && message.retryKind === 'report-ai'
+      && message.billContextId === contextId)?.id ?? null;
 }
 
 async function runReportExplain(ctx) {
   const deps = ctx.qaDeps ?? {};
   if (ctx.state.assistant?.qaAiPending || typeof deps.explainReport !== 'function') return;
-  const bundle = typeof deps.getReportBundle === 'function' ? deps.getReportBundle(ctx.state.bill) : null;
-  if (!bundle || bundle.review?.portfolio_published !== true || !isConfirmedLocal(ctx.state.bill) || !hasCompletePortfolio(bundle)) return;
-  const id = pushAiTurn(ctx, '让 AI 解释当前数字', '正在请 AI 解释当前页面已发布的数字…', 'AI 解释');
+  const bill = ctx.state.bill;
+  const bundle = typeof deps.getReportBundle === 'function' ? deps.getReportBundle(bill) : null;
+  if (isDemoReport(bill, bundle) || !isExplainableBill(bill) || !bundle
+    || bundle.review?.portfolio_published !== true || !hasCompletePortfolio(bundle)) return;
+  // 同一账单只保留一段 AI 解读：重试或再次点击都复用原 turn，不追加相同用户消息。
+  const existingId = reportAiTurnId(ctx.state);
+  let id;
+  if (existingId) {
+    id = existingId;
+    setAssistant(ctx, {
+      view: 'conversation',
+      qaAiPending: true,
+      qaMessages: (Array.isArray(ctx.state.assistant.qaMessages) ? ctx.state.assistant.qaMessages : [])
+        .map((message) => (message.id === id
+          ? { ...message, status: 'pending', text: REPORT_AI_PENDING_TEXT }
+          : message)),
+    });
+  } else {
+    id = pushAiTurn(ctx, '让 AI 解释当前数字', REPORT_AI_PENDING_TEXT, REPORT_AI_TAG, {
+      route: 'report',
+      retryKind: 'report-ai',
+    });
+  }
   let result;
   try {
     result = await deps.explainReport({
       question: '解释当前页面已发布的组合数字及其含义',
       bundle,
-      bill: ctx.state.bill,
+      bill,
     });
   } catch {
     result = { ok: false };
@@ -701,7 +763,10 @@ async function runReportExplain(ctx) {
   } else {
     finishAiTurn(ctx, id, {
       ok: false,
-      text: 'AI 解释未完成；本地页面说明仍然有效。可稍后重试，或查看页面说明。',
+      text: REPORT_AI_FAILURE_TEXT,
+      tag: REPORT_AI_TAG,
+      route: 'report',
+      retryKind: 'report-ai',
     });
   }
 }

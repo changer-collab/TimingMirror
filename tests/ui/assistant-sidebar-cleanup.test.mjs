@@ -478,12 +478,12 @@ for (const route of ['home', 'import', 'report', 'contract']) {
   await Promise.resolve();
   const conversation = render('report');
   const last = state.assistant.qaMessages.at(-1);
-  check('报告页：点击后进入对话视图，结果标注 AI 解释并清理内部公式 ID',
+  check('报告页：点击后进入对话视图，结果标注 AI 解读并清理内部公式 ID',
     calls.length === 1
     && state.assistant.view === 'conversation'
     && state.assistant.qaMessages.length === 2
     && last?.kind === 'ai'
-    && last?.tag === 'AI 解释'
+    && last?.tag === 'AI 解读'
     && last?.status === 'ok'
     && last.text.includes('AI 解释了已发布的四项组合数字')
     && !/CALC_/.test(last.text)
@@ -499,10 +499,11 @@ for (const route of ['home', 'import', 'report', 'contract']) {
   await Promise.resolve();
   const failedConversation = render('report');
   const failedLast = state.assistant.qaMessages.at(-1);
-  check('报告页：AI 失败时保留本地说明入口，不显示内部错误码',
+  check('报告页：AI 失败时显示统一失败状态与重试入口，不显示内部错误码',
     failedLast?.status === 'failed'
-    && failedLast.text.includes('本地页面说明仍然有效')
-    && nodesByTag(failedConversation, 'button').some((node) => allText(node).includes('查看页面说明'))
+    && failedLast.text === 'AI 解读暂时不可用，本地页面说明仍然有效。'
+    && nodesByTag(failedConversation, 'button').some((node) => allText(node).includes('重试 AI 解读'))
+    && !nodesByTag(failedConversation, 'button').some((node) => allText(node).includes('查看页面说明'))
     && !allText(failedConversation).match(/E_MODEL_NOT_CONFIGURED|trace|request_id/),
     JSON.stringify(failedLast));
 }
