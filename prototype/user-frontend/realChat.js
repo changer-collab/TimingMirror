@@ -49,6 +49,8 @@ let handoffNotice = null;
 let clearArmed = false;
 // 正在生成的运行过程按 requestId 暂存；渲染重建后可从内存恢复，不写入持久状态。
 const liveTraces = new Map();
+// 延迟改写可能早于消息入列表完成；先暂存补丁，消息落地后再应用。
+const queuedRewrites = new Map();
 
 const TRACE_ICONS = Object.freeze({ running: '…', done: '✓', failed: '!', skipped: '–' });
 
@@ -98,9 +100,18 @@ function traceHTML(events, { requestId = null, pending = false } = {}) {
   </div>`;
 }
 
-function patchLiveTrace(host, requestId, events) {
+/* 页面重渲染会替换 #tm-real-chat，闭包里拿到的旧节点会脱离文档；按 id 重新取当前节点。 */
+function resolveTraceHost(host, lookup = (id) => (typeof document === 'undefined' ? null : document.getElementById(id))) {
+  if (!host) return null;
+  if (host.isConnected !== false) return host;
+  return (host.id && typeof lookup === 'function' ? lookup(host.id) : null) ?? host;
+}
+
+function patchLiveTrace(host, requestId, events, lookup) {
   if (!host || !requestId) return;
-  const node = host.querySelector(`[data-role="qa-trace-host"][data-request-id="${requestId}"]`);
+  const root = resolveTraceHost(host, lookup);
+  if (!root) return;
+  const node = root.querySelector(`[data-role="qa-trace-host"][data-request-id="${requestId}"]`);
   if (!node) return;
   const count = node.querySelector('[data-role="qa-trace-count"]');
   const steps = node.querySelector('[data-role="qa-trace-steps"]');
@@ -110,7 +121,7 @@ function patchLiveTrace(host, requestId, events) {
     const panel = node.querySelector('[data-role="qa-trace"]');
     if (panel) panel.open = true;
   }
-  const scroller = host.querySelector('[data-role="qa-scroll"]');
+  const scroller = root.querySelector('[data-role="qa-scroll"]');
   if (scroller) scroller.scrollTop = scroller.scrollHeight;
 }
 
@@ -125,8 +136,10 @@ function esc(value) {
   }[ch]));
 }
 
+const EXTRA_INTENT_LABELS = Object.freeze({ assertion_check: '数字核对' });
+
 function intentLabelOf(intent) {
-  return QA_INTENT_LABELS[intent] ?? '事实问答';
+  return QA_INTENT_LABELS[intent] ?? EXTRA_INTENT_LABELS[intent] ?? '事实问答';
 }
 
 function statusOf(answer) {
@@ -212,6 +225,28 @@ function rewriteOf(message, answer) {
   return message?.rewrite ?? answer?.rewrite ?? null;
 }
 
+const REWRITE_REASON_HINTS = Object.freeze({
+  timeout: 'AI 改写超时，这次先显示本地表述。可以重试。',
+  response_invalid: 'AI 改写没有通过数字复核，这次先显示本地表述。可以重试。',
+  rate_limited: 'AI 改写当前请求较多，这次先显示本地表述。可以重试。',
+  request_invalid: '这次改写请求没有通过校验，先显示本地表述。',
+  unavailable: 'AI 改写暂时不可用，这次先显示本地表述。可以重试。',
+  verification_failed: '改写没有通过发布前复核，已保留本地表述。',
+});
+
+function rewriteHintOf(meta) {
+  if (!meta || (meta.status !== 'local_fallback' && meta.status !== 'withheld')) return null;
+  return REWRITE_REASON_HINTS[meta.reason] ?? '模型改写未采用，以下是本地表述。';
+}
+
+function rewriteNoticeHTML(message, answer) {
+  if (message?.rewrite_pending || answer?.rewrite_pending) {
+    return '<p class="tm-qa-rewrite-hint is-pending">正在换一种说法…</p>';
+  }
+  const hint = rewriteHintOf(message?.rewrite_meta ?? answer?.rewrite_meta);
+  return hint ? `<p class="tm-qa-rewrite-hint" data-role="qa-rewrite-hint">${esc(hint)}</p>` : '';
+}
+
 function rewriteHTML(message, answer) {
   const rewrite = rewriteOf(message, answer);
   if (!rewrite) return '';
@@ -237,16 +272,13 @@ function rewriteHTML(message, answer) {
       ${message?.rewrite_pending ? '<p class="tm-qa-rewrite-hint is-pending">正在换一种说法…</p>' : ''}
     </section>`;
   }
-  if (rewrite.status === 'local_fallback') {
-    return '<p class="tm-qa-rewrite-hint" data-role="qa-rewrite-hint">模型改写未采用，以下是本地表述。</p>';
-  }
   return '';
 }
 
 function answerTextHTML(answer, message) {
   const rewrite = rewriteOf(message, answer);
   if (rewrite?.status === 'ok') return rewriteHTML(message, answer);
-  return `<p class="tm-qa-text">${esc(answer.text)}</p>${rewriteHTML(message, answer)}`;
+  return `<p class="tm-qa-text">${esc(answer.text)}</p>${rewriteNoticeHTML(message, answer)}`;
 }
 
 function onlineHTML(message) {
@@ -281,8 +313,15 @@ function actionsHTML(answer, message, actionMap, currentRuleKey, question, allow
       kind: 'online',
     });
   }
-  if (answer.status === 'local' && rewriteOf(message, answer)?.status === 'ok') {
-    actions.push({ id: 'rewrite-again', label: '换一种说法', kind: 'rewrite' });
+  const rewrite = rewriteOf(message, answer);
+  const rewriteMeta = message?.rewrite_meta ?? answer?.rewrite_meta ?? null;
+  if (answer.status === 'local' && (rewrite?.status === 'ok'
+    || (rewriteMeta && (rewriteMeta.status === 'local_fallback' || rewriteMeta.status === 'withheld')))) {
+    actions.push({
+      id: 'rewrite-again',
+      label: rewrite?.status === 'ok' ? '换一种说法' : '重试白话改写',
+      kind: 'rewrite',
+    });
   }
   const names = new Set(actions.map((a) => a.id));
   let stale = false;
@@ -325,6 +364,20 @@ function patchMessage(ctx, messageId, patch) {
 function findMessage(ctx, messageId) {
   const messages = Array.isArray(ctx?.state?.chat?.messages) ? ctx.state.chat.messages : [];
   return messages.find((message) => message?.id === messageId) ?? null;
+}
+
+function applyRewritePatch(ctx, messageId, payload) {
+  const current = findMessage(ctx, messageId);
+  if (!current) return false;
+  if ((current.bill_context_id ?? null) !== (ctx?.state?.bill?.contextId ?? null)) return false;
+  return patchMessage(ctx, messageId, {
+    answer: payload.answer ?? current.answer,
+    rewrite: payload.rewrite ?? null,
+    rewrite_meta: payload.meta ?? null,
+    rewrite_pending: false,
+    rewrite_hint: null,
+    ...(Array.isArray(payload.trace) ? { trace: payload.trace } : {}),
+  });
 }
 
 function answerHTML(entry, actionMap, currentRuleKey, allowOnline) {
@@ -642,6 +695,14 @@ export function renderRealChat(host, ctx) {
           ruleState,
           versions,
           source,
+          deferRewrite: true,
+          onRewrite: (payload) => {
+            if (!findMessage(ctx, requestId)) {
+              queuedRewrites.set(requestId, payload);
+              return;
+            }
+            applyRewritePatch(ctx, requestId, payload);
+          },
           onStage: (event) => {
             if (!isCurrent()) return;
             const events = mergeTraceEvent(liveTraces.get(requestId) ?? [], event);
@@ -674,6 +735,11 @@ export function renderRealChat(host, ctx) {
         messages: [...state.chat.messages, assistantMessage],
       },
     });
+    const queued = queuedRewrites.get(requestId);
+    if (queued) {
+      queuedRewrites.delete(requestId);
+      applyRewritePatch(ctx, requestId, queued);
+    }
     void autoExtractProfileFacts(question, requestId, messageContextId, answer);
   }
 
@@ -769,7 +835,10 @@ export function renderRealChat(host, ctx) {
     if (!message || !question || message.rewrite_pending) return;
     if ((message.bill_context_id ?? null) !== (state.bill?.contextId ?? null)) return;
     const current = rewriteOf(message, message.answer);
-    if (!current || current.status !== 'ok') return;
+    const currentMeta = message.rewrite_meta ?? message.answer?.rewrite_meta ?? null;
+    const retryable = current && (current.status === 'ok'
+      || currentMeta?.status === 'local_fallback' || currentMeta?.status === 'withheld');
+    if (!retryable) return;
     if (typeof ctx.qaDeps?.rewriteAnswer !== 'function') {
       patchMessage(ctx, messageId, { rewrite_hint: '当前环境不支持白话改写。' });
       return;
@@ -791,6 +860,7 @@ export function renderRealChat(host, ctx) {
     if (!latest || !latest.rewrite_pending) return;
     if (result?.rewrite) {
       patchMessage(ctx, messageId, {
+        answer: { ...latest.answer, rewrite: result.rewrite, rewrite_meta: result.rewrite_meta ?? null, rewrite_pending: false },
         rewrite: result.rewrite,
         rewrite_meta: result.rewrite_meta ?? null,
         rewrite_pending: false,
@@ -896,4 +966,4 @@ export function renderRealChat(host, ctx) {
   };
 }
 
-export { mergeTraceEvent, traceHTML };
+export { mergeTraceEvent, traceHTML, resolveTraceHost, patchLiveTrace };

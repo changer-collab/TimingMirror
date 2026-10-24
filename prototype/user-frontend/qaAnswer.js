@@ -23,6 +23,7 @@ import { assembleContext, contextStillCurrent } from '../../src/agent/contextAss
 import { buildEvidenceBundle } from '../../src/agent/evidenceBundle.js';
 import { buildClaims, composeLocalAnswer, COMPOSED_INTENTS } from '../../src/agent/answerComposer.js';
 import { buildPlainDraft } from '../../src/agent/plainLanguage.js';
+import { checkAssertedNumbers } from '../../src/agent/assertedNumbers.js';
 import { createAnswerRewriter, REWRITE_TIMEOUT_MS } from '../../src/agent/answerRewriter.js';
 import { verifyAnswer } from '../../src/agent/answerVerifier.js';
 import { establishedPatternsOf } from '../../src/agent/historyIndex.js';
@@ -381,7 +382,7 @@ function answerWhatIf({ route, bundle, bill, elapsedMs }) {
   }
   const direction = replace.recoveredMoney >= 0 ? '多' : '少';
   const exact = Boolean(symbol || tradeDate) ? '' : '（未指定具体成交，按绝对差额最高的一笔展示）';
-  const text = `按当前账单的单笔反事实，${cf.trade_date} 卖出 ${cf.symbol} ${cf.quantity} 股若没有发生${exact}（按估值日收盘价重算，只替换这一笔），对照结果会比实际${direction} ${fmtMoney(Math.abs(replace.recoveredMoney))}，折合 ${fmtPP(replace.recoveredPP)}。这是事后假设，不是建议，也不代表当时应该那样做。`;
+  const text = `如果 ${cf.trade_date} 卖出 ${cf.symbol} 这笔没发生${exact}，按报告收盘价重算，结果会比现在${direction} ${fmtMoney(Math.abs(replace.recoveredMoney))}，收益率差 ${fmtPP(replace.recoveredPP)}。这只是事后假设，不是建议，也不代表当时应该那样做。`;
   const facts = [
     { label: '成交', value: `${cf.trade_date} · 卖出 ${cf.symbol} × ${cf.quantity}` },
     { label: '差额', value: signedMoney(replace.recoveredMoney), tone: replace.recoveredMoney >= 0 ? 'loss' : 'ok' },
@@ -450,7 +451,7 @@ function answerMetaCalc({ route, bundle, bill, elapsedMs }) {
       : '来源：报告页的计算路径',
   }));
   const missing = published.length - traceable.length;
-  const text = `这次回答只使用当前报告中已核对并发布的 ${traceable.length} 条数字；没有重新计算。每条数字都能在报告页展开到公式和成交来源。${missing ? `另有 ${missing} 条数字本次未纳入回答。` : ''}`;
+  const text = `这些数字都能回到报告页的计算路径，本次没有重新计算：实际收益来自持仓与成交，对照收益是假设每笔买入后一直不动，择时损耗是两者之差。逐笔的公式和成交来源可在报告里展开核对。${missing ? `另有 ${missing} 条数字本次未纳入回答。` : ''}`;
   return makeEnvelope({
     status: 'local',
     intent: 'meta_calc',
@@ -476,7 +477,12 @@ function answerMetaTrust({ route, bundle, bill, elapsedMs }) {
   const blocked = Array.isArray(review.blocked_facts) ? review.blocked_facts : [];
   const blockedSymbols = Array.isArray(review.blocked_symbols) ? review.blocked_symbols : [];
   const published = review.portfolio_published === true;
-  const text = `这份报告的组合结果${published ? '已发布' : '尚未发布'}。${blocked.length ? `有 ${blocked.length} 条数字未纳入回答；` : ''}${degraded.length ? `有 ${degraded.length} 条数据提示；` : ''}${blockedSymbols.length ? `${blockedSymbols.length} 个标的缺价。` : ''}${degraded.length ? '数据提示只说明缺口，已发布的数字仍按原口径展示。' : '当前没有数据提示。'}`;
+  const gaps = blocked.length || blockedSymbols.length || degraded.length;
+  const text = published
+    ? `结论不会硬算：行情缺失或复核不过时，组合结果就不发布。${gaps
+      ? `这份报告有 ${blocked.length} 条数字未纳入回答、${blockedSymbols.length} 个标的缺价、${degraded.length} 条数据提示；缺口不补齐，已发布的数字仍按原口径展示。`
+      : '这份报告没有缺价，已发布的数字都能回到成交与行情证据，可以逐条核对。'}`
+    : '这份报告的组合结果尚未发布：行情缺失或复核不过时，宁可不给结论，也不用替代数据补齐。';
   const evidence = degraded.slice(0, 4).map((d) => ({
     label: '数据提示',
     detail: String(d.message ?? ''),
@@ -666,11 +672,11 @@ function answerScope({ scope, question, bill, elapsedMs }) {
     });
   }
   return makeEnvelope({
-    status: 'local',
+    status: 'refusal',
     intent: 'unrelated',
     route,
     source: 'template',
-    text: '这件事超出我的范围：我只用这份账单里已经核对过的事实回答，不做其他任务。可以改问这份账单的表现、最错的一笔或规则守不守得住。',
+    text: '这件事不在我能回答的范围：我只用这份账单里已核对的事实，回答已经发生的事。可以改问这份账单的表现、最错的一笔或规则守不守得住。',
     actions: sampleActions(['worst', 'pattern']),
     trace: { template_id: 'T-unrelated' },
     notice: '未读取账单、未调用模型。',
@@ -944,6 +950,16 @@ async function composeBuiltEnvelope({
   return composed;
 }
 
+function publishedPartsOf(bundle) {
+  const facts = Array.isArray(bundle?.review?.published_facts) ? bundle.review.published_facts : [];
+  const parts = [];
+  for (const fact of facts) {
+    if (fact && typeof fact.display === 'string') parts.push(fact.display);
+  }
+  if (typeof bundle?.asOfDate === 'string') parts.push(bundle.asOfDate);
+  return parts;
+}
+
 async function answerLegacy({ question, bill, ruleState, versions, preferOnline, route, trace, elapsed, now, askOnline }) {
     const intent = route?.intent ?? null;
     if (!intent) {
@@ -1004,6 +1020,28 @@ async function answerLegacy({ question, bill, ruleState, versions, preferOnline,
             message: bundle.review?.blocked_symbols?.map((b) => b.symbol).join('、') || '组合结果未发布',
           }],
           trace: { template_id: null },
+          bill,
+          elapsedMs: elapsed(),
+        });
+      }
+    }
+
+    if (bundle) {
+      const asserted = checkAssertedNumbers(question, publishedPartsOf(bundle));
+      if (!asserted.ok) {
+        trace.push('degraded', 'done', '问题里的数字与已发布事实不符');
+        return makeEnvelope({
+          status: 'clarify',
+          intent: 'assertion_check',
+          route,
+          source: 'local',
+          text: '你提到的数字不在本账单已发布的数字里，我无法确认。请先打开报告核对实际收益和一直持有的对照，再问我。',
+          actions: [
+            reportAction('打开报告 · 核对数字'),
+            askAction('qa-meta-calc', '这些数字怎么算', '这些数字怎么算？'),
+          ],
+          notice: '本次没有复述问题里的数字，也没有用未核对的内容作答。',
+          trace: { template_id: 'T-assertion-check' },
           bill,
           elapsedMs: elapsed(),
         });
@@ -1243,10 +1281,62 @@ async function answerLegacy({ question, bill, ruleState, versions, preferOnline,
     return answer;
   }
 
+  // 白话改写不阻塞首屏：先发布通过复核的本地回答，改写完成后再复核并补丁到同一条消息。
+  async function settleDeferredRewrite({ answer, question, bill, trace, scope }, onRewrite) {
+    const draft = rewriteDraftOf(answer, bill);
+    const claims = rewriteClaimsOf(answer);
+    if (!Array.isArray(answer.claims) || answer.claims.length === 0) answer.claims = claims;
+    let result = null;
+    try {
+      result = await rewriter.rewrite({
+        question,
+        intent: answer.intent,
+        scope,
+        draft,
+        claims,
+        facts: answer.facts,
+        evidence: answer.evidence,
+        userKey: bill?.contextId ?? '',
+      });
+    } catch {
+      result = null;
+    }
+    answer.rewrite = result?.rewrite ?? null;
+    answer.rewrite_meta = result?.meta ?? {
+      status: 'local_fallback', model_called: false, cached: false, reason: 'unavailable',
+    };
+    answer.narrative_policy = 'auto';
+    trace.push('rewrite', result?.ok ? 'done' : 'skipped', 'AI 转成白话', {
+      detail: result?.ok
+        ? (result.meta.cached ? '使用缓存表述' : '已绑定 claim')
+        : '本次改用本地表述',
+    });
+    const checked = verifyAnswer({ envelope: answer, scope, bill });
+    if (!checked.ok) {
+      // 改写未通过复核时只丢弃改写，不影响已经发布的本地回答。
+      answer.rewrite = null;
+      answer.rewrite_meta = { ...answer.rewrite_meta, status: 'withheld', reason: 'verification_failed' };
+      answer.narrative_policy = 'none';
+    }
+    answer.rewrite_pending = false;
+    if (typeof onRewrite === 'function') {
+      try {
+        onRewrite({
+          answer,
+          rewrite: answer.rewrite,
+          meta: answer.rewrite_meta,
+          verified: checked.ok,
+          trace: trace.events(),
+        });
+      } catch { /* 补丁失败不影响已回答内容 */ }
+    }
+  }
+
   async function ask({
     question = '', bill = null, ruleState = null, versions = [],
     preferOnline = false, source = 'typed', onStage = null,
     reuseIntent = null, reuseRoute = null,
+    deferRewrite = false, onRewrite = null,
   } = {}) {
     const started = now();
     const elapsed = () => now() - started;
@@ -1292,6 +1382,7 @@ async function answerLegacy({ question, bill, ruleState, versions, preferOnline,
       })
       : null;
 
+    let deferred = null;
     const orchestrator = createOrchestrator({
       routeScope,
       intentPolicy: reusePolicy ?? intentPolicy,
@@ -1311,6 +1402,19 @@ async function answerLegacy({ question, bill, ruleState, versions, preferOnline,
               now,
               askOnline,
             });
+          if (deferRewrite && rewriteEligible(envelope)) {
+            envelope.narrative_policy = 'pending';
+            envelope.rewrite_pending = true;
+            trace.push('rewrite', 'running', 'AI 转成白话');
+            deferred = {
+              answer: envelope,
+              question: current,
+              bill: currentBill,
+              trace,
+              scope: { kind: 'bill', synthetic: currentBill?.demo === true },
+            };
+            return envelope;
+          }
           return await autoRewrite({ answer: envelope, question: current, bill: currentBill, trace });
         } catch (e) {
           return makeEnvelope({
@@ -1332,7 +1436,12 @@ async function answerLegacy({ question, bill, ruleState, versions, preferOnline,
       now,
     });
 
-    return orchestrator.runTurn({ question: normalized, bill, source, onStage });
+    const out = await orchestrator.runTurn({ question: normalized, bill, source, onStage });
+    if (deferred && out.envelope === deferred.answer
+      && out.envelope.status === 'local' && out.envelope.narrative_policy === 'pending') {
+      void settleDeferredRewrite(deferred, onRewrite);
+    }
+    return out;
   }
 
   async function rewrite({ question = '', answer = null, bill = null, force = false } = {}) {

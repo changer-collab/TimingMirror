@@ -45,7 +45,8 @@ function build(args = {}) {
     && !('answer' in built.request)
     && !JSON.stringify(built.request).includes('这笔交易的差额是'), JSON.stringify(built.request));
   check('请求：允许值覆盖金额/日期/代码/数量', built.ok
-    && built.request.allowed.displays.includes('¥1,200.00')
+    && built.request.allowed.displays.includes('money:1200')
+    && built.request.allowed.displays.includes('money:100')
     && built.request.allowed.numbers.includes('1200.00')
     && built.request.allowed.dates.includes('2024-09-27')
     && built.request.allowed.symbols.includes('000000')
@@ -113,7 +114,7 @@ function build(args = {}) {
   check('客户端：发送体不含答案原文，且带允许值', calls.length === 1
     && Object.keys(calls[0]).join(',') === 'question,intent,facts,evidence,allowed'
     && !JSON.stringify(calls[0]).includes('这笔交易的差额是')
-    && calls[0].allowed.displays.includes('¥1,200.00'), JSON.stringify(calls[0]));
+    && calls[0].allowed.displays.includes('money:1200'), JSON.stringify(calls[0]));
   check('客户端：成功后返回数字校验计数', answered.number_check && answered.number_check.checked === [...VALID_TEXT].length, JSON.stringify(answered.number_check));
 
   const flakyCalls = [];

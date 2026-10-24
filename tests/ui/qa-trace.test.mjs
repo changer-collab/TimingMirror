@@ -11,7 +11,7 @@ import { createTrace, createOrchestrator } from '../../src/agent/orchestrator.js
 import { createIntentPolicy } from '../../src/agent/intentPolicy.js';
 import { routeScope } from '../../src/agent/scopeRouter.js';
 import { createQaAnswerService } from '../../prototype/user-frontend/qaAnswer.js';
-import { mergeTraceEvent, traceHTML } from '../../prototype/user-frontend/realChat.js';
+import { mergeTraceEvent, traceHTML, resolveTraceHost, patchLiveTrace } from '../../prototype/user-frontend/realChat.js';
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -194,6 +194,58 @@ async function runOrchestrator({ question, source, classifyIntent, local = () =>
     source.slice(source.indexOf('BOUNDARY_STATES'), source.indexOf('BOUNDARY_STATES') + 120));
   check('withheld：Trace 面板位于回答正文之上', answerBlock.indexOf('traceHTML(') < answerBlock.indexOf('answerTextHTML('),
     answerBlock.slice(0, 400));
+}
+
+/* ==== ⑤ 重渲染后的增量更新：旧 host 脱离文档时按 id 找回当前节点 ==== */
+{
+  const detached = { id: 'tm-real-chat', isConnected: false };
+  const fresh = { id: 'tm-real-chat', isConnected: true };
+  check('重渲染：已脱离文档的旧 host 按 id 换成当前节点',
+    resolveTraceHost(detached, (id) => (id === 'tm-real-chat' ? fresh : null)) === fresh);
+  check('重渲染：仍连接的 host 直接使用，不重复查询',
+    resolveTraceHost(fresh, () => { throw new Error('不应查询'); }) === fresh);
+
+  const fake = fakeTraceDom();
+  const events = [
+    { stage: 'scope', status: 'done', label: '判断问题范围', detail: '账单问题', ms: 12 },
+    { stage: 'intent', status: 'running', label: '模型分析意图', ms: 900 },
+  ];
+  patchLiveTrace(detached, 'qa-1', events, (id) => (id === 'tm-real-chat' ? fake.root : null));
+  check('重渲染：等待面板继续追加到当前节点', fake.count.textContent === 'AI 运行过程 · 进行中 · 2 步'
+    && fake.steps.innerHTML.includes('模型分析意图') && fake.steps.innerHTML.includes('判断问题范围'),
+  JSON.stringify({ count: fake.count.textContent, steps: fake.steps.innerHTML.slice(0, 160) }));
+  check('重渲染：增量更新保持展开并滚到底部', fake.panel.open === true
+    && fake.scroller.scrollTop === fake.scroller.scrollHeight);
+
+  patchLiveTrace(detached, 'qa-1', [...events, { stage: 'plan', status: 'done', label: '确定回答步骤', ms: 4 }],
+    (id) => (id === 'tm-real-chat' ? fake.root : null));
+  check('重渲染：后续阶段不再停在 2 步', fake.count.textContent === 'AI 运行过程 · 进行中 · 3 步'
+    && fake.steps.innerHTML.includes('确定回答步骤'), fake.steps.innerHTML.slice(0, 200));
+}
+
+function fakeTraceDom() {
+  const count = { textContent: '' };
+  const steps = { innerHTML: '' };
+  const panel = { open: false };
+  const node = {
+    querySelector(selector) {
+      if (selector.includes('qa-trace-count')) return count;
+      if (selector.includes('qa-trace-steps')) return steps;
+      if (selector === '[data-role="qa-trace"]') return panel;
+      return null;
+    },
+  };
+  const scroller = { scrollTop: 0, scrollHeight: 640 };
+  const root = {
+    id: 'tm-real-chat',
+    isConnected: true,
+    querySelector(selector) {
+      if (selector.includes('qa-trace-host')) return node;
+      if (selector.includes('qa-scroll')) return scroller;
+      return null;
+    },
+  };
+  return { root, count, steps, panel, scroller };
 }
 
 const failed = results.filter((r) => !r.ok);

@@ -40,6 +40,7 @@ const MONEY_SOURCE = '[+-]?¥[+-]?\\d[\\d,]*(?:\\.\\d+)?';
 const MONEY_RE = new RegExp(MONEY_SOURCE, 'g');
 const PCT_RE = /[+-]?\d+(?:\.\d+)?\s*%/g;
 const PP_RE = /[+-]?\d+(?:\.\d+)?\s*pp/gi;
+const PP_CN_RE = /[+-]?\d+(?:\.\d+)?\s*个百分点/g;
 const UNIT_RE = /([+-]?\d[\d,]*(?:\.\d+)?)\s*(元|股|手|份)/g;
 const COUNT_TOKEN_RE = /(\d[\d,]*(?:\.\d+)?)\s*(笔|次|条|类|份|个|天|日|行)/g;
 const SOURCE_DATE_RE = /(\d{4})\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})\s*日?/g;
@@ -80,8 +81,29 @@ function numericKey(raw) {
   return value;
 }
 
+function numberKeyOf(raw) {
+  const text = compact(raw).toLowerCase()
+    .replace(/¥|%|个百分点|pp|元|股|手|份/g, '')
+    .replace(/,/g, '');
+  const match = text.match(/^([+-]?)(\d+(?:\.\d+)?)$/u);
+  if (!match) return null;
+  const value = (match[1] === '-' ? -1 : 1) * Number(match[2]);
+  if (!Number.isFinite(value)) return null;
+  return String(value === 0 ? 0 : value);
+}
+
+function unitOf(raw) {
+  const text = compact(raw).toLowerCase();
+  if (text.includes('%')) return 'pct';
+  if (text.includes('pp') || text.includes('个百分点')) return 'pp';
+  if (text.includes('¥') || text.includes('元')) return 'money';
+  return 'count';
+}
+
+// 展示值按单位+数值归一：¥1,200.00、-¥1200、¥+1,200 视为同一金额。
 function displayKey(raw) {
-  return compact(raw).toLowerCase();
+  const value = numberKeyOf(raw);
+  return value === null ? compact(raw).toLowerCase() : `${unitOf(raw)}:${value}`;
 }
 
 function escapeRe(value) {
@@ -134,8 +156,13 @@ function sourceHasCount(sourceCompact, count) {
   return re.test(sourceCompact);
 }
 
-function sourceHasDisplay(sourceCompact, display) {
-  return sourceCompact.includes(display);
+function sourceHasDisplay(sourceCanon, display) {
+  for (const pattern of [MONEY_RE, PCT_RE, PP_RE, PP_CN_RE]) {
+    for (const match of sourceCanon.matchAll(pattern)) {
+      if (displayKey(match[0]) === display) return true;
+    }
+  }
+  return false;
 }
 
 function sourceHasDate(sourceCanon, date) {
@@ -171,7 +198,7 @@ function validateAllowedAgainstSource(request) {
   if (allowed.symbols.some((value) => !sourceHasSymbol(sourceCanon, value))) {
     return fail('allowed.symbols 包含事实中不存在的代码');
   }
-  if (allowed.displays.some((value) => !sourceHasDisplay(sourceCompact, value))) {
+  if (allowed.displays.some((value) => !sourceHasDisplay(sourceCanon, value))) {
     return fail('allowed.displays 包含事实中不存在的展示值');
   }
   return { ok: true };
@@ -285,6 +312,12 @@ function validateNarrativeNumbers(text, allowed) {
   ));
   if (!pp.ok) return pp;
   residue = pp.text;
+
+  const ppCn = replaceAll(residue, PP_CN_RE, (raw) => (
+    displaySet.has(displayKey(raw)) ? true : '解读包含未提供的百分点'
+  ));
+  if (!ppCn.ok) return ppCn;
+  residue = ppCn.text;
 
   const units = replaceAll(residue, UNIT_RE, (raw) => {
     const match = String(raw).match(/^([+-]?\d[\d,]*(?:\.\d+)?)\s*(元|股|手|份)$/u);
@@ -412,6 +445,10 @@ function collectAllowed(parts) {
     pushUnique(allowed.displays, displayKey(match[0]), MAX_DISPLAYS);
     pushUnique(allowed.numbers, numericKey(match[0].replace(/pp/iu, '')), MAX_NUMBERS);
   }
+  for (const match of sourceCanon.matchAll(PP_CN_RE)) {
+    pushUnique(allowed.displays, displayKey(match[0]), MAX_DISPLAYS);
+    pushUnique(allowed.numbers, numericKey(match[0].replace(/个百分点/u, '')), MAX_NUMBERS);
+  }
   for (const match of sourceCanon.matchAll(UNIT_RE)) {
     pushUnique(allowed.counts, `${numericKey(match[1])}${match[2]}`, MAX_COUNTS);
     pushUnique(allowed.numbers, numericKey(match[1]), MAX_NUMBERS);
@@ -423,7 +460,7 @@ function collectAllowed(parts) {
 
   // 先剥离日期/金额/百分比/计数，再把剩余数字与 6 位代码纳入允许值。
   let residue = sourceCanon;
-  const stripPatterns = [SOURCE_DATE_RE, MONEY_RE, PCT_RE, PP_RE, UNIT_RE, COUNT_TOKEN_RE];
+  const stripPatterns = [SOURCE_DATE_RE, MONEY_RE, PCT_RE, PP_RE, PP_CN_RE, UNIT_RE, COUNT_TOKEN_RE];
   for (const pattern of stripPatterns) {
     residue = residue.replace(pattern, ' ');
   }
