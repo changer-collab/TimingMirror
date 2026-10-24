@@ -166,6 +166,7 @@ function axisLabelAttrs(i, n) {
 export function renderGhostChart(root, cf) {
   const { series, markers } = cf;
   const compact = cf.compact === true;
+  const merged = cf.merged === true;
   const points = series.points;
   const n = points.length;
   const xs = (i) => xPos(i, n);
@@ -175,19 +176,20 @@ export function renderGhostChart(root, cf) {
   const yA = (v) => yPos(v, extA, H1);
   const yC = (v) => yPos(v, extC, H2);
   const xIdx = axisLabels(n);
+  const dateIndex = new Map(points.map((p, i) => [p.date, i]));
 
   const wrap = div('gc-wrap');
   const tip = div('gc-tip');
   tip.setAttribute('style', 'display:none');
 
-  if (!compact) {
+  if (!compact && !merged) {
     wrap.append(div('gc-reading-guide', [
       textNode('读图提示：上图比较你的实际结果、买入后持有，以及“这笔卖出没有发生”的假设结果；下图只显示每日收盘价和交易发生的时间点。'),
     ]));
   }
 
   //  上：资产路径 
-  wrap.append(div('gc-panel-title', [textNode(compact ? '资产价值' : '资产价值变化：实际操作 / 买入后持有 / 假如这笔卖出没有发生；红色带表示两者差额')]));
+  if (!merged) wrap.append(div('gc-panel-title', [textNode(compact ? '资产价值' : '资产价值变化：实际操作 / 买入后持有 / 假如这笔卖出没有发生；红色带表示两者差额')]));
   const svg1 = svgEl('svg', { viewBox: `0 0 ${W} ${H1}`, class: 'gc-svg', role: 'img' });
   svg1.append(frame(extA, H1));
   const gapPath = gapD(points, xs, yA, yA);
@@ -204,51 +206,88 @@ export function renderGhostChart(root, cf) {
     svg1.append(isolatedPoints(points, key, xs, yA, cls));
   }
   svg1.append(isolatedLabels(points, xs, yA));
+  if (merged) {
+    let sellNo = 0;
+    let lastSellX = -999;
+    const ordered = [...markers].sort((a, b) => String(a.trade_date).localeCompare(String(b.trade_date)));
+    for (const m of ordered) {
+      const i = dateIndex.get(m.trade_date);
+      if (i === undefined) continue;
+      const x = xs(i);
+      const value = points[i].actual;
+      const y = Number.isFinite(value) ? yA(value) : H1 - PAD.b;
+      const buy = m.side === 'buy';
+      svg1.append(svgEl('line', {
+        x1: x, x2: x, y1: PAD.t + 10, y2: H1 - PAD.b,
+        class: `gc-trade-line ${buy ? 'is-buy' : 'is-sell'}`,
+      }));
+      if (Number.isFinite(value)) {
+        svg1.append(svgEl('circle', {
+          cx: x, cy: y, r: buy ? 2.4 : 3.2,
+          class: `gc-trade-dot ${buy ? 'is-buy' : 'is-sell'}`,
+        }));
+      }
+      if (!buy) {
+        sellNo += 1;
+        const labelY = Math.abs(x - lastSellX) < 40 && sellNo % 2 === 0 ? PAD.t + 14 : 14;
+        svg1.append(svgText(x, labelY, String(sellNo).padStart(2, '0'), 'gc-trade-label is-sell', { 'text-anchor': 'middle' }));
+        lastSellX = x;
+      }
+    }
+  }
   for (const i of xIdx) svg1.append(svgText(xs(i), H1 - 10, points[i].date, 'gc-axis', axisLabelAttrs(i, n)));
   const cross1 = svgEl('line', { class: 'gc-cross', y1: PAD.t, y2: H1 - PAD.b, style: 'display:none' });
   svg1.append(cross1);
-  wrap.append(svg1);
+  if (!merged) wrap.append(svg1);
 
   //  下：收盘价与买卖点 
-  wrap.append(div('gc-panel-title', [textNode(compact ? '收盘价与买卖点' : '每日收盘价与交易时间点：绿色为买入，红色为卖出，橙色圈为本次模拟的卖出笔')]));
-  const svg2 = svgEl('svg', { viewBox: `0 0 ${W} ${H2}`, class: 'gc-svg', role: 'img' });
-  svg2.append(frame(extC, H2));
-  const closeD = lineD(points, 'close', xs, yC);
-  if (closeD) svg2.append(svgEl('path', { d: closeD, class: 'gc-line gc-line-close', fill: 'none' }));
-  svg2.append(isolatedPoints(points, 'close', xs, yC, 'gc-line-close'));
-  svg2.append(isolatedCloseLabels(points, xs, yC));
-  const dateIndex = new Map(points.map((p, i) => [p.date, i]));
-  for (const m of markers) {
-    const i = dateIndex.get(m.trade_date);
-    if (i === undefined) continue;
-    const x = xs(i);
-    const known = Number.isFinite(points[i].close);
-    const y = known ? yC(points[i].close) : H2 - PAD.b; // 缺价日标在底缘（价格未知，不猜测）
-    if (!known) {
-      svg2.append(svgText(x - 10, y - 24, `${m.trade_date}：交易日缺价`, 'gc-missing-marker-label', { 'text-anchor': 'end' }));
+  let cross2 = null;
+  if (!merged) {
+    wrap.append(div('gc-panel-title', [textNode(compact ? '收盘价与买卖点' : '每日收盘价与交易时间点：绿色为买入，红色为卖出，橙色圈为本次模拟的卖出笔')]));
+    const svg2 = svgEl('svg', { viewBox: `0 0 ${W} ${H2}`, class: 'gc-svg', role: 'img' });
+    svg2.append(frame(extC, H2));
+    const closeD = lineD(points, 'close', xs, yC);
+    if (closeD) svg2.append(svgEl('path', { d: closeD, class: 'gc-line gc-line-close', fill: 'none' }));
+    svg2.append(isolatedPoints(points, 'close', xs, yC, 'gc-line-close'));
+    svg2.append(isolatedCloseLabels(points, xs, yC));
+    for (const m of markers) {
+      const i = dateIndex.get(m.trade_date);
+      if (i === undefined) continue;
+      const x = xs(i);
+      const known = Number.isFinite(points[i].close);
+      const y = known ? yC(points[i].close) : H2 - PAD.b; // 缺价日标在底缘（价格未知，不猜测）
+      if (!known) {
+        svg2.append(svgText(x - 10, y - 24, `${m.trade_date}：交易日缺价`, 'gc-missing-marker-label', { 'text-anchor': 'end' }));
+      }
+      if (m.side === 'buy') {
+        svg2.append(svgEl('path', { d: `M${x.toFixed(2)},${(y - 8).toFixed(2)}L${(x - 6).toFixed(2)},${(y + 5).toFixed(2)}L${(x + 6).toFixed(2)},${(y + 5).toFixed(2)}Z`, class: 'gc-marker gc-marker-buy' }));
+      } else {
+        svg2.append(svgEl('path', { d: `M${x.toFixed(2)},${(y + 8).toFixed(2)}L${(x - 6).toFixed(2)},${(y - 5).toFixed(2)}L${(x + 6).toFixed(2)},${(y - 5).toFixed(2)}Z`, class: 'gc-marker gc-marker-sell' }));
+      }
+      if (m.replaced) {
+        svg2.append(svgEl('circle', { cx: x, cy: known ? y : y - 14, r: 12, class: 'gc-marker-ring' }));
+      }
     }
-    if (m.side === 'buy') {
-      svg2.append(svgEl('path', { d: `M${x.toFixed(2)},${(y - 8).toFixed(2)}L${(x - 6).toFixed(2)},${(y + 5).toFixed(2)}L${(x + 6).toFixed(2)},${(y + 5).toFixed(2)}Z`, class: 'gc-marker gc-marker-buy' }));
-    } else {
-      svg2.append(svgEl('path', { d: `M${x.toFixed(2)},${(y + 8).toFixed(2)}L${(x - 6).toFixed(2)},${(y - 5).toFixed(2)}L${(x + 6).toFixed(2)},${(y - 5).toFixed(2)}Z`, class: 'gc-marker gc-marker-sell' }));
-    }
-    if (m.replaced) {
-      svg2.append(svgEl('circle', { cx: x, cy: known ? y : y - 14, r: 12, class: 'gc-marker-ring' }));
-    }
+    for (const i of xIdx) svg2.append(svgText(xs(i), H2 - 10, points[i].date, 'gc-axis', axisLabelAttrs(i, n)));
+    cross2 = svgEl('line', { class: 'gc-cross', y1: PAD.t, y2: H2 - PAD.b, style: 'display:none' });
+    svg2.append(cross2);
+    wrap.append(svg2);
   }
-  for (const i of xIdx) svg2.append(svgText(xs(i), H2 - 10, points[i].date, 'gc-axis', axisLabelAttrs(i, n)));
-  const cross2 = svgEl('line', { class: 'gc-cross', y1: PAD.t, y2: H2 - PAD.b, style: 'display:none' });
-  svg2.append(cross2);
-  wrap.append(svg2);
-
-  wrap.append(tip);
 
   //  图例 
   const benchmarkLabel = series.benchmark?.name ? `${series.benchmark.name}（同额）` : '沪深300（同额）';
   const benchmarkLegend = hasBenchmark
     ? [div('gc-legend-item', [spanSw('gc-sw gc-sw-benchmark'), textNode(benchmarkLabel)])]
     : [];
-  const legend = div('gc-legend', compact ? [
+  const legend = div('gc-legend', merged ? [
+    div('gc-legend-item', [spanSw('gc-sw gc-sw-actual'), textNode('实际')]),
+    div('gc-legend-item', [spanSw('gc-sw gc-sw-ghost'), textNode('一直持有')]),
+    div('gc-legend-item', [spanSw('gc-sw gc-sw-cf'), textNode('假如没卖')]),
+    ...benchmarkLegend,
+    div('gc-legend-item', [spanSw('gc-sw gc-sw-gap'), textNode('差额')]),
+    div('gc-legend-item', [spanSw('gc-sw gc-sw-trade is-buy'), textNode('买入点')]),
+    div('gc-legend-item', [spanSw('gc-sw gc-sw-trade is-sell'), textNode('卖出点')]),
+  ] : compact ? [
     div('gc-legend-item', [spanSw('gc-sw gc-sw-actual'), textNode('实际')]),
     div('gc-legend-item', [spanSw('gc-sw gc-sw-ghost'), textNode('一直持有')]),
     div('gc-legend-item', [spanSw('gc-sw gc-sw-cf'), textNode('假如没卖')]),
@@ -266,14 +305,13 @@ export function renderGhostChart(root, cf) {
     div('gc-legend-item', [spanSw('gc-sw gc-sw-sell'), textNode('卖出')]),
     div('gc-legend-item', [spanSw('gc-sw gc-sw-replaced'), textNode('当前替换笔')]),
   ]);
-  wrap.append(legend);
 
-  if (series.complete === false || series.missing_dates.length > 0) {
-    wrap.append(div('banner warn-banner gc-missing', [
+  const missingNote = series.complete === false || series.missing_dates.length > 0
+    ? div('banner warn-banner gc-missing', [
       textNode(`序列不完整：缺少价格数据，路径已断开（${series.missing_dates.join('、')}）缺价日不回退其他日期，相应日期不参与连线。`),
       textNode(' 底缘买卖标记表示该交易日缺价，不表示价格为零或跌到底部。'),
-    ]));
-  }
+    ])
+    : null;
 
   const marketCaption = cf.marketSource && cf.marketSource.dynamic
     ? 'Tushare 动态日线（最新已收盘，服务端获取，非实时，草案口径）'
@@ -282,11 +320,39 @@ export function renderGhostChart(root, cf) {
     ? 'Tushare index_daily'
     : (series.benchmark?.source ?? '指数日线');
   const benchmarkCaption = hasBenchmark ? `；${benchmarkLabel}按同一买入本金折算（${benchmarkSource}）` : '';
-  wrap.append(div('gc-caption', [
+  const caption = div(merged ? 'gc-caption scale-note' : 'gc-caption', [
     textNode(compact
       ? `${marketCaption}；只替换所选卖出，其余成交不变${benchmarkCaption}。`
       : `${marketCaption}：仅替换所选卖出笔，其余成交不变${benchmarkCaption}；不构成投资建议`),
-  ]));
+  ]);
+
+  if (merged) {
+    const head = div('chart-head', [
+      legend,
+      div('chart-range', [textNode('DAILY / 本地收盘价 · 单位 元')]),
+    ]);
+    const stage = div('chart-stage', [svg1, tip]);
+    const foot = div('chart-foot');
+    const addFoot = (text) => {
+      const item = document.createElement('span');
+      item.textContent = text;
+      foot.append(item);
+    };
+    const sells = [...markers]
+      .filter((m) => m.side !== 'buy')
+      .sort((a, b) => String(a.trade_date).localeCompare(String(b.trade_date)));
+    sells.forEach((m, i) => {
+      addFoot(`${String(i + 1).padStart(2, '0')} 卖出 ${cf.symbol || ''} · ${m.trade_date}`);
+    });
+    if (points[n - 1]?.date) addFoot(`${points[n - 1].date} 估值日`);
+    wrap.append(head, stage);
+    if (missingNote) wrap.append(missingNote);
+    wrap.append(foot, caption);
+  } else {
+    wrap.append(tip, legend);
+    if (missingNote) wrap.append(missingNote);
+    wrap.append(caption);
+  }
 
   //  十字线：上下面板同步 
   const fmtValue = (v) => (Number.isFinite(v) ? fmtMoney(v) : '—（缺价）');
@@ -294,12 +360,13 @@ export function renderGhostChart(root, cf) {
   function setIndex(i) {
     if (i === null || i === undefined || i < 0 || i >= n) {
       cross1.setAttribute('style', 'display:none');
-      cross2.setAttribute('style', 'display:none');
+      if (cross2) cross2.setAttribute('style', 'display:none');
       tip.setAttribute('style', 'display:none');
       return;
     }
     const x = xs(i);
     for (const c of [cross1, cross2]) {
+      if (!c) continue;
       c.setAttribute('style', '');
       c.setAttribute('x1', String(x));
       c.setAttribute('x2', String(x));
@@ -312,7 +379,7 @@ export function renderGhostChart(root, cf) {
       div('gc-tip-row', [textNode(`反事实 ${fmtValue(p.cf)}`)]),
       ...(hasBenchmark ? [div('gc-tip-row', [textNode(`${benchmarkLabel} ${fmtValue(p.benchmark)}`)])] : []),
       div('gc-tip-row', [textNode(`缺口 ${fmtValue(p.gap)}`)]),
-      div('gc-tip-row', [textNode(`收盘价 ${fmtClose(p.close)}`)]),
+      div('gc-tip-row', [textNode(`收盘价 ${fmtClose(p.close)}${merged ? ' 元' : ''}`)]),
     );
     tip.setAttribute('style', '');
   }
