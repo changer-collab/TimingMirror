@@ -191,6 +191,56 @@ function makePdf({ text = 'date,symbol,side,price,quantity\n2024-09-24,600519,bu
   check('响应：只有待确认说明也允许进入草稿', unresolvedOnly.ok === true && unresolvedOnly.unresolved[0].reason.includes('日期'));
 }
 
+/* —— 客户端同构校验：视觉可选 column_mapping，文字通道保持旧契约 —— */
+{
+  const mapping = [
+    { source_label: '名称/代码', source_subfield: '代码', target_field: 'symbol', confidence: 'high' },
+    { source_label: '标志/交收日期', source_subfield: '交收日期', target_field: 'settlement_date', confidence: 'high' },
+    { source_label: '成交价/量', source_subfield: '成交价', target_field: 'price', confidence: 'high' },
+  ];
+  const withMapping = JSON.stringify({ ...JSON.parse(AI_BODY), column_mapping: mapping });
+  const ok = validateRecoveryResponse(withMapping, { allowColumnMapping: true });
+  check('客户端映射：视觉响应接受可选 column_mapping', ok.ok === true
+    && ok.columnMapping.length === mapping.length
+    && ok.columnMapping[1].target_field === 'settlement_date', JSON.stringify(ok.columnMapping));
+  const missing = validateRecoveryResponse(AI_BODY, { allowColumnMapping: true });
+  check('客户端映射：缺少映射仍通过且归一化为空数组', missing.ok === true
+    && Array.isArray(missing.columnMapping) && missing.columnMapping.length === 0, JSON.stringify(missing.columnMapping));
+  const textRejects = validateRecoveryResponse(withMapping);
+  check('客户端映射：文字通道默认拒绝 column_mapping', textRejects.ok === false
+    && textRejects.code === IMPORT_RECOVERY_CODES.MODEL_RESPONSE, JSON.stringify(textRejects));
+  const invalid = (value) => validateRecoveryResponse(
+    JSON.stringify({ ...JSON.parse(AI_BODY), column_mapping: value }),
+    { allowColumnMapping: true },
+  );
+  const extra = invalid([{ ...mapping[0], note: 'x' }]);
+  check('客户端映射：额外字段拒绝', extra.ok === false && extra.code === IMPORT_RECOVERY_CODES.MODEL_RESPONSE);
+  const unknownTarget = invalid([{ ...mapping[0], target_field: 'note' }]);
+  check('客户端映射：未知 target_field 拒绝', unknownTarget.ok === false);
+  const badConfidence = invalid([{ ...mapping[0], confidence: 'certain' }]);
+  check('客户端映射：非法 confidence 拒绝', badConfidence.ok === false);
+  const leak = invalid([{ ...mapping[0], source_label: '资金账号 123456' }]);
+  check('客户端映射：账户信息不进入映射', leak.ok === false);
+  const rowString = validateRecoveryResponse(JSON.stringify({
+    trades: [], unresolved: [{ row: '2', reason: '日期无法确定' }],
+  }), { allowColumnMapping: true });
+  check('客户端映射：unresolved[].row 仍只允许非负整数或 null', rowString.ok === false
+    && rowString.code === IMPORT_RECOVERY_CODES.MODEL_RESPONSE, JSON.stringify(rowString));
+
+  const transport = {
+    async importRecover() { return { rawText: AI_BODY }; },
+    async importVision() { return { rawText: withMapping }; },
+  };
+  const client = createImportRecovery({ transport, timeoutMs: 1000, storage: null });
+  const result = await client.requestVision({
+    images: [{ mime: 'image/jpeg', data_base64: 'AAAA', bytes: 3 }],
+    sourceKind: 'image',
+  });
+  check('客户端映射：requestVision 将映射写入草稿结果', result.ok === true
+    && result.draft?.columnMapping?.length === mapping.length
+    && result.draft.columnMapping[0].source_label === '名称/代码', JSON.stringify(result.draft?.columnMapping));
+}
+
 {
   const calls = [];
   const transport = {

@@ -78,4 +78,7 @@ export function normalizeImportVisionRequest(body) {
   };
 }
 
-export { validateImportRecoverResponse as validateImportVisionResponse };
+/** 视觉响应在统一草稿 schema 上额外允许可选的 column_mapping；文字通道保持不含该字段。 */
+export function validateImportVisionResponse(rawText) {
+  return validateImportRecoverResponse(rawText, { allowColumnMapping: true });
+}

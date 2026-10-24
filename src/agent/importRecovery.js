@@ -17,6 +17,7 @@ import {
   IMPORT_VISION_CODES,
   validateVisionInput,
 } from './importVision.js';
+import { validateColumnMapping } from '../engine/importColumnMapping.js';
 
 export const IMPORT_RECOVERY_STAGE = 'bill_extract';
 export const IMPORT_RECOVERY_MAX_MODEL_CALLS = 2;
@@ -222,7 +223,8 @@ function normalizeSide(value) {
   return undefined;
 }
 
-export function validateRecoveryResponse(rawText) {
+export function validateRecoveryResponse(rawText, { allowColumnMapping = false } = {}) {
+  const responseKeys = allowColumnMapping ? ['trades', 'unresolved', 'column_mapping'] : ['trades', 'unresolved'];
   if (typeof rawText !== 'string') return failure(IMPORT_RECOVERY_CODES.MODEL_RESPONSE, '识别响应不是字符串');
   let parsed;
   try {
@@ -231,7 +233,7 @@ export function validateRecoveryResponse(rawText) {
     return failure(IMPORT_RECOVERY_CODES.MODEL_RESPONSE, '识别响应不是合法 JSON');
   }
   if (!isObject(parsed)) return failure(IMPORT_RECOVERY_CODES.MODEL_RESPONSE, '识别响应必须为对象');
-  const extra = Object.keys(parsed).filter((key) => !['trades', 'unresolved'].includes(key));
+  const extra = Object.keys(parsed).filter((key) => !responseKeys.includes(key));
   if (extra.length) return failure(IMPORT_RECOVERY_CODES.MODEL_RESPONSE, `识别响应包含不允许字段：${extra.join(',')}`);
   if (!Array.isArray(parsed.trades) || parsed.trades.length > IMPORT_RECOVERY_MAX_TRADES) {
     return failure(IMPORT_RECOVERY_CODES.MODEL_RESPONSE, '识别响应 trades 必须为数组且不超过上限');
@@ -290,10 +292,18 @@ export function validateRecoveryResponse(rawText) {
     }
     unresolved.push({ row: raw.row ?? null, reason: raw.reason.trim() });
   }
+  let columnMapping = [];
+  if (allowColumnMapping && parsed.column_mapping !== undefined) {
+    const checked = validateColumnMapping(parsed.column_mapping);
+    if (!checked.ok) {
+      return failure(IMPORT_RECOVERY_CODES.MODEL_RESPONSE, `原图列名映射未通过校验：${checked.reason}`);
+    }
+    columnMapping = checked.value;
+  }
   if (trades.length === 0 && unresolved.length === 0) {
     return failure(IMPORT_RECOVERY_CODES.EMPTY_RESULT, 'AI 没有识别到可用的交易明细');
   }
-  return { ok: true, trades, unresolved };
+  return { ok: true, trades, unresolved, columnMapping };
 }
 
 function invokeWithTimeout(fn, request, timeoutMs) {
@@ -600,14 +610,20 @@ export function createImportRecovery({
           retryable: failure.retryable,
         });
       }
-      const checked = validateRecoveryResponse(call.response && call.response.rawText);
+      const checked = validateRecoveryResponse(call.response && call.response.rawText, {
+        allowColumnMapping: modality === 'vision',
+      });
       if (!checked.ok) {
         if (flow.model_calls < flow.budget_max) continue;
         return finish(flow, 'clarify', checked.code,
           `AI 返回的内容未通过结构校验；本次识别次数已用完（${flow.model_calls}/${flow.budget_max}），可结束本次识别后重新开始或手动修改`,
           { retryable: false });
       }
-      flow.draft = { trades: checked.trades, unresolved: checked.unresolved };
+      flow.draft = {
+        trades: checked.trades,
+        unresolved: checked.unresolved,
+        columnMapping: checked.columnMapping ?? [],
+      };
       return finish(flow, 'draft', null, `AI 已整理出 ${checked.trades.length} 条交易草稿；尚未导入，请逐行核对`,
         { draft: clone(flow.draft) });
     }

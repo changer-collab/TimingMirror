@@ -194,6 +194,7 @@ export function buildAiDraft({
   requestId = null,
   duplicatePolicy = 'exclude',
   nonTradePolicy = 'draft',
+  columnMapping = [],
 } = {}) {
   const warnOnly = duplicatePolicy === 'warn';
   const unresolvedNonTrades = nonTradePolicy === 'unresolved';
@@ -266,6 +267,7 @@ export function buildAiDraft({
     rows,
     rawRows: [],
     unresolved: [...(Array.isArray(unresolved) ? unresolved : []), ...extraUnresolved],
+    columnMapping: Array.isArray(columnMapping) ? columnMapping.map((entry) => ({ ...entry })) : [],
     requestId,
     note: '',
   };
@@ -364,4 +366,12 @@ export function draftRowStatusText(row) {
   if (row.status === 'invalid') return '需修正';
   if (row.status === 'valid') return '可导入';
   return '待确认';
+}
+
+/** 行状态语义：红色只留给阻断修正；待确认/重复是可处理警告。 */
+export function draftRowSeverity(row) {
+  if (row?.status === 'invalid') return 'error';
+  if (row?.status === 'duplicate' || row?.status === 'needs_review') return 'warning';
+  if (row?.status === 'valid') return 'success';
+  return 'info';
 }
