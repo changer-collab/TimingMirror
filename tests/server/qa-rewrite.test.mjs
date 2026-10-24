@@ -74,7 +74,7 @@ async function invoke(handler, path, body) {
   const normalized = normalizeQaRewriteRequest(requestBody());
   check('请求：合法请求通过并归一化', normalized.ok === true
     && Object.keys(normalized.request).join(',') === 'question,intent,scope,draft,claims,facts,evidence,glossary,allowed'
-    && normalized.request.allowed.displays.includes('-¥1,200.00'), JSON.stringify(normalized.request?.allowed));
+    && normalized.request.allowed.displays.includes('money:-1200'), JSON.stringify(normalized.request?.allowed));
 
   check('请求：额外字段拒绝', normalizeQaRewriteRequest({ ...requestBody(), extra: 1 }).ok === false);
   check('请求：缺少 claims 拒绝', normalizeQaRewriteRequest({ ...requestBody(), claims: [] }).ok === false);

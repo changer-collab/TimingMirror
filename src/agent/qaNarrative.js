@@ -29,6 +29,7 @@ const SOURCE_DATE_ONE_RE = /^(\d{4})\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})
 const MONEY_RE = /[+-]?¥[+-]?\d[\d,]*(?:\.\d+)?/g;
 const PCT_RE = /[+-]?\d+(?:\.\d+)?\s*%/g;
 const PP_RE = /[+-]?\d+(?:\.\d+)?\s*pp/gi;
+const PP_CN_RE = /[+-]?\d+(?:\.\d+)?\s*个百分点/g;
 const UNIT_RE = /([+-]?\d[\d,]*(?:\.\d+)?)\s*(元|股|手|份)/g;
 const COUNT_TOKEN_RE = /(\d[\d,]*(?:\.\d+)?)\s*(笔|次|条|类|份|个|天|日|行)/g;
 const CHINESE_COUNT_RE = /[一二三四五六七八九十百千万两]+(?:笔|次|条|类|份|个|天|日|行|股|手|元)/u;
@@ -69,8 +70,29 @@ function numericKey(raw) {
   return value;
 }
 
+function numberKeyOf(raw) {
+  const text = compact(raw).toLowerCase()
+    .replace(/¥|%|个百分点|pp|元|股|手|份/g, '')
+    .replace(/,/g, '');
+  const match = text.match(/^([+-]?)(\d+(?:\.\d+)?)$/u);
+  if (!match) return null;
+  const value = (match[1] === '-' ? -1 : 1) * Number(match[2]);
+  if (!Number.isFinite(value)) return null;
+  return String(value === 0 ? 0 : value);
+}
+
+function unitOf(raw) {
+  const text = compact(raw).toLowerCase();
+  if (text.includes('%')) return 'pct';
+  if (text.includes('pp') || text.includes('个百分点')) return 'pp';
+  if (text.includes('¥') || text.includes('元')) return 'money';
+  return 'count';
+}
+
+// 展示值按单位+数值归一：¥1,200.00、-¥1200、¥+1,200 视为同一金额。
 function displayKey(raw) {
-  return compact(raw).toLowerCase();
+  const value = numberKeyOf(raw);
+  return value === null ? compact(raw).toLowerCase() : `${unitOf(raw)}:${value}`;
 }
 
 function normalizeDateMatch(match) {
@@ -106,6 +128,10 @@ function collectAllowed(parts) {
     pushUnique(allowed.displays, displayKey(match[0]), MAX_DISPLAYS);
     pushUnique(allowed.numbers, numericKey(match[0].replace(/pp/iu, '')), MAX_NUMBERS);
   }
+  for (const match of sourceCanon.matchAll(PP_CN_RE)) {
+    pushUnique(allowed.displays, displayKey(match[0]), MAX_DISPLAYS);
+    pushUnique(allowed.numbers, numericKey(match[0].replace(/个百分点/u, '')), MAX_NUMBERS);
+  }
   for (const match of sourceCanon.matchAll(UNIT_RE)) {
     pushUnique(allowed.counts, `${numericKey(match[1])}${match[2]}`, MAX_COUNTS);
     pushUnique(allowed.numbers, numericKey(match[1]), MAX_NUMBERS);
@@ -119,7 +145,7 @@ function collectAllowed(parts) {
   let residue = sourceCanon;
   const stripPatterns = [
     new RegExp(SOURCE_DATE_RE.source, 'g'),
-    MONEY_RE, PCT_RE, PP_RE, UNIT_RE, COUNT_TOKEN_RE,
+    MONEY_RE, PCT_RE, PP_RE, PP_CN_RE, UNIT_RE, COUNT_TOKEN_RE,
   ];
   for (const pattern of stripPatterns) residue = residue.replace(pattern, ' ');
   for (const match of residue.matchAll(/(?<!\d)\d{6}(?!\d)/g)) {
@@ -185,6 +211,7 @@ function validateNumbers(text, allowed) {
   replaceAll(MONEY_RE, (raw) => displaySet.has(displayKey(raw)));
   replaceAll(PCT_RE, (raw) => displaySet.has(displayKey(raw)));
   replaceAll(PP_RE, (raw) => displaySet.has(displayKey(raw)));
+  replaceAll(PP_CN_RE, (raw) => displaySet.has(displayKey(raw)));
   replaceAll(UNIT_RE, (raw) => {
     const match = raw.match(/^([+-]?\d[\d,]*(?:\.\d+)?)\s*(元|股|手|份)$/u);
     return Boolean(match) && countSet.has(`${numericKey(match[1])}${match[2]}`);
