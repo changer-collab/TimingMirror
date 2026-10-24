@@ -17,6 +17,21 @@ const isNumeric = (s) => /^-?\d+(\.\d+)?$/.test(s);
 const trimTrailingFractionZeros = (s) => String(s).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
 const overPrecision = (s) => /\.\d{3,}$/.test(trimTrailingFractionZeros(s));
 
+// 数量允许 ASCII/全角千分位分组；只接受 1-3 位首组 + 每组 3 位，不接受小数、负数和混合分组。
+const QUANTITY_RE = /^(?:\d+|\d{1,3}(?:,\d{3})+|\d{1,3}(?:，\d{3})+)$/;
+
+/** 展示用数量 → canonical 正整数；无法安全解析时返回 null。 */
+export function normalizeQuantity(raw) {
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) && Number.isInteger(raw) && raw > 0 ? raw : null;
+  }
+  if (typeof raw !== 'string') return null;
+  const text = raw.trim();
+  if (text === '' || !QUANTITY_RE.test(text)) return null;
+  const value = Number(text.replace(/[,，]/g, ''));
+  return Number.isFinite(value) && Number.isInteger(value) && value > 0 ? value : null;
+}
+
 const emptyResult = (sourceFile) => ({
   schema_version: 'candidate-3',
   source_file: sourceFile,
@@ -66,6 +81,7 @@ export function normalizeRows({ header, rows }, sourceFile = '', { skipQuantityC
     const pRaw = get('价格'); const qRaw = get('数量');
     const feeRaw = feeColAbsent ? '' : get('费用');
     const taxRaw = taxColAbsent ? '' : get('税费');
+    const quantity = normalizeQuantity(qRaw);
     const errs = [];
 
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) errs.push(['E_DATE_FORMAT', `日期：${d}`]);
@@ -74,7 +90,7 @@ export function normalizeRows({ header, rows }, sourceFile = '', { skipQuantityC
     if (!side) errs.push(['E_SIDE_VALUE', `方向：${sideRaw}`]);
     if (!isNumeric(pRaw) || Number(pRaw) <= 0) errs.push(['E_PRICE_VALUE', `价格：${pRaw}`]);
     else if (overPrecision(pRaw)) errs.push(['E_PRICE_PRECISION', `价格超 2 位有效小数（尾随零不计，不自动舍入，需修正后重新导入）：${pRaw}`]);
-    if (!/^\d+$/.test(qRaw) || Number(qRaw) <= 0) errs.push(['E_QTY_INTEGER', `数量：${qRaw}`]);
+    if (quantity === null) errs.push(['E_QTY_INTEGER', `数量：${qRaw}`]);
     for (const [field, raw] of [['费用', feeRaw], ['税费', taxRaw]]) {
       if (raw === '') continue;
       if (!isNumeric(raw) || Number(raw) < 0) errs.push(['E_MONEY_VALUE', `${field}：${raw}`]);
@@ -91,7 +107,7 @@ export function normalizeRows({ header, rows }, sourceFile = '', { skipQuantityC
     validTrades.push({
       trade_id: `T${String(rowIdx + 1).padStart(3, '0')}`,
       trade_date: d, symbol: s, side,
-      price: Number(pRaw), quantity: Number(qRaw),
+      price: Number(pRaw), quantity,
       fee: feeMissing ? 0 : Number(feeRaw),
       tax: taxMissing ? 0 : Number(taxRaw),
       fee_missing: feeMissing, tax_missing: taxMissing,
