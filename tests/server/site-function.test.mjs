@@ -21,6 +21,7 @@ import { assessDynamicCacheDoc, createMarketCache } from '../../src/engine/marke
 import { projectOnlineFacts } from '../../src/agent/onlineBoundary.js';
 import { BEHAVIOR_CANDIDATE } from '../../server/site-functions/behaviorAnalysis.mjs';
 import { validateChatIntentResponse } from '../../server/site-functions/chatIntent.mjs';
+import { readFileSync } from 'node:fs';
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: ok ? '' : String(detail) });
@@ -908,6 +909,11 @@ function streamOfChunks(chunks) {
     && replay.fetched_at !== doc.fetched_at
     && JSON.stringify(replay.symbols) === JSON.stringify(doc.symbols));
 }
+
+const dataPathLine = readFileSync(new URL('../../server/site-functions/index.ts', import.meta.url), 'utf8')
+  .split('\n').find((line) => line.includes('const isDataPath')) ?? '';
+check('入口：数据路由包含账单/画像/规则/历史', ['bills', 'profile', 'rules', 'history'].every((key) => dataPathLine.includes(key)), dataPathLine);
+check('入口：模型与行情接口不判为数据路由', dataPathLine !== '' && !/llm|market/u.test(dataPathLine), dataPathLine);
 
 const failed = results.filter((r) => !r.ok);
 for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.ok ? '' : '   → ' + r.detail}`);
