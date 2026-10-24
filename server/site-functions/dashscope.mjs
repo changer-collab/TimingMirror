@@ -250,10 +250,11 @@ export const MODEL_PROMPTS = Object.freeze({
 });
 
 export class ModelTransportError extends Error {
-  constructor(code) {
+  constructor(code, details = null) {
     super(code);
     this.name = 'ModelTransportError';
     this.code = code;
+    if (details !== null) this.details = details;
   }
 }
 

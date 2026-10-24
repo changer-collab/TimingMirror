@@ -22,6 +22,14 @@ function fail(code) {
   return new ModelTransportError(code);
 }
 
+function timeoutError(timeoutMs, startedAt, phase) {
+  return new ModelTransportError(DEEPSEEK_ERROR_CODES.TIMEOUT, {
+    timeout_ms: timeoutMs,
+    elapsed_ms: Math.max(0, Date.now() - startedAt),
+    phase,
+  });
+}
+
 function stripCodeFence(text) {
   const trimmed = text.trim();
   const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
@@ -83,6 +91,8 @@ export function createDeepSeekTransport({
   const endpoint = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
 
   async function request(body, requestTimeoutMs = timeoutMs) {
+    const startedAt = Date.now();
+    let phase = 'response_headers';
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
     try {
@@ -99,10 +109,12 @@ export function createDeepSeekTransport({
         });
       } catch (error) {
         if (controller.signal.aborted || (error && error.name === 'AbortError')) {
-          throw fail(DEEPSEEK_ERROR_CODES.TIMEOUT);
+          throw timeoutError(requestTimeoutMs, startedAt, phase);
         }
         throw fail(DEEPSEEK_ERROR_CODES.UNAVAILABLE);
       }
+      phase = 'response_body';
+      if (controller.signal.aborted) throw timeoutError(requestTimeoutMs, startedAt, phase);
       if (response === null || typeof response !== 'object' || typeof response.ok !== 'boolean') {
         throw fail(DEEPSEEK_ERROR_CODES.RESPONSE);
       }
@@ -112,11 +124,11 @@ export function createDeepSeekTransport({
         payload = await response.json();
       } catch (error) {
         if (controller.signal.aborted || (error && error.name === 'AbortError')) {
-          throw fail(DEEPSEEK_ERROR_CODES.TIMEOUT);
+          throw timeoutError(requestTimeoutMs, startedAt, phase);
         }
         throw fail(DEEPSEEK_ERROR_CODES.RESPONSE);
       }
-      if (controller.signal.aborted) throw fail(DEEPSEEK_ERROR_CODES.TIMEOUT);
+      if (controller.signal.aborted) throw timeoutError(requestTimeoutMs, startedAt, phase);
       const choices = payload?.choices;
       if (!Array.isArray(choices) || choices.length === 0) {
         throw fail(DEEPSEEK_ERROR_CODES.RESPONSE);
@@ -132,7 +144,7 @@ export function createDeepSeekTransport({
     } catch (error) {
       if (error instanceof ModelTransportError) throw error;
       if (controller.signal.aborted || (error && error.name === 'AbortError')) {
-        throw fail(DEEPSEEK_ERROR_CODES.TIMEOUT);
+        throw timeoutError(requestTimeoutMs, startedAt, phase);
       }
       throw fail(DEEPSEEK_ERROR_CODES.UNAVAILABLE);
     } finally {
@@ -168,6 +180,7 @@ export function createDeepSeekTransport({
         { role: 'user', content },
       ],
       response_format: { type: 'json_object' },
+      thinking: { type: 'disabled' },
     }, visionTimeoutMs);
   }
 
