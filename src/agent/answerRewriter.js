@@ -1,9 +1,9 @@
 // 自动重写：本地事实草稿 → rewrite-v2 → 三层白话；任何失败整体回退本地草稿。
-// 4 秒超时、按用户/范围/意图/claims 缓存；不记录模型原文，也不把错误码交给界面。
+// 超时略大于服务端上限；按用户/范围/意图/claims 缓存；不记录模型原文，只把固定原因交给界面。
 import { buildPlainDraft } from './plainLanguage.js';
-import { buildRewriteRequest, createQaRewrite } from './qaRewrite.js';
+import { buildRewriteRequest } from './qaRewrite.js';
 
-export const REWRITE_TIMEOUT_MS = 9000;
+export const REWRITE_TIMEOUT_MS = 12000;
 export const REWRITE_CACHE_MAX = 64;
 
 const TIMEOUT = Symbol('timeout');
@@ -27,6 +27,21 @@ export function rewriteCacheKey({ userKey = '', intent = '', scope = {}, draft =
     hash = (hash * prime) & mask;
   }
   return hash.toString(16).padStart(16, '0');
+}
+
+function failureReason(result) {
+  if (!result) return 'unavailable';
+  if (result.aborted === true) return 'timeout';
+  if (result.code === 'E_QA_REWRITE_CHECK') return 'response_invalid';
+  const upstream = typeof result.upstream_code === 'string' ? result.upstream_code : '';
+  if (upstream === 'E_MODEL_TIMEOUT') return 'timeout';
+  if (upstream === 'E_MODEL_RATE_LIMITED') return 'rate_limited';
+  if (upstream === 'E_QA_REWRITE_REQUEST_INVALID') return 'request_invalid';
+  if (upstream === 'E_QA_REWRITE_RESPONSE_INVALID' || upstream === 'E_MODEL_RESPONSE_INVALID') {
+    return 'response_invalid';
+  }
+  if (result.transport_status === 429) return 'rate_limited';
+  return 'unavailable';
 }
 
 function localRewrite({ draft, intent, scope, claims = [] }) {
@@ -79,7 +94,6 @@ export function createAnswerRewriter({
 } = {}) {
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) throw new TypeError('timeoutMs 必须为正整数');
   if (typeof now !== 'function') throw new TypeError('now 必须为函数');
-  const client = createQaRewrite({ transport });
 
   async function rewrite({
     question = '', intent = '', scope = { kind: 'bill' }, draft = null,
@@ -154,7 +168,7 @@ export function createAnswerRewriter({
         ok: false,
         rewrite: fallback,
         meta: {
-          status: 'local_fallback', model_called: true, cached: false, ms, timeout_ms: timeoutMs, reason: result?.code === 'E_QA_REWRITE_CHECK' ? 'response_invalid' : 'unavailable',
+          status: 'local_fallback', model_called: true, cached: false, ms, timeout_ms: timeoutMs, reason: failureReason(result),
         },
       };
     }

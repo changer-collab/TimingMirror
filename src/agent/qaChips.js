@@ -314,10 +314,11 @@ export function worstTradeAnswer({ chip, bundle, bill, plan }) {
         notice: '逐笔差额为 0 时不评选“最错一笔”；逐笔分解未进入复核发布事实。',
       });
     }
+    const largerNote = Number(largest.dragMoney) < 0 ? '这笔之后收盘价低于卖出价' : '这笔的差额为 0';
     return localAnswer({
       chip,
       plan,
-      text: `按当前账单报告的逐笔损耗分解，没有哪一笔卖出相对“买入不动”更差，因此没有“最错一笔”。差额绝对值最大的是 ${largest.trade_date} 卖出 ${largest.symbol} ${largest.quantity} 股：卖出价 ${priceText(largest.price)}，估值日收盘 ${priceText(largest.close)}，实际比持有到估值日多赚 ${absDrag}。组合总损耗 ${total}。这是事后对照，不评价当时的决定。`,
+      text: `按这份账单，没有哪一笔卖出相对“买入不动”更差，因此没有“最错一笔”。差额最大的交易是 ${largest.trade_date} 卖出 ${largest.symbol}：${largerNote}，实际比一直持有多赚 ${absDrag}。这是事后对照，不评价当时的决定。`,
       facts: [
         { label: '成交（差额最大）', value: `${largest.trade_date} · 卖出 ${largest.symbol} × ${largest.quantity}` },
         { label: '优于对照', value: absDrag },
@@ -330,7 +331,7 @@ export function worstTradeAnswer({ chip, bundle, bill, plan }) {
   }
   const drag = moneyText(top);
   const share = shareText(top);
-  const text = `按当前账单报告的逐笔损耗分解，代价最高的一笔是 ${top.trade_date} 卖出 ${top.symbol} ${top.quantity} 股：卖出价 ${priceText(top.price)}，估值日收盘 ${priceText(top.close)}，与买入不动相比少赚 ${drag}，占组合总损耗 ${share}。这是事后对照，不评价当时的决定；展示序不等于因果。`;
+  const text = `最错的一笔是 ${top.trade_date} 卖出 ${top.symbol}：之后收盘价高于卖出价，与买入不动相比少赚 ${drag}。这是事后对照，不评价当时的决定；展示序不等于因果。`;
   return localAnswer({
     chip,
     plan,
@@ -389,7 +390,7 @@ export function buildBestTradeAnswer({ bundle, bill, question = '我获利最高
     return localAnswer({
       chip,
       plan,
-      text: `按当前账单报告的逐笔损耗分解，没有哪一笔卖出相对“买入不动”更赚：每笔卖出都不优于持有到估值日。最接近的一笔是 ${best.trade_date} 卖出 ${best.symbol} ${best.quantity} 股，实际比持有到估值日少赚 ${absDrag}。组合总损耗 ${total}。这是事后对照，不评价当时的决定；展示序不等于因果。`,
+      text: `没有最加分的一笔：每笔卖出都不如一直持有。最接近的是 ${best.trade_date} 卖出 ${best.symbol}，比一直持有少赚 ${absDrag}。这是事后对照，不评价当时的决定；展示序不等于因果。`,
       facts: [
         { label: '成交（最接近）', value: `${best.trade_date} · 卖出 ${best.symbol} × ${best.quantity}` },
         { label: '落后对照', value: absDrag },
@@ -403,7 +404,7 @@ export function buildBestTradeAnswer({ bundle, bill, question = '我获利最高
   return localAnswer({
     chip,
     plan,
-    text: `按当前账单报告的逐笔损耗分解，相对“买入不动”赚得最多的一笔是 ${best.trade_date} 卖出 ${best.symbol} ${best.quantity} 股：卖出价 ${priceText(best.price)}，估值日收盘 ${priceText(best.close)}，实际比持有到估值日多赚 ${absDrag}，占组合总损耗 ${shareText(best)}。组合总损耗 ${total}。这是事后对照，不评价当时的决定；展示序不等于因果。`,
+    text: `最加分的一笔是 ${best.trade_date} 卖出 ${best.symbol}：之后收盘价低于卖出价，比一直持有好 ${absDrag}。这是事后对照，不评价当时的决定；展示序不等于因果。`,
     facts: [
       { label: '成交', value: `${best.trade_date} · 卖出 ${best.symbol} × ${best.quantity}` },
       { label: '优于对照', value: absDrag },
@@ -499,13 +500,12 @@ export function buildSimilarContextAnswer({ bundle, bill, question = SIMILAR_QUE
   }
 
   const lines = patternEvidenceLines({ ...focus, evidence }, 4);
-  const scopeText = symbol ? `标的 ${symbol} ` : '全账单';
   const statusText = focus.status === '成立'
-    ? '已达到当前候选阈值'
+    ? '已达到候选条件'
     : focus.status === '不成立'
-      ? '未达到当前候选阈值'
-      : '样本不足，暂不判定';
-  const text = `只在这份账单内看，${focus.name}：${scopeText}命中 ${evidence.length} 次，${statusText}。${lines.length ? `具体是：${lines.join('；')}。` : ''}这是按交易间隔和价格窗口做的重复情境对照，不是跨账单检索，也不是行情形态相似度匹配。`;
+      ? '没有达到候选条件'
+      : '样本还不够，暂不判定';
+  const text = `只在这份账单内看“${focus.name}”：${symbol ? `标的 ${symbol} ` : ''}命中 ${evidence.length} 次，${statusText}。这是重复操作对照，不是跨账单检索，也不判断行情形态。`;
 
   return localAnswer({
     chip,
@@ -537,24 +537,24 @@ function profileAnswer({ chip, bundle, bill, plan, savedFacts = [] }) {
     return localAnswer({
       chip,
       plan,
-      text: `镜子不给你贴人格标签。这份账单覆盖 ${tradeCount} 笔交易（买入 ${buyCount}、卖出 ${sellCount}）；行为发现没有生成可核验的模式，因此不生成行为画像。`,
+      text: `这份账单共 ${tradeCount} 笔交易；行为发现没有生成可核验的模式，因此不生成行为画像，也不贴性格标签。`,
       facts: [{ label: '账单覆盖', value: `${tradeCount} 笔 / ${buyCount} 笔买入 / ${sellCount} 笔卖出` }],
       notice: `${savedNote}“我是谁”只列本账单可验证的交易行为；不用示例标签补齐。`,
       savedFacts: saved.facts,
       savedFactTotal: saved.total,
     });
   }
-  const summary = patterns.map((p) => `${p.name}${p.status}（命中 ${p.sample_n} 笔 / 已评估 ${p.evaluated_n} 笔）`).join('；');
   const hitPatterns = patterns.filter((p) => p.status === '成立');
   const evidence = hitPatterns.flatMap((p) => patternEvidenceLines(p, 3)).slice(0, 6);
   const namesByStatus = (status) => {
     const list = patterns.filter((p) => p.status === status);
     return list.length ? list.map((p) => `${p.name}（${p.sample_n} 笔）`).join('、') : '无';
   };
+  const hitNames = hitPatterns.map((p) => p.name).join('、');
   return localAnswer({
     chip,
     plan,
-    text: `镜子不给你贴人格标签。这份账单覆盖 ${tradeCount} 笔交易（买入 ${buyCount}、卖出 ${sellCount}）。行为发现引擎检查了 ${patterns.length} 类重复模式：${summary}。${hitPatterns.length ? `成立 ${hitPatterns.length} 类。` : '当前没有成立的模式。'}完整行为画像尚未实现，不用示例标签补齐。`,
+    text: `这份账单共 ${tradeCount} 笔交易，镜子只列可核对的操作习惯。${hitNames ? `成立的模式：${hitNames}。` : '当前没有成立的模式。'}证据不足或没有达到的见下方事实，不当作结论，也不贴性格标签。`,
     facts: [
       { label: '账单覆盖', value: `${tradeCount} 笔 / ${buyCount} 笔买入 / ${sellCount} 笔卖出` },
       { label: '成立的模式', value: namesByStatus('成立') },
@@ -667,6 +667,8 @@ export function buildLocalPortfolioAnswer({ chip = 'portfolio', bundle, bill } =
     return fail(QA_CHIP_CODES.DECOMPOSITION_UNAVAILABLE, `组合四事实不齐（缺少：${missing.join('、')}）：不生成组合表现回答`);
   }
   const values = required.map((k) => byKey.get(k));
+  const actualNegative = /^\s*-/u.test(String(values[0].display).replace(/[−－]/gu, '-'));
+  const drag = String(values[2].display).replace(/pp/iu, ' 个百分点');
   return {
     ok: true,
     kind: 'local',
@@ -677,7 +679,7 @@ export function buildLocalPortfolioAnswer({ chip = 'portfolio', bundle, bill } =
     plan_id: null,
     plan_status: 'local',
     composition_reason: '自由输入复用已发布组合四事实；在线复述仅在回答上单独选择',
-    text: `按已发布事实复述：组合实际收益 ${values[0].display}，对照收益 ${values[1].display}，择时损耗 ${values[2].display}，损耗金额 ${values[3].display}。这是对已发生交易的事后对照，不是预测。`,
+    text: `按这份账单，实际收益是 ${values[0].display}，${actualNegative ? '即期末比本金少' : '即期末比本金多'}。对照收益是 ${values[1].display}，即假设每笔买入后一直不动。两者的差记作择时损耗 ${drag}（金额 ${values[3].display}）。这只是事后对照，不是预测。`,
     facts: [
       { label: '实际收益', value: values[0].display },
       { label: '对照收益', value: values[1].display },

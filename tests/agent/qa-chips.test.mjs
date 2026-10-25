@@ -121,10 +121,11 @@ const answerFor = (chipId, extra = {}) => buildLocalChipAnswer({
 /* ==== ② 最错一笔：逐笔分解首项 + 回源 ==== */
 {
   const a = answerFor('worst_trade');
-  check('最错一笔：取逐笔损耗首位（T002 / 000000 / ¥100.00 / +66.7%）', a.ok
+  check('最错一笔：取逐笔损耗首位（T002 / 000000 / ¥100.00），占比留在事实栏', a.ok
     && a.template_id === 'T-worst-trade'
     && a.text.includes('2024-09-27') && a.text.includes('000000')
-    && a.text.includes('¥100.00') && a.text.includes('+66.7%'), JSON.stringify(a));
+    && a.text.includes('¥100.00') && !a.text.includes('+66.7%')
+    && a.facts.some((f) => f.label === '占总损耗' && f.value === '+66.7%'), JSON.stringify(a));
   check('最错一笔：展示成交与回源行，不出现演示数字 6,440', a.facts.some((f) => f.label === '回源' && f.value === 'qa-mini.csv 第 3 行')
     && !JSON.stringify(a).includes('6,440') && !JSON.stringify(a).includes('¥6,440.00'), JSON.stringify(a.facts));
   check('最错一笔：明确事后对照、展示序不等于因果', a.text.includes('事后对照')
@@ -256,15 +257,16 @@ const answerFor = (chipId, extra = {}) => buildLocalChipAnswer({
 /* ==== ④ 我是谁：只列本账单可验证行为，不虚构标签 ==== */
 {
   const a = answerFor('profile');
-  check('我是谁：账单覆盖 4 笔 / 2 买入 / 2 卖出 + 行为发现结论', a.ok && a.template_id === 'T-profile'
-    && a.text.includes('4 笔交易') && a.text.includes('买入 2') && a.text.includes('卖出 2')
-    && a.text.includes('追高买入') && a.text.includes('成立'), JSON.stringify(a));
-  check('我是谁：列出全部已实现模式而非只报追高', a.text.includes('卖出后两日内买回')
-    && a.text.includes('买入后三日内卖出') && a.text.includes('交易频率偏高')
-    && !a.text.includes('只实现了')
-    && a.facts.length === 4
+  check('我是谁：正文只讲结论，账单覆盖留在事实栏', a.ok && a.template_id === 'T-profile'
+    && a.text.includes('4 笔交易') && !a.text.includes('买入 2')
+    && a.text.includes('追高买入') && a.text.includes('成立')
+    && a.facts.some((f) => f.label === '账单覆盖' && f.value.includes('2 笔买入')), JSON.stringify(a));
+  check('我是谁：事实栏列全部已实现模式而非只报追高', a.facts.find((f) => f.label === '成立的模式')?.value.includes('卖出后两日内买回') === false
+    && a.facts.find((f) => f.label === '证据不足')?.value.includes('卖出后两日内买回')
+    && a.facts.find((f) => f.label === '证据不足')?.value.includes('交易频率偏高')
     && a.facts.find((f) => f.label === '成立的模式')?.value.includes('追高买入')
-    && a.facts.find((f) => f.label === '成立的模式')?.value.includes('买入后三日内卖出'), JSON.stringify({ text: a.text, facts: a.facts }));
+    && a.facts.find((f) => f.label === '成立的模式')?.value.includes('买入后三日内卖出')
+    && a.facts.length === 4, JSON.stringify({ text: a.text, facts: a.facts }));
   check('我是谁：不生成性格/风险偏好等未实现标签', !/(保守型|激进型|稳健型|风险偏好[:：]|性格[:：])/.test(a.text), a.text);
 }
 

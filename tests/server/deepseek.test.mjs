@@ -553,7 +553,7 @@ const REWRITE_REQUEST = {
     counts: [],
     dates: [],
     symbols: [],
-    displays: ['-¥1,200.00', '¥1,300.00', '¥2,500.00'],
+    displays: ['money:-1200', 'money:1300', 'money:2500'],
   },
   glossary: [],
   limits: { headline_max_chars: 45 },
@@ -578,10 +578,20 @@ const REWRITE_RAW = JSON.stringify({
   check('改写：user 只含十个协议字段', Object.keys(user).sort().join(',')
     === 'allowed,claims,draft,evidence,facts,glossary,intent,limits,question,scope'
   && user.draft.plain.length === 2 && user.claims[0].id === 'Q1', JSON.stringify(user).slice(0, 400));
-  check('改写：temperature 0、max_tokens 500、JSON 输出',
-    call.body.temperature === 0 && call.body.max_tokens === 500
+  check('改写：temperature 0、max_tokens 700、JSON 输出',
+    call.body.temperature === 0 && call.body.max_tokens === 700
     && call.body.response_format?.type === 'json_object', JSON.stringify(call.body).slice(0, 300));
   check('改写：读取 content 为 rawText', out.rawText === REWRITE_RAW, out.rawText);
+}
+
+{
+  const fake = fakeFetch(() => reply(200, { choices: [{ message: { content: REWRITE_RAW }, finish_reason: 'length' }] }));
+  const transport = createDeepSeekTransport({ apiKey: 'test-key', model: 'deepseek-flash', fetchImpl: fake.fetchImpl });
+  let error = null;
+  try { await transport.qaRewrite(REWRITE_REQUEST); } catch (e) { error = e; }
+  check('改写：finish_reason=length 视为截断，不返回半截 JSON', error?.code === DEEPSEEK_ERROR_CODES.RESPONSE
+    && error?.details?.finish_reason === 'length',
+  JSON.stringify(error && { code: error.code, details: error.details }));
 }
 
 {

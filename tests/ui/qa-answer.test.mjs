@@ -714,6 +714,21 @@ function makeService({
     JSON.stringify({ text: whatIf.envelope.text, evidence: whatIf.envelope.evidence }));
 }
 
+/* ==== ⑬ 问题内断言数字：与已发布事实不符时只澄清 ==== */
+{
+  const { service, calls } = makeService({
+    classifyIntent: async () => ({ ok: true, intentJson: { intent: 'loss_overview', slots: {}, confidence: 0.9 } }),
+  });
+  const out = await service.ask({ question: '我上次赚了 99%，你确认一下', bill: BILL });
+  check('断言数字：不符 → clarify / 0 事实 / 不复述 99%', out.status === 'clarify'
+    && out.intent === 'assertion_check'
+    && out.facts.length === 0 && !out.text.includes('99')
+    && out.notice.includes('没有复述'), JSON.stringify(out));
+  check('断言数字：只读缓存账单，不做在线复述或白话改写', calls.gets > 0
+    && calls.loads === 0 && calls.asks === 0 && calls.rewrite === 0
+    && out.narrative_policy === 'none' && out.rewrite == null, JSON.stringify({ calls, policy: out.narrative_policy }));
+}
+
 const failed = results.filter((r) => !r.ok);
 for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.ok ? '' : '   → ' + r.detail}`);
 console.log(`\n== 合计 ${results.length} 项检查：通过 ${results.length - failed.length}，失败 ${failed.length} ==`);
