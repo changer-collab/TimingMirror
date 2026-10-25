@@ -258,7 +258,7 @@ function methodDisclosure(bill, demo) {
       <li><strong>读取账单</strong><p>${esc(source)}</p></li>
       <li><strong>确定性计算</strong><p>同一笔本金、同一段行情，计算实际收益、买入不动收益与每笔卖出差额。</p></li>
       <li><strong>发布前核对</strong><p>逐笔加总与总差额一致、每笔能回到原始成交行，报告才发布。</p></li>
-      <li><strong>语言层只做复述</strong><p>模型只把已核对的事实换成一句话，不新增数字、不改结论。${demo ? '示例账单不进入在线复述。' : '在线复述不可用时，页面只用本地事实回答。'}</p></li>
+      <li><strong>语言层只做复述</strong><p>模型只把已核对的事实换成一句话，不新增数字、不改结论。${demo ? '示例账单只在你主动点击时进入在线解释。' : '在线复述不可用时，页面只用本地事实回答。'}</p></li>
     </ol>
   </details>`;
 }

@@ -5,6 +5,7 @@ import * as adapter from '../../demo/adapter.js';
 import { buildRuleCandidates } from '../../engine/userProfile.js';
 import { renderScenarioReview } from './scenarioReviewView.js';
 import { saveContractsDemo, defaultContracts } from '../../state.js';
+import { createRuleSaveFlow, RULE_SAVE_STATE } from '../ruleSaveFlow.js';
 
 const ACTION_LABEL = Object.freeze({ buy: '买入提醒', sell: '卖出提醒' });
 const INTRO = '设置在操作复盘中用于提醒自己的交易规则。规则仅用于提醒，不会自动交易或阻止交易。';
@@ -151,21 +152,25 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
   const ruleSet = adapter.contractRuleSet(c.versions);
   const slotOf = (template_id) => ruleSet.slots.find((s) => s.template_id === template_id) ?? null;
 
+  const saveFlow = createRuleSaveFlow({
+    getContracts: () => state.contracts,
+    set,
+    saveRules: typeof ctx?.cloudDeps?.saveRules === 'function' ? ctx.cloudDeps.saveRules : null,
+    saveLocal: saveContractsDemo,
+  });
   function commitAll(recs, extra = {}) {
-    if (!recs || !recs.length) return;
+    if (!recs || !recs.length) return Promise.resolve({ ok: false });
     const versions = [...c.versions, ...recs];
-    set({ contracts: { versions, simContext: null, sim: { ...c.sim, result: null, running: false, runId: null, fallback: null }, ...extra } });
-    const saveRules = ctx?.cloudDeps?.saveRules;
-    if (typeof saveRules === 'function') {
-      Promise.resolve(saveRules({ versions })).catch(() => {});
-      return;
-    }
-    saveContractsDemo();
+    return saveFlow.saveVersions(versions, {
+      extra,
+      simReset: { ...c.sim, result: null, running: false, runId: null, fallback: null },
+    });
   }
   function openEditor(mode, { rule = null, template_id = null, action = null } = {}) {
+    const idleSave = { saveState: { status: RULE_SAVE_STATE.IDLE, message: '', versions: null, at: null } };
     if (mode === 'edit' && rule?.is_custom) {
       const result = { status: 'supported', is_custom: true, rule_id: rule.rule_id, text: rule.text, action: rule.action, scope: rule.scope, scope_text: rule.scope_text, understanding: rule.understanding, checks: [] };
-      set({ contracts: { modal: { mode, targetHash: rule.hash, targetRuleId: rule.rule_id, actionFilter: null }, draft: { template_id: CUSTOM_TEMPLATE, fields: {}, note: rule.latest_note, scope: scopeDraftOf(rule.scope) }, nl: { ...emptyNl(), text: rule.text, status: 'done', result, actionChoice: rule.action } } });
+      set({ contracts: { modal: { mode, targetHash: rule.hash, targetRuleId: rule.rule_id, actionFilter: null }, draft: { template_id: CUSTOM_TEMPLATE, fields: {}, note: rule.latest_note, scope: scopeDraftOf(rule.scope) }, nl: { ...emptyNl(), text: rule.text, status: 'done', result, actionChoice: rule.action }, ...idleSave } });
       return;
     }
     const wanted = rule ? rule.template_id : template_id;
@@ -173,15 +178,17 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
     const pool = filtered.length ? filtered : templates;
     const fewestTpl = [...pool].sort((a, b) => (slotOf(a.template_id)?.current ? 1 : 0) - (slotOf(b.template_id)?.current ? 1 : 0))[0];
     const tpl = templates.find((t) => t.template_id === wanted) ?? fewestTpl ?? pool[0];
-    set({ contracts: { modal: { mode, targetHash: rule ? rule.hash : null, actionFilter: action }, draft: draftFor(tpl, rule) } });
+    set({ contracts: { modal: { mode, targetHash: rule ? rule.hash : null, actionFilter: action }, draft: draftFor(tpl, rule), ...idleSave } });
   }
   const closeEditor = () => {
+    if (state.contracts.saveState?.status === RULE_SAVE_STATE.SAVING) return;
     nlToken = null;
+    const assistant = state.assistant.pendingConfirmationFlowId || state.assistant.pendingDraftId
+      ? { ...state.assistant, pendingConfirmationFlowId: null, pendingDraftId: null }
+      : state.assistant;
     set({
-      contracts: { modal: null, nl: null },
-      assistant: state.assistant.pendingConfirmationFlowId
-        ? { ...state.assistant, pendingConfirmationFlowId: null }
-        : state.assistant,
+      contracts: { modal: null, nl: null, saveState: { status: RULE_SAVE_STATE.IDLE, message: '', versions: null, at: null } },
+      assistant,
     });
   };
   const emptyNl = () => ({ text: '', status: 'idle', result: null, choices: {}, ack: false, actionChoice: null, flowId: null, modelCalls: 0, budgetMax: 2 });
@@ -197,6 +204,13 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
       // el('div', { class: 'muted small cv-agent-note' }, [AGENT_NOTE]),
     ]),
   ]));
+  if (c.saveState?.status === RULE_SAVE_STATE.SAVING) {
+    page.append(el('div', { class: 'card cv-save-state', 'data-role': 'rule-save-state', role: 'status' }, ['正在保存规则…']));
+  } else if (c.saveState?.status === RULE_SAVE_STATE.FAILED) {
+    page.append(el('div', { class: 'card cv-save-state is-failed', 'data-role': 'rule-save-state', role: 'alert' }, [
+      el('div', {}, [c.saveState.message]),
+    ]));
+  }
 
   /* —— 当前生效规则：按类型，每种类型最多一条（由 adapter 派生）—— */
   const currentBox = el('div', { class: 'card cv-current' });
@@ -598,27 +612,40 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
       const next = parsed.scope ?? { kind: 'all' };
       return old.kind === next.kind && (old.symbol ?? '') === (next.symbol ?? '') ? null : JSON.stringify(next);
     };
+    let saving = false;
     const saveBtn = el('button', {
       class: 'btn primary', 'data-role': 'modal-save',
-      onclick: () => {
+      onclick: async () => {
+        if (saving) return;
         const parsed = preview();
         const d = editorState(parsed);
         const scopeKey = scopeChangeKey(parsed, d);
         if (scopeKey && scopeAckKey !== scopeKey) return;
-        commitAll(adapter.contractSaveRecords(c.versions, {
+        saving = true;
+        saveBtn.disabled = true;
+        await commitAll(adapter.contractSaveRecords(c.versions, {
           parsed,
           targetHash,
           note: c.draft.note,
           forceDuplicate: d.action === 'duplicate' ? dupAcked : false,
           assistantFlowId: c.modal?.assistantFlowId ?? null,
+          assistantDraftId: c.draft.assistantDraftId ?? null,
+          assistantCandidateId: c.draft.assistantCandidateId ?? null,
         }), { modal: null });
+        saving = false;
+        paintLive();
       },
     }, ['保存并启用']);
+    const savingState = c.saveState?.status === RULE_SAVE_STATE.SAVING;
     dialog.append(live, el('div', { class: 'cv-modal-foot' }, [
+      c.saveState?.status === RULE_SAVE_STATE.FAILED
+        ? el('div', { class: 'error', 'data-role': 'rule-save-error', role: 'alert' }, [c.saveState.message])
+        : null,
+      savingState ? el('div', { class: 'muted small' }, ['正在保存规则…']) : null,
       hint,
       dupNote,
       el('div', { class: 'row cv-modal-actions' }, [
-        el('button', { class: 'btn', 'data-role': 'modal-cancel', onclick: closeEditor }, ['取消']),
+        el('button', { class: 'btn', 'data-role': 'modal-cancel', disabled: savingState ? '' : null, onclick: closeEditor }, ['取消']),
         saveBtn,
       ]),
     ]));
@@ -646,7 +673,8 @@ export function renderContract(root, ctx, { section = 'rules' } = {}) {
       const isDup = d.action === 'duplicate';
       const scopeKey = scopeChangeKey(parsed, d);
       if (scopeAckKey !== scopeKey) scopeAckKey = null;
-      saveBtn.disabled = !d.canSave || (isDup && !dupAcked) || !!(scopeKey && scopeAckKey !== scopeKey);
+      saveBtn.disabled = saving || c.saveState?.status === RULE_SAVE_STATE.SAVING
+        || !d.canSave || (isDup && !dupAcked) || !!(scopeKey && scopeAckKey !== scopeKey);
       const hintText = {
         invalid: '参数无效：请先修正参数，保存不可用。',
         unchanged: '与当前规则相同：同一规则不会重复保存；决策说明不参与判定，不能单独形成新规则。',
