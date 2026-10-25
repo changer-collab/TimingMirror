@@ -1551,17 +1551,26 @@ function recordBase(src, note) {
 
 // 保存并启用：edit＝编辑当前规则（创建新版本，旧版本进入历史）；new＝新模板规则（同模板不同范围可并存，互不替代）；
 // restore＝历史同哈希→恢复该版本；duplicate＝同哈希已存在为当前规则但用户可强制新增；origin 仅作记录展示
-export function contractSaveRecords(versions, { parsed, note, origin = null, confirmScopeChange = false, forceDuplicate = false, assistantFlowId = null, targetHash = null } = {}) {
+export function contractSaveRecords(versions, {
+  parsed, note, origin = null, confirmScopeChange = false, forceDuplicate = false,
+  assistantFlowId = null, assistantDraftId = null, assistantCandidateId = null, targetHash = null,
+} = {}) {
   const d = contractEditorState(versions, parsed, { targetHash });
   if (!d.canSave) return [];
   if (d.action === 'duplicate' && !forceDuplicate) return [];
-  if (d.action === 'restore') return contractRestoreRecords(versions, { hash: parsed.hash, note, confirmScopeChange, assistantFlowId });
+  if (d.action === 'restore') {
+    return contractRestoreRecords(versions, {
+      hash: parsed.hash, note, confirmScopeChange, assistantFlowId, assistantDraftId, assistantCandidateId,
+    });
+  }
   const at = new Date().toISOString();
   const rec = {
     ...recordBase({ ...parsed, threshold_display: parsed.threshold.display }, note), at,
     v: d.next_version, status: '已确认', from_v: null,
   };
   if (typeof assistantFlowId === 'string' && assistantFlowId) rec.assistant_flow_id = assistantFlowId;
+  if (typeof assistantDraftId === 'string' && assistantDraftId) rec.assistant_draft_id = assistantDraftId;
+  if (typeof assistantCandidateId === 'string' && assistantCandidateId) rec.assistant_candidate_id = assistantCandidateId;
   if (origin && typeof origin.text === 'string' && origin.text.trim()) {
     rec.origin = { kind: 'natural_language', text: origin.text.trim(), confirmations: { ...(origin.confirmations ?? {}) } };
   }
@@ -1574,7 +1583,10 @@ export function contractSaveRecords(versions, { parsed, note, origin = null, con
 }
 
 // 恢复历史规则为当前规则：追加一条”经恢复”的状态记录（版本号不变）；多规则共存，不影响其余规则
-export function contractRestoreRecords(versions, { hash, rule_id, note, confirmScopeChange = false, assistantFlowId = null } = {}) {
+export function contractRestoreRecords(versions, {
+  hash, rule_id, note, confirmScopeChange = false,
+  assistantFlowId = null, assistantDraftId = null, assistantCandidateId = null,
+} = {}) {
   const ruleSet = contractRuleSet(versions);
   const preview = contractRestoreState(versions, { hash, rule_id });
   const rule = preview.rule;
@@ -1583,6 +1595,8 @@ export function contractRestoreRecords(versions, { hash, rule_id, note, confirmS
   if (rule.is_custom) {
     const rec = { ...customRecordBase(rule.latest, note, at, rule.v), status: rule.reenable_status, transition_from: rule.status, via: '恢复' };
     if (typeof assistantFlowId === 'string' && assistantFlowId) rec.assistant_flow_id = assistantFlowId;
+    if (typeof assistantDraftId === 'string' && assistantDraftId) rec.assistant_draft_id = assistantDraftId;
+    if (typeof assistantCandidateId === 'string' && assistantCandidateId) rec.assistant_candidate_id = assistantCandidateId;
     const current = ruleSet.customCurrent.find((r) => r.rule_id === rule.rule_id && r.hash !== rule.hash);
     const retired = current ? [{ ...customRecordBase(current.latest, null, at, current.v), status: '已拒绝', transition_from: current.status, via: '替代', replaced_by_v: rule.v, replaced_by_hash: rule.hash }] : [];
     return [rec, ...retired];
@@ -1590,6 +1604,8 @@ export function contractRestoreRecords(versions, { hash, rule_id, note, confirmS
   // 模板规则恢复：查找同模板+同范围的当前规则，标记为"替代"
   const rec = { ...recordBase(rule.latest, note), at, v: rule.v, status: rule.reenable_status, transition_from: rule.status, via: '恢复' };
   if (typeof assistantFlowId === 'string' && assistantFlowId) rec.assistant_flow_id = assistantFlowId;
+  if (typeof assistantDraftId === 'string' && assistantDraftId) rec.assistant_draft_id = assistantDraftId;
+  if (typeof assistantCandidateId === 'string' && assistantCandidateId) rec.assistant_candidate_id = assistantCandidateId;
   const currentRule = preview.current;
   const retired = currentRule ? [{ ...recordBase(currentRule.latest, null), at, v: currentRule.v, status: '已拒绝', transition_from: currentRule.status, via: '替代', replaced_by_v: rule.v, replaced_by_hash: rule.hash }] : [];
   return [rec, ...retired];

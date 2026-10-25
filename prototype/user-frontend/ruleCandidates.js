@@ -2,6 +2,10 @@
 import { contractTemplates, previewContract } from '../../src/demo/adapter.js';
 import { recordCandidateEvent } from './profileStore.js';
 
+// 报告证据草案没有 AI flow；用本地 draft_id 从载入、编辑到保存结果返回保持同一关联。
+let candidateDraftSeq = 0;
+const nextCandidateDraftId = () => `candidate-draft-${++candidateDraftSeq}`;
+
 function candidateFields(candidate, template) {
   const fields = {};
   for (const f of template.fields) {
@@ -44,8 +48,10 @@ export function openRuleCandidateInAssistant(ctx, candidate) {
   const fields = candidateFields(candidate, template);
   const parsed = previewContract({ template_id: candidate.template_id, fields, scope: { kind: 'all' } });
   const supported = parsed?.supported !== false;
+  const draftId = nextCandidateDraftId();
   const draft = {
     origin: 'behavior_candidate',
+    draft_id: draftId,
     template_id: candidate.template_id,
     fields,
     text: supported ? parsed.text : candidate.text,
@@ -67,6 +73,10 @@ export function openRuleCandidateInAssistant(ctx, candidate) {
       pending: false,
       requestId: null,
       flowId: null,
+      draftId,
+      // 保存中的旧草案关联要保留，旧结果返回时才能提示且不误清新草案。
+      pendingDraftId: state.assistant.pendingDraftId ?? null,
+      savedNotice: null,
       stage: 'draft',
       draft,
       plan: null,

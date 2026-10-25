@@ -503,7 +503,12 @@ function focusQaInput() {
 
 async function explainReportNumbers({ question, bundle, bill } = {}) {
   if (!bundle?.review || typeof question !== 'string' || question.trim() === '') return { ok: false };
-  if (bill?.status !== 'confirmed' || bill?.sourceType !== 'local' || bill?.demo === true) return { ok: false };
+  // 示例报告同样走这条链路：只发送已发布事实，不发送示例账单文件或云端数据。
+  const confirmed = bill?.status === 'confirmed' && bill?.sourceType === 'local'
+    && bill?.blocked !== true && Array.isArray(bill?.trades) && bill.trades.length > 0
+    && typeof bill?.contextId === 'string' && bill.contextId !== '';
+  if (!confirmed) return { ok: false };
+  if (bundle.review.portfolio_published !== true) return { ok: false };
   const result = await getQaOnlineClient().ask({ question, review: bundle.review });
   if (!result?.ok || typeof result.text !== 'string' || result.text.trim() === '') return { ok: false };
   return { ok: true, text: result.text.trim() };

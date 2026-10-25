@@ -146,6 +146,9 @@ export function createAssistantController({ client, state, set, go, scrollSimula
     if (state.assistant.pending || !state.assistant.draft || state.assistant.semanticConfirmation) return;
     patch({
       draft: null,
+      draftId: null,
+      pendingDraftId: null,
+      savedNotice: null,
       flowId: null,
       requestId: null,
       stage: 'idle',
@@ -284,6 +287,9 @@ export function createAssistantController({ client, state, set, go, scrollSimula
         pending: false,
         requestId: null,
         flowId: flow.flow_id,
+        draftId: null,
+        pendingDraftId: null,
+        savedNotice: null,
         stage: flow.status,
         draft: flow.draft,
         plan: flow.plan,
@@ -339,23 +345,28 @@ export function createAssistantController({ client, state, set, go, scrollSimula
   function confirmInContract() {
     const draft = state.assistant.draft;
     if (!draft) return patch({ error: { code: 'E_ASSISTANT_NO_DRAFT', message: '当前没有可确认的规则草案' } });
+    const fromCandidate = draft.origin === CANDIDATE_ORIGIN;
+    const draftId = fromCandidate ? (draft.draft_id ?? state.assistant.draftId ?? null) : null;
     set({
       contracts: {
         modal: { mode: 'add', targetHash: null, assistantFlowId: draft.flow_id },
         draft: {
           template_id: draft.template_id,
           fields: Object.fromEntries(Object.entries(draft.fields).map(([k, v]) => [k, String(v)])),
-          note: draft.origin === CANDIDATE_ORIGIN
+          note: fromCandidate
             ? '来自报告行为证据；可修改后确认'
             : '来自 AI 规则理解草案；可在规则页修改后确认',
           scope: scopeDraftOf(draft),
           assistantFlowId: draft.flow_id,
+          assistantDraftId: draftId,
+          assistantCandidateId: fromCandidate ? (draft.candidate_id ?? null) : null,
         },
       },
       assistant: {
         ...state.assistant,
         mobileView: false,
         pendingConfirmationFlowId: draft.flow_id,
+        pendingDraftId: draftId,
         versionsBaselineCount: state.contracts.versions.length,
         versionsBaselineHashes: state.contracts.versions.map((v) => v.hash).filter(Boolean),
         dataContextKey: dataContextKey(state),
@@ -413,13 +424,97 @@ export function createAssistantController({ client, state, set, go, scrollSimula
     go('contract');
   }
 
+  // 报告证据草案没有 AI flow：只认带同一 assistant_draft_id 的实际保存记录。
+  function syncCandidateDraft(noticePatch) {
+    const draft = state.assistant.draft;
+    if (!draft?.draft_id) {
+      if (Object.keys(noticePatch).length) patch(noticePatch);
+      return;
+    }
+    const currentCount = Array.isArray(state.contracts.versions) ? state.contracts.versions.length : 0;
+    const baselineCount = Number.isInteger(state.assistant.versionsBaselineCount)
+      ? state.assistant.versionsBaselineCount
+      : currentCount;
+    const added = currentCount > baselineCount ? state.contracts.versions.slice(baselineCount) : [];
+    const match = added.find((v) => v
+      && (v.schema === 'contract-v1' || v.schema === 'contract-v2')
+      && v.assistant_draft_id === draft.draft_id
+      && typeof v.hash === 'string' && typeof v.template_id === 'string');
+    if (!match) {
+      const pendingId = state.assistant.pendingDraftId;
+      const olderSaved = pendingId && pendingId !== draft.draft_id
+        ? state.contracts.versions.find((v) => v && v.assistant_draft_id === pendingId)
+        : null;
+      const extra = olderSaved
+        ? {
+          pendingDraftId: null,
+          messages: [...state.assistant.messages, {
+            role: 'assistant',
+            kind: 'notice',
+            text: '上一份规则草案已保存并启用；当前新草案保持不变。',
+          }],
+        }
+        : {};
+      if (Object.keys(noticePatch).length || Object.keys(extra).length) patch({ ...noticePatch, ...extra });
+      return;
+    }
+    if (state.assistant.draft?.draft_id !== draft.draft_id) return;
+    const ruleSet = contractRuleSet(state.contracts.versions);
+    const current = ruleSet.current.find((r) => r.hash === match.hash) ?? null;
+    const savedRule = current ? ruleIdentity(current) : ruleIdentity(match);
+    patch({
+      ...noticePatch,
+      draft: null,
+      draftId: null,
+      pendingDraftId: null,
+      flowId: null,
+      stage: 'saved',
+      savedNotice: {
+        text: '规则已保存并启用',
+        hash: match.hash,
+        version: current?.v ?? match.v ?? null,
+        template_id: match.template_id,
+      },
+      currentRule: savedRule,
+      semanticConfirmation: null,
+      ruleDrift: null,
+      simulation: null,
+      simulationAttempt: null,
+      currentSimulationResultId: null,
+      currentSimulationStatus: null,
+      consistency: null,
+      consistencyAttempt: null,
+      explanation: '',
+      pendingConfirmationFlowId: null,
+      versionsBaselineCount: currentCount,
+      versionsBaselineHashes: state.contracts.versions.map((v) => v.hash).filter(Boolean),
+      ruleStateKey: null,
+      simulationKey: null,
+      error: null,
+      messages: [...state.assistant.messages, {
+        role: 'assistant',
+        kind: 'notice',
+        text: '规则已保存并启用。历史复盘会使用当前生效规则。',
+      }],
+      ...explanationReset(),
+    });
+  }
+
   function syncFromState() {
     if (state.assistant.pending) return;
     const notice = marketNoticeFromState(state);
     const noticePatch = sameNotice(notice, state.assistant.marketNotice) ? {} : { marketNotice: notice };
     const flowId = state.assistant.flowId;
     const draft = state.assistant.draft;
-    if (!flowId || !draft) {
+    if (!draft) {
+      if (Object.keys(noticePatch).length) patch(noticePatch);
+      return;
+    }
+    if (draft.origin === CANDIDATE_ORIGIN) {
+      syncCandidateDraft(noticePatch);
+      return;
+    }
+    if (!flowId) {
       if (Object.keys(noticePatch).length) patch(noticePatch);
       return;
     }
@@ -677,6 +772,11 @@ export function createAssistantController({ client, state, set, go, scrollSimula
     return client.getExplanationEligibility(state.assistant.flowId);
   }
 
+  function viewSavedRule() {
+    if (state.assistant.mobileView) patch({ mobileView: false });
+    go('contract');
+  }
+
   async function explainResult() {
     if (state.assistant.resultExplanationPending) return;
     const flowId = state.assistant.flowId;
@@ -804,6 +904,7 @@ export function createAssistantController({ client, state, set, go, scrollSimula
     confirmInContract,
     goSimulation,
     returnToRuleEdit,
+    viewSavedRule,
     syncFromState,
     explanationEligibility,
     explainResult,
@@ -983,7 +1084,9 @@ function draftCard(controller, state) {
   const removed = drift?.status === 'removed';
   const attemptFailed = attempt?.status === 'failed';
   const attemptNotRun = attempt?.status === 'not_executed';
-  const simChip = attemptFailed
+  // 报告证据草案保存前不要求单次情景模拟；保存成功后整张草案卡会收起。
+  const showSimulation = !(fromCandidate && !semantic);
+  const simChip = !showSimulation ? null : attemptFailed
     ? chip('本次模拟：失败', 'warn')
     : attemptNotRun
       ? chip('本次模拟：未执行', 'warn')
@@ -1065,11 +1168,13 @@ function draftCard(controller, state) {
         ? el('div', { class: 'muted small' }, ['这次模拟对应当前生效规则；此前保存的记录不覆盖这次修改。'])
         : null,
     ]) : el('div', { class: 'muted small' }, [
-      state.assistant.marketNotice
-        ? '行情暂不可用，暂时不能生成模拟结果；你仍可以查看或修改规则。'
-        : state.bill?.status === 'confirmed' && state.bill?.sourceType === 'local'
-          ? '尚未模拟；到规则页点击测试后，助手会自动接收结果，不会自动发起。'
-          : '操作复盘需要先确认本地账单。',
+      fromCandidate
+        ? '保存并启用后，历史复盘会使用当前生效规则；这里不会要求你做单次情景模拟。'
+        : state.assistant.marketNotice
+          ? '行情暂不可用，暂时不能生成模拟结果；你仍可以查看或修改规则。'
+          : state.bill?.status === 'confirmed' && state.bill?.sourceType === 'local'
+            ? '保存并启用后，历史复盘会使用当前生效规则；这里不会要求你做单次情景测试。'
+            : '操作复盘需要先确认本地账单。',
     ]),
     attemptFailed || attemptNotRun
       ? el('div', { class: 'assistant-check' }, [
@@ -1094,6 +1199,28 @@ function draftCard(controller, state) {
     ]) : null,
   ]);
   return card;
+}
+
+function savedNoticeCard(controller, state) {
+  const notice = state.assistant.savedNotice;
+  if (!notice) return null;
+  return el('div', {
+    class: 'assistant-draft',
+    'data-role': 'assistant-saved-notice',
+  }, [
+    el('div', { class: 'assistant-draft-head' }, [notice.text ?? '规则已保存并启用']),
+    el('div', { class: 'muted small' }, [
+      notice.version ? `v${textOf(notice.version)} · 已生效；历史复盘会使用当前生效规则。` : '已生效；历史复盘会使用当前生效规则。',
+    ]),
+    el('div', { class: 'row assistant-actions' }, [
+      el('button', {
+        class: 'btn small',
+        type: 'button',
+        'data-role': 'assistant-view-rule',
+        onclick: () => controller.viewSavedRule(),
+      }, ['查看规则']),
+    ]),
+  ]);
 }
 
 let syncScheduled = false;
@@ -1215,6 +1342,8 @@ export function renderAssistantPanel(root, ctx) {
 
   const draft = draftCard(controller, state);
   if (draft) card.append(draft);
+  const saved = savedNoticeCard(controller, state);
+  if (saved) card.append(saved);
 
   root.replaceChildren(card);
 }

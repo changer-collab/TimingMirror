@@ -174,11 +174,53 @@ function retryOf(card) {
 /* ==== 入口规则 ==== */
 {
   state.report = { symbol: 'pool' };
-  state.bill = billOf({ demo: true, demoScenarioId: 'chase', contextId: 'demo-report-ai' });
+  state.bill = billOf({
+    demo: true, source: 'demo', demoScenarioId: 'chase', contextId: 'demo-report-ai',
+  });
   resetAssistant();
+  let demoCalls = 0;
+  let demoArgs = null;
+  ctx.qaDeps.getReportBundle = () => BUNDLE;
+  ctx.qaDeps.explainReport = async (args) => {
+    demoCalls += 1;
+    demoArgs = args;
+    return { ok: true, text: '示例报告的实际收益 +3.7%，对照收益 +8.1%。' };
+  };
   const demoCard = render('report');
-  check('示例账单：没有 AI 解读入口', !primaryOf(demoCard)
-    && !allText(demoCard).includes('让 AI 解释当前数字'), allText(demoCard).slice(0, 320));
+  const demoPrimary = primaryOf(demoCard);
+  check('示例账单：显示 AI 解读入口并保留示例身份说明',
+    !!demoPrimary
+    && allText(demoCard).includes('示例账单')
+    && allText(demoCard).includes('将发送这份示例报告中已发布的数字和你的问题，不发送文件，也不会写入你的账单或画像。'),
+    allText(demoCard).slice(0, 360));
+  clickNode(demoPrimary);
+  await flush();
+  check('示例账单：点击后只调用一次报告解释，输入仍是当前已发布报告',
+    demoCalls === 1
+    && demoArgs?.bill?.demo === true
+    && demoArgs?.bill?.contextId === 'demo-report-ai'
+    && demoArgs?.bundle === BUNDLE
+    && state.assistant.qaMessages.length === 2,
+    JSON.stringify({ calls: demoCalls, messages: state.assistant.qaMessages }));
+
+  state.bill = billOf({ demo: true, source: 'demo', contextId: 'demo-report-ai-missing' });
+  resetAssistant();
+  ctx.qaDeps.getReportBundle = () => ({
+    review: {
+      portfolio_published: true,
+      published_facts: [
+        { scope: 'portfolio', key: 'actualRet', display: '+3.7%' },
+        { scope: 'portfolio', key: 'ghostRet', display: '+8.1%' },
+        { scope: 'portfolio', key: 'drag', display: '+4.4pp' },
+      ],
+    },
+  });
+  ctx.qaDeps.explainReport = async () => { demoCalls += 1; return { ok: true, text: '不应调用' }; };
+  const demoIncomplete = render('report');
+  check('示例账单：缺少有效已发布事实时不给解释入口，改为查看原因',
+    !primaryOf(demoIncomplete)
+    && allText(demoIncomplete).includes('查看报告原因'),
+    allText(demoIncomplete).slice(0, 360));
 
   state.bill = billOf({ status: 'loaded' });
   resetAssistant();
@@ -193,6 +235,7 @@ function retryOf(card) {
 
   state.bill = billOf();
   resetAssistant();
+  ctx.qaDeps.getReportBundle = () => BUNDLE;
   const userCard = render('report');
   const userPrimary = primaryOf(userCard);
   check('已确认非示例账单：显示 AI 解读入口与发送范围',
@@ -367,6 +410,54 @@ const FAILURE_TEXT = 'AI 解读暂时不可用，本地页面说明仍然有效�
     && nodesByClass(successCard, 'qa-ai-msg').length === 1
     && allText(successCard).includes('重试成功'),
     JSON.stringify({ calls, messages: state.assistant.qaMessages }));
+}
+
+/* ==== 上下文切换：旧请求结果不进入新示例/账单/报告快照 ==== */
+{
+  state.bill = billOf({ demo: true, source: 'demo', contextId: 'demo-switch-1' });
+  resetAssistant();
+  ctx.qaDeps.getReportBundle = () => BUNDLE;
+  let resolveAsk;
+  ctx.qaDeps.explainReport = () => new Promise((resolve) => { resolveAsk = resolve; });
+  const card = render('report');
+  clickNode(primaryOf(card));
+  await flush();
+
+  state.bill = billOf({ demo: true, source: 'demo', contextId: 'demo-switch-2' });
+  const switched = render('report');
+  resolveAsk({ ok: true, text: '旧示例的解读结果不应出现' });
+  await flush();
+  const afterSwitch = render('report');
+  check('切换示例账单：旧请求结果不进入新上下文',
+    state.assistant.qaAiPending === false
+    && !allText(switched).includes('旧示例的解读结果不应出现')
+    && !allText(afterSwitch).includes('旧示例的解读结果不应出现')
+    && !visibleHelpMessages(state).some((m) => String(m.text ?? '').includes('旧示例的解读结果不应出现')),
+    JSON.stringify(state.assistant.qaMessages));
+
+  const snapshot1 = BUNDLE;
+  const snapshot2 = { ...BUNDLE, asOfDate: '2026-10-25' };
+  let activeSnapshot = snapshot1;
+  state.bill = billOf({ contextId: 'report-snapshot-switch' });
+  resetAssistant();
+  ctx.qaDeps.getReportBundle = () => activeSnapshot;
+  ctx.qaDeps.explainReport = () => new Promise((resolve) => { resolveAsk = resolve; });
+  const snapshotCard = render('report');
+  clickNode(primaryOf(snapshotCard));
+  await flush();
+  activeSnapshot = snapshot2;
+  render('report');
+  resolveAsk({ ok: true, text: '旧报告快照的解读不应出现' });
+  await flush();
+  const afterSnapshot = render('report');
+  const discarded = state.assistant.qaMessages.find((m) => m.kind === 'ai');
+  check('切换报告快照：旧请求结果丢弃，不覆盖新快照',
+    state.assistant.qaAiPending === false
+    && !allText(afterSnapshot).includes('旧报告快照的解读不应出现')
+    && discarded?.status === 'failed'
+    && discarded?.text.includes('上下文已切换'),
+    JSON.stringify({ messages: state.assistant.qaMessages, text: allText(afterSnapshot).slice(0, 240) }));
+  ctx.qaDeps.getReportBundle = () => BUNDLE;
 }
 
 /* ==== 出站隐私：只发送问题与已核对事实 ==== */

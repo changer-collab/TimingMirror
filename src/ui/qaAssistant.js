@@ -56,10 +56,10 @@ function isConfirmedLocal(bill) {
     && Array.isArray(bill.trades) && bill.trades.length > 0;
 }
 
-// 报告页 AI 解读只针对已确认且非示例的用户账单；contextId 用于把解读绑定到当前账单。
+// 报告页 AI 解读只针对已确认且带当前上下文的账单；示例报告同样可由用户主动触发，
+// 但请求仍只走已发布事实，示例身份与行情来源由报告页标注。
 function isExplainableBill(bill) {
-  return isConfirmedLocal(bill) && bill.demo !== true && bill.source !== 'demo'
-    && typeof bill.contextId === 'string' && bill.contextId !== '';
+  return isConfirmedLocal(bill) && typeof bill.contextId === 'string' && bill.contextId !== '';
 }
 
 function isDemoReport(bill, bundle) {
@@ -199,21 +199,21 @@ function importStatus(state) {
       actions: [{ href: '#/import', label: '核对并确认' }],
     };
   }
+  if (bill.demo === true) {
+    return {
+      title: '账单状态',
+      lines: ['当前是示例账单；示例结果不写入画像。需要时可让 AI 解释当前已发布的示例数字，不会混入你的云端账单。'],
+      actions: [{ href: '#/import', label: '导入自己的账单' }],
+    };
+  }
   if (isConfirmedLocal(bill)) {
     return {
       title: '账单状态',
       lines: ['账单已确认；可以打开报告页查看已发布结果，或去问答页继续复盘。'],
       actions: [
         { href: '#/report', label: '打开报告页' },
-        ...(isConfirmedLocal(bill) ? [{ handoffQuestion: '这份账单的组合表现如何？', label: '去问答页继续' }] : []),
+        { handoffQuestion: '这份账单的组合表现如何？', label: '去问答页继续' },
       ],
-    };
-  }
-  if (bill.demo === true) {
-    return {
-      title: '账单状态',
-      lines: ['当前是示例账单；示例结果不写入画像，也不参与在线复述。'],
-      actions: [{ href: '#/import', label: '导入自己的账单' }],
     };
   }
   return null;
@@ -342,8 +342,6 @@ function primaryAction(state, deps) {
         note: '当前是单标的视图；AI 解释只针对组合已发布数字，请先在报告页切回组合。',
       };
     }
-    // 示例场景/示例账单不提供真实账单的 AI 解读入口。
-    if (isDemoReport(bill, bundle)) return null;
     if (!isExplainableBill(bill) || !bundle) {
       return {
         id: 'report-open',
@@ -367,7 +365,9 @@ function primaryAction(state, deps) {
       id: 'report-ai',
       kind: 'report-ai',
       label: pending ? REPORT_AI_PENDING_TEXT : '让 AI 解释当前数字',
-      note: '将发送当前页面已发布的数字和你的问题，不发送原始账单文件。',
+      note: isDemoReport(bill, bundle)
+        ? '将发送这份示例报告中已发布的数字和你的问题，不发送文件，也不会写入你的账单或画像。'
+        : '将发送当前页面已发布的数字和你的问题，不发送原始账单文件。',
       disabled: pending || typeof deps?.explainReport !== 'function',
     };
   }
@@ -746,8 +746,9 @@ async function runReportExplain(ctx) {
   if (ctx.state.assistant?.qaAiPending || typeof deps.explainReport !== 'function') return;
   const bill = ctx.state.bill;
   const bundle = typeof deps.getReportBundle === 'function' ? deps.getReportBundle(bill) : null;
-  if (isDemoReport(bill, bundle) || !isExplainableBill(bill) || !bundle
+  if (!isExplainableBill(bill) || !bundle
     || bundle.review?.portfolio_published !== true || !hasCompletePortfolio(bundle)) return;
+  const requestContextId = billContextId(ctx.state);
   // 同一账单只保留一段 AI 解读：重试或再次点击都复用原 turn，不追加相同用户消息。
   const existingId = reportAiTurnId(ctx.state);
   let id;
@@ -776,6 +777,20 @@ async function runReportExplain(ctx) {
     });
   } catch {
     result = { ok: false };
+  }
+  // 切换示例、账单或报告快照后，旧请求结果只留在原上下文，不写入当前页面。
+  const currentBundle = typeof deps.getReportBundle === 'function' ? deps.getReportBundle(ctx.state.bill) : null;
+  if (billContextId(ctx.state) !== requestContextId
+    || currentBundle?.review !== bundle.review
+    || currentBundle?.asOfDate !== bundle.asOfDate) {
+    finishAiTurn(ctx, id, {
+      ok: false,
+      text: '上下文已切换，本次 AI 解读结果已丢弃。',
+      tag: REPORT_AI_TAG,
+      route: 'report',
+      retryKind: 'report-ai',
+    });
+    return;
   }
   if (result?.ok && typeof result.text === 'string' && result.text.trim()) {
     finishAiTurn(ctx, id, { ok: true, text: result.text.trim() });
